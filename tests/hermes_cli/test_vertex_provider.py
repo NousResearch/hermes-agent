@@ -249,3 +249,40 @@ def test_vertex_not_explicitly_configured_when_unset(monkeypatch):
     monkeypatch.delenv("VERTEX_CREDENTIALS_PATH", raising=False)
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     assert auth.is_provider_explicitly_configured("vertex") is False
+
+
+# ── model-ID normalization (primary path) ────────────────────────────────────
+#
+# The vertex model space is mixed: Claude rides the AnthropicVertex SDK
+# (bare publisher IDs — the SDK URL-injects publishers/anthropic/models/<id>),
+# while Gemini/partner-MaaS ride the OpenAI-compat endpoint (REQUIRES the
+# publisher/ prefix). Only the anthropic/ prefix may be stripped, and the
+# primary path must agree with the auxiliary path's strip.
+
+@pytest.mark.parametrize("given,expected", [
+    ("anthropic/claude-fable-5", "claude-fable-5"),
+    ("anthropic/claude-sonnet-5", "claude-sonnet-5"),
+    ("Anthropic/Claude-Fable-5", "Claude-Fable-5"),  # case-insensitive prefix
+    ("anthropic/claude-sonnet-4-5@20250929", "claude-sonnet-4-5@20250929"),
+    ("claude-fable-5", "claude-fable-5"),                       # already bare
+    ("google/gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"),
+    ("moonshotai/kimi-k2-thinking-maas", "moonshotai/kimi-k2-thinking-maas"),
+    ("deepseek-ai/deepseek-v3.2-maas", "deepseek-ai/deepseek-v3.2-maas"),
+])
+def test_vertex_normalization_strips_only_anthropic_prefix(given, expected):
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    assert normalize_model_for_provider(given, "vertex") == expected
+
+
+def test_vertex_normalization_agrees_with_anthropic_detection():
+    """Whatever the classifier accepts, normalization must reduce to an ID the
+    AnthropicVertex SDK can serve — the primary/auxiliary disagreement bug."""
+    from agent.vertex_adapter import is_anthropic_vertex_model
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    for alias in ("anthropic/claude-fable-5", "claude-fable-5"):
+        assert is_anthropic_vertex_model(alias)
+        normalized = normalize_model_for_provider(alias, "vertex")
+        assert normalized == "claude-fable-5"
+        assert is_anthropic_vertex_model(normalized)

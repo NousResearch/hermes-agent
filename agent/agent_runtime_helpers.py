@@ -1173,12 +1173,19 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            # Provider-aware: a Bedrock/Vertex primary must be rebuilt with
+            # its SDK client (AnthropicBedrock / AnthropicVertex) — rebuilding
+            # with build_anthropic_client() would point the recovered session
+            # at api.anthropic.com with the "aws-sdk"/"vertex-oauth"
+            # placeholder key and 401 every subsequent request.
+            from agent.anthropic_adapter import build_anthropic_client_for_provider
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
+            agent._anthropic_client = build_anthropic_client_for_provider(
+                agent.provider,
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                agent=agent,
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1345,12 +1352,18 @@ def restore_primary_runtime(agent) -> bool:
 
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            # Provider-aware: restoring a Bedrock/Vertex primary must rebuild
+            # its SDK client (AnthropicBedrock / AnthropicVertex); the plain
+            # Anthropic client + "aws-sdk"/"vertex-oauth" placeholder key
+            # would 401 against api.anthropic.com on the next turn.
+            from agent.anthropic_adapter import build_anthropic_client_for_provider
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
+            agent._anthropic_client = build_anthropic_client_for_provider(
+                agent.provider,
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                agent=agent,
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1958,7 +1971,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── Determine api_mode if not provided ──
     if not api_mode:
-        api_mode = determine_api_mode(new_provider, base_url)
+        api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2098,7 +2111,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.client = MoAClient(agent.model or "default")
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
-                build_anthropic_client,
+                build_anthropic_client_for_provider,
                 resolve_anthropic_token,
                 _is_oauth_token,
             )
@@ -2107,6 +2120,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             # API key — falling back would send Anthropic credentials to third-party endpoints.
             _is_native_anthropic = new_provider == "anthropic"
             effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+
+            # SDK-auth providers carry no bearer key: Bedrock signs with
+            # SigV4, Vertex with a google-auth Credentials object. Pin the
+            # same placeholder keys agent_init uses so a stale key from the
+            # previous provider can't leak into logs/snapshots.
+            _sdk_placeholder_keys = {"bedrock": "aws-sdk", "vertex": "vertex-oauth"}
+            if new_provider in _sdk_placeholder_keys:
+                effective_key = _sdk_placeholder_keys[new_provider]
 
             # MiniMax OAuth: swap static string for a per-request callable token
             # provider so the rebuilt client survives 15-min token expiry. See
@@ -2126,9 +2147,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-            agent._anthropic_client = build_anthropic_client(
+            # Provider-aware: switching to Claude-on-Vertex (or Bedrock) must
+            # build the SDK client — the plain Anthropic client would send the
+            # placeholder key to api.anthropic.com and 401.
+            agent._anthropic_client = build_anthropic_client_for_provider(
+                new_provider,
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                agent=agent,
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None

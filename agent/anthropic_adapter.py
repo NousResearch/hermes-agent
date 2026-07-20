@@ -956,6 +956,68 @@ def build_anthropic_vertex_client(
     return _anthropic_sdk.AnthropicVertex(**_kwargs)
 
 
+def build_anthropic_client_for_provider(
+    provider: Optional[str],
+    api_key,
+    base_url: Optional[str],
+    *,
+    timeout: Optional[float] = None,
+    drop_context_1m_beta: bool = False,
+    agent=None,
+):
+    """Provider-aware Anthropic client construction — the single chokepoint
+    for every path that (re)builds an ``anthropic_messages`` primary client.
+
+    ``api_mode == "anthropic_messages"`` does not imply a direct Anthropic
+    endpoint: Bedrock needs ``AnthropicBedrock`` (SigV4) and Vertex needs
+    ``AnthropicVertex`` (self-refreshing OAuth2 Credentials). Recovery,
+    restore, and provider-switch paths must build through here — calling
+    ``build_anthropic_client()`` directly for those providers silently
+    points the session at api.anthropic.com with a placeholder key
+    ("aws-sdk" / "vertex-oauth") and every subsequent request 401s.
+
+    For vertex, credentials are re-resolved (so a Credentials object
+    refreshed by another path is picked up) with the agent's cached
+    ``_vertex_*`` attributes as fallback; the caches are refreshed when an
+    ``agent`` is supplied. For bedrock, the region comes from the agent
+    cache, then the base_url, then us-east-1 — mirroring agent_init.
+    """
+    provider_norm = (provider or "").strip().lower()
+
+    if provider_norm == "bedrock":
+        import re
+
+        _region = getattr(agent, "_bedrock_region", None) if agent is not None else None
+        if not _region:
+            _match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+            _region = _match.group(1) if _match else "us-east-1"
+        if agent is not None:
+            agent._bedrock_region = _region
+        return build_anthropic_bedrock_client(_region)
+
+    if provider_norm == "vertex":
+        from agent.vertex_adapter import get_vertex_anthropic_config
+
+        _creds, _project, _region = get_vertex_anthropic_config()
+        if agent is not None:
+            _project = _project or getattr(agent, "_vertex_project_id", None)
+            _region = _region or getattr(agent, "_vertex_region", None)
+            _creds = _creds or getattr(agent, "_vertex_credentials", None)
+        _region = _region or "global"
+        if agent is not None:
+            agent._vertex_project_id = _project
+            agent._vertex_region = _region
+            agent._vertex_credentials = _creds
+        return build_anthropic_vertex_client(_project, _region, credentials=_creds)
+
+    return build_anthropic_client(
+        api_key,
+        base_url,
+        timeout=timeout,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 

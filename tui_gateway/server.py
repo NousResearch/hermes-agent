@@ -5237,12 +5237,20 @@ def _make_agent(
             # The switch already resolved concrete credentials/endpoint; honor
             # persisted overrides only while using that original runtime. They
             # must not leak into a different fallback provider/model pair.
-            if override_base_url:
-                runtime["base_url"] = override_base_url
-            if override_api_key:
-                runtime["api_key"] = override_api_key
-            if override_api_mode:
-                runtime["api_mode"] = override_api_mode
+            #
+            # Exception: Claude-on-Vertex. resolve_runtime_provider's
+            # model-aware vertex branch is authoritative there (AnthropicVertex
+            # SDK, anthropic_messages, self-refreshing OAuth Credentials) —
+            # session rows persisted by provider-level flows store api_mode
+            # "chat_completions", and re-applying that clobbers the resolution
+            # and sends the primary to the OpenAI-compat surface (HTTP 404).
+            if not runtime.get("vertex_anthropic"):
+                if override_base_url:
+                    runtime["base_url"] = override_base_url
+                if override_api_key:
+                    runtime["api_key"] = override_api_key
+                if override_api_mode:
+                    runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:

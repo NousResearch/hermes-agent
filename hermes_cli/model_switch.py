@@ -1444,7 +1444,7 @@ def switch_model(
     if _mandated_mode is not None:
         api_mode = _mandated_mode
     elif not api_mode:
-        api_mode = determine_api_mode(target_provider, base_url)
+        api_mode = determine_api_mode(target_provider, base_url, model=new_model)
 
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
@@ -1527,7 +1527,7 @@ def switch_model(
 
     # --- Determine api_mode if not already set ---
     if not api_mode:
-        api_mode = determine_api_mode(target_provider, base_url)
+        api_mode = determine_api_mode(target_provider, base_url, model=new_model)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize

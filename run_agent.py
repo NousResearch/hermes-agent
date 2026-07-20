@@ -5005,43 +5005,27 @@ class AIAgent:
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
 
-        Handles both direct Anthropic and Bedrock-hosted Anthropic models
-        correctly — rebuilding with the Bedrock SDK when provider is bedrock,
-        rather than always falling back to build_anthropic_client() which
-        requires a direct Anthropic API key.
+        Delegates to ``build_anthropic_client_for_provider`` — the single
+        provider-aware chokepoint that picks AnthropicBedrock for bedrock,
+        AnthropicVertex for vertex (re-resolving credentials, with this
+        agent's cached ``_vertex_*`` attrs as fallback), and the plain
+        Anthropic client otherwise. Recovery/restore/switch paths in
+        agent_runtime_helpers build through the same chokepoint.
 
         Honors ``self._oauth_1m_beta_disabled`` (set by the reactive recovery
         path when an OAuth subscription rejects the 1M-context beta) so the
         rebuilt client carries the reduced beta set.
         """
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            self._anthropic_client = build_anthropic_bedrock_client(region)
-        elif getattr(self, "provider", None) == "vertex":
-            from agent.anthropic_adapter import build_anthropic_vertex_client
-            from agent.vertex_adapter import get_vertex_anthropic_config
-            # Re-resolve so a credentials object refreshed by another path is
-            # picked up; falls back to the cached attrs when resolution fails.
-            _creds, _project, _region = get_vertex_anthropic_config()
-            project = _project or getattr(self, "_vertex_project_id", None)
-            region = _region or getattr(self, "_vertex_region", "global") or "global"
-            creds = _creds or getattr(self, "_vertex_credentials", None)
-            self._vertex_project_id = project
-            self._vertex_region = region
-            self._vertex_credentials = creds
-            self._anthropic_client = build_anthropic_vertex_client(
-                project, region, credentials=creds,
-            )
-        else:
-            from agent.anthropic_adapter import build_anthropic_client
-            self._anthropic_client = build_anthropic_client(
-                self._anthropic_api_key,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=_drop_1m,
-            )
+        from agent.anthropic_adapter import build_anthropic_client_for_provider
+
+        self._anthropic_client = build_anthropic_client_for_provider(
+            getattr(self, "provider", None),
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(self.provider, self.model),
+            drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            agent=self,
+        )
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""

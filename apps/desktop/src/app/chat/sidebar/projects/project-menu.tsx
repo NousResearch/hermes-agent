@@ -129,24 +129,40 @@ export function ProjectMenu({
     </DropdownMenuItem>
   )
 
+  // The bare trigger button (no Tip, no anchor) — composed with whichever of
+  // Tip / PopoverAnchor apply below, always OUTSIDE the asChild chain that
+  // ends at this button, never wrapping it directly. asChild clones only its
+  // immediate child, so any of these wrappers placed inside another
+  // asChild-consuming component (instead of around it) would have its
+  // injected props silently swallowed by that inner component instead of
+  // reaching the real DOM button (see #67500).
+  const triggerButton = (
+    <DropdownMenuTrigger asChild>
+      <button
+        aria-label={p.menu}
+        className={cn(
+          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
+          // In the project header reveal on the whole header hover; in overview
+          // rows reveal on the row hover.
+          scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'
+        )}
+        onClick={event => event.stopPropagation()}
+        type="button"
+      >
+        <Codicon name="kebab-vertical" size="0.75rem" />
+      </button>
+    </DropdownMenuTrigger>
+  )
+
+  // Tip always wraps the outermost element of whatever we render — either the
+  // trigger directly (anchorRef present: the popover anchors to the whole row
+  // via a separate virtualRef, so PopoverAnchor isn't involved here), or the
+  // PopoverAnchor-wrapped trigger (anchorRef absent: the popover anchors to
+  // this button itself). Either way, Tip > PopoverAnchor > DropdownMenuTrigger
+  // > button, so asChild composes props/ref all the way down to the real DOM
+  // node instead of stopping at an intermediate wrapper.
   const trigger = (
-    <Tip label={p.menu}>
-      <DropdownMenuTrigger asChild>
-        <button
-          aria-label={p.menu}
-          className={cn(
-            'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
-            // In the project header reveal on the whole header hover; in overview
-            // rows reveal on the row hover.
-            scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'
-          )}
-          onClick={event => event.stopPropagation()}
-          type="button"
-        >
-          <Codicon name="kebab-vertical" size="0.75rem" />
-        </button>
-      </DropdownMenuTrigger>
-    </Tip>
+    <Tip label={p.menu}>{anchorRef ? triggerButton : <PopoverAnchor asChild>{triggerButton}</PopoverAnchor>}</Tip>
   )
 
   return (
@@ -155,7 +171,7 @@ export function ProjectMenu({
           the kebab is only the dropdown trigger then. */}
       {anchorRef ? <PopoverAnchor virtualRef={anchorRef as React.RefObject<HTMLElement>} /> : null}
       <DropdownMenu>
-        {anchorRef ? trigger : <PopoverAnchor asChild>{trigger}</PopoverAnchor>}
+        {trigger}
         {/* Closing the menu refocuses the trigger (also the popover anchor),
             which the appearance popover would read as focus-outside and die on.
             Suppress that refocus so it survives. */}

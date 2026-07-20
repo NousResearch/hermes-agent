@@ -53,7 +53,15 @@ function dashboardImportInterpreterFixture() {
 
   return {
     cleanup: () => fs.rmSync(directory, { force: true, recursive: true }),
-    env: { PYTHONPATH: [directory, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },
+    // Python normally puts the checkout cwd ahead of PYTHONPATH. The Electron
+    // test project runs from this repository, so it would otherwise import the
+    // real hermes_cli package rather than this deliberately broken runtime
+    // fixture. Safe-path mode removes that implicit cwd entry while preserving
+    // the fixture as the explicit runtime import root.
+    env: {
+      PYTHONPATH: [directory, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+      PYTHONSAFEPATH: '1'
+    },
     interpreter: findPythonInterpreter()
   }
 }

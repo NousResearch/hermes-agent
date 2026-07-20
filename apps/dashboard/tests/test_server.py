@@ -1006,6 +1006,26 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertEqual(gold["price"], 2400)
         self.assertEqual(gold["group"], "Metals")
 
+    def test_changelog_sample_and_normalizer(self):
+        d = self.api.changelog({})
+        self.assertTrue(d["releases"])
+        for r in d["releases"]:
+            self.assertTrue(r["product"] and r["tag"] and r["url"])
+        import unittest.mock as mock
+        rel = json.dumps([
+            {"tag_name": "v2.4.0", "name": "Claude Code v2.4.0",
+             "body": "Subagents and background tasks.",
+             "published_at": "2026-07-18T00:00:00Z",
+             "html_url": "https://github.com/anthropics/claude-code/releases/tag/v2.4.0"},
+        ]).encode()
+        with mock.patch.object(server, "fetch_url", return_value=rel):
+            out = server.live_changelog()
+        self.assertEqual(out["source"], "live")
+        self.assertTrue(any(r["tag"] == "v2.4.0" for r in out["releases"]))
+        # newest first
+        pubs = [r["published"] for r in out["releases"]]
+        self.assertEqual(pubs, sorted(pubs, reverse=True))
+
     def test_pubmed_grounding_normalizer(self):
         import unittest.mock as mock
         esearch = json.dumps({"esearchresult": {"idlist": ["111"]}}).encode()

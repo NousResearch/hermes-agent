@@ -1224,6 +1224,36 @@ a.aid-card:hover { border-color: var(--accent); background: var(--surface); }
 .commod-chg.up { color: var(--delta-up); }
 .commod-chg.down { color: var(--delta-down); }
 
+/* ---------- Claude changelog ---------- */
+.chg-list { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; margin-top: 8px; }
+.chg-item { display: block; text-decoration: none; padding: 8px 6px; border-bottom: 1px solid var(--hairline); border-left: 2px solid transparent; }
+.chg-item:last-child { border-bottom: none; }
+.chg-item:hover { background: var(--surface-2); border-left-color: var(--accent); }
+.chg-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chg-product { font-weight: 600; font-size: 13px; }
+.chg-tag { flex: 0 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--accent); }
+.chg-name { font-size: 12px; margin-top: 2px; }
+.chg-notes { margin-top: 3px; line-height: 1.4; }
+.chg-when { margin-top: 3px; }
+
+/* ---------- learning tracker ---------- */
+.trk-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 12px; color: var(--ink-2); }
+.trk-pct { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+.trk-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin: 5px 0 8px; }
+.trk-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+.trk-list { display: flex; flex-direction: column; max-height: 300px; overflow-y: auto; }
+.trk-row { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--hairline); }
+.trk-row:last-child { border-bottom: none; }
+.trk-row.st-done .trk-title { text-decoration: line-through; color: var(--muted); }
+.trk-title { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; color: var(--ink); }
+a.trk-title:hover { color: var(--accent); }
+.trk-status { flex: 0 0 auto; min-width: 96px; text-align: center; }
+.trk-status.st-doing { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.trk-status.st-done { color: var(--delta-up); border-color: color-mix(in srgb, var(--delta-up) 45%, transparent); }
+.trk-del { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.trk-add { display: flex; gap: 6px; margin-top: 8px; }
+.trk-input { flex: 1; }
+
 /* ---------- arXiv papers ---------- */
 .paper-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; margin-top: 8px; }
 .paper-item { border-bottom: 1px solid var(--hairline); padding: 6px 2px; }

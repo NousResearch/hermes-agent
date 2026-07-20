@@ -124,7 +124,7 @@ const WIDGET_PAGES = {
   Sports: ["scores", "racing"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "marine", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
-  "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily"],
+  "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily", "changelog", "tracker"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -816,6 +816,23 @@ check("AI radar lists stories", (await page.locator(".widget-ainews .news-item")
 await gotoWidget("aidaily");
 await page.waitForSelector(".widget-aidaily .aid-card", { timeout: 5000 });
 check("AI daily brief shows category picks", (await page.locator(".widget-aidaily .aid-card").count()) >= 4);
+// Claude changelog
+await gotoWidget("changelog");
+await page.waitForSelector(".widget-changelog .chg-item", { timeout: 5000 });
+check("changelog lists releases", (await page.locator(".widget-changelog .chg-item").count()) >= 3);
+check("changelog shows a version tag", /v?\d/.test(await page.locator(".widget-changelog .chg-tag").first().innerText()));
+// learning tracker
+await gotoWidget("tracker");
+await page.waitForSelector(".widget-tracker .trk-row", { timeout: 5000 });
+check("learning tracker seeded with courses", (await page.locator(".widget-tracker .trk-row").count()) >= 5);
+const trkPctBefore = await page.locator(".widget-tracker .trk-pct").innerText();
+await page.locator(".widget-tracker .trk-row .trk-status").first().click();
+await page.locator(".widget-tracker .trk-row .trk-status").first().click();
+await page.waitForFunction(() =>
+  /done/i.test(document.querySelector(".widget-tracker .trk-row .trk-status")?.className || ""),
+  null, { timeout: 5000 });
+check("tracker status cycles to done", /st-done/.test(await page.locator(".widget-tracker .trk-row .trk-status").first().getAttribute("class")));
+check("tracker progress updates", (await page.locator(".widget-tracker .trk-pct").innerText()) !== trkPctBefore);
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

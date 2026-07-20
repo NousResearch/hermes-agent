@@ -1776,6 +1776,58 @@ def sample_repos(window: str) -> dict:
         for n, d, s, lang, t in demo]}
 
 
+# Claude/Anthropic changelog — latest GitHub releases across key repos.
+CHANGELOG_TTL = 60 * 60
+_CHANGELOG_REPOS = [
+    ("anthropics/claude-code", "Claude Code"),
+    ("anthropics/anthropic-sdk-python", "Python SDK"),
+    ("anthropics/anthropic-sdk-typescript", "TypeScript SDK"),
+    ("anthropics/claude-agent-sdk-python", "Agent SDK"),
+    ("modelcontextprotocol/servers", "MCP Servers"),
+]
+
+
+def live_changelog(*_a) -> dict:
+    releases = []
+    for repo, label in _CHANGELOG_REPOS:
+        try:
+            q = urllib.parse.urlencode({"per_page": 3})
+            raw = json.loads(fetch_url(f"https://api.github.com/repos/{repo}/releases?{q}", timeout=8))
+            for r in raw[:3]:
+                if r.get("draft"):
+                    continue
+                releases.append({
+                    "repo": repo, "product": label,
+                    "tag": r.get("tag_name") or "",
+                    "name": (r.get("name") or r.get("tag_name") or "").strip(),
+                    "notes": strip_html(r.get("body") or "", 280),
+                    "published": r.get("published_at") or r.get("created_at") or "",
+                    "url": r.get("html_url") or f"https://github.com/{repo}/releases",
+                })
+        except Exception:
+            continue  # one repo failing must not sink the feed
+    if not releases:
+        raise RuntimeError("no releases")
+    releases.sort(key=lambda x: x["published"], reverse=True)
+    return {"source": "live", "releases": releases[:20]}
+
+
+def sample_changelog(*_a) -> dict:
+    now = datetime.now(timezone.utc)
+    demo = [
+        ("anthropics/claude-code", "Claude Code", "v2.4.0", "Subagents, background tasks and richer status line.", 1),
+        ("anthropics/claude-code", "Claude Code", "v2.3.0", "MCP resource browsing; hooks improvements.", 6),
+        ("anthropics/anthropic-sdk-python", "Python SDK", "v0.42.0", "Prompt caching helpers; streaming fixes.", 3),
+        ("anthropics/anthropic-sdk-typescript", "TypeScript SDK", "v0.34.0", "Tool-runner beta; message batches.", 4),
+        ("modelcontextprotocol/servers", "MCP Servers", "2026.07", "New reference servers and transport fixes.", 8),
+    ]
+    return {"source": "sample", "releases": [
+        {"repo": r, "product": p, "tag": t, "name": f"{p} {t}", "notes": notes,
+         "published": (now - timedelta(days=age)).isoformat(),
+         "url": f"https://github.com/{r}/releases"}
+        for r, p, t, notes, age in demo]}
+
+
 def live_papers(category: str) -> dict:
     cat = category if category in ("cs.AI", "cs.CL", "cs.LG") else "cs.AI"
     url = ("http://export.arxiv.org/api/query?"
@@ -2634,6 +2686,7 @@ SOURCES: dict[str, dict] = {
     "trials": {"ttl": TRIALS_TTL, "live": live_trials, "sample": sample_trials},
     "drug": {"ttl": DRUG_TTL, "live": live_drug, "sample": sample_drug},
     "repos": {"ttl": REPOS_TTL, "live": live_repos, "sample": sample_repos},
+    "changelog": {"ttl": CHANGELOG_TTL, "live": live_changelog, "sample": sample_changelog},
     "papers": {"ttl": PAPERS_TTL, "live": live_papers, "sample": sample_papers},
     "ainews": {"ttl": AI_NEWS_TTL, "live": live_ai_news, "sample": sample_ai_news},
     "commodities": {"ttl": COMMODITIES_TTL,
@@ -3100,6 +3153,9 @@ class Api:
 
     def commodities(self, params: dict) -> dict:
         return self.fetch_source("commodities")
+
+    def changelog(self, params: dict) -> dict:
+        return self.fetch_source("changelog")
 
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
@@ -3629,6 +3685,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/repos": "repos",
         "/api/papers": "papers",
         "/api/commodities": "commodities",
+        "/api/changelog": "changelog",
         "/api/ai-news": "ai_news",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",

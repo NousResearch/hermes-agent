@@ -148,6 +148,7 @@ export const api = {
   papers: (cat) => getJSON("/api/papers", { cat }),
   aiNews: (topic) => getJSON("/api/ai-news", { topic }),
   commodities: () => getJSON("/api/commodities"),
+  changelog: () => getJSON("/api/changelog"),
   runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
   cryptoCoin: (id) => getJSON("/api/crypto/coin", { id }),
   cryptoChart: (id, days) => getJSON("/api/crypto/chart", { id, days }),

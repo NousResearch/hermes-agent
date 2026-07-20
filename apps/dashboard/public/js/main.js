@@ -51,13 +51,15 @@ import papers from "./widgets/papers.js";
 import ainews from "./widgets/ainews.js";
 import aidaily from "./widgets/aidaily.js";
 import commodities from "./widgets/commodities.js";
+import changelog from "./widgets/changelog.js";
+import tracker from "./widgets/tracker.js";
 import worldstate from "./widgets/worldstate.js";
 import reading from "./widgets/reading.js";
 import focus from "./widgets/focus.js";
 import system from "./widgets/system.js";
 
 const WIDGETS = Object.fromEntries(
-  [clock, glance, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, scores, racing, socials, gaming, stocks, worldclock, quakes, fx, convert, air, marine, space, alerts, flights, podcasts, medbot, pubmed, trials, drug, calc, meded, codelab, ailearn, snippets, repos, papers, ainews, aidaily, commodities, focus, system]
+  [clock, glance, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, scores, racing, socials, gaming, stocks, worldclock, quakes, fx, convert, air, marine, space, alerts, flights, podcasts, medbot, pubmed, trials, drug, calc, meded, codelab, ailearn, snippets, repos, papers, ainews, aidaily, commodities, changelog, tracker, focus, system]
     .map((w) => [w.type, w]),
 );
 

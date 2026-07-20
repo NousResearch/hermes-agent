@@ -30,6 +30,7 @@ function defaultPages() {
     { id: uid(), name: "AI Lab", layout: [
       w("aidaily", "xl"), w("ailearn", "l"), w("codelab", "l"),
       w("repos", "m"), w("papers", "m"), w("ainews", "m"), w("snippets", "m"),
+      w("changelog", "m"), w("tracker", "m"),
     ] },
   ];
 }

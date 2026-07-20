@@ -366,12 +366,17 @@ def _compute_tool_definitions(
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
-        if os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
-            # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
-            # must always receive the lifecycle handoff tools. Assignee
-            # profiles may intentionally restrict their normal chat toolsets
-            # (for token/cost reasons), but that should not strip the kanban
-            # worker's completion/block/heartbeat surface.
+        if (
+            effective_enabled_toolsets
+            and os.environ.get("HERMES_KANBAN_TASK")
+            and "kanban" not in effective_enabled_toolsets
+        ):
+            # Dispatcher-spawned workers with a non-empty restriction retain
+            # lifecycle handoff tools. An explicit empty list is an absolute
+            # deny-all boundary and must not be expanded implicitly.
+            # Assignee profiles may intentionally restrict their normal chat
+            # toolsets (for token/cost reasons), but that should not strip the
+            # kanban worker's completion/block/heartbeat surface.
             effective_enabled_toolsets.append("kanban")
         for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):

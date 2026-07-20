@@ -462,6 +462,18 @@ class TestDisabledToolsetsPlatformBundle:
     """Regression test for #33924: disabling a platform bundle (hermes-*)
     must not remove core tools from other enabled toolsets."""
 
+    def test_explicit_empty_toolsets_remain_empty_in_kanban_worker(
+        self, monkeypatch
+    ):
+        """An explicit deny-all must override implicit kanban lifecycle tools."""
+        from model_tools import get_tool_definitions
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-security-boundary")
+
+        tools = get_tool_definitions(enabled_toolsets=[], quiet_mode=True)
+
+        assert tools == []
+
     def test_disabling_platform_bundle_preserves_core_tools(self):
         """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
         from model_tools import get_tool_definitions

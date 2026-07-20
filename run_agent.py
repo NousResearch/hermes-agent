@@ -3572,12 +3572,13 @@ class AIAgent:
           - process_registry entries for task_id (user's bg shells)
           - terminal sandbox for task_id (cwd, env, shell state)
           - browser daemon for task_id (open tabs, cookies)
-          - memory provider (has its own lifecycle; keeps running)
 
         We DO close:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
           - Active child subagents (per-turn artefacts; safe to drop)
+          - Memory-provider clients (durable state is in the backend; a rebuilt
+            agent creates a fresh provider for the same session)
 
         Safe to call multiple times.  Distinct from close() — which is the
         hard teardown for actual session boundaries (/new, /reset, session
@@ -3597,6 +3598,19 @@ class AIAgent:
                         child.close()
                     except Exception:
                         pass
+        except Exception:
+            pass
+
+        # A soft-evicted agent is removed from the cache and will not be able
+        # to own its memory provider again. Keep the durable session state,
+        # but close the provider's network client so an aiohttp/httpx pool is
+        # not orphaned until interpreter shutdown. Do not call
+        # on_session_end(): cache eviction is not a session boundary, and a
+        # resumed agent must not observe a false end-of-session transition.
+        try:
+            memory_manager = getattr(self, "_memory_manager", None)
+            if memory_manager is not None:
+                memory_manager.shutdown_all()
         except Exception:
             pass
 

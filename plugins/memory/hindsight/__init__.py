@@ -281,6 +281,33 @@ def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     return future.result(timeout=timeout)
 
 
+def _close_async_client_from_finalizer(coro) -> None:
+    """Best-effort close for a client whose provider lost its owner."""
+    loop = _loop
+    if loop is None or not loop.is_running():
+        try:
+            coro.close()
+        except Exception:
+            pass
+        return
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        try:
+            coro.close()
+        except Exception:
+            pass
+        return
+    # A finalizer normally runs outside the shared loop thread. If it does
+    # not, waiting here would deadlock; the scheduled close is sufficient.
+    if threading.current_thread() is _loop_thread:
+        return
+    try:
+        future.result(timeout=2.0)
+    except Exception:
+        # The future retains the coroutine if the bounded wait expires, so
+        # the close can still finish without blocking object finalization.
+        pass
 # ---------------------------------------------------------------------------
 # Backward-compatible alias — instances use self._run_sync() instead.
 # ---------------------------------------------------------------------------
@@ -712,6 +739,38 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
+
+    def __del__(self):
+        """Close a client if provider ownership is lost unexpectedly.
+
+        Normal lifecycle paths call ``shutdown()``. This finalizer is a
+        bounded safety net for temporary/helper agents that can be collected
+        without reaching a gateway session-boundary callback; otherwise the
+        Hindsight aiohttp session survives until interpreter shutdown.
+        """
+        try:
+            client = getattr(self, "_client", None)
+            if client is None:
+                return
+            self._client = None
+            if self._mode == "local_embedded":
+                inner_client = getattr(client, "_client", None)
+                aclose = getattr(inner_client, "aclose", None)
+                if callable(aclose):
+                    _close_async_client_from_finalizer(aclose())
+                    try:
+                        client._client = None
+                    except Exception:
+                        pass
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            else:
+                aclose = getattr(client, "aclose", None)
+                if callable(aclose):
+                    _close_async_client_from_finalizer(aclose())
+        except Exception:
+            pass
 
     @property
     def name(self) -> str:

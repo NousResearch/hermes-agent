@@ -1791,6 +1791,21 @@ class TestSharedEventLoopLifecycle:
         mock_client.aclose.assert_called_once()
         assert provider._client is None
 
+    def test_finalizer_closes_orphaned_client(self, provider_with_config):
+        """Provider collection must not leave an aiohttp client behind."""
+        from plugins.memory import hindsight as hindsight_mod
+
+        async def _noop():
+            return 1
+
+        assert hindsight_mod._run_sync(_noop()) == 1
+        provider = provider_with_config()
+        mock_client = provider._client
+
+        provider.__del__()
+
+        mock_client.aclose.assert_awaited_once()
+        assert provider._client is None
 
 class TestShutdown:
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):

@@ -1463,6 +1463,24 @@ class TestAgentCacheIdleResume:
         # Post-release: client reference is dropped (memory freed).
         assert agent.client is None
 
+    def test_release_clients_closes_memory_provider_without_ending_session(self):
+        """Soft eviction must close provider clients without a false boundary."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4", api_key="test",
+            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            max_iterations=5, quiet_mode=True,
+            skip_context_files=True, skip_memory=True,
+        )
+        memory_manager = MagicMock()
+        agent._memory_manager = memory_manager
+
+        agent.release_clients()
+
+        memory_manager.shutdown_all.assert_called_once_with()
+        memory_manager.on_session_end.assert_not_called()
+
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 

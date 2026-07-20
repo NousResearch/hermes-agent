@@ -111,6 +111,68 @@ CLIENT_TOOL_PLACEHOLDER = json.dumps({"status": "pending_client_execution"})
 _registered_frontend_names: set[str] = set()
 _reg_lock = threading.Lock()
 
+# Toolsets this adapter itself registers into the process-global registry, one
+# per kind of client declaration. An entry in one of these is the adapter's OWN
+# handler left over from an earlier run (registration is idempotent and
+# process-global, declarations are per-run) rather than a server tool.
+_FRONTEND_TOOLSET = "agui-frontend"
+_STATE_WRITER_TOOLSET = "agui-state-writer"
+_ADAPTER_TOOLSETS = frozenset({_FRONTEND_TOOLSET, _STATE_WRITER_TOOLSET})
+
+
+class ToolNameCollisionError(ValueError):
+    """A client-declared tool name is already owned by a server tool.
+
+    ``registry.dispatch`` resolves purely by name (``tools/registry.py``), so a
+    frontend or state-writer declaration that reuses a server tool name such as
+    ``terminal`` or ``write_file`` would make the model's call execute that
+    server tool instead of handing off to the client. The run is rejected
+    outright rather than silently degraded.
+    """
+
+    def __init__(self, names) -> None:
+        self.names = sorted(names)
+        joined = ", ".join(self.names)
+        super().__init__(
+            f"Client-declared tool name(s) conflict with existing tools: {joined}. "
+            "Rename the client tool(s); server tool names are reserved, and a "
+            "name cannot switch between frontend and state-writer."
+        )
+
+
+def _reject_name_collisions(frontend_names: set[str], state_writer_names: set[str]) -> None:
+    """Raise :class:`ToolNameCollisionError` if a declaration shadows a server tool.
+
+    Call this BEFORE any schema merge or registration. It must also run AFTER
+    ``run_agent`` has been imported: ``model_tools`` executes
+    ``discover_builtin_tools()`` at import time, and until that happens the
+    registry is empty and every check below passes vacuously.
+    """
+    from tools.registry import registry
+
+    both = set(frontend_names) & set(state_writer_names)
+    if both:
+        raise ToolNameCollisionError(both)
+
+    # The adapter's own leftover registration is exempt only when the name is
+    # being re-declared as the SAME kind of tool. A blanket "is it one of our
+    # toolsets?" exemption would let a state-writer name be re-declared as a
+    # frontend tool on a later run: registration is skipped (the name is
+    # already in the registry), so the name stays bound to the state-writer
+    # handler while being advertised as client-executed — the same shadowing
+    # bug this guard exists to prevent, one layer in.
+    collisions = set()
+    for names, own_toolset in (
+        (frontend_names, _FRONTEND_TOOLSET),
+        (state_writer_names, _STATE_WRITER_TOOLSET),
+    ):
+        for name in names:
+            entry = registry.get_entry(name)
+            if entry is not None and entry.toolset != own_toolset:
+                collisions.add(name)
+    if collisions:
+        raise ToolNameCollisionError(collisions)
+
 
 def _load_agui_config() -> dict:
     """Return the ``agui`` section of ``config.yaml`` (empty dict if unavailable).
@@ -390,6 +452,15 @@ def build_run_agent(
     ``RunState`` is seeded and its snapshots are emitted.
     """
     from run_agent import AIAgent
+
+    # Reject shadowing declarations before anything is merged or registered.
+    # Keep this BELOW the run_agent import: that import is what populates the
+    # tool registry (model_tools runs discover_builtin_tools() at import), so
+    # hoisting the check above it would silently make it a no-op.
+    _reject_name_collisions(
+        set(frontend_tool_names or set()),
+        set(state_writer_specs or {}),
+    )
 
     settings = _resolve_agent_settings(config)
 

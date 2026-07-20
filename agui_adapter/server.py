@@ -65,6 +65,7 @@ from agui_adapter.events import AGUIEventBridge
 from agui_adapter.session import (
     AgentConfig,
     RunState,
+    ToolNameCollisionError,
     build_run_agent,
     reset_current_agent,
     reset_current_state,
@@ -506,6 +507,14 @@ async def _event_stream(run_input: RunAgentInput, encoder: EventEncoder,
                 if final and not bridge.emitted_any_text:
                     bridge.on_text_delta(final)
             bridge.finish()
+        except ToolNameCollisionError as exc:
+            # A malformed client declaration, not a server fault: the run was
+            # rejected before the agent was built, so there is no open AG-UI
+            # lifecycle to close. Echo the offending names (the client's own
+            # data) so the integrator can fix the declaration; the reserved
+            # server tool names are NOT enumerated back.
+            logger.warning("AG-UI run rejected: %s", exc)
+            emit((approvals.ERROR, str(exc)))
         except Exception:  # noqa: BLE001 - surfaced as RUN_ERROR
             logger.exception("AG-UI run failed")
             # Close any AG-UI lifecycle the failed run left open (streaming

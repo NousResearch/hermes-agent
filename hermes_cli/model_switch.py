@@ -570,12 +570,14 @@ def resolve_persist_behavior(
        user is trying a different backend for this conversation, not
        reconfiguring the default.  ``--global`` can still force persist.
     5. Otherwise defer to ``model.persist_switch_by_default`` in
-       ``config.yaml`` (defaults to ``True``, so a plain ``/model <name>``
-       survives across sessions — the behavior users expect).
+       ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
+       affects only the current session).  Users who want the old
+       persist-by-default behavior can set the key to ``true``; a one-off
+       ``--global`` always persists.
 
     The config read is defensive: on a fresh install ``model`` may be a
     flat string rather than a dict, in which case the built-in default
-    (``True``) applies.
+    (``False``) applies.
     """
     if is_once:
         return False
@@ -590,10 +592,10 @@ def resolve_persist_behavior(
 
         model_cfg = load_config().get("model")
         if isinstance(model_cfg, dict):
-            return bool(model_cfg.get("persist_switch_by_default", True))
+            return bool(model_cfg.get("persist_switch_by_default", False))
     except Exception:
         pass
-    return True
+    return False
 
 
 # ---------------------------------------------------------------------------

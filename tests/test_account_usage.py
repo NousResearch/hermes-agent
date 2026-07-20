@@ -118,6 +118,70 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     assert "Credits balance: $9.99" in lines[3]
 
 
+def test_fetch_account_usage_xai_oauth_billing(monkeypatch):
+    monkeypatch.setattr(
+        "tools.xai_http.resolve_xai_http_credentials",
+        lambda: {
+            "provider": "xai-oauth",
+            "api_key": "oauth-token",
+            "base_url": "https://api.x.ai/v1",
+        },
+        raising=False,
+    )
+    payload = {
+        "config": {
+            "creditUsagePercent": 18,
+            "currentPeriod": {
+                "start": "2026-07-13T14:45:00Z",
+                "end": "2026-07-20T14:45:00Z",
+                "type": "USAGE_PERIOD_TYPE_WEEKLY",
+            },
+            "productUsage": [
+                {"product": "GrokBuild", "usagePercent": 16},
+                {"product": "Api", "usagePercent": 2},
+            ],
+            "onDemandCap": {"val": 50},
+            "onDemandUsed": {"val": 10},
+        }
+    }
+
+    class _XaiClient(_Client):
+        def get(self, url, headers=None):
+            assert url == "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+            assert headers == {
+                "Authorization": "Bearer oauth-token",
+                "Accept": "application/json",
+                "X-XAI-Token-Auth": "xai-grok-cli",
+            }
+            return _Response(payload)
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda **kwargs: _XaiClient(payload),
+    )
+
+    snapshot = fetch_account_usage("xai-oauth")
+
+    assert snapshot is not None
+    assert snapshot.title == "Grok limits"
+    assert [window.label for window in snapshot.windows] == [
+        "SuperGrok weekly credits", "Grok Build weekly", "API weekly"
+    ]
+    assert snapshot.windows[0].used_percent == 18.0
+    assert snapshot.windows[0].reset_at == datetime(2026, 7, 20, 14, 45, tzinfo=timezone.utc)
+    assert "On-demand: 40 of 50 remaining" in snapshot.details
+
+
+def test_fetch_account_usage_xai_oauth_never_uses_api_key(monkeypatch):
+    monkeypatch.setattr(
+        "tools.xai_http.resolve_xai_http_credentials",
+        lambda: {"provider": "xai", "api_key": "api-key"},
+        raising=False,
+    )
+    snapshot = fetch_account_usage("xai-oauth")
+    assert snapshot is None
+
+
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",

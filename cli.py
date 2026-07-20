@@ -9859,8 +9859,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         agent = self.agent
         calls = agent.session_api_calls
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
 
-        if calls == 0:
+        if calls == 0 and provider != "xai-oauth":
             if self._print_nous_credits_block():
                 self._print_usage_cta()
             else:
@@ -9911,7 +9912,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
         base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
         api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
         # Lazy import — pulls the OpenAI SDK chain, only needed here.

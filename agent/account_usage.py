@@ -797,6 +797,101 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
+XAI_CLI_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+
+
+def _parse_xai_percent(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    try:
+        percent = float(value)
+    except (TypeError, ValueError):
+        return None
+    return percent if math.isfinite(percent) and 0 <= percent <= 100 else None
+
+
+def _parse_xai_amount(value: Any) -> Optional[float]:
+    raw: Any = value.get("val") if isinstance(value, dict) else value
+    if isinstance(raw, bool):
+        return None
+    try:
+        amount = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) and amount >= 0 else None
+
+
+def _fetch_xai_oauth_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch SuperGrok subscription usage from the Grok CLI billing API.
+
+    This is separate from metered xAI API usage. Only stored xAI OAuth
+    credentials may be sent to the subscription billing host.
+    """
+    from tools.xai_http import resolve_xai_http_credentials
+
+    runtime = resolve_xai_http_credentials()
+    if runtime.get("provider") != "xai-oauth":
+        return None
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "X-XAI-Token-Auth": "xai-grok-cli",
+    }
+    with httpx.Client(timeout=15.0, follow_redirects=False) as client:
+        response = client.get(XAI_CLI_BILLING_URL, headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    config = payload.get("config") if isinstance(payload, dict) else None
+    if not isinstance(config, dict):
+        return AccountUsageSnapshot(
+            provider="xai-oauth", source="billing_api", fetched_at=_utc_now(),
+            title="Grok limits",
+            unavailable_reason="The Grok billing response contained no usage configuration.",
+        )
+
+    period = config.get("currentPeriod")
+    period_end = _parse_dt(period.get("end")) if isinstance(period, dict) else None
+    windows: list[AccountUsageWindow] = []
+    credit_percent = _parse_xai_percent(config.get("creditUsagePercent"))
+    if credit_percent is not None:
+        windows.append(AccountUsageWindow(
+            label="SuperGrok weekly credits", used_percent=credit_percent, reset_at=period_end,
+        ))
+
+    products = config.get("productUsage")
+    if isinstance(products, list):
+        for item in products:
+            if not isinstance(item, dict):
+                continue
+            product = str(item.get("product", "")).strip()
+            percent = _parse_xai_percent(item.get("usagePercent"))
+            if not product or percent is None:
+                continue
+            label = {"GrokBuild": "Grok Build", "Api": "API"}.get(product, product)
+            windows.append(AccountUsageWindow(
+                label=f"{label} weekly", used_percent=percent, reset_at=period_end,
+            ))
+
+    details: list[str] = []
+    cap = _parse_xai_amount(config.get("onDemandCap"))
+    used = _parse_xai_amount(config.get("onDemandUsed"))
+    if cap is not None and cap > 0 and used is not None:
+        details.append(f"On-demand: {max(0.0, cap - used):g} of {cap:g} remaining")
+    if not windows and not details:
+        return AccountUsageSnapshot(
+            provider="xai-oauth", source="billing_api", fetched_at=_utc_now(),
+            title="Grok limits",
+            unavailable_reason="The Grok billing response contained no recognized usage fields.",
+        )
+    return AccountUsageSnapshot(
+        provider="xai-oauth", source="billing_api", fetched_at=_utc_now(),
+        title="Grok limits", windows=tuple(windows), details=tuple(details),
+    )
+
+
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(
         requested="openrouter",
@@ -883,6 +978,8 @@ def fetch_account_usage(
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
+        if normalized == "xai-oauth":
+            return _fetch_xai_oauth_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
     except Exception:

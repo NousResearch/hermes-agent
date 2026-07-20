@@ -1646,3 +1646,77 @@ class TestMemoryInjectionRejectsMalformedSchema:
         names = {t["function"]["name"] for t in agent.tools}
         assert names == {"good_tool"}
         assert agent.valid_tool_names == {"good_tool"}
+
+
+
+# ---------------------------------------------------------------------------
+# sanitize_context regression tests (PR #68072)
+#
+# Regression: prior to this fix, sanitize_context assumed str input and crashed
+# with "expected string or bytes-like object, got 'list'" when callers passed
+# multimodal message content (a list of typed parts). PR #44738 normalizes
+# content at the external-memory sync boundary; this test ensures the
+# defensive guard inside sanitize_context() still does its job if a caller
+# forgets the boundary normalization.
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeContextMultimodalList:
+    def test_string_passthrough(self):
+        from agent.memory_manager import sanitize_context
+        # Plain string with a known-bad pattern should still be stripped.
+        assert sanitize_context("<memory-context>x</memory-context>hello") == "hello"
+
+    def test_empty_string(self):
+        from agent.memory_manager import sanitize_context
+        assert sanitize_context("") == ""
+
+    def test_none_returns_empty(self):
+        from agent.memory_manager import sanitize_context
+        # None is not a str, so the guard path runs. Must not raise.
+        assert sanitize_context(None) == ""
+
+    def test_list_of_text_parts(self):
+        from agent.memory_manager import sanitize_context
+        content = [
+            {"type": "text", "text": "hello "},
+            {"type": "text", "text": "world"},
+        ]
+        # Lists should be flattened, never crash. Whitespace-separated join.
+        result = sanitize_context(content)
+        assert "hello" in result
+        assert "world" in result
+
+    def test_list_with_fence_tags(self):
+        from agent.memory_manager import sanitize_context
+        # The fence-tag strip must work AFTER list flattening.
+        content = [
+            {"type": "text", "text": "<memory-context>leak</memory-context>safe"},
+        ]
+        result = sanitize_context(content)
+        assert "leak" not in result
+        assert "safe" in result
+
+    def test_list_with_image_part(self):
+        from agent.memory_manager import sanitize_context
+        # Image parts should not crash; they may become a marker or be skipped.
+        content = [
+            {"type": "text", "text": "see image"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        result = sanitize_context(content)
+        assert "see image" in result
+
+    def test_scalar_fallback(self):
+        from agent.memory_manager import sanitize_context
+        # A scalar (int / bool / float) should coerce via str() and not crash.
+        assert "42" in sanitize_context(42)
+        assert "True" in sanitize_context(True)
+
+    def test_does_not_call_re_sub_on_list(self):
+        # Direct guard: feeding a list directly must not raise TypeError.
+        from agent.memory_manager import sanitize_context
+        try:
+            sanitize_context([{"type": "text", "text": "ok"}])
+        except TypeError as e:
+            pytest.fail(f"sanitize_context raised TypeError on list input: {e}")

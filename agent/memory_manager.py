@@ -161,23 +161,36 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
-def sanitize_context(text) -> str:
+def sanitize_context(text: Any) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output.
 
-    Accepts string OR list (multimodal message content) - lists are flattened
-    via _summarize_user_message_for_log before regex sanitization. Without
-    this guard, multimodal messages reach the regex as a list and crash with
-    ``expected string or bytes-like object, got 'list'``.
+    Accepts string OR list (multimodal message content) — lists are flattened
+    via ``_summarize_user_message_for_log`` before regex sanitization.
+
+    Without this guard, multimodal messages reach the regex as a list and crash
+    with ``expected string or bytes-like object, got 'list'``. PR #44738
+    normalizes content at the external-memory sync boundary, so this code path
+    is normally not reached for that case; this function is the last line of
+    defense if a caller forgets the boundary normalization.
     """
     if not isinstance(text, str):
         # Lazy import to avoid circular: memory_manager is imported widely.
         try:
             from agent.codex_responses_adapter import _summarize_user_message_for_log
             text = _summarize_user_message_for_log(text, sep="\n")
-        except Exception:
+        except ImportError:
+            logger.warning("sanitize_context: _summarize_user_message_for_log unavailable; using str() fallback")
             try:
                 text = str(text)
             except Exception:
+                logger.warning("sanitize_context: str() coercion failed; returning empty string")
+                return ""
+        except Exception:
+            logger.warning("sanitize_context: flatten helper raised; using str() fallback", exc_info=True)
+            try:
+                text = str(text)
+            except Exception:
+                logger.warning("sanitize_context: str() coercion failed; returning empty string")
                 return ""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)

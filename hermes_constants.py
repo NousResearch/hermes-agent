@@ -1142,6 +1142,14 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     """
     if get_managed_system(home) is not None:
         return
+    if os.path.islink(path):
+        # Leave symlinked entries alone. If an operator symlinks a HERMES_HOME subdir
+        # (e.g. ``skills`` -> a group-shared library) to storage they own deliberately, the
+        # target's permissions are theirs to set, not ours to normalize (#68055). ``os.chmod``
+        # follows symlinks, so securing the link would clamp the *target* to 0700 on every
+        # ``load_config()`` and strip a shared group's r+x. ``follow_symlinks=False`` is not an
+        # option — Linux has no ``lchmod`` and raises ``NotImplementedError``.
+        return
     explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
     if _container_or_chmod_skipped() and not explicit_mode:
         _chown_to_hermes_uid(path)

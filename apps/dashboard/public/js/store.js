@@ -28,7 +28,7 @@ function defaultPages() {
       w("meded", "l"),
     ] },
     { id: uid(), name: "AI Lab", layout: [
-      w("ailearn", "l"), w("codelab", "l"), w("snippets", "m"),
+      w("ailearn", "l"), w("codelab", "l"), w("repos", "m"), w("papers", "m"), w("snippets", "m"),
     ] },
   ];
 }

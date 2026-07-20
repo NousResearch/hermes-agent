@@ -124,7 +124,7 @@ const WIDGET_PAGES = {
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
-  "AI Lab": ["codelab", "ailearn", "snippets"],
+  "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -741,6 +741,17 @@ check("prompt library seeded", (await page.locator(".widget-snippets .snip-item"
 await page.locator(".widget-snippets .snip-search").fill("debounce");
 await page.waitForTimeout(150);
 check("prompt library search filters", (await page.locator(".widget-snippets .snip-item").count()) === 1);
+// Repo Radar + arXiv Papers (live data, sample fallback offline)
+await gotoWidget("repos");
+await page.waitForSelector(".widget-repos .repo-item", { timeout: 5000 });
+check("repo radar lists repositories", (await page.locator(".widget-repos .repo-item").count()) >= 3);
+check("repo shows a star count", /★/.test(await page.locator(".widget-repos .repo-stars").first().innerText()));
+await gotoWidget("papers");
+await page.waitForSelector(".widget-papers .paper-item", { timeout: 5000 });
+check("arxiv papers list renders", (await page.locator(".widget-papers .paper-item").count()) >= 2);
+await page.locator(".widget-papers .paper-head").first().click();
+await page.waitForTimeout(150);
+check("paper abstract expands", !(await page.locator(".widget-papers .paper-abstract").first().isHidden()));
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

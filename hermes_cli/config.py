@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
+import rich
+from rich.text import Text
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -316,7 +318,7 @@ _EXTRA_ENV_KEYS = frozenset({
 })
 import yaml
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Colors, color, RichColors, rich_color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 
 
@@ -686,7 +688,7 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
 
 def managed_error(action: str = "modify configuration"):
     """Print user-friendly error for managed mode."""
-    print(format_managed_message(action), file=sys.stderr)
+    rich.print(format_managed_message(action), file=sys.stderr)
 
 
 # =============================================================================
@@ -5828,7 +5830,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     try:
         fixes = sanitize_env_file()
         if fixes and not quiet:
-            print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
+            rich.print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
 
@@ -5856,7 +5858,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             config["display"] = display
             _persist_migration(config)
             if not quiet:
-                print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
+                rich.print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
@@ -5872,7 +5874,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             _persist_migration(config)
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
-                print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+                rich.print(f"  ✓ Added timezone to config.yaml: {tz_display}")
 
     # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
     # The new Anthropic auth flow no longer uses this env var.
@@ -5882,7 +5884,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if old_token:
                 save_env_value("ANTHROPIC_TOKEN", "")
                 if not quiet:
-                    print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
+                    rich.print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
 
@@ -5945,10 +5947,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config.pop("custom_providers", None)
                 _persist_migration(config)
                 if not quiet:
-                    print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
+                    rich.print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
                     for key in list(providers_dict.keys())[-migrated_count:]:
                         ep = providers_dict[key]
-                        print(f"    → {key}: {ep.get('api', '')}")
+                        rich.print(f"    → {key}: {ep.get('api', '')}")
 
     # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
     # These env vars were written by the old setup wizard but nothing reads
@@ -5961,7 +5963,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if old_val:
                     save_env_value(dead_var, "")
                     if not quiet:
-                        print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
+                        rich.print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
             except Exception:
                 pass
 
@@ -6013,7 +6015,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             config["stt"] = stt
             _persist_migration(config)
             if not quiet:
-                print("  ✓ Migrated legacy stt.model to provider-specific config")
+                rich.print("  ✓ Migrated legacy stt.model to provider-specific config")
 
     # ── Version 14 → 15: add explicit gateway interim-message gate ──
     if current_ver < 15:
@@ -6027,7 +6029,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             results["config_added"].append("display.interim_assistant_messages=true (default)")
             _persist_migration(config)
             if not quiet:
-                print("  ✓ Added display.interim_assistant_messages=true")
+                rich.print("  ✓ Added display.interim_assistant_messages=true")
 
     # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
     if current_ver < 16:
@@ -6050,7 +6052,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             _persist_migration(config)
             if not quiet:
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
-                print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
+                rich.print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
             results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
 
     # ── Version 16 → 17: remove legacy compression.summary_* keys ──
@@ -6086,9 +6088,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 _persist_migration(config)
                 if not quiet:
                     if migrated_keys:
-                        print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
+                        rich.print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
-                        print("  ✓ Removed unused compression.summary_* keys")
+                        rich.print("  ✓ Removed unused compression.summary_* keys")
 
     # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
     # The loader now requires plugins to appear in ``plugins.enabled`` before
@@ -6145,12 +6147,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             )
             if not quiet:
                 if grandfathered:
-                    print(
+                    rich.print(
                         f"  ✓ Plugins now opt-in: grandfathered "
                         f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
                     )
                 else:
-                    print(
+                    rich.print(
                         "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
                         "Use `hermes plugins enable <name>` to activate."
                     )
@@ -6225,7 +6227,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     f"curator ({len(added_curator)} default key(s))"
                 )
                 if not quiet:
-                    print(
+                    rich.print(
                         "  ✓ Curator settings now available "
                         f"({', '.join(added_curator)}) — edit via `hermes config set`"
                     )
@@ -6234,7 +6236,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     f"auxiliary.curator ({len(added_aux)} default key(s))"
                 )
                 if not quiet:
-                    print(
+                    rich.print(
                         "  ✓ auxiliary.curator settings now available "
                         f"({', '.join(added_aux)}) — edit via `hermes config set`"
                     )
@@ -6253,7 +6255,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             _persist_migration(config)
             results["config_added"].append("model_catalog.ttl_hours 24→1")
             if not quiet:
-                print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
+                rich.print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
     # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
     # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
@@ -6281,7 +6283,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if touched:
             _persist_migration(config)
             if not quiet:
-                print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+                rich.print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
     # ── Version 29 → 30: curator.consolidate defaults to false ──
     # Consolidation (the LLM umbrella-building fork) is opt-in, OFF by default;
@@ -6316,7 +6318,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             _persist_migration(config)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:
-                print(
+                rich.print(
                     "  ✓ Turned off verify-on-stop (agent.verify_on_stop: false). "
                     "Set it to true to re-enable, or \"auto\" for the legacy "
                     "surface-aware behavior."
@@ -6343,7 +6345,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             _persist_migration(config)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:
-                print(
+                rich.print(
                     "  ✓ Turned off verify-on-stop (agent.verify_on_stop: false) — "
                     "the old default was written into your config as a literal "
                     "true. Set it to true again to re-enable, or \"auto\" for the "
@@ -6379,7 +6381,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             config["delegation"] = raw_deleg
             _persist_migration(config)
             if not quiet:
-                print(
+                rich.print(
                     "  ✓ Removed deprecated delegation.max_async_children — "
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
@@ -6411,8 +6413,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 )
                 if not quiet:
                     for issue in issues:
-                        print(f"  ⚠ {issue}")
-                    print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
+                        rich.print(f"  ⚠ {issue}")
+                    rich.print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
             if mcp_touched:
                 config["mcp_servers"] = raw_mcp_servers
                 _persist_migration(config)
@@ -6432,27 +6434,27 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         for w in ts_warnings:
             results["warnings"].append(w)
             if not quiet:
-                print(f"  ⚠ {w}")
+                rich.print(f"  ⚠ {w}")
     except Exception as _ts_val_err:
         # best-effort; never block migration on validation
         logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)
 
     if current_ver < latest_ver and not quiet:
-        print(f"Config version: {current_ver} → {latest_ver}")
+        rich.print(f"Config version: {current_ver} → {latest_ver}")
 
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     
     if missing_env and not quiet:
-        print("\n⚠️  Missing required environment variables:")
+        rich.print("\n⚠️  Missing required environment variables:")
         for var in missing_env:
-            print(f"   • {var['name']}: {var['description']}")
+            rich.print(f"   • {var['name']}: {var['description']}")
     
     if interactive and missing_env:
-        print("\nLet's configure them now:\n")
+        rich.print("\nLet's configure them now:\n")
         for var in missing_env:
             if var.get("url"):
-                print(f"  Get your key at: {var['url']}")
+                rich.print(f"  Get your key at: {var['url']}")
             
             if var.get("password"):
                 value = masked_secret_prompt(f"  {var['prompt']}: ")
@@ -6462,10 +6464,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if value:
                 save_env_value(var["name"], value)
                 results["env_added"].append(var["name"])
-                print(f"  ✓ Saved {var['name']}")
+                rich.print(f"  ✓ Saved {var['name']}")
             else:
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
-            print()
+            rich.print()
     
     # Check for missing optional env vars and offer to configure interactively
     # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
@@ -6488,23 +6490,23 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not get_env_value(name) and name in OPTIONAL_ENV_VARS
         ]
         if new_and_unset:
-            print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
+            rich.print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
             for name, info in new_and_unset:
-                print(f"    • {name} — {info.get('description', '')}")
-            print()
+                rich.print(f"    • {name} — {info.get('description', '')}")
+            rich.print()
             try:
                 answer = input("  Configure new keys? [y/N]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 answer = "n"
 
             if answer in {"y", "yes"}:
-                print()
+                rich.print()
                 for name, info in new_and_unset:
                     if info.get("url"):
-                        print(f"  {info.get('description', name)}")
-                        print(f"  Get your key at: {info['url']}")
+                        rich.print(f"  {info.get('description', name)}")
+                        rich.print(f"  Get your key at: {info['url']}")
                     else:
-                        print(f"  {info.get('description', name)}")
+                        rich.print(f"  {info.get('description', name)}")
                     if info.get("password"):
                         value = masked_secret_prompt(
                             f"  {info.get('prompt', name)} (Enter to skip): "
@@ -6514,10 +6516,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     if value:
                         save_env_value(name, value)
                         results["env_added"].append(name)
-                        print(f"  ✓ Saved {name}")
-                    print()
+                        rich.print(f"  ✓ Saved {name}")
+                    rich.print()
             else:
-                print("  Set later with: hermes config set <key> <value>")
+                rich.print("  Set later with: hermes config set <key> <value>")
     
     # Check for missing config fields.
     #
@@ -6541,18 +6543,18 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # Prompt for any that are missing/empty.
     missing_skill_config = get_missing_skill_config_vars()
     if missing_skill_config and interactive and not quiet:
-        print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
+        rich.print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
         for var in missing_skill_config:
             skill_name = var.get("skill", "unknown")
-            print(f"    • {var['key']} — {var['description']} (from skill: {skill_name})")
-        print()
+            rich.print(f"    • {var['key']} — {var['description']} (from skill: {skill_name})")
+        rich.print()
         try:
             answer = input("  Configure skill settings? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
 
         if answer in {"y", "yes"}:
-            print()
+            rich.print()
             config = read_raw_config()
             try:
                 from agent.skill_utils import SKILL_CONFIG_PREFIX
@@ -6568,15 +6570,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
                     _set_nested(config, storage_key, value)
                     results["config_added"].append(var["key"])
-                    print(f"  ✓ Saved {var['key']} = {value}")
+                    rich.print(f"  ✓ Saved {var['key']} = {value}")
                 else:
                     results["warnings"].append(
                         f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
                     )
-                print()
+                rich.print()
             _persist_migration(config)
         else:
-            print("  Set later with: hermes config set <key> <value>")
+            rich.print("  Set later with: hermes config set <key> <value>")
 
     return results
 
@@ -7538,7 +7540,7 @@ def save_config(
         if managed_keys:
             config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
             if _stripped:
-                print(
+                rich.print(
                     f"Note: {len(_stripped)} managed setting(s) were not saved "
                     f"(managed by your administrator): {', '.join(sorted(_stripped))}",
                     file=sys.stderr,
@@ -7894,7 +7896,7 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
             bad_chars.append(f"  position {i}: {ch!r} (U+{ord(ch):04X})")
     sanitized = value.encode("ascii", errors="ignore").decode("ascii")
 
-    print(
+    rich.print(
         f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
         f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
         f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters.\n"
@@ -7955,7 +7957,7 @@ def save_env_value(key: str, value: str):
     if managed_scope.is_env_managed(key):
         managed_dir = managed_scope.get_managed_dir()
         src = (managed_dir / ".env") if managed_dir else "the managed scope"
-        print(
+        rich.print(
             f"Cannot set {key}: it is managed by your administrator ({src}) "
             f"and cannot be changed.",
             file=sys.stderr,
@@ -8051,7 +8053,7 @@ def remove_env_value(key: str) -> bool:
     if managed_scope.is_env_managed(key):
         managed_dir = managed_scope.get_managed_dir()
         src = (managed_dir / ".env") if managed_dir else "the managed scope"
-        print(
+        rich.print(
             f"Cannot remove {key}: it is managed by your administrator ({src}) "
             f"and cannot be changed.",
             file=sys.stderr,
@@ -8216,7 +8218,7 @@ def redact_key(key: str) -> str:
     "(not set)" placeholder in dim color for the empty case.
     """
     from agent.redact import mask_secret
-    return mask_secret(key, empty=color("(not set)", Colors.DIM))
+    return mask_secret(key, empty=rich_color("(not set)", RichColors.DIM))
 
 
 # Key names (case-insensitive, exact match) whose VALUE is a credential and
@@ -8277,10 +8279,10 @@ def show_config():
     """Display current configuration."""
     config = load_config()
 
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    rich.print()
+    rich.print(rich_color("┌─────────────────────────────────────────────────────────┐", RichColors.CYAN))
+    rich.print(rich_color("│              ⚕ Hermes Configuration                    │", RichColors.CYAN))
+    rich.print(rich_color("└─────────────────────────────────────────────────────────┘", RichColors.CYAN))
 
     # Managed scope: surface that some settings are administrator-pinned so the
     # user understands why their config.yaml value may not be the effective one.
@@ -8290,34 +8292,34 @@ def show_config():
     _managed_env = managed_scope.load_managed_env()
     if _managed_keys or _managed_env:
         _managed_dir = managed_scope.get_managed_dir()
-        print()
-        print(color(
+        rich.print()
+        rich.print(rich_color(
             f"  ⚷ Some settings are managed by your administrator ({_managed_dir}) "
             f"and cannot be changed",
-            Colors.YELLOW,
-            Colors.BOLD,
+            RichColors.YELLOW,
+            RichColors.BOLD,
         ))
         if _managed_keys:
-            print(color(
+            rich.print(rich_color(
                 f"    Managed config keys: {', '.join(sorted(_managed_keys))}",
-                Colors.YELLOW,
+                RichColors.YELLOW,
             ))
         if _managed_env:
-            print(color(
+            rich.print(rich_color(
                 f"    Managed env keys: {', '.join(sorted(_managed_env))}",
-                Colors.YELLOW,
+                RichColors.YELLOW,
             ))
 
     # Paths
-    print()
-    print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
-    print(f"  Config:       {get_config_path()}")
-    print(f"  Secrets:      {get_env_path()}")
-    print(f"  Install:      {get_project_root()}")
+    rich.print()
+    rich.print(rich_color("◆ Paths", RichColors.CYAN, RichColors.BOLD))
+    rich.print(f"  Config:       {get_config_path()}")
+    rich.print(f"  Secrets:      {get_env_path()}")
+    rich.print(f"  Install:      {get_project_root()}")
     
     # API Keys
-    print()
-    print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color("◆ API Keys", RichColors.CYAN, RichColors.BOLD))
     
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
@@ -8333,95 +8335,96 @@ def show_config():
     
     for env_key, name in keys:
         value = get_env_value(env_key)
-        print(f"  {name:<14} {redact_key(value)}")
+        rich.print(f"  {name:<14} {redact_key(value)}")
+        rich.print(Text.assemble(f"  {name:<14} ", redact_key(value)))
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
+    rich.print(Text.assemble(f"  {'Anthropic':<14} ", redact_key(anthropic_value)))
     
     # Model settings
-    print()
-    print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
+    rich.print()
+    rich.print(rich_color("◆ Model", RichColors.CYAN, RichColors.BOLD))
+    rich.print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
-    print(f"  Max turns:    {_cfg_max_turns}")
+    rich.print(f"  Max turns:    {_cfg_max_turns}")
     # Warn on stale HERMES_MAX_ITERATIONS ghost in .env that disagrees with
     # config.yaml (issue #17534). Read the .env FILE directly so we catch the
     # ghost even when the gateway bridge already overrode os.environ.
     try:
         _env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
         if _env_ghost is not None and str(_env_ghost).strip() != str(_cfg_max_turns).strip():
-            print(color(
+            rich.print(rich_color(
                 f"                ⚠ .env has stale HERMES_MAX_ITERATIONS={_env_ghost} "
                 f"(run 'hermes doctor --fix' to remove)",
-                Colors.YELLOW,
+                RichColors.YELLOW,
             ))
     except Exception:
         pass
     
     # Display
-    print()
-    print(color("◆ Display", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color("◆ Display", RichColors.CYAN, RichColors.BOLD))
     display = config.get('display', {})
-    print(f"  Personality:  {display.get('personality') or 'none'}")
-    print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
-    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    rich.print(f"  Personality:  {display.get('personality') or 'none'}")
+    rich.print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
+    rich.print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
     ump_first = ump.get('first_lines', 2)
     ump_last = ump.get('last_lines', 2)
-    print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
+    rich.print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
 
     # Terminal
-    print()
-    print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color("◆ Terminal", RichColors.CYAN, RichColors.BOLD))
     terminal = config.get('terminal', {})
-    print(f"  Backend:      {terminal.get('backend', 'local')}")
-    print(f"  Working dir:  {terminal.get('cwd', '.')}")
-    print(f"  Timeout:      {terminal.get('timeout', 60)}s")
+    rich.print(f"  Backend:      {terminal.get('backend', 'local')}")
+    rich.print(f"  Working dir:  {terminal.get('cwd', '.')}")
+    rich.print(f"  Timeout:      {terminal.get('timeout', 60)}s")
     
     if terminal.get('backend') == 'docker':
-        print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        rich.print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
-        print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
+        rich.print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'modal':
-        print(f"  Modal image:  {terminal.get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        rich.print(f"  Modal image:  {terminal.get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
-        print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
+        rich.print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
     elif terminal.get('backend') == 'daytona':
-        print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        rich.print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
-        print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+        rich.print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
-        print(f"  SSH host:     {ssh_host or '(not set)'}")
-        print(f"  SSH user:     {ssh_user or '(not set)'}")
+        rich.print(f"  SSH host:     {ssh_host or '(not set)'}")
+        rich.print(f"  SSH user:     {ssh_user or '(not set)'}")
     
     # Timezone
-    print()
-    print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color("◆ Timezone", RichColors.CYAN, RichColors.BOLD))
     tz = config.get('timezone', '')
     if tz:
-        print(f"  Timezone:     {tz}")
+        rich.print(f"  Timezone:     {tz}")
     else:
-        print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+        rich.print(Text.assemble(f"  Timezone:     ", rich_color('(server-local)', RichColors.DIM)))
 
     # Compression
-    print()
-    print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color("◆ Context Compression", RichColors.CYAN, RichColors.BOLD))
     compression = config.get('compression', {})
     enabled = compression.get('enabled', True)
-    print(f"  Enabled:      {'yes' if enabled else 'no'}")
+    rich.print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
-        print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
-        print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
-        print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
+        rich.print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        rich.print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+        rich.print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        rich.print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})
         _sm = _aux_comp.get('model', '') or '(auto)'
-        print(f"  Model:        {_sm}")
+        rich.print(f"  Model:        {_sm}")
         comp_provider = _aux_comp.get('provider', 'auto')
         if comp_provider and comp_provider != 'auto':
-            print(f"  Provider:     {comp_provider}")
+            rich.print(f"  Provider:     {comp_provider}")
     
     # Auxiliary models
     auxiliary = config.get('auxiliary', {})
@@ -8434,8 +8437,8 @@ def show_config():
         for t in aux_tasks.values()
     )
     if has_overrides:
-        print()
-        print(color("◆ Auxiliary Models (overrides)", Colors.CYAN, Colors.BOLD))
+        rich.print()
+        rich.print(rich_color("◆ Auxiliary Models (overrides)", RichColors.CYAN, RichColors.BOLD))
         for label, task_cfg in aux_tasks.items():
             prov = task_cfg.get('provider', 'auto')
             mdl = task_cfg.get('model', '')
@@ -8443,17 +8446,24 @@ def show_config():
                 parts = [f"provider={prov}"]
                 if mdl:
                     parts.append(f"model={mdl}")
-                print(f"  {label:12s}  {', '.join(parts)}")
+                rich.print(f"  {label:12s}  {', '.join(parts)}")
     
     # Messaging
-    print()
-    print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
+    rich.print()
+    rich.print(rich_color("◆ Messaging Platforms", RichColors.CYAN, RichColors.BOLD))
     
     telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
     discord_token = get_env_value('DISCORD_BOT_TOKEN')
     
-    print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
-    print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+    if telegram_token:
+        rich.print("  Telegram:     configured")
+    else:
+        rich.print(Text.assemble("  Telegram:     ", rich_color('not configured', RichColors.DIM)))
+
+    if discord_token:
+        rich.print("  Discord:      configured")
+    else:
+        rich.print(Text.assemble("  Discord:      ", rich_color('not configured', RichColors.DIM)))
     
     # Skill config
     try:
@@ -8461,23 +8471,23 @@ def show_config():
         skill_vars = discover_all_skill_config_vars()
         if skill_vars:
             resolved = resolve_skill_config_values(skill_vars)
-            print()
-            print(color("◆ Skill Settings", Colors.CYAN, Colors.BOLD))
+            rich.print()
+            rich.print(rich_color("◆ Skill Settings", RichColors.CYAN, RichColors.BOLD))
             for var in skill_vars:
                 key = var["key"]
                 value = resolved.get(key, "")
                 skill_name = var.get("skill", "")
-                display_val = str(value) if value else color("(not set)", Colors.DIM)
-                print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
+                display_val = str(value) if value else rich_color("(not set)", RichColors.DIM)
+                rich.print(Text.assemble(f"  {key:<20s} ", display_val, "  ", rich_color(f'[{skill_name}]', RichColors.DIM)))
     except Exception:
         pass
 
-    print()
-    print(color("─" * 60, Colors.DIM))
-    print(color("  hermes config edit     # Edit config file", Colors.DIM))
-    print(color("  hermes config set <key> <value>", Colors.DIM))
-    print(color("  hermes setup           # Run setup wizard", Colors.DIM))
-    print()
+    rich.print()
+    rich.print(rich_color("─" * 60, RichColors.DIM))
+    rich.print(rich_color("  hermes config edit     # Edit config file", RichColors.DIM))
+    rich.print(rich_color("  hermes config set <key> <value>", RichColors.DIM))
+    rich.print(rich_color("  hermes setup           # Run setup wizard", RichColors.DIM))
+    rich.print()
 
 
 def edit_config():
@@ -8490,7 +8500,7 @@ def edit_config():
     # Ensure config exists
     if not config_path.exists():
         save_config(DEFAULT_CONFIG, strip_defaults=False)
-        print(f"Created {config_path}")
+        rich.print(f"Created {config_path}")
     
     # Find editor
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
@@ -8512,11 +8522,11 @@ def edit_config():
                 break
     
     if not editor:
-        print("No editor found. Config file is at:")
-        print(f"  {config_path}")
+        rich.print("No editor found. Config file is at:")
+        rich.print(f"  {config_path}")
         return
     
-    print(f"Opening {config_path} in {editor}...")
+    rich.print(f"Opening {config_path} in {editor}...")
     subprocess.run([editor, str(config_path)])
 
 
@@ -8549,7 +8559,7 @@ def set_config_value(key: str, value: str):
     if managed_scope.is_key_managed(key):
         managed_dir = managed_scope.get_managed_dir()
         src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
-        print(
+        rich.print(
             f"Cannot set '{key}': it is managed by your administrator ({src}) "
             f"and cannot be changed. Contact your administrator to modify it.",
             file=sys.stderr,
@@ -8562,7 +8572,7 @@ def set_config_value(key: str, value: str):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         save_provider_env_credential(key.upper(), value)
-        print(f"✓ Set {key} in {get_env_path()}")
+        rich.print(f"✓ Set {key} in {get_env_path()}")
         return
     
     # Otherwise it goes to config.yaml
@@ -8607,7 +8617,7 @@ def set_config_value(key: str, value: str):
     if _alias_norm in ("model.api_base", "api_base"):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
-        print("  (note: 'api_base' is an alias — saved as model.base_url)")
+        rich.print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write
@@ -8629,7 +8639,7 @@ def set_config_value(key: str, value: str):
         _display_value = mask_secret(value)
     else:
         _display_value = value
-    print(f"✓ Set {key} = {_display_value} in {config_path}")
+    rich.print(f"✓ Set {key} = {_display_value} in {config_path}")
 
 
 def get_config_value(key: str, *, as_json: bool = False):
@@ -8641,10 +8651,10 @@ def get_config_value(key: str, *, as_json: bool = False):
         value = _get_nested(load_config(), key)
 
     if value is _MISSING:
-        print(f"Config key not set: {key}", file=sys.stderr)
+        rich.print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
 
-    print(_format_config_get_value(value, as_json=as_json))
+    rich.print(_format_config_get_value(value, as_json=as_json))
 
 
 def unset_config_value(key: str):
@@ -8659,7 +8669,7 @@ def unset_config_value(key: str):
     if managed_scope.is_key_managed(key):
         managed_dir = managed_scope.get_managed_dir()
         src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
-        print(
+        rich.print(
             f"Cannot unset '{key}': it is managed by your administrator ({src}) "
             f"and cannot be changed. Contact your administrator to modify it.",
             file=sys.stderr,
@@ -8673,9 +8683,9 @@ def unset_config_value(key: str):
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         if not remove_provider_env_credential(key.upper()).get("found"):
-            print(f"Config key not set: {key}", file=sys.stderr)
+            rich.print(f"Config key not set: {key}", file=sys.stderr)
             sys.exit(1)
-        print(f"✓ Unset {key} from {get_env_path()}")
+        rich.print(f"✓ Unset {key} from {get_env_path()}")
         return
 
     config_path = get_config_path()
@@ -8696,13 +8706,13 @@ def unset_config_value(key: str):
         removed = remove_env_value(env_var) or removed
 
     if not removed:
-        print(f"Config key not set: {key}", file=sys.stderr)
+        rich.print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
 
     ensure_hermes_home()
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
-    print(f"✓ Unset {key} from {config_path}")
+    rich.print(f"✓ Unset {key} from {config_path}")
 
 
 # =============================================================================
@@ -8722,12 +8732,12 @@ def config_command(args):
     elif subcmd == "get":
         key = getattr(args, 'key', None)
         if not key:
-            print("Usage: hermes config get <key> [--json]")
-            print()
-            print("Examples:")
-            print("  hermes config get model")
-            print("  hermes config get terminal.backend")
-            print("  hermes config get skills.config --json")
+            rich.print("Usage: hermes config get <key> [--json]")
+            rich.print()
+            rich.print("Examples:")
+            rich.print("  hermes config get model")
+            rich.print("  hermes config get terminal.backend")
+            rich.print("  hermes config get skills.config --json")
             sys.exit(1)
         get_config_value(key, as_json=getattr(args, 'json', False))
 
@@ -8735,37 +8745,37 @@ def config_command(args):
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
         if not key or value is None:
-            print("Usage: hermes config set <key> <value>")
-            print()
-            print("Examples:")
-            print("  hermes config set model anthropic/claude-sonnet-4")
-            print("  hermes config set terminal.backend docker")
-            print("  hermes config set OPENROUTER_API_KEY sk-or-...")
+            rich.print("Usage: hermes config set <key> <value>")
+            rich.print()
+            rich.print("Examples:")
+            rich.print("  hermes config set model anthropic/claude-sonnet-4")
+            rich.print("  hermes config set terminal.backend docker")
+            rich.print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
 
     elif subcmd == "unset":
         key = getattr(args, 'key', None)
         if not key:
-            print("Usage: hermes config unset <key>")
-            print()
-            print("Examples:")
-            print("  hermes config unset model")
-            print("  hermes config unset terminal.backend")
-            print("  hermes config unset OPENROUTER_API_KEY")
+            rich.print("Usage: hermes config unset <key>")
+            rich.print()
+            rich.print("Examples:")
+            rich.print("  hermes config unset model")
+            rich.print("  hermes config unset terminal.backend")
+            rich.print("  hermes config unset OPENROUTER_API_KEY")
             sys.exit(1)
         unset_config_value(key)
     
     elif subcmd == "path":
-        print(get_config_path())
+        rich.print(get_config_path())
     
     elif subcmd == "env-path":
-        print(get_env_path())
+        rich.print(get_env_path())
     
     elif subcmd == "migrate":
-        print()
-        print(color("🔄 Checking configuration for updates...", Colors.CYAN, Colors.BOLD))
-        print()
+        rich.print()
+        rich.print(rich_color("🔄 Checking configuration for updates...", RichColors.CYAN, RichColors.BOLD))
+        rich.print()
         
         # Check what's missing
         missing_env = get_missing_env_vars(required_only=False)
@@ -8773,16 +8783,16 @@ def config_command(args):
         current_ver, latest_ver = check_config_version()
         
         if not missing_env and not missing_config and current_ver >= latest_ver:
-            print(color("✓ Configuration is up to date!", Colors.GREEN))
-            print()
+            rich.print(rich_color("✓ Configuration is up to date!", RichColors.GREEN))
+            rich.print()
             return
         
         # Show what needs to be updated
         if current_ver < latest_ver:
-            print(f"  Config version: {current_ver} → {latest_ver}")
+            rich.print(f"  Config version: {current_ver} → {latest_ver}")
         
         if missing_config:
-            print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
+            rich.print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
         
         required_missing = [v for v in missing_env if v.get("is_required")]
         optional_missing = [
@@ -8791,84 +8801,84 @@ def config_command(args):
         ]
         
         if required_missing:
-            print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
+            rich.print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
             for var in required_missing:
-                print(f"     • {var['name']}")
+                rich.print(f"     • {var['name']}")
         
         if optional_missing:
-            print(f"\n  ℹ️  {len(optional_missing)} optional API key(s) not configured:")
+            rich.print(f"\n  ℹ️  {len(optional_missing)} optional API key(s) not configured:")
             for var in optional_missing:
                 tools = var.get("tools", [])
                 tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
-                print(f"     • {var['name']}{tools_str}")
+                rich.print(f"     • {var['name']}{tools_str}")
         
-        print()
+        rich.print()
         
         # Run migration
         results = migrate_config(interactive=True, quiet=False)
         
-        print()
+        rich.print()
         if results["env_added"] or results["config_added"]:
-            print(color("✓ Configuration updated!", Colors.GREEN))
+            rich.print(rich_color("✓ Configuration updated!", RichColors.GREEN))
         
         if results["warnings"]:
-            print()
+            rich.print()
             for warning in results["warnings"]:
-                print(color(f"  ⚠️  {warning}", Colors.YELLOW))
+                rich.print(rich_color(f"  ⚠️  {warning}", RichColors.YELLOW))
         
-        print()
+        rich.print()
     
     elif subcmd == "check":
         # Non-interactive check for what's missing
-        print()
-        print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
-        print()
+        rich.print()
+        rich.print(rich_color("📋 Configuration Status", RichColors.CYAN, RichColors.BOLD))
+        rich.print()
         
         current_ver, latest_ver = check_config_version()
         if current_ver >= latest_ver:
-            print(f"  Config version: {current_ver} ✓")
+            rich.print(f"  Config version: {current_ver} ✓")
         else:
-            print(color(f"  Config version: {current_ver} → {latest_ver} (update available)", Colors.YELLOW))
+            rich.print(rich_color(f"  Config version: {current_ver} → {latest_ver} (update available)", RichColors.YELLOW))
         
-        print()
-        print(color("  Required:", Colors.BOLD))
+        rich.print()
+        rich.print(rich_color("  Required:", RichColors.BOLD))
         for var_name in REQUIRED_ENV_VARS:
             if get_env_value(var_name):
-                print(f"    ✓ {var_name}")
+                rich.print(f"    ✓ {var_name}")
             else:
-                print(color(f"    ✗ {var_name} (missing)", Colors.RED))
+                rich.print(rich_color(f"    ✗ {var_name} (missing)", RichColors.RED))
         
-        print()
-        print(color("  Optional:", Colors.BOLD))
+        rich.print()
+        rich.print(rich_color("  Optional:", RichColors.BOLD))
         for var_name, info in OPTIONAL_ENV_VARS.items():
             if get_env_value(var_name):
-                print(f"    ✓ {var_name}")
+                rich.print(f"    ✓ {var_name}")
             else:
                 tools = info.get("tools", [])
                 tools_str = f" → {', '.join(tools[:2])}" if tools else ""
-                print(color(f"    ○ {var_name}{tools_str}", Colors.DIM))
+                rich.print(rich_color(f"    ○ {var_name}{tools_str}", RichColors.DIM))
         
         missing_config = get_missing_config_fields()
         if missing_config:
-            print()
-            print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
-            print("    Run 'hermes config migrate' to add them")
+            rich.print()
+            rich.print(rich_color(f"  {len(missing_config)} new config option(s) available", RichColors.YELLOW))
+            rich.print("    Run 'hermes config migrate' to add them")
         
-        print()
+        rich.print()
     
     else:
-        print(f"Unknown config command: {subcmd}")
-        print()
-        print("Available commands:")
-        print("  hermes config           Show current configuration")
-        print("  hermes config edit      Open config in editor")
-        print("  hermes config get <key>          Print a resolved config value")
-        print("  hermes config set <key> <value>   Set a config value")
-        print("  hermes config unset <key>        Remove a config value")
-        print("  hermes config check     Check for missing/outdated config")
-        print("  hermes config migrate   Update config with new options")
-        print("  hermes config path      Show config file path")
-        print("  hermes config env-path  Show .env file path")
+        rich.print(f"Unknown config command: {subcmd}")
+        rich.print()
+        rich.print("Available commands:")
+        rich.print("  hermes config           Show current configuration")
+        rich.print("  hermes config edit      Open config in editor")
+        rich.print("  hermes config get <key>          Print a resolved config value")
+        rich.print("  hermes config set <key> <value>   Set a config value")
+        rich.print("  hermes config unset <key>        Remove a config value")
+        rich.print("  hermes config check     Check for missing/outdated config")
+        rich.print("  hermes config migrate   Update config with new options")
+        rich.print("  hermes config path      Show config file path")
+        rich.print("  hermes config env-path  Show .env file path")
         sys.exit(1)
 
 

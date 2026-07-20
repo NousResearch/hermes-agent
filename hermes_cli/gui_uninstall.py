@@ -42,19 +42,21 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Colors, color, RichColors, rich_color
+import rich
+from rich.text import Text
 
 
 def log_info(msg: str):
-    print(f"{color('→', Colors.CYAN)} {msg}")
+    rich.print(Text.assemble(rich_color('→', RichColors.CYAN), " ", msg))
 
 
 def log_success(msg: str):
-    print(f"{color('✓', Colors.GREEN)} {msg}")
+    rich.print(Text.assemble(rich_color('✓', RichColors.GREEN), " ", msg))
 
 
 def log_warn(msg: str):
-    print(f"{color('⚠', Colors.YELLOW)} {msg}")
+    rich.print(Text.assemble(rich_color('⚠', RichColors.YELLOW), " ", msg))
 
 
 # ---------------------------------------------------------------------------

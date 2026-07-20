@@ -38,6 +38,7 @@ For captures / actions with `capture_after=True`:
 
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import logging
@@ -148,6 +149,7 @@ _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
+_backend_permission_modes: Dict[str, str] = {}
 # Approval state, scoped per conversation/run (keyed by session_id) so a
 # gateway serving concurrent sessions can't leak one run's "always approve"
 # unlock into another. Falls back to a shared "" bucket for callers that
@@ -160,36 +162,121 @@ _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
 
 
+def _cua_permission_mode(session_id: str) -> str:
+    """Map Hermes's explicit approval bypass onto Cua's immutable mode."""
+    try:
+        from tools.approval import (
+            is_approval_bypass_active_for_session,
+        )
+
+        if is_approval_bypass_active_for_session(session_id):
+            return "unrestricted"
+    except Exception:
+        # Approval state must fail closed if it cannot be resolved.
+        pass
+    return "standard"
+
+
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
     sid = str(session_id or "")
-    with _backend_lock:
-        if sid == "" and _backend is not None:
-            return _backend
-        cached = _backends.get(sid)
-        if cached is not None:
-            return cached
-        backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-        if backend_name in {"cua", "cua-driver", ""}:
-            from tools.computer_use.cua_backend import CuaDriverBackend
+    while True:
+        stale_backend: Optional[ComputerUseBackend] = None
+        stale_lock: Optional[threading.RLock] = None
+        with _backend_lock:
+            # Resolve the mode while holding the cache lock. Session YOLO
+            # mutation never holds the approval lock while releasing this
+            # cache, so the lock order cannot cycle.
+            permission_mode = _cua_permission_mode(sid)
+            if sid == "" and _backend is not None and sid not in _backends:
+                # Preserve the long-standing empty-session injection hook used
+                # by integrations and tests while normalizing it into the
+                # session-owned cache/lifecycle path.
+                _backends[sid] = _backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+            cached = _backends.get(sid)
+            if cached is not None:
+                if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                    return cached
+                # Cua's permission mode cannot change after daemon startup. A
+                # /yolo toggle replaces only this session's backend.
+                stale_backend = _backends.pop(sid)
+                stale_lock = _backend_call_locks.pop(sid, None)
+                _backend_permission_modes.pop(sid, None)
+                if sid == "":
+                    _backend = None
+            else:
+                backend_name = os.environ.get(
+                    "HERMES_COMPUTER_USE_BACKEND", "cua"
+                ).lower()
+                if backend_name in {"cua", "cua-driver", ""}:
+                    from tools.computer_use.cua_backend import CuaDriverBackend
 
-            backend = CuaDriverBackend()
-        elif backend_name == "noop":  # pragma: no cover
-            backend = _NoopBackend()
-        else:
-            raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
+                    backend = CuaDriverBackend(permission_mode=permission_mode)
+                elif backend_name == "noop":  # pragma: no cover
+                    backend = _NoopBackend()
+                else:
+                    raise RuntimeError(
+                        f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}"
+                    )
+                # Starting under the cache lock preserves the existing
+                # one-backend-per-session invariant. A concurrent mode toggle
+                # releases this backend before returning to its caller.
+                backend.start()
+                _backends[sid] = backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+                if sid == "":
+                    _backend = backend
+                return backend
+
+        # Stop a mismatched backend outside the global cache lock. Another
+        # session can continue creating or releasing its own backend, and the
+        # loop re-reads the authoritative mode before installing a replacement.
         try:
-            backend.start()
+            if stale_lock is not None:
+                with stale_lock:
+                    stale_backend.stop()
+            elif stale_backend is not None:
+                stale_backend.stop()
         except Exception:
-            # Don't cache a backend whose start() failed (e.g. a lazy
-            # dependency install was declined / failed). The next call
-            # retries cleanly instead of returning a half-initialised backend.
-            raise
-        _backends[sid] = backend
-        _backend_call_locks[sid] = threading.RLock()
-        if sid == "":
-            _backend = backend
-        return backend
+            pass
+
+
+def release_computer_use_session(session_id: str) -> bool:
+    """Release one backend context at a real host session boundary.
+
+    This public, idempotent seam lets agent hosts and policy plugins end the
+    exact Cua session, discard typed-browser capabilities, and stop a private
+    embedded daemon after success, failure, or cancellation.
+    """
+    global _backend
+    sid = str(session_id or "")
+    with _backend_lock:
+        backend = _backends.pop(sid, None)
+        call_lock = _backend_call_locks.pop(sid, None)
+        _backend_permission_modes.pop(sid, None)
+        if sid == "" and _backend is backend:
+            _backend = None
+    with _approval_lock:
+        _session_auto_approve.pop(sid, None)
+        _always_allow.pop(sid, None)
+    if backend is None:
+        return False
+    try:
+        if call_lock is not None:
+            with call_lock:
+                backend.stop()
+        else:
+            backend.stop()
+    except Exception:
+        logger.debug(
+            "computer_use backend release failed for session %s",
+            sid,
+            exc_info=True,
+        )
+    return True
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
@@ -199,17 +286,25 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
         unique = {id(item): item for item in _backends.values()}
         if _backend is not None:
             unique[id(_backend)] = _backend
-        for backend in unique.values():
-            try:
-                backend.stop()
-            except Exception:
-                pass
         _backend = None
         _backends.clear()
         _backend_call_locks.clear()
+        _backend_permission_modes.clear()
+    for backend in unique.values():
+        try:
+            backend.stop()
+        except Exception:
+            pass
     with _approval_lock:
         _session_auto_approve.clear()
         _always_allow.clear()
+
+
+# Normal interpreter shutdown is a final backstop for CLI paths that do not
+# retain an AIAgent long enough to call close(). Hard process termination is
+# outside Python's cleanup guarantees; private daemon policy/socket isolation
+# still prevents that orphan from widening another Hermes session.
+atexit.register(reset_backend_for_tests)
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -287,7 +382,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
-    # Per-run key for approval-state isolation across concurrent sessions.
+    # Per-run key for approval-state and daemon-mode isolation across
+    # concurrent sessions.
     session_id = str(kwargs.get("session_id") or "")
 
     # Safety: validate actions before approval prompt.

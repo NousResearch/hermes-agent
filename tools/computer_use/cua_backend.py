@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 import concurrent.futures
 import json
 import logging
@@ -45,7 +46,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -204,6 +207,157 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     return env
+
+
+class _EmbeddedCuaDaemon:
+    """Private host-owned daemon used for an explicit unrestricted session.
+
+    Cua Driver permission mode is immutable after daemon startup.  Reusing the
+    machine-wide daemon would therefore let one Hermes session's YOLO choice
+    affect another session.  A private embedded daemon gives the requesting
+    session its own socket, process, and launch-time risk acknowledgement.
+    """
+
+    _START_TIMEOUT_SECONDS = 15.0
+
+    def __init__(self, driver_cmd: str, permission_mode: str) -> None:
+        if permission_mode != "unrestricted":
+            raise ValueError("embedded permission override supports unrestricted only")
+        self.permission_mode = permission_mode
+        self._driver_cmd = driver_cmd
+        self._command = driver_cmd
+        self._mcp_args: List[str] = list(_CUA_DRIVER_ARGS)
+        self._process: Any = None
+        self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._stderr_thread: Optional[threading.Thread] = None
+        token = uuid.uuid4().hex[:12]
+        if sys.platform == "win32":
+            self.socket_path = rf"\\.\pipe\hermes-cua-{token}"
+        else:
+            self.socket_path = os.path.join(
+                tempfile.gettempdir(), f"hc-{token}.sock"
+            )
+
+    def child_env(self) -> Dict[str, str]:
+        env = cua_driver_child_env()
+        env["CUA_DRIVER_PERMISSION_MODE"] = "unrestricted"
+        env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
+        return env
+
+    def _drain_stderr(self, process: Any) -> None:
+        stream = getattr(process, "stderr", None)
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                text = str(line).strip()
+                if text:
+                    self._stderr_tail.append(text)
+                    logger.debug("embedded cua-driver: %s", text)
+        except Exception:
+            pass
+
+    def start(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            return
+        from tools.environments.local import _sanitize_subprocess_env
+
+        self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
+        env = _sanitize_subprocess_env(self.child_env())
+        command = [
+            self._command,
+            "serve",
+            "--embedded",
+            "--socket",
+            self.socket_path,
+            "--no-permissions-gate",
+            "--permission-mode",
+            "unrestricted",
+            "--dangerously-bypass-approvals",
+        ]
+        self._process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            args=(self._process,),
+            name="hermes-cua-daemon-stderr",
+            daemon=True,
+        )
+        self._stderr_thread.start()
+
+        deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if self._process.poll() is not None:
+                detail = "; ".join(self._stderr_tail) or "no diagnostic output"
+                raise RuntimeError(
+                    f"embedded cua-driver exited during startup: {detail}"
+                )
+            try:
+                probe = subprocess.run(
+                    [self._command, "status", "--socket", self.socket_path],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                    env=env,
+                )
+            except (OSError, subprocess.SubprocessError):
+                probe = None
+            if probe is not None and probe.returncode == 0:
+                return
+            time.sleep(0.1)
+
+        self.stop()
+        detail = "; ".join(self._stderr_tail) or "daemon did not become ready"
+        raise RuntimeError(f"embedded cua-driver startup timed out: {detail}")
+
+    def proxy_invocation(self) -> Tuple[str, List[str]]:
+        if self._process is None or self._process.poll() is not None:
+            raise RuntimeError("embedded cua-driver daemon is not running")
+        return self._command, [
+            *self._mcp_args,
+            "--embedded",
+            "--socket",
+            self.socket_path,
+        ]
+
+    def stop(self) -> None:
+        process = self._process
+        self._process = None
+        if process is not None and process.poll() is None:
+            from tools.environments.local import _sanitize_subprocess_env
+
+            try:
+                subprocess.run(
+                    [self._command, "stop", "--socket", self.socket_path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3.0,
+                    env=_sanitize_subprocess_env(self.child_env()),
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2.0)
+        if sys.platform != "win32" and os.path.exists(self.socket_path):
+            try:
+                os.remove(self.socket_path)
+            except OSError:
+                pass
 
 
 def _resolve_mcp_invocation(
@@ -625,8 +779,13 @@ class _CuaDriverSession:
     session object, never the surrounding contexts.
     """
 
-    def __init__(self, bridge: _AsyncBridge) -> None:
+    def __init__(
+        self,
+        bridge: _AsyncBridge,
+        embedded_daemon: Optional[_EmbeddedCuaDaemon] = None,
+    ) -> None:
         self._bridge = bridge
+        self._embedded_daemon = embedded_daemon
         self._session = None
         self._lock = threading.Lock()
         self._started = False
@@ -684,14 +843,19 @@ class _CuaDriverSession:
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
             self._startup_phase = "manifest-discovery"
-            command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            if self._embedded_daemon is not None:
+                command, args = self._embedded_daemon.proxy_invocation()
+                child_env = self._embedded_daemon.child_env()
+            else:
+                command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+                child_env = cua_driver_child_env()
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
                 args=args,
                 # Apply the telemetry policy first (default: disabled), then
                 # sanitize Hermes-managed secrets out of the child env.
-                env=_sanitize_subprocess_env(cua_driver_child_env()),
+                env=_sanitize_subprocess_env(child_env),
             )
 
             async with stdio_client(params) as (read, write):
@@ -1013,7 +1177,21 @@ class _CuaDriverSession:
             os.close(fd)
             call_args["screenshot_out_file"] = shot_file
 
-        cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(call_args)]
+        driver_command = _CUA_DRIVER_CMD
+        child_env = cua_driver_child_env()
+        socket_args: List[str] = []
+        embedded_daemon = getattr(self, "_embedded_daemon", None)
+        if embedded_daemon is not None:
+            driver_command = embedded_daemon.proxy_invocation()[0]
+            child_env = embedded_daemon.child_env()
+            socket_args = ["--socket", embedded_daemon.socket_path]
+        cmd = [
+            driver_command,
+            "call",
+            name,
+            json.dumps(call_args),
+            *socket_args,
+        ]
         attempts = 4
         backoff = 0.5
         parsed: Any = None
@@ -1023,7 +1201,7 @@ class _CuaDriverSession:
                 try:
                     proc = _subprocess.run(
                         cmd, capture_output=True, text=True, timeout=max(15.0, timeout),
-                        env=_sanitize_subprocess_env(cua_driver_child_env()),
+                        env=_sanitize_subprocess_env(child_env),
                     )
                 except Exception as e:  # pragma: no cover - subprocess spawn failure
                     raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
@@ -1298,9 +1476,17 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
-    def __init__(self) -> None:
+    def __init__(self, permission_mode: str = "standard") -> None:
+        if permission_mode not in {"standard", "unrestricted"}:
+            raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
+        self.permission_mode = permission_mode
+        self._embedded_daemon = (
+            _EmbeddedCuaDaemon(_CUA_DRIVER_CMD, permission_mode)
+            if permission_mode == "unrestricted"
+            else None
+        )
         self._bridge = _AsyncBridge()
-        self._session = _CuaDriverSession(self._bridge)
+        self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
         # Sticky context — updated by capture(), used by action tools.
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
@@ -1369,7 +1555,14 @@ class CuaDriverBackend(ComputerUseBackend):
         # machinery's caches are refreshed within this process.
         import importlib
         importlib.invalidate_caches()
-        self._session.start()
+        try:
+            if self._embedded_daemon is not None:
+                self._embedded_daemon.start()
+            self._session.start()
+        except Exception:
+            if self._embedded_daemon is not None:
+                self._embedded_daemon.stop()
+            raise
 
         # Declare the run's session identity to cua-driver. From the
         # cua-driver server instructions: "start_session(session) once
@@ -1399,7 +1592,11 @@ class CuaDriverBackend(ComputerUseBackend):
         try:
             self._session.stop()
         finally:
-            self._bridge.stop()
+            try:
+                self._bridge.stop()
+            finally:
+                if self._embedded_daemon is not None:
+                    self._embedded_daemon.stop()
 
     def is_available(self) -> bool:
         # cua-driver runs on macOS, Windows, and Linux. The Linux path is

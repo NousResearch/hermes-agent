@@ -226,7 +226,8 @@ def test_backends_are_isolated_by_hermes_session_and_reused_within_it():
     created = []
 
     class _Backend:
-        def __init__(self):
+        def __init__(self, permission_mode="standard"):
+            self.permission_mode = permission_mode
             created.append(self)
 
         def start(self):
@@ -251,7 +252,8 @@ def test_concurrent_hermes_sessions_do_not_share_backend_state():
     created = []
 
     class _Backend:
-        def __init__(self):
+        def __init__(self, permission_mode="standard"):
+            self.permission_mode = permission_mode
             self.marker = len(created)
             created.append(self)
 
@@ -627,8 +629,12 @@ def test_missing_typed_browser_tool_returns_native_fallback_refusal():
     call.assert_not_called()
 
 
-def test_existing_profile_prepare_requires_interactive_driver_grant():
+def test_existing_profile_prepare_delegates_to_driver_permission_mode():
     driver = _BrowserDriver()
+    driver.responses["browser_prepare"] = {
+        "status": "refused",
+        "code": "browser_consent_required",
+    }
     route = _browser_route(driver)
 
     result = route.prepare(
@@ -639,8 +645,17 @@ def test_existing_profile_prepare_requires_interactive_driver_grant():
     )
 
     assert result["code"] == "browser_consent_required"
-    assert result["interactive_grant_required"] is True
-    assert driver.calls == []
+    assert driver.calls == [
+        (
+            "browser_prepare",
+            {
+                "pid": 101,
+                "window_id": 202,
+                "strategy": {"kind": "existing_profile"},
+                "session": "hermes-a",
+            },
+        )
+    ]
 
 
 def test_namespaced_state_and_prepare_actions_use_typed_backend_wrappers():

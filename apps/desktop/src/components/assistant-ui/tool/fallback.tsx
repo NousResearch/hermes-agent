@@ -312,17 +312,22 @@ function ToolEntry({ part }: ToolEntryProps) {
   // in the composer status stack rather than a bulky inline card. Uses the same
   // detected target the old inline card did, keyed to the active session the
   // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
-  const activeSessionId = useStore($activeSessionId)
-  const currentCwd = useStore($currentCwd)
   const previewTarget = view.previewTarget
 
   useEffect(() => {
-    if (isPending || !activeSessionId || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
-    recordPreviewArtifact(activeSessionId, previewTarget, currentCwd || '')
-  }, [activeSessionId, currentCwd, isPending, previewTarget])
+    // Read (don't subscribe) session/cwd: this only fires when a previewable
+    // target appears, and subscribing re-rendered every tool row on any session
+    // or cwd change.
+    const activeSessionId = $activeSessionId.get()
+
+    if (activeSessionId) {
+      recordPreviewArtifact(activeSessionId, previewTarget, $currentCwd.get() || '')
+    }
+  }, [isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

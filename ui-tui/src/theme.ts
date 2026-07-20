@@ -340,21 +340,28 @@ export const DARK_SEEDS: ThemeSeeds = {
 }
 
 // Light-terminal seeds: darker golds/ambers that stay legible on white.
+// The classic light-mode Hermes look was never hand-authored: for years the
+// TUI emitted the DARK golds and hosts with xterm's minimumContrastRatio
+// (Cursor defaults to 4.5) lifted them against white — hue and saturation
+// kept, luminance clamped. These seeds are those exact lifts
+// (liftForContrast(dark, '#ffffff', 4.5)), so hosts WITHOUT a contrast pass
+// render the same thing Cursor always showed. Text/prompt stay ink — body
+// copy historically rendered in the terminal's default near-black fg.
 export const LIGHT_SEEDS: ThemeSeeds = {
-  accent: '#A0651C',
+  accent: '#956E00',
   bg: '#ffffff',
-  border: '#7A4F1F',
-  error: '#C62828',
-  ok: '#2E7D32',
-  primary: '#8B6914',
+  border: '#A56628',
+  error: '#C14240',
+  ok: '#367E39',
+  primary: '#867000',
   prompt: '#2B2014',
-  shellDollar: '#1565C0',
-  statusBad: '#D84315',
-  statusCritical: '#B71C1C',
-  statusGood: '#2E7D32',
-  statusWarn: '#8B6914',
+  shellDollar: '#377BB3',
+  statusBad: '#A65A00',
+  statusCritical: '#B94D4D',
+  statusGood: '#5C7A5C',
+  statusWarn: '#867000',
   text: '#3D2F13',
-  warn: '#E65100'
+  warn: '#956115'
 }
 
 export const DARK_THEME: Theme = {
@@ -401,8 +408,20 @@ export const LIGHT_THEME: Theme = {
 // The lift itself is xterm.js's own multiplicative algorithm
 // (liftForContrast), so on hosts that run their own minimumContrastRatio the
 // two adjustments agree instead of fighting.
+// Foreground floors are polarity-aware. On a DARK background the authored
+// palette is already bright, so a modest floor only rescues the rare dark
+// tone. On a LIGHT background — which in practice means a TRANSPARENT Cursor/
+// terminal window compositing over a light editor, where xterm applies NO
+// contrast lift of its own (there is no solid bg to measure against) — the
+// beloved classic look is the authored palette rendered essentially RAW:
+// vivid #FFD700 gold (~1.36:1), not a WCAG-darkened mustard. So the light
+// floor is a near-invisible rescue only (catches cream #FFF8DC at 1.08 but
+// leaves the golds untouched). Pixel-sampled target: #F5C242 (L61 S90),
+// which the previous 1.45 floor crushed to #867000 (L26) — the reported mud.
 const DISPLAY_MIN_CONTRAST = 1.45
 const SEMANTIC_MIN_CONTRAST = 2.2
+const LIGHT_DISPLAY_MIN_CONTRAST = 1.18
+const LIGHT_SEMANTIC_MIN_CONTRAST = 1.6
 
 const DISPLAY_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'primary',
@@ -444,13 +463,15 @@ const DARK_BG_MAX_LUMINANCE = 0.35
 
 function adaptColorsToBackground(colors: ThemeColors, isLight: boolean, base: ThemeColors, bg: string): ThemeColors {
   const out = { ...colors }
+  const displayFloor = isLight ? LIGHT_DISPLAY_MIN_CONTRAST : DISPLAY_MIN_CONTRAST
+  const semanticFloor = isLight ? LIGHT_SEMANTIC_MIN_CONTRAST : SEMANTIC_MIN_CONTRAST
 
   for (const key of DISPLAY_FOREGROUNDS) {
-    out[key] = liftForContrast(out[key], bg, DISPLAY_MIN_CONTRAST)
+    out[key] = liftForContrast(out[key], bg, displayFloor)
   }
 
   for (const key of SEMANTIC_FOREGROUNDS) {
-    out[key] = liftForContrast(out[key], bg, SEMANTIC_MIN_CONTRAST)
+    out[key] = liftForContrast(out[key], bg, semanticFloor)
   }
 
   for (const key of ADAPTIVE_BACKGROUNDS) {
@@ -521,11 +542,16 @@ export interface ThemeTones {
  *   dark muted  #CC9B1F ≈ desaturate(mix(accent, bg, .19), .16)  (err 3)
  *   dark label  #DAA520 ≈ desaturate(mix(accent, bg, .13), .16)  (err 3)
  *   dark status #C0C0C0 = grayOf(mix(text, bg, .24))             (err 0)
- *   light muted/label #7A5A0F ≈ mix(primary, text, .27)          (err 5)
- *   light status #333333 = grayOf(mix(text, bg, .01))            (err 1)
+ *   light muted #946C08 ≈ desaturate(accent, .05)                (err 2)
+ *   light label #8E6B13 ≈ desaturate(mix(accent, text, .03), .15) (err 2)
+ *   light status #6F6F6F = grayOf(mix(text, bg, .30))            (err 1)
  *   light surface #F5F5F5 ≈ bg + softened accent                 (err 5)
- *   light chip  #E0D1BF = mix(surface, accent, .25)              (err 3)
- *   light selection #D4E4F7 ≈ mix(bg, shellDollar, .17)          (err 3)
+ *   light chip  #E0D1BF = mix(surface, accent, .25)              (err 8)
+ *   light selection #D4E4F7 ≈ mix(bg, shellDollar, .20)          (err 7)
+ *
+ * The light targets are the LIFT CANON: liftForContrast(dark literal,
+ * white, 4.5) — what xterm's minimumContrastRatio showed on light hosts
+ * for years — not hand-picked browns (those read as desaturated mud).
  *
  * The classic dark navy fills (#1a1a2e/#333355/#3a3a55) are IRREDUCIBLE from
  * gold seeds — the search bottoms out at gray, err 10–17 — so they remain
@@ -538,21 +564,24 @@ export function deriveTones(seeds: {
   shellDollar?: string
   text: string
 }): ThemeTones {
-  const { accent, bg, primary, text } = seeds
+  const { accent, bg, text } = seeds
   const isLight = (relativeLuminance(bg) ?? 0) > 0.5
-  const inkBlend = mix(primary, text, 0.27)
   // Fill tint keeps most of the accent's chroma — a heavier desaturate here
   // read as washed-out ("a little too desat") next to authored fills.
   const surface = mix(bg, desaturate(accent, 0.15), isLight ? 0.045 : 0.09)
 
   return {
-    muted: isLight ? inkBlend : desaturate(mix(accent, bg, 0.19), 0.16),
-    label: isLight ? inkBlend : desaturate(mix(accent, bg, 0.13), 0.16),
-    statusFg: grayOf(mix(text, bg, isLight ? 0.01 : 0.24)),
+    // Light knobs are fitted to the lift canon (xterm minimumContrastRatio
+    // 4.5 of the classic dark golds against white — see LIGHT_SEEDS), not
+    // to ink blends: muted #946C08 ≈ desat(accent .05), label #8E6B13 ≈
+    // desat(mix(accent, text, .03), .15), statusFg #6F6F6F ≈ gray 30% lift.
+    muted: isLight ? desaturate(accent, 0.05) : desaturate(mix(accent, bg, 0.19), 0.16),
+    label: isLight ? desaturate(mix(accent, text, 0.03), 0.15) : desaturate(mix(accent, bg, 0.13), 0.16),
+    statusFg: grayOf(mix(text, bg, isLight ? 0.3 : 0.24)),
     surface,
     activeRow: mix(surface, accent, 0.25),
     selection:
-      isLight && seeds.shellDollar ? mix(bg, seeds.shellDollar, 0.17) : mix(surface, accent, 0.28),
+      isLight && seeds.shellDollar ? mix(bg, seeds.shellDollar, 0.2) : mix(surface, accent, 0.28),
     border: mix(accent, bg, 0.25)
   }
 }

@@ -39,11 +39,15 @@ const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 let lastSkin: GatewaySkin | null = null
 
 const themeForSkin = (s: GatewaySkin) => {
-  // Prefer the skin's hand-tuned palette for the terminal's polarity
-  // (desktop colors/darkColors contract). Without a paired block, `colors`
-  // goes through fromSkin's automatic contrast adaptation instead.
+  // Polarity overrides OVERLAY the base palette, they don't replace it: a skin
+  // can ship a fills-only `light_colors` (flip the dark navy menu/status fills
+  // to light on a light terminal) while its vivid foreground golds keep coming
+  // from `colors` and render raw through fromSkin's shim. A full paired block
+  // still works — it just overrides every key it lists.
   const paired = detectLightMode() ? s.light_colors : s.dark_colors
-  const colors = paired && Object.keys(paired).length ? paired : (s.colors ?? {})
+
+  const colors =
+    paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
 
   return fromSkin(colors, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '', s.tool_prefix ?? '', s.help_header ?? '')
 }

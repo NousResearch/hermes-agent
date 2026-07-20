@@ -126,41 +126,57 @@ def contrast(a: str, b: str) -> float:
 LIGHT_AUTHORED = frozenset({"daylight", "warm-lightmode"})
 
 
-def _palettes():
-    """Yield (skin, palette_name, palette, is_light) for every built-in."""
+# A `light_colors`/`dark_colors` block is an OVERLAY on `colors`, not a full
+# replacement — a skin may ship a fills-only light overlay (flip the dark navy
+# menu/status fills to light) while its vivid foregrounds keep coming from
+# `colors` and render raw. So only the base `colors` block is held to the
+# completeness + full foreground-contrast contract; overlays are audited for
+# valid keys and fill polarity only.
+def _base_palettes():
+    """Yield (skin, palette, is_light) for every built-in's base `colors`."""
     for name, skin in _BUILTIN_SKINS.items():
-        yield name, "colors", skin.get("colors", {}), name in LIGHT_AUTHORED
+        yield name, skin.get("colors", {}), name in LIGHT_AUTHORED
 
+
+def _overlays():
+    """Yield (skin, block, palette, is_light) for every partial overlay block."""
+    for name, skin in _BUILTIN_SKINS.items():
         if skin.get("light_colors"):
             yield name, "light_colors", skin["light_colors"], True
         if skin.get("dark_colors"):
             yield name, "dark_colors", skin["dark_colors"], False
 
 
-ALL_PALETTES = list(_palettes())
-PALETTE_IDS = [f"{skin}:{block}" for skin, block, _, _ in ALL_PALETTES]
+BASE_PALETTES = list(_base_palettes())
+BASE_IDS = [f"{skin}:colors" for skin, _, _ in BASE_PALETTES]
+OVERLAYS = list(_overlays())
+OVERLAY_IDS = [f"{skin}:{block}" for skin, block, _, _ in OVERLAYS]
 
 
-@pytest.mark.parametrize(("skin", "block", "palette", "is_light"), ALL_PALETTES, ids=PALETTE_IDS)
-def test_palette_is_complete(skin, block, palette, is_light):
+@pytest.mark.parametrize(("skin", "palette", "is_light"), BASE_PALETTES, ids=BASE_IDS)
+def test_base_palette_is_complete(skin, palette, is_light):
     missing = REQUIRED_KEYS - palette.keys()
-    assert not missing, f"{skin}.{block} missing keys: {sorted(missing)}"
+    assert not missing, f"{skin}.colors missing keys: {sorted(missing)}"
 
 
-@pytest.mark.parametrize(("skin", "block", "palette", "is_light"), ALL_PALETTES, ids=PALETTE_IDS)
-def test_palette_contrast_and_polarity(skin, block, palette, is_light):
+@pytest.mark.parametrize(("skin", "palette", "is_light"), BASE_PALETTES, ids=BASE_IDS)
+def test_base_palette_contrast_and_polarity(skin, palette, is_light):
     pole = LIGHT_POLE if is_light else DARK_POLE
     problems = []
 
-    for key in STRONG_FG:
-        ratio = contrast(palette[key], pole)
-        if ratio < STRONG_MIN:
-            problems.append(f"{key}={palette[key]} contrast {ratio:.2f} < {STRONG_MIN} vs {pole}")
+    # Light-authored bases render on a light pole where the classic look is the
+    # vivid palette rendered RAW (transparent terminals apply no lift), so the
+    # firm STRONG/SOFT floors only apply to dark-authored bases on a dark pole.
+    if not is_light:
+        for key in STRONG_FG:
+            ratio = contrast(palette[key], pole)
+            if ratio < STRONG_MIN:
+                problems.append(f"{key}={palette[key]} contrast {ratio:.2f} < {STRONG_MIN} vs {pole}")
 
-    for key in SOFT_FG:
-        ratio = contrast(palette[key], pole)
-        if ratio < SOFT_MIN:
-            problems.append(f"{key}={palette[key]} contrast {ratio:.2f} < {SOFT_MIN} vs {pole}")
+        for key in SOFT_FG:
+            ratio = contrast(palette[key], pole)
+            if ratio < SOFT_MIN:
+                problems.append(f"{key}={palette[key]} contrast {ratio:.2f} < {SOFT_MIN} vs {pole}")
 
     status_bg = palette["status_bar_bg"]
     for key in ON_STATUS_BAR:
@@ -169,13 +185,35 @@ def test_palette_contrast_and_polarity(skin, block, palette, is_light):
         if ratio < floor:
             problems.append(f"{key}={palette[key]} contrast {ratio:.2f} < {floor} vs status_bar_bg {status_bg}")
 
-    for key in FILLS:
+    _check_fills(palette, is_light, FILLS, problems)
+    _check_chip(palette, problems)
+
+    assert not problems, f"{skin}.colors:\n  " + "\n  ".join(problems)
+
+
+@pytest.mark.parametrize(("skin", "block", "palette", "is_light"), OVERLAYS, ids=OVERLAY_IDS)
+def test_overlay_keys_and_fill_polarity(skin, block, palette, is_light):
+    unknown = palette.keys() - REQUIRED_KEYS
+    assert not unknown, f"{skin}.{block} has unknown keys: {sorted(unknown)}"
+
+    problems = []
+    _check_fills(palette, is_light, [k for k in FILLS if k in palette], problems)
+    if "completion_menu_current_bg" in palette and "completion_menu_bg" in palette:
+        _check_chip(palette, problems)
+
+    assert not problems, f"{skin}.{block}:\n  " + "\n  ".join(problems)
+
+
+def _check_fills(palette, is_light, keys, problems):
+    for key in keys:
         lum = luminance(palette[key])
         if is_light and lum < 0.4:
             problems.append(f"{key}={palette[key]} is a dark fill (lum {lum:.2f}) in a light palette")
         if not is_light and lum > 0.35:
             problems.append(f"{key}={palette[key]} is a light fill (lum {lum:.2f}) in a dark palette")
 
+
+def _check_chip(palette, problems):
     # The selection chip must remain distinguishable from the menu surface.
     chip = contrast(palette["completion_menu_current_bg"], palette["completion_menu_bg"])
     if chip < 1.15:
@@ -183,5 +221,3 @@ def test_palette_contrast_and_polarity(skin, block, palette, is_light):
             f"completion_menu_current_bg={palette['completion_menu_current_bg']} "
             f"indistinguishable from completion_menu_bg (contrast {chip:.2f})"
         )
-
-    assert not problems, f"{skin}.{block}:\n  " + "\n  ".join(problems)

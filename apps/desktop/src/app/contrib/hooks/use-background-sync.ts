@@ -11,6 +11,13 @@ import type { GatewayRequester } from '../types'
 const CRON_POLL_INTERVAL_MS = 30_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+// Local session metadata (title, updated_at, message_count, working state) can
+// change when another client (mobile app, WebUI, a second Desktop window over a
+// remote gateway) drives a turn on the same backend. The desktop's own WebSocket
+// never sees those events — the gateway routes them to the session's owning
+// transport, not to every connected socket. Poll the recents list so cross-client
+// mutations surface without a manual restart.
+const SESSIONS_POLL_INTERVAL_MS = 15_000
 
 interface BackgroundSyncParams {
   activeIsMessaging: boolean
@@ -108,6 +115,18 @@ export function useBackgroundSync({
 
     return visiblePoll(MESSAGING_POLL_INTERVAL_MS, () => void refreshMessagingSessions())
   }, [gatewayState, refreshMessagingSessions])
+
+  // Keep local session metadata live across clients: another client (Conduit,
+  // WebUI, remote Desktop) driving a turn on the same backend updates
+  // title/updated_at/message_count in state.db, but the desktop's own WebSocket
+  // never receives those events (no fan-out to non-owning transports).
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    return visiblePoll(SESSIONS_POLL_INTERVAL_MS, () => void refreshSessions().catch(() => undefined))
+  }, [gatewayState, refreshSessions])
 
   // Only the open messaging transcript needs its own poll — local chats are
   // live over the websocket already.

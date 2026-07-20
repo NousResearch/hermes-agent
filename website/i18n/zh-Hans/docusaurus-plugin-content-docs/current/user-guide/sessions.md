@@ -552,11 +552,23 @@ group_sessions_per_user: false
 
 | 内容 | 路径 | 描述 |
 |------|------|-------------|
-| SQLite 数据库 | `~/.hermes/state.db` | 所有 session 元数据 + 带 FTS5 的消息 |
-| Gateway 消息 | `~/.hermes/state.db` | SQLite——所有 session 消息的权威存储 |
-| Gateway 路由索引 | `~/.hermes/sessions/sessions.json` | 将 session 键映射到活跃 session ID（来源元数据、过期标志） |
+| 规范会话存储 | `~/.hermes/state.db` | 所有 session 元数据、带 FTS5 的消息，以及 gateway 主路由索引 |
+| 遗留 Gateway 路由镜像 | `~/.hermes/sessions/sessions.json` | 活跃 gateway 路由的可选兼容镜像；默认写入，供外部工具和降级兼容使用 |
 
 SQLite 数据库使用 WAL 模式支持并发读取和单写入，非常适合 gateway 的多平台架构。
+
+:::warning `sessions.json` 是兼容镜像，不是 session 列表
+Gateway 主路由索引位于 `~/.hermes/state.db` 的 `gateway_routing` 表中。默认情况下，
+Hermes 还会将 `~/.hermes/sessions/sessions.json` 写作向后兼容镜像，供外部工具和
+降级场景使用。它将消息 session 键（`agent:main:<platform>:...`）映射到活跃
+session ID，并且只包含 gateway / 消息平台条目。可以在 `config.yaml` 中设置
+`gateway.write_sessions_json: false`，停止常规镜像写入；如果 `state.db` 路由保存
+失败，Hermes 仍会写入该 JSON 文件作为恢复兜底。
+
+这是预期行为，并不表示 CLI session 丢失。`hermes sessions list`、`/sessions`
+和 dashboard 都读取 `state.db`；它保存 CLI、TUI 和 gateway 的全部 session，
+并在 JSON 镜像与其不一致时作为权威来源。
+:::
 
 :::note 遗留 JSONL 对话记录
 在 state.db 成为权威存储之前创建的 session 可能在 `~/.hermes/sessions/` 中留有

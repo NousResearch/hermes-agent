@@ -3552,8 +3552,9 @@ class SessionDB:
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
         """Mark a gateway session's expiry-finalization flag in state.db.
 
-        Mirrors ``SessionEntry.expiry_finalized`` (sessions.json) so the flag
-        survives even if the JSON index is pruned or lost (#9006).
+        Keeps the durable session row aligned with the primary gateway routing
+        entry (and optional JSON mirror) so the flag survives mirror pruning or
+        loss (#9006).
         """
         if not session_id:
             return
@@ -3792,12 +3793,13 @@ class SessionDB:
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
-        ``sessions.json`` is the fast routing index, but it can be missing or
-        pruned after process-level restart bugs.  New gateway sessions persist
-        the deterministic ``session_key`` on the durable session row so the
-        mapping can be rebuilt exactly.  Rows ended only by older gateway
-        cleanup's ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap``
-        (dashboard viewer disconnect before #60609) are treated as recoverable;
+        The ``gateway_routing`` table is the primary fast index, but legacy
+        databases or process-level restart bugs can leave a route missing.
+        Gateway sessions also persist the deterministic ``session_key`` on the
+        durable session row so the mapping can be rebuilt exactly. Rows ended
+        only by older gateway cleanup's ``agent_close`` bug or a mistaken TUI
+        ``ws_orphan_reap`` (dashboard viewer disconnect before #60609) are
+        treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
         """

@@ -8898,10 +8898,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._clear_conversation_scope(
                             key, reason="expiry_finalized"
                         )
-                        # Persist the finalized flag to sessions.json AND
-                        # state.db (single write-path, #9006) — also drops
-                        # the persisted /model override, since finalization
-                        # is a conversation boundary.
+                        # Persist the finalized flag to the primary state.db
+                        # routing/session rows and optional JSON mirror (single
+                        # write-path, #9006) — also drops the persisted /model
+                        # override, since finalization is a conversation boundary.
                         await self.async_session_store.set_expiry_finalized(entry)
                         logger.debug(
                             "Session expiry finalized for %s",

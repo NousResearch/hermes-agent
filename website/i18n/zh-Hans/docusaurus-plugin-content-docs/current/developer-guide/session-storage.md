@@ -11,8 +11,13 @@ Hermes Agent 使用 SQLite 数据库（`~/.hermes/state.db`）跨 CLI 和 gatewa
 ~/.hermes/state.db (SQLite, WAL mode)
 ├── sessions              — 会话元数据、token 计数、计费信息
 ├── messages              — 每个会话的完整消息历史
+├── session_model_usage   — 按模型和任务归因 token/成本
+├── gateway_routing       — gateway 会话路由的规范索引
+├── compression_locks     — 跨进程压缩租约
+├── async_delegations     — 持久化异步委派状态
 ├── messages_fts          — FTS5 虚拟表（content + tool_name + tool_calls）
 ├── messages_fts_trigram  — 使用 trigram tokenizer 的 FTS5 虚拟表（CJK / 子串搜索）
+├── messages_fts_cjk      — 原生 tokenizer 可用时启用的可选 CJK bigram FTS5 索引
 ├── state_meta            — 键值元数据表
 └── schema_version        — 单行表，跟踪迁移状态
 ```
@@ -34,6 +39,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    session_key TEXT,
+    chat_id TEXT,
+    chat_type TEXT,
+    thread_id TEXT,
+    display_name TEXT,
+    origin_json TEXT,
+    expiry_finalized INTEGER DEFAULT 0,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -48,6 +60,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_read_tokens INTEGER DEFAULT 0,
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
+    cwd TEXT,
+    git_branch TEXT,
+    git_repo_root TEXT,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -58,12 +73,29 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    handoff_state TEXT,
+    handoff_platform TEXT,
+    handoff_error TEXT,
+    compression_failure_cooldown_until REAL,
+    compression_failure_error TEXT,
+    compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
+    compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
+    profile_name TEXT,
+    rewind_count INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_session_key
+    ON sessions(session_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
+    ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
+    ON sessions(handoff_state, started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
@@ -79,6 +111,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
+    effect_disposition TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -86,10 +119,21 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    platform_message_id TEXT,
+    observed INTEGER DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    compacted INTEGER NOT NULL DEFAULT 0,
+    api_content TEXT,
+    display_kind TEXT,
+    display_metadata TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_session_active
+    ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_active_null
+    ON messages(active) WHERE active IS NULL;
 ```
 
 说明：
@@ -98,39 +142,48 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 - `reasoning` 存储提供商暴露的原始推理文本
 - 时间戳为 Unix epoch 浮点数（`time.time()`）
 
+### 辅助表
+
+- `session_model_usage` 按会话、模型、计费路由和任务归因调用、token 与成本。
+- `gateway_routing` 以 `(scope, session_key)` 为键，将每条 gateway 路由记录存为
+  JSON。它是规范路由索引；`sessions.json` 仅作为兼容镜像/回退。
+- `compression_locks` 用于跨进程协调压缩租约。
+- `async_delegations` 持久化委派生命周期、结果、所有权与交付状态。
+
 ### FTS5 全文搜索
+
+全新创建的 schema v23 数据库使用 external-content FTS 表，避免在基础索引中
+重复存储可搜索文本：
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
-    content=messages,
-    content_rowid=id
+    tool_name,
+    tool_calls,
+    content='messages',
+    content_rowid='id'
 );
 ```
 
-FTS5 表通过三个触发器与 `messages` 表保持同步，分别在 INSERT、UPDATE 和 DELETE 时触发：
+INSERT、UPDATE 和 DELETE 触发器使 `content`、`tool_name` 与 `tool_calls`
+保持同步。重建期间，触发器使用 `state_meta` 中的
+`fts_rebuild_high_water` 和 `fts_rebuild_progress` 标记，只修改已存在于
+索引中的行。
 
-```sql
-CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
+trigram 索引及其可选的原生 CJK bigram 替代索引通过视图读取，并排除
+`role='tool'` 的行，避免重复索引大型机器载荷。工具消息仍可通过
+`messages_fts` 搜索。
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content)
-        VALUES('delete', old.id, old.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content)
-        VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
-```
+已有的 v23 之前数据库继续使用正常工作的 v22 inline FTS 布局，直到用户显式
+运行 `hermes sessions optimize-storage`。FTS 布局通过
+`state_meta.fts_storage_version` 独立跟踪，因此不执行存储重写也不会阻塞后续
+主 schema 迁移。完整触发器定义见 `hermes_state.py` 中的 `FTS_SQL`、
+`FTS_TRIGRAM_SQL` 与 `FTS_CJK_*_SQL`。
 
 
 ## Schema 版本与迁移
 
-当前 schema 版本：**11**
+当前 schema 版本：**23**
 
 `schema_version` 表存储单个整数。简单的列添加由 `_reconcile_columns()` 声明式处理（对比实时列与 `SCHEMA_SQL` 并 ADD 缺失列）。版本门控链保留用于无法声明式表达的数据迁移及索引/FTS 变更：
 
@@ -147,8 +200,15 @@ END;
 | 9 | 向 messages 添加 `codex_message_items` 列，用于 Codex Responses 消息 id/phase 重放 |
 | 10 | 添加 `messages_fts_trigram` 虚拟表（trigram tokenizer，用于 CJK / 子串搜索）并回填现有行 |
 | 11 | 重新索引 `messages_fts` 和 `messages_fts_trigram` 以覆盖 `tool_name` + `tool_calls`，从外部内容模式切换为内联模式；删除旧触发器并回填所有消息行 |
+| 16 | 在 `model_config` 中标记委派子 agent 行（`$._delegate_from`），防止父会话删除后孤立的子会话出现在普通会话选择器中 |
+| 18 | 整合 gateway 元数据——从 `sessions.json` 回填 `display_name` / `origin_json` / `expiry_finalized` |
+| 20 | 按模型归因用量——根据历史 session 聚合总量生成 `session_model_usage` 行 |
+| 22 | 按任务维度归因用量——重建 `session_model_usage`，使 `task` 参与主键；历史行保留为主循环用量（`task=''`） |
+| 23 | FTS 存储重构——新数据库使用 external-content 索引；已有数据库继续使用 v22 inline 布局，直到运行 `hermes sessions optimize-storage`，FTS 布局版本由 `state_meta` 独立跟踪 |
 
-声明式列添加使用 `ALTER TABLE ADD COLUMN`，包裹在 try/except 中以处理列已存在的情况（幂等）。每个成功的迁移块完成后版本号递增。
+未在上表列出的版本属于由 `_reconcile_columns()` 处理的声明式列添加（只递增版本，不执行数据迁移）。
+
+声明式列添加使用 `ALTER TABLE ADD COLUMN`，包裹在 try/except 中以处理列已存在的情况（幂等）。必要的 schema 初始化完成后，主 schema 标记会更新为 `SCHEMA_VERSION`。从 v23 开始，可选的 FTS 存储重写使用独立的 `fts_storage_version` 标记，不再阻塞 `schema_version` 更新。
 
 
 ## 写入竞争处理

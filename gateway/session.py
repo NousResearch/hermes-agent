@@ -802,8 +802,9 @@ class SessionEntry:
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
-    # agent).  Persisted to sessions.json so the flag survives gateway
-    # restarts — prevents redundant finalization runs.
+    # agent). Persisted to the primary state.db routing index (and the optional
+    # sessions.json mirror) so the flag survives gateway restarts and prevents
+    # redundant finalization runs.
     expiry_finalized: bool = False
 
     # When True the next call to get_or_create_session() will auto-reset
@@ -1161,8 +1162,9 @@ class SessionStore:
     """
     Manages session storage and retrieval.
     
-    Uses SQLite (via SessionDB) for session metadata and message transcripts.
-    Falls back to legacy JSONL files if SQLite is unavailable.
+    Uses SQLite (via SessionDB) for session metadata, message transcripts, and
+    the primary gateway routing index. ``sessions.json`` is an optional legacy
+    mirror; legacy JSONL transcripts are no longer read or written.
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
@@ -1203,7 +1205,10 @@ class SessionStore:
             from hermes_state import SessionDB
             self._db = SessionDB()
         except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            print(
+                "[gateway] Warning: SQLite session store unavailable; "
+                f"continuing with sessions.json routing fallback: {e}"
+            )
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Return whether a session has active work, failing closed on registry errors."""
@@ -1320,19 +1325,20 @@ class SessionStore:
 
         self._loaded = True
 
-        # Prune any sessions.json entries that point to sessions already ended
-        # in state.db. A hard gateway crash (exit code 1) skips the graceful
-        # shutdown path, so sessions.json is never cleared and is left pointing
-        # at ended sessions. On the next startup those stale entries act as live
-        # routing keys. get_or_create_session() only consulted end_reason at
-        # startup (here) until #54878 added a routing-time guard for the
-        # live-gateway case; this startup prune still self-heals crash-left
-        # entries before the first message arrives. Pruning here (lock already
-        # held) is cheap: one lookup per routing key, once at startup.
+        # Prune routing entries that point to sessions already ended in
+        # state.db. A hard gateway crash (exit code 1) can skip the graceful
+        # route cleanup, leaving the primary DB index and/or legacy JSON mirror
+        # pointing at ended sessions. On the next startup those stale entries
+        # act as live routing keys. get_or_create_session() only consulted
+        # end_reason at startup (here) until #54878 added a routing-time guard
+        # for the live-gateway case; this startup prune still self-heals
+        # crash-left entries before the first message arrives. Pruning here
+        # (lock already held) is cheap: one lookup per routing key, once at
+        # startup.
         self._prune_stale_sessions_locked()
 
     def _prune_stale_sessions_locked(self) -> None:
-        """Remove sessions.json entries whose session has ended in state.db.
+        """Remove routing entries whose session has ended in state.db.
 
         Called once during startup (from ``_ensure_loaded_locked``, lock held).
         A ``session_id`` is stale when state.db reports ``end_reason IS NOT
@@ -1366,7 +1372,7 @@ class SessionStore:
                         except Exception as exc:
                             logger.debug(
                                 "gateway.session: recovery lookup failed for stale "
-                                "sessions.json entry %r -> %s: %s",
+                                "routing entry %r -> %s: %s",
                                 key,
                                 entry.session_id,
                                 exc,
@@ -1385,7 +1391,7 @@ class SessionStore:
                     # fresh message.
                     if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
                         logger.warning(
-                            "gateway.session: repointing stale sessions.json entry "
+                            "gateway.session: repointing stale routing entry "
                             "%r from ended %s (end_reason=%r) to recovered %s",
                             key,
                             entry.session_id,
@@ -1397,7 +1403,7 @@ class SessionStore:
                         continue
 
                     logger.warning(
-                        "gateway.session: pruning stale sessions.json entry "
+                        "gateway.session: pruning stale routing entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",
                         key, entry.session_id, row["end_reason"],
                     )
@@ -1475,8 +1481,10 @@ class SessionStore:
                 "active session IDs. This is NOT the session list. ALL "
                 "sessions (CLI, TUI, and gateway) live in ~/.hermes/state.db "
                 "and are shown by `hermes sessions list` and `/sessions`. "
-                "Disable this file with `gateway.write_sessions_json: false` "
-                "in config.yaml."
+                "Disable routine mirror writes with "
+                "`gateway.write_sessions_json: false` in config.yaml; a "
+                "failed state.db routing save still writes this recovery "
+                "fallback."
             ),
             **data,
         }
@@ -1870,11 +1878,11 @@ class SessionStore:
     def set_expiry_finalized(
         self, entry: SessionEntry, *, clear_model_override: bool = True
     ) -> None:
-        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
+        """Mark a session entry expiry-finalized in memory and durable storage.
 
-        Single write-path for the expiry watcher (#9006): keeps the durable
-        state.db flag in sync with the JSON routing index so the flag
-        survives sessions.json pruning/loss.
+        Single write-path for the expiry watcher (#9006): updates the primary
+        state.db routing entry and session row plus the optional JSON mirror,
+        so the flag survives mirror pruning/loss.
 
         ``clear_model_override=False`` preserves the give-up path's original
         behavior (flag only, no override drop).
@@ -2117,8 +2125,9 @@ class SessionStore:
                 return self._db.session_count() > 1
             except Exception:
                 pass  # fall through to heuristic
-        # Fallback: check if sessions.json was loaded with existing data.
-        # This covers the rare case where the DB is unavailable.
+        # Fallback: check the in-memory routing entries (which may have been
+        # imported from legacy sessions.json). This covers the rare case where
+        # the DB is unavailable.
         with self._lock:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
@@ -2319,7 +2328,7 @@ class SessionStore:
                     # a fresh session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
-                        "state.db but still live in sessions.json; dropping "
+                        "state.db but still live in the routing index; dropping "
                         "stale entry and recovering/recreating the session "
                         "(#54878)",
                         session_key, entry.session_id,

@@ -210,7 +210,7 @@ hermes-agent/
 | `~/.hermes/skills/` | Todas las habilidades activas (incluidas + instaladas desde hub + creadas por el agente) |
 | `~/.hermes/memories/` | Memoria persistente (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | Base de datos de sesiones SQLite |
-| `~/.hermes/sessions/` | Índice de enrutamiento del gateway (`sessions.json`), migas de pan de solicitudes, transcripciones `*.jsonl` del gateway y (opcionalmente) snapshots JSON por sesión cuando `sessions.write_json_snapshots: true` está configurado. Los snapshots por sesión están desactivados por defecto; state.db es canónica. |
+| `~/.hermes/sessions/` | Espejo heredado opcional del enrutamiento del gateway (`sessions.json`), migas de pan de solicitudes, transcripciones `*.jsonl` del gateway y (opcionalmente) snapshots JSON por sesión cuando se configura `sessions.write_json_snapshots: true`. El espejo se escribe por defecto por compatibilidad; `gateway.write_sessions_json: false` desactiva las escrituras rutinarias, pero un fallo al guardar el enrutamiento en `state.db` todavía genera el JSON de recuperación. `state.db` es la fuente canónica. |
 | `~/.hermes/cron/` | Datos de trabajos programados |
 | `~/.hermes/whatsapp/session/` | Credenciales del puente WhatsApp |
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Merge Coverage Verification"
+  short_description: "Verify recovery patches survive merges"
+  default_prompt: "Use $merge-coverage-verification to audit recovery coverage before and after a merge."

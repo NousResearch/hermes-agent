@@ -198,6 +198,36 @@ Delete a stored response.
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
+### GET /v1/profiles
+
+Returns the complete profile roster using only canonical IDs and safe routing
+state. A configured `API_SERVER_KEY` is always required.
+
+```json
+{
+  "object": "list",
+  "version": 1,
+  "complete": true,
+  "active_profile": "default",
+  "data": [
+    {
+      "id": "default",
+      "object": "hermes.profile",
+      "is_default": true,
+      "is_active": true,
+      "served": true
+    }
+  ]
+}
+```
+
+`served` means the current gateway can serve that profile. In single-profile
+mode only the active profile is served; a multiplex gateway serves every
+profile in the returned roster. The endpoint never returns profile paths,
+descriptions, aliases, provider/model settings, distribution metadata, skill
+counts, environment state, or credentials. It fails instead of returning a
+partial or malformed inventory.
+
 ### GET /v1/capabilities
 
 Returns a machine-readable description of the API server's stable surface for external UIs, orchestrators, and plugin bridges.
@@ -214,7 +244,11 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "profile_inventory": true,
+    "profile_inventory_version": 1,
+    "profile_inventory_complete": true,
+    "profile_inventory_requires_api_key": true
   }
 }
 ```

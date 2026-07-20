@@ -93,7 +93,7 @@ _PROPERTIES: Dict[str, Any] = {
     "button": {
         "type": "string",
         "enum": ["left", "right", "middle"],
-        "description": "Mouse button. Defaults to left.",
+        "description": "Mouse button. Defaults to left. Non-left drag buttons require coordinates and driver support.",
     },
     "modifiers": {
         "type": "array",
@@ -112,7 +112,7 @@ _PROPERTIES: Dict[str, Any] = {
                 "meta",
             ],
         },
-        "description": "Modifier keys held during the action.",
+        "description": "Modifier keys held during the action. Drag modifiers require coordinates and driver support.",
     },
     "from_element": {"type": "integer", "description": "Source element index (drag)."},
     "to_element": {"type": "integer", "description": "Target element index (drag)."},

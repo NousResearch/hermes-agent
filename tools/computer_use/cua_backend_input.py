@@ -158,7 +158,29 @@ class _InputMixin:
                                      "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
                  if from_xy is not None and to_xy is not None else None),
             ), "drag requires from_element/to_element or from_coordinate/to_coordinate.")
-        return refusal if refusal is not None else self._run_input_action("drag", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
+        button_norm = (button or "left").lower()
+        if button_norm not in {"left", "right", "middle"}:
+            return _refuse("drag", f"unknown button {button!r} — expected left, right, middle.", code="bad_drag_button")
+        # The option fields describe pixel gestures, not an element/AX contract. Their presence alongside
+        # element fields does not prove that the element path honors them. Do not silently switch addressing.
+        if element_drag and (button_norm != "left" or modifiers):
+            return _refuse("drag", "Nondefault drag buttons and modifiers require verified "
+                           "from_coordinate/to_coordinate values, not element addressing.", code="drag_options_unsupported")
+        # Keep the legacy default payload; check each requested option independently against tools/list before
+        # _run_input_action can focus the target or dispatch any input. Version/capability tokens are not enough.
+        if button_norm != "left":
+            if not self._session.supports_input_property("drag", "button"):
+                return _refuse("drag", "The connected cua-driver does not support the requested drag button.",
+                               code="drag_button_unsupported")
+            args["button"] = button_norm
+        if modifiers:
+            if not self._session.supports_input_property("drag", "modifier"):
+                return _refuse("drag", "The connected cua-driver does not support drag modifiers.",
+                               code="drag_modifiers_unsupported")
+            args["modifier"] = modifiers
+        return self._run_input_action("drag", args, delivery_mode, bring_to_front)
 
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
                x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None,

@@ -47,6 +47,8 @@ _BLOCKED_KEY_COMBOS = {
 }
 _KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option",
                 "windows": "win", "super": "win", "meta": "win"}
+_POINTER_ACTIONS_WITH_MODIFIERS = frozenset({"click", "double_click", "right_click", "middle_click", "drag"})
+_ALLOWED_POINTER_MODIFIERS = frozenset({"cmd", "shift", "option", "alt", "ctrl", "fn", "win", "windows", "super", "meta"})
 _BLOCKED_TYPE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in (  # dangerous shell patterns for `type` (last one: fork bomb)
     r"curl\s+[^|]*\|\s*bash", r"curl\s+[^|]*\|\s*sh", r"wget\s+[^|]*\|\s*bash",
     r"\bsudo\s+rm\s+-[rf]", r"\brm\s+-rf\s+/\s*$", r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}")]
@@ -54,6 +56,17 @@ _BLOCKED_TYPE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in (  # dangerous s
 def _canon_key_combo(keys: str) -> frozenset:
     # Split on "+" AND "-": cua-driver accepts hyphenated combos, so "ctrl-alt-delete" would bypass otherwise.
     return frozenset(_KEY_ALIASES.get(p, p) for p in (q.strip().lower() for q in re.split(r"\s*[+\-]\s*", keys)) if p)
+
+def _normalize_pointer_modifiers(raw: Any) -> List[str]:
+    """Schemas are advisory for direct callers and some providers; validate before approval."""
+    if not isinstance(raw, list) or any(not isinstance(value, str) for value in raw):
+        raise ValueError("modifiers must be a list of strings")
+    normalized = [value.strip().lower() for value in raw]
+    for value in normalized:
+        if value not in _ALLOWED_POINTER_MODIFIERS:
+            raise ValueError(f"unknown modifier {value!r} — expected one of {', '.join(sorted(_ALLOWED_POINTER_MODIFIERS))}")
+    return normalized
+
 
 def _reject_unsafe(action: str, args: Dict[str, Any]) -> Optional[str]:
     """JSON error for hard-blocked input, else None. Runs BEFORE the approval prompt."""
@@ -295,6 +308,11 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
     if (err := _reject_unsafe(action, args)) is not None:
         return err
+    if action in _POINTER_ACTIONS_WITH_MODIFIERS and "modifiers" in args:
+        try:
+            args = {**args, "modifiers": _normalize_pointer_modifiers(args["modifiers"])}
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
         ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
     for scope in scopes:

@@ -499,4 +499,17 @@ describe('overlayConcurrentMessageChanges', () => {
     expect(overlaid.map(message => message.id)).toEqual(['assistant-stream-runtime', 'user-racing'])
     expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'partial A + delta B' }])
   })
+
+  it('merges an activation prefix with a baseline-new runtime delta chunk', () => {
+    const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
+    const current = [msg('assistant-stream-runtime', 'assistant', ' + delta B', { pending: true })]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, [], current)
+
+    expect(overlaid.map(message => message.id)).toEqual(['assistant-stream-runtime'])
+    expect(overlaid[0].parts).toEqual([
+      { type: 'text', text: 'partial A' },
+      { type: 'text', text: ' + delta B' }
+    ])
+  })
 })

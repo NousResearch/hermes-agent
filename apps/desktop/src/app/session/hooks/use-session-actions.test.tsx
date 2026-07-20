@@ -685,6 +685,93 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('newest prompt')
   })
 
+  it('preserves a runtime-cache delta that arrives while cold resume waits for REST', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getSessionMessages>>>()
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map()
+    }
+
+    const compressedRuntimeMessages = [
+      { content: 'recent question', role: 'user', timestamp: 3 },
+      { content: 'recent answer', role: 'assistant', timestamp: 4 }
+    ]
+
+    vi.mocked(getSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: compressedRuntimeMessages.length,
+          messages: compressedRuntimeMessages,
+          running: true,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial A',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.anything()))
+
+    const runtimeState = clientState('stored-1')
+    runtimeState.messages = [
+      {
+        id: 'assistant-stream-live-cold',
+        role: 'assistant',
+        parts: [{ type: 'text', text: ' + delta B' }],
+        pending: true
+      }
+    ]
+    runtimeState.streamId = 'assistant-stream-live-cold'
+    sessionStateByRuntimeIdRef.current.set('runtime-1', runtimeState)
+
+    await act(async () => {
+      persisted.resolve({
+        messages: [
+          { content: 'older question removed by compression', role: 'user', timestamp: 1 },
+          { content: 'older answer removed by compression', role: 'assistant', timestamp: 2 },
+          ...compressedRuntimeMessages
+        ],
+        session_id: 'stored-1'
+      } as never)
+      await resumePromise
+    })
+
+    const renderedText = JSON.stringify(resumedState?.messages)
+
+    const streamingAssistantRows = resumedState?.messages.filter(message => message.id.startsWith('assistant-stream-'))
+
+    expect(renderedText).toContain('older question removed by compression')
+    expect(renderedText).toContain('partial A')
+    expect(renderedText).toContain('delta B')
+    expect(streamingAssistantRows).toHaveLength(1)
+    expect(streamingAssistantRows?.[0].id).toBe('assistant-stream-live-cold')
+  })
+
   it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {
     const parentMessages = [
       { content: 'question before compression', role: 'user', timestamp: 1 },

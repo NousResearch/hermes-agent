@@ -536,9 +536,18 @@ export function overlayConcurrentMessageChanges(
     }
 
     if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {
-      nextIndexById.delete(overlaid[activationStreamIndex].id)
+      const activationStream = overlaid[activationStreamIndex]
+      const activationText = chatMessageText(activationStream)
+      const currentText = chatMessageText(current)
+
+      const replacement =
+        activationText && !currentText.startsWith(activationText)
+          ? { ...current, parts: [...activationStream.parts, ...current.parts] }
+          : current
+
+      nextIndexById.delete(activationStream.id)
       nextIndexById.set(current.id, activationStreamIndex)
-      overlaid[activationStreamIndex] = current
+      overlaid[activationStreamIndex] = replacement
       activationStreamIndex = -1
       changed = true
 

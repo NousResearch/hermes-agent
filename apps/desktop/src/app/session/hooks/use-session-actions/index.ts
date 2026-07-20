@@ -811,6 +811,8 @@ export function useSessionActions({
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
         const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
 
+        let resumeRuntimeBaselineMessages: ChatMessage[] = []
+
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
@@ -822,6 +824,11 @@ export function useSessionActions({
           // background while the prefetch above paints the transcript.
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
+        }).then(resumed => {
+          resumeRuntimeBaselineMessages =
+            sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
+
+          return resumed
         })
 
         // The rejection is consumed by the `await` below; this guard only
@@ -916,13 +923,23 @@ export function useSessionActions({
           return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
         })()
 
-        // Prefetch-hit fast path: `preferredMessages` IS the live `$messages`
-        // array (already error-merged when `localSnapshot` was built), so reuse
-        // the ref instead of rebuilding a throwaway transcript+Map every switch.
+        const currentRuntimeMessages =
+          sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
+
+        const preferredWithRuntimeChanges = overlayConcurrentMessageChanges(
+          preferredMessages,
+          resumeRuntimeBaselineMessages,
+          currentRuntimeMessages
+        )
+
+        // Prefetch-hit fast path: `preferredWithRuntimeChanges` IS the live
+        // `$messages` array (already error-merged when `localSnapshot` was
+        // built), so reuse the ref instead of rebuilding a throwaway
+        // transcript+Map every switch.
         const messagesForView =
-          preferredMessages === currentMessages
+          preferredWithRuntimeChanges === currentMessages
             ? currentMessages
-            : preserveLocalAssistantErrors(preferredMessages, currentMessages)
+            : preserveLocalAssistantErrors(preferredWithRuntimeChanges, currentMessages)
 
         if (sessionShouldHaveTranscript(stored) && messagesForView.length === 0) {
           setActiveSessionId(null)

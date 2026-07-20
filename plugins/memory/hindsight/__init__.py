@@ -341,6 +341,39 @@ REFLECT_SCHEMA = {
     },
 }
 
+INVALIDATE_SCHEMA = {
+    "name": "hindsight_invalidate",
+    "description": (
+        "Invalidate (soft-delete) or restore a stored memory. "
+        "Invalidated memories are excluded from recall, consolidation, "
+        "and graph maintenance, but kept for audit — fully reversible. "
+        "Only world/experience facts can be invalidated; observations are derived.\n\n"
+        "WORKFLOW: first use hindsight_recall to find the memory_id "
+        "(each result includes an id=... prefix), confirm it is the "
+        "target, then call this tool. "
+        "Pass restore=true to revert a previous invalidation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "Memory ID from hindsight_recall results (e.g. '5e79c849-f3b6')."
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this memory is being invalidated (for audit trail)."
+            },
+            "restore": {
+                "type": "boolean",
+                "default": False,
+                "description": "Set true to RESTORE a previously invalidated memory to valid."
+            },
+        },
+        "required": ["memory_id"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -1698,7 +1731,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
             return []
-        return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
+        return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA, INVALIDATE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
@@ -1747,7 +1780,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
+                lines = []
+                for i, r in enumerate(resp.results, 1):
+                    sid = r.id[:12] if r.id else "?"
+                    state = getattr(r, "state", None)
+                    flag = " [INVALIDATED]" if state == "invalidated" else ""
+                    lines.append(f"{i}. id={sid} {r.text}{flag}")
                 return json.dumps({"result": "\n".join(lines)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
@@ -1771,7 +1809,88 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to reflect: {e}")
 
+        elif tool_name == "hindsight_invalidate":
+            memory_id = args.get("memory_id", "")
+            if not memory_id:
+                return tool_error("Missing required parameter: memory_id")
+            state = "valid" if args.get("restore", False) else "invalidated"
+            reason = args.get("reason", "")
+
+            try:
+                UpdateMemoryRequest = _try_import_update_memory_request()
+                if UpdateMemoryRequest is not None:
+                    # —— SDK >= 0.8.4 path ——
+                    req = UpdateMemoryRequest(state=state)
+                    if reason:
+                        req.reason = reason
+                    self._run_hindsight_operation(
+                        lambda client: client.memory.update_memory(
+                            bank_id=self._bank_id,
+                            memory_id=memory_id,
+                            update_memory_request=req,
+                        )
+                    )
+                else:
+                    # —— HTTP fallback (SDK < 0.8.4) ——
+                    self._http_patch_memory(memory_id, state, reason=reason or None)
+
+                action = "restored" if state == "valid" else "invalidated"
+                return json.dumps({"result": f"Memory {memory_id[:12]}... {action}."})
+            except Exception as e:
+                logger.warning("hindsight_invalidate failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to curate memory: {e}")
+
         return tool_error(f"Unknown tool: {tool_name}")
+
+    @staticmethod
+    def _try_import_update_memory_request():
+        """Return UpdateMemoryRequest class, or None if SDK < 0.8.x.
+
+        Uses a lazy import guard so the plugin continues to work with
+        hindsight-client 0.6.1 — the caller falls back to an HTTP PATCH.
+        """
+        try:
+            from hindsight_client_api.models.update_memory_request import (  # noqa: PLC0415
+                UpdateMemoryRequest,
+            )
+            return UpdateMemoryRequest
+        except ImportError:
+            return None
+
+    def _http_patch_memory(self, memory_id: str, state: str, *,
+                           reason: str | None = None):
+        """PATCH /v1/default/banks/{bank_id}/memories/{memory_id}.
+
+        Direct HTTP fallback for SDK versions that don't expose
+        MemoryApi.update_memory (available from 0.8.x onward).
+
+        Raises RuntimeError on HTTP errors.
+        """
+        import urllib.error       # noqa: PLC0415
+        import urllib.request     # noqa: PLC0415
+
+        url = (
+            f"{self._api_url.rstrip('/')}"
+            f"/v1/default/banks/{self._bank_id}/memories/{memory_id}"
+        )
+        body = {"state": state}
+        if reason:
+            body["reason"] = reason
+        data = json.dumps(body).encode("utf-8")
+
+        req = urllib.request.Request(
+            url, data=data, method="PATCH",
+            headers={"Content-Type": "application/json"},
+        )
+        if self._api_key:
+            req.add_header("Authorization", f"Bearer {self._api_key}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                resp.read()  # consume — 200 returns empty body
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            raise RuntimeError(f"HTTP {e.code}: {body[:300]}") from None
 
     def on_session_switch(
         self,

@@ -17,6 +17,7 @@ import {
   inputVisualHeight,
   stableComposerColumns
 } from '../lib/inputMetrics.js'
+import { mix } from '../lib/color.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
 
@@ -418,7 +419,11 @@ const ComposerPane = memo(function ComposerPane({
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
-                  placeholderColor={ui.theme.color.muted}
+                  // Faint = an EXPLICIT color blended toward the theme surface,
+                  // never SGR dim: dim is terminal-interpreted, and on
+                  // transparent profiles it renders as a black slab. The
+                  // surface tracks polarity, so the hint recedes on both.
+                  placeholderColor={mix(ui.theme.color.muted, ui.theme.color.completionBg, 0.45)}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

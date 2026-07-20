@@ -1,6 +1,7 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { type RefObject, useState } from 'react'
 
+import { mix } from '../lib/color.js'
 import type { Theme } from '../theme.js'
 
 /**
@@ -39,8 +40,11 @@ export function OverlayScrollbar({
 
   const vBar = (n: number) => (n > 0 ? `${'│\n'.repeat(n - 1)}│` : '')
   const thumbBody = `${'┃\n'.repeat(Math.max(0, thumb - 1))}┃`
-  const thumbColor = grab !== null ? t.color.primary : t.color.accent
-  const trackColor = hover ? t.color.border : t.color.muted
+  // Same scheme as TranscriptScrollbar: base-color thumb, accent on interact,
+  // track receded via explicit blend (SGR dim renders as a black slab on
+  // transparent terminals — see TranscriptScrollbar).
+  const thumbColor = grab !== null || hover ? t.color.accent : t.color.primary
+  const trackColor = mix(hover ? t.color.border : t.color.muted, t.color.completionBg, hover ? 0.25 : 0.55)
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
@@ -68,24 +72,14 @@ export function OverlayScrollbar({
       width={1}
     >
       {!scrollable ? (
-        <Text color={trackColor} dim>
-          {vBar(vp)}
-        </Text>
+        <Text color={trackColor}>{vBar(vp)}</Text>
       ) : (
         <>
-          {thumbTop > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {vBar(thumbTop)}
-            </Text>
-          ) : null}
+          {thumbTop > 0 ? <Text color={trackColor}>{vBar(thumbTop)}</Text> : null}
 
           <Text color={thumbColor}>{thumbBody}</Text>
 
-          {below > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {vBar(below)}
-            </Text>
-          ) : null}
+          {below > 0 ? <Text color={trackColor}>{vBar(below)}</Text> : null}
         </>
       )}
     </Box>

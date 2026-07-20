@@ -1236,8 +1236,29 @@ def compress_context(
                     # Flush any un-persisted current-turn messages to the OLD
                     # session before ending it, so they survive in the preserved
                     # parent transcript (#47202). (In-place skips this — see above.)
+                    #
+                    # Pass the already-durable prefix as conversation_history so
+                    # the flush skips it by identity (#68196). Preflight
+                    # compression runs BEFORE the normal turn flush has stamped
+                    # the cold-resumed history dicts with _DB_PERSISTED_MARKER, so
+                    # without a boundary _flush_messages_to_session_db treats every
+                    # restored row as new and re-appends the whole transcript to
+                    # the parent. turn_context anchors _persist_user_message_idx at
+                    # the current-turn user message before preflight runs, so
+                    # messages[:idx] is exactly the persisted prefix; only the
+                    # current turn's new messages get written.
+                    current_idx = getattr(agent, "_persist_user_message_idx", None)
+                    persisted_history = (
+                        messages[:current_idx]
+                        if isinstance(current_idx, int)
+                        and 0 <= current_idx <= len(messages)
+                        else None
+                    )
                     try:
-                        agent._flush_messages_to_session_db(messages)
+                        agent._flush_messages_to_session_db(
+                            messages,
+                            conversation_history=persisted_history,
+                        )
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
                     # Propagate title to the new session with auto-numbering

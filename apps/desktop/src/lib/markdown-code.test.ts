@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyProseCodeBlock } from './markdown-code'
+import { isLikelyProseCodeBlock, isLikelyProseFence } from './markdown-code'
 
 describe('isLikelyProseCodeBlock', () => {
   it('detects prose that Streamdown mislabels as an unknown language', () => {
@@ -15,6 +15,20 @@ describe('isLikelyProseCodeBlock', () => {
         ].join('\n')
       )
     ).toBe(true)
+  })
+
+  it('keeps ordinary text fences with prose as prose', () => {
+    const prose = ['Morning update', 'Checks await review', 'Results appear soon'].join('\n')
+
+    expect(isLikelyProseFence('text', prose)).toBe(true)
+    expect(isLikelyProseCodeBlock('text', prose)).toBe(true)
+  })
+
+  it('keeps fenced file lists as code blocks', () => {
+    const files = ['gateway-event.ts', 'process-result-visibility.test.tsx', 'tui_gateway/server.py + tests'].join('\n')
+
+    expect(isLikelyProseFence('text', files)).toBe(false)
+    expect(isLikelyProseCodeBlock('text', files)).toBe(false)
   })
 
   it('keeps real code blocks', () => {

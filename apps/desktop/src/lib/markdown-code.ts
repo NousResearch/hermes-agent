@@ -39,6 +39,7 @@ interface CodeSignals {
   bulletLines: number
   codeSignals: number
   hasMarkdown: boolean
+  pathLines: number
   proseLines: number
   trimmed: string
   urlLines: number
@@ -267,6 +268,7 @@ function codeSignals(body: string): CodeSignals {
     bulletLines: (trimmed.match(/^\s*[-*]\s+\S+/gm) || []).length,
     codeSignals: codeSignalCount(trimmed),
     hasMarkdown: markdownSignals > 0,
+    pathLines: (trimmed.match(/^\s*(?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]{1,8}(?:\s+\+\s+.*)?\s*$/gim) || []).length,
     proseLines: proseLineCount(trimmed),
     trimmed,
     urlLines: (trimmed.match(/^\s*https?:\/\/\S+\s*$/gim) || []).length
@@ -304,7 +306,7 @@ export function isLikelyProseFence(info: string, body: string): boolean {
 
   return (
     (signals.bulletLines >= 2 && signals.hasMarkdown && signals.codeSignals <= 2) ||
-    (signals.proseLines >= 3 && signals.codeSignals === 0)
+    (signals.pathLines < 2 && signals.proseLines >= 3 && signals.codeSignals === 0)
   )
 }
 
@@ -321,7 +323,7 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   }
 
   if (NON_CODE_FENCE_LANGUAGES.has(cleanLanguage)) {
-    return signals.proseLines >= 3 && signals.codeSignals === 0
+    return signals.pathLines < 2 && signals.proseLines >= 3 && signals.codeSignals === 0
   }
 
   return !COMMON_CODE_LANGUAGES.has(cleanLanguage) && signals.proseLines >= 2 && signals.codeSignals <= 1

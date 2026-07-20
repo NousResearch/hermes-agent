@@ -572,6 +572,24 @@ describe('assistant-ui streaming renderer', () => {
   // layout, spring animation via rAF) only produces brittle change-detector
   // tests. The rendering/streaming-content tests below remain the contract.
 
+  it('renders a completed text fence without leaking its language label into the transcript', async () => {
+    const { container } = render(
+      <MessageHarness
+        message={assistantMessage(
+          '| PR | Scope | Status |\n| --- | --- | --- |\n| #64094 | Async result visibility | Open |\n\n## Scope verification\n\n**#64094** changes only:\n\n```text\ngateway-event.ts\nprocess-result-visibility.test.tsx\nuser-message.tsx\n```',
+          false
+        )}
+      />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
+      expect(container.textContent).toContain('gateway-event.ts')
+    })
+
+    expect(screen.queryByText('text', { exact: true })).toBeNull()
+  })
+
   it('renders an incomplete streaming fenced code block as a code card', async () => {
     const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)
 

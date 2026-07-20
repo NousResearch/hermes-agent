@@ -1158,6 +1158,11 @@ def _run_chrome_fallback_command(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+            # Mirror the daemon reaping done in _run_browser_command: the CLI
+            # client is gone but the detached agent-browser daemon (Chromium
+            # cold-start) survives proc.kill() and leaks inside the gateway
+            # (issue #68139).  Tree-kill the daemon via the verified path.
+            _kill_browser_daemon_on_timeout(task_socket_dir, tmp_session)
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
             with open(stdout_path, "r", encoding="utf-8") as f:
@@ -1667,6 +1672,58 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
         return False
 
     return True
+
+
+def _kill_browser_daemon_on_timeout(task_socket_dir: str,
+                                    session_name: str) -> bool:
+    """Best-effort tree-kill of the agent-browser daemon left behind on timeout.
+
+    When a ``browser_*`` CLI command hits ``subprocess.TimeoutExpired`` we only
+    ``proc.kill()`` the *CLI client* process (see ``_run_browser_command`` and
+    ``_run_chrome_fallback_command``).  agent-browser spawns a detached daemon
+    grandchild (which cold-starts Chromium) whose socket dir is passed via the
+    ``AGENT_BROWSER_SOCKET_DIR`` env var — never via argv — so that daemon keeps
+    running and is never reaped by the startup-only orphan reaper inside a
+    long-lived gateway.  The daemon + full Chromium tree (~150-250 MB) is then
+    orphaned inside the gateway's cgroup until the host OOMs.
+
+    Terminate the orphaned daemon here using the *same* verified-termination
+    path the orphan reaper uses, so we never signal a process that isn't
+    genuinely ours (issue #14073 spoof defense).  Returns True if a daemon was
+    reaped.
+    """
+    pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
+    if not os.path.isfile(pid_file):
+        # No daemon PID file — nothing to reap.
+        return False
+    try:
+        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return False
+
+    from gateway.status import _pid_exists
+    if not _pid_exists(daemon_pid):
+        return False
+
+    if not _verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name):
+        logger.warning(
+            "browser daemon PID %d failed reap verification on command "
+            "timeout; leaving it for the next orphan sweep (session %s)",
+            daemon_pid, session_name)
+        return False
+
+    try:
+        from tools.process_registry import ProcessRegistry
+        ProcessRegistry._terminate_host_pid(daemon_pid)
+        logger.info(
+            "Reaped browser daemon PID %d after command timeout (session %s)",
+            daemon_pid, session_name)
+        return True
+    except (ProcessLookupError, PermissionError, OSError) as exc:
+        logger.warning(
+            "Could not reap browser daemon PID %d on command timeout: %s",
+            daemon_pid, exc)
+        return False
 
 
 def _reap_orphaned_browser_sessions():
@@ -2503,6 +2560,16 @@ def _run_browser_command(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+            # The CLI client is dead, but agent-browser spawned a detached
+            # daemon grandchild (Chromium cold-start) whose socket dir is passed
+            # via AGENT_BROWSER_SOCKET_DIR, not argv.  That daemon is NOT killed
+            # by proc.kill() and the startup-only orphan reaper never reaps it
+            # inside a long-lived gateway — it orphans ~150-250 MB of Chromium
+            # per timeout (issue #68139).  Tree-kill the daemon too, using the
+            # same verified-termination path as the orphan reaper.
+            session_name = session_info.get("session_name")
+            if session_name:
+                _kill_browser_daemon_on_timeout(task_socket_dir, session_name)
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
             if stderr and stderr.strip():

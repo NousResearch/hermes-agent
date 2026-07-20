@@ -537,3 +537,76 @@ class TestEmergencyCleanupRunsReaper:
         assert reaper_called, (
             "Reaper must run on exit even with no active sessions"
         )
+
+
+class TestKillBrowserDaemonOnTimeout:
+    """Issue #68139: the agent-browser daemon (Chromium cold-start) spawned by a
+    command that times out must be tree-killed, not orphaned inside the gateway.
+    """
+
+    def _make_socket_dir(self, tmpdir, session_name, pid=None):
+        import tools.browser_tool as bt
+        d = tmpdir / f"agent-browser-{session_name}"
+        d.mkdir()
+        if pid is not None:
+            (d / f"{session_name}.pid").write_text(str(pid))
+        return d
+
+    def test_daemon_reaped_when_verified(self, fake_tmpdir):
+        import tools.browser_tool as bt
+
+        session_name = "h_timeout1234"
+        d = self._make_socket_dir(fake_tmpdir, session_name, pid=12345)
+
+        kill_calls = []
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon",
+                   return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid: kill_calls.append(pid)):
+            reaped = bt._kill_browser_daemon_on_timeout(str(d), session_name)
+
+        assert reaped is True
+        assert kill_calls == [12345]
+
+    def test_dead_daemon_not_reaped(self, fake_tmpdir):
+        import tools.browser_tool as bt
+
+        session_name = "h_timeoutdead1"
+        d = self._make_socket_dir(fake_tmpdir, session_name, pid=999999999)
+
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=AssertionError("should not terminate dead PID")):
+            reaped = bt._kill_browser_daemon_on_timeout(str(d), session_name)
+
+        assert reaped is False
+
+    def test_unverified_daemon_not_reaped(self, fake_tmpdir):
+        """A daemon that fails the reap-verification check must be left alone
+        (issue #14073 spoof defense) even on command timeout."""
+        import tools.browser_tool as bt
+
+        session_name = "h_timeoutspoof"
+        d = self._make_socket_dir(fake_tmpdir, session_name, pid=12345)
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon",
+                   return_value=False), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=AssertionError("should not terminate unverified PID")):
+            reaped = bt._kill_browser_daemon_on_timeout(str(d), session_name)
+
+        assert reaped is False
+
+    def test_missing_pid_file_is_noop(self, fake_tmpdir):
+        import tools.browser_tool as bt
+
+        session_name = "h_timeoutnopid"
+        d = self._make_socket_dir(fake_tmpdir, session_name)  # no .pid file
+
+        with patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=AssertionError("should not terminate without pid")):
+            reaped = bt._kill_browser_daemon_on_timeout(str(d), session_name)
+
+        assert reaped is False

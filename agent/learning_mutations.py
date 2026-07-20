@@ -10,6 +10,7 @@ deleting a memory rewrites its file.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,14 +37,11 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     Entries come from ``MemoryStore._read_file`` — the memory tool's own parser —
     so journey indices stay aligned with what the graph renders; a profile card's
     local index is its global index minus the MEMORY.md card count."""
-    from hermes_constants import get_hermes_home
     from agent.learning_graph import _memory_cards
     from tools.memory_tool import MemoryStore
 
     source, gidx = _parse_memory_id(node_id)
-    path = get_hermes_home() / "memories" / _MEMORY_FILES[source]
-    if not path.exists():
-        raise ValueError(f"{path.name} not found")
+    path = _memory_path(source)
     chunks = MemoryStore._read_file(path)
     cards = _memory_cards()
     if not 0 <= gidx < len(cards):
@@ -56,10 +54,46 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
+def _memory_path(source: str) -> Path:
+    """The file for a memory source, without reading it — so a caller can take the
+    lock on it *before* the read half of its read-modify-write cycle."""
+    from hermes_constants import get_hermes_home
+
+    path = get_hermes_home() / "memories" / _MEMORY_FILES[source]
+    if not path.exists():
+        raise ValueError(f"{path.name} not found")
+    return path
+
+
+@contextmanager
+def _memory_write_lock(node_id: str):
+    """Exclusive lock over a memory file's *entire* read-modify-write cycle.
+
+    ``_edit_memory``/``_delete_memory`` read the entry list before they write it
+    back, so a lock taken only around the final write still lets a ``MemoryStore``
+    update commit in the gap and get overwritten by the stale snapshot. Taking the
+    lock first (before ``_locate_memory``) makes the whole cycle atomic against
+    ``MemoryStore._mutate``, which locks and reloads the same way.
+
+    ``_write_memory`` deliberately does NOT lock: flock is per open file
+    description, so a nested acquisition on the same path would block forever.
+    """
+    from tools.memory_tool import MemoryStore
+
+    source, _ = _parse_memory_id(node_id)
+    with MemoryStore._file_lock(_memory_path(source)):
+        yield
+
+
 def _write_memory(path: Path, chunks: list[str]) -> None:
     """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
+    never sees a half-written file (and the §-join stays single-sourced).
+
+    The caller holds ``MemoryStore._file_lock(path)`` across its whole
+    read-modify-write cycle (see ``_memory_write_lock``); ``_write_file`` does not
+    self-lock, so this path must not acquire it either."""
     from tools.memory_tool import MemoryStore
+
     MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
 
 
@@ -125,9 +159,10 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    path, chunks, local = _locate_memory(node_id)
-    del chunks[local]
-    _write_memory(path, chunks)
+    with _memory_write_lock(node_id):
+        path, chunks, local = _locate_memory(node_id)
+        del chunks[local]
+        _write_memory(path, chunks)
     return {"ok": True, "message": f"deleted memory from {path.name}"}
 
 
@@ -151,7 +186,8 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(node_id)
-    chunks[local] = body
-    _write_memory(path, chunks)
+    with _memory_write_lock(node_id):
+        path, chunks, local = _locate_memory(node_id)
+        chunks[local] = body
+        _write_memory(path, chunks)
     return {"ok": True, "message": f"updated memory in {path.name}"}

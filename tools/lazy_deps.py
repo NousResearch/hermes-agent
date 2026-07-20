@@ -243,6 +243,23 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 }
 
 
+# =============================================================================
+# Feature-specific build environment variables.
+#
+# Merged into the pip/uv subprocess env when ensuring a feature. Use for
+# packages whose build-time tooling needs non-default flags (cmake policy
+# overrides, compiler flags, etc.). Keys are feature names; values are
+# {env_var_name: value} dicts.
+# =============================================================================
+_FEATURE_BUILD_ENV: dict[str, dict[str, str]] = {
+    # python-olm 3.2.16 (transitive dep of mautrix[encryption]) uses
+    # ``cmake_minimum_required(VERSION X.Y)`` without the <min>...<max>
+    # syntax, which CMake >=4.0 rejects. The env var tells CMake to accept
+    # the old single-version form without bumping the upstream code.
+    "platform.matrix": {"CMAKE_POLICY_VERSION_MINIMUM": "3.5"},
+}
+
+
 # Conservative regex for spec validation — package name plus optional
 # version range. Reject anything that looks like a URL, file path, or shell
 # metacharacter.
@@ -570,6 +587,54 @@ def _is_present(spec: str) -> bool:
         return False
 
 
+def _apply_prebuild_patches(feature: str) -> None:
+    """Apply known source-level patches for a feature's packages before build.
+
+    Some lazily-installed packages ship source bugs that prevent compilation
+    with modern toolchains. This function patches the unpacked sdist copies
+    in uv's cache before pip/uv builds them.
+    """
+    if feature == "platform.matrix":
+        _patch_python_olm_list_hh()
+
+
+def _patch_python_olm_list_hh() -> None:
+    """Patch python-olm 3.2.16's bundled libolm ``list.hh`` for C++ const-correctness.
+
+    ``include/olm/list.hh`` declares a pointer as ``T * const other_pos`` and
+    then increments it (``++other_pos``), which Apple Clang >=21 (macOS
+    Sequoia) rejects as ``cannot assign to variable with const-qualified
+    type``.  The fix is remove the ``const`` qualifier from the pointer (the
+    pointed-to data stays unqualified, so semantics are identical for the
+    copy-assignment use case here).
+
+    Patches every unpacked copy found in uv's sdist cache.
+    """
+    cache_root = Path.home() / ".cache" / "uv" / "sdists-v9" / "pypi" / "python-olm"
+    if not cache_root.is_dir():
+        return
+    for version_dir in cache_root.iterdir():
+        if not version_dir.is_dir():
+            continue
+        for build_dir in version_dir.iterdir():
+            list_hh = build_dir / "src" / "libolm" / "include" / "olm" / "list.hh"
+            if not list_hh.is_file():
+                continue
+            try:
+                content = list_hh.read_text(encoding="utf-8")
+                old = "T * const other_pos = other._data;"
+                new = "T * other_pos = other._data;"
+                if old not in content:
+                    continue
+                list_hh.write_text(content.replace(old, new), encoding="utf-8")
+                logger.debug(
+                    "Patched python-olm list.hh const-correctness bug at %s",
+                    list_hh,
+                )
+            except OSError as exc:
+                logger.debug("Could not patch %s: %s", list_hh, exc)
+
+
 def _core_constraints_file() -> Optional[Path]:
     """Write a pip constraints file pinning every package already importable
     in the core environment to its installed version.
@@ -618,7 +683,12 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _venv_pip_install(
+    specs: tuple[str, ...],
+    *,
+    timeout: int = 300,
+    extra_env: Optional[dict[str, str]] = None,
+) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
     Two modes:
@@ -630,6 +700,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
       core venv's versions (see :func:`_core_constraints_file`). The target
       is append-only on ``sys.path`` so it can never shadow core. Used by
       the immutable Docker image to keep lazy installs off the sealed venv.
+
+    ``extra_env``: optional env vars merged into the subprocess environment
+    (e.g. cmake policy overrides for packages with old CMakeLists.txt).
 
     Mirrors the strategy in ``hermes_cli.tools_config._pip_install`` but
     kept independent here so this module has no CLI dependency.
@@ -659,6 +732,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         from tools.environments.local import hermes_subprocess_env
         uv_env = hermes_subprocess_env(inherit_credentials=False)
         uv_env["VIRTUAL_ENV"] = str(venv_root)
+        if extra_env:
+            uv_env.update(extra_env)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
         uv_bin = shutil.which("uv")
@@ -806,8 +881,13 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
                 feature, missing, "user declined install at prompt"
             )
 
+    # Apply known source-level patches before building (e.g. python-olm's
+    # list.hh const-correctness workaround for Apple Clang >=21).
+    _apply_prebuild_patches(feature)
+
+    extra_env = _FEATURE_BUILD_ENV.get(feature)
     logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
-    result = _venv_pip_install(missing)
+    result = _venv_pip_install(missing, extra_env=extra_env)
     if not result.success:
         # Surface the actual pip error so the user can debug PyPI-side
         # issues (404 quarantine, network down, etc.).

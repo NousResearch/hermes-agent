@@ -8430,7 +8430,9 @@ class TestPtyWebSocket:
         relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
         python_path = tmp_path / relative_python
         python_path.parent.mkdir(parents=True)
-        os.link(sys.executable, python_path)
+        # copy2, not os.link: tmp_path may sit on a different filesystem than
+        # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+        shutil.copy2(sys.executable, python_path)
         monkeypatch.setenv("HERMES_CWD", str(tmp_path))
         monkeypatch.setenv("HERMES_PYTHON", str(relative_python))
         monkeypatch.setattr(
@@ -8452,7 +8454,9 @@ class TestPtyWebSocket:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         executable = bin_dir / command
-        os.link(sys.executable, executable)
+        # copy2, not os.link: tmp_path may sit on a different filesystem than
+        # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+        shutil.copy2(sys.executable, executable)
         env = {
             "HERMES_CWD": str(tmp_path),
             "HERMES_PYTHON": command,

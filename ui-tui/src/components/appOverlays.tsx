@@ -375,7 +375,9 @@ export function FloatingOverlays({
                     </Text>
                   </Box>
                   {item.meta ? (
-                    <Text backgroundColor={row.backgroundColor} color={theme.color.muted}>
+                    // Active row: meta rides the chip, so it uses the row ink —
+                    // muted-on-chip can drop under 1.5:1 on dark accent chips.
+                    <Text backgroundColor={row.backgroundColor} color={active ? row.color : theme.color.muted}>
                       {' '}
                       {item.meta}
                     </Text>

@@ -613,14 +613,24 @@ export function TextInput({
   const boxRef = useDeclaredCursor({
     line: layout.line,
     column: layout.column,
-    active: focus && termFocus && !selected
+    // The placeholder state draws a synthetic cursor (see `rendered`), so the
+    // hardware cursor must not also be declared there — hosts paint it with
+    // their own cursor colors as a solid slab over the first glyph.
+    active: focus && termFocus && !selected && !(!display && !!placeholder)
   })
 
   // Hide the hardware cursor while a selection is active (prevents
   // auto-wrap onto the next row when inverted text fills the column
-  // exactly) or when the terminal loses focus (suppresses the hollow-rect
-  // ghost most terminals draw at the parked position).
-  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+  // exactly), when the terminal loses focus (suppresses the hollow-rect
+  // ghost most terminals draw at the parked position), or while the
+  // placeholder is showing: hosts draw block cursors with their OWN
+  // cursor/cursorAccent colors, which can render as a solid slab that
+  // swallows the first placeholder glyph ("sk me anything…"). The
+  // placeholder state draws its own synthetic cursor instead (the
+  // bubbletea/bubbles textinput pattern: the cursor cell renders the first
+  // placeholder character, styled), so the hint is always fully legible.
+  const placeholderShowing = focus && !display && !!placeholder
+  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus || placeholderShowing)
 
   useEffect(() => {
     if (!hideHardwareCursor || !stdout) {
@@ -637,19 +647,21 @@ export function TextInput({
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
   // Placeholder text is just a hint, not a selection — render it in the
-  // theme's muted color (SGR dim as fallback) without inverse styling. In a
-  // TTY the hardware cursor parks at column 0 and visually marks the input
-  // start. Non-TTY surfaces still need the synthetic inverse first-char to
-  // draw a cursor at all.
+  // theme's muted color (SGR dim as fallback). The cursor over an empty
+  // input is SYNTHETIC (bubbles textinput pattern): the first placeholder
+  // character rendered inverse-muted, so the glyph stays legible under the
+  // "cursor" and the block never renders as a host-colored solid slab. The
+  // hardware cursor is hidden for this state (see hideHardwareCursor).
   const rendered = useMemo(() => {
     if (!focus) {
       return display || colorizeHint(placeholder, placeholderColor)
     }
 
     if (!display && placeholder) {
-      return nativeCursor
-        ? colorizeHint(placeholder, placeholderColor)
-        : invert(placeholder[0] ?? ' ') + colorizeHint(placeholder.slice(1), placeholderColor)
+      return (
+        colorizeHint(invert(placeholder[0] ?? ' '), placeholderColor) +
+        colorizeHint(placeholder.slice(1), placeholderColor)
+      )
     }
 
     if (selected) {

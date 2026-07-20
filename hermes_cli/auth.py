@@ -70,6 +70,8 @@ except Exception:
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
+_AUTH_STORE_LOAD_FAILED_KEY = "_auth_store_load_failed"
+_AUTH_STORE_CORRUPT_COPY_KEY = "_auth_store_corrupt_copy"
 
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
@@ -1106,26 +1108,55 @@ def _auth_store_lock(
         yield
 
 
+def _preserve_corrupt_auth_file(auth_file: Path) -> Optional[Path]:
+    """Copy an unreadable auth store to a unique 0600 forensic sidecar."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    for _ in range(100):
+        candidate = auth_file.with_name(
+            f"{auth_file.name}.corrupt.{stamp}.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        try:
+            fd = os.open(
+                str(candidate),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            os.close(fd)
+            shutil.copy2(auth_file, candidate)
+            try:
+                candidate.chmod(0o600)
+            except OSError:
+                pass
+            return candidate
+        except FileExistsError:
+            continue
+    return None
+
+
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text())
-    except Exception as exc:
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
+        raw = json.loads(auth_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        corrupt_path = None
         try:
-            import shutil
-            shutil.copy2(auth_file, corrupt_path)
+            corrupt_path = _preserve_corrupt_auth_file(auth_file)
         except Exception:
-            pass
+            logger.exception("auth: failed to preserve corrupt auth store %s", auth_file)
         logger.warning(
-            "auth: failed to parse %s (%s) — starting with empty store. "
+            "auth: failed to parse %s (%s) — refusing to overwrite this auth store. "
             "Corrupt file preserved at %s",
             auth_file, exc, corrupt_path,
         )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+        return {
+            "version": AUTH_STORE_VERSION,
+            "providers": {},
+            _AUTH_STORE_LOAD_FAILED_KEY: str(exc),
+            _AUTH_STORE_CORRUPT_COPY_KEY: str(corrupt_path) if corrupt_path else None,
+        }
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -1149,6 +1180,13 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
+    if auth_store.get(_AUTH_STORE_LOAD_FAILED_KEY):
+        corrupt_copy = auth_store.get(_AUTH_STORE_CORRUPT_COPY_KEY)
+        raise RuntimeError(
+            "Refusing to overwrite auth.json because it was loaded after a parse failure. "
+            f"Recover or remove the existing auth.json first. Preserved copy: {corrupt_copy}"
+        )
+
     # target_path=None preserves the existing contract (write the active
     # store at _auth_file_path()). An explicit path lets callers persist a
     # specific store — e.g. the global-root write-through for rotating xAI

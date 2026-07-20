@@ -8755,10 +8755,9 @@ class TestDashboardPluginStaticAssetAllowlist:
         assert resp.status_code in (403, 404)
 
 
-def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
-    """Build a drop-in for httpx.Client whose .get() returns a canned status
-    (or raises a transport error). Patched in for the credential-validate probe
-    so tests never touch the network."""
+def _fake_httpx_async_client(*, status: int | None = None, raise_exc: bool = False):
+    """Build a drop-in for httpx.AsyncClient with a canned GET response."""
+
     class _Resp:
         def __init__(self, code):
             self.status_code = code
@@ -8771,13 +8770,13 @@ def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
         def __init__(self, *a, **k):
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *a):
+        async def __aexit__(self, *a):
             return False
 
-        def get(self, *a, **k):
+        async def get(self, *a, **k):
             if raise_exc:
                 raise RuntimeError("connection refused")
             return _Resp(status)
@@ -8800,26 +8799,38 @@ class TestValidateProviderCredential:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+        class _BlockingClient:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError(
+                    "async validation route used blocking httpx.Client"
+                )
+
+        monkeypatch.setattr("httpx.Client", _BlockingClient)
+
     def _post(self, key, value):
-        return self.client.post("/api/providers/validate", json={"key": key, "value": value})
+        return self.client.post(
+            "/api/providers/validate", json={"key": key, "value": value}
+        )
 
     def test_rejected_key_blocks(self, monkeypatch):
-        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=401))
+        monkeypatch.setattr("httpx.AsyncClient", _fake_httpx_async_client(status=401))
         data = self._post("OPENROUTER_API_KEY", "sk-bogus").json()
         assert data["ok"] is False and data["reachable"] is True
 
     def test_valid_key_passes(self, monkeypatch):
-        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        monkeypatch.setattr("httpx.AsyncClient", _fake_httpx_async_client(status=200))
         data = self._post("OPENAI_API_KEY", "sk-real").json()
         assert data["ok"] is True and data["reachable"] is True
 
     def test_rate_limited_counts_as_valid(self, monkeypatch):
-        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=429))
+        monkeypatch.setattr("httpx.AsyncClient", _fake_httpx_async_client(status=429))
         data = self._post("XAI_API_KEY", "xai-real").json()
         assert data["ok"] is True
 
     def test_network_error_is_unreachable_not_blocking(self, monkeypatch):
-        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        monkeypatch.setattr(
+            "httpx.AsyncClient", _fake_httpx_async_client(raise_exc=True)
+        )
         data = self._post("OPENROUTER_API_KEY", "sk-real").json()
         assert data["ok"] is False and data["reachable"] is False
 
@@ -8849,18 +8860,18 @@ class TestValidateProviderCredential:
             def __init__(self, *a, **k):
                 pass
 
-            def __enter__(self):
+            async def __aenter__(self):
                 return self
 
-            def __exit__(self, *a):
+            async def __aexit__(self, *a):
                 return False
 
-            def get(self, url, *a, headers=None, **k):
+            async def get(self, url, *a, headers=None, **k):
                 captured["url"] = url
                 captured["headers"] = headers
                 return _Resp()
 
-        monkeypatch.setattr("httpx.Client", _Client)
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
 
         resp = self.client.post(
             "/api/providers/validate",
@@ -8891,23 +8902,75 @@ class TestValidateProviderCredential:
             def __init__(self, *a, **k):
                 pass
 
-            def __enter__(self):
+            async def __aenter__(self):
                 return self
 
-            def __exit__(self, *a):
+            async def __aexit__(self, *a):
                 return False
 
-            def get(self, url, *a, headers=None, **k):
+            async def get(self, url, *a, headers=None, **k):
                 captured["headers"] = headers
                 return _Resp()
 
-        monkeypatch.setattr("httpx.Client", _Client)
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
 
         self.client.post(
             "/api/providers/validate",
             json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:8000/v1"},
         )
         assert captured["headers"] is None
+
+    def test_named_custom_endpoint_probe_is_async(self, monkeypatch):
+        """Custom endpoint validation must not block the dashboard event loop."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "local-model"}]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, headers=None, **kwargs):
+                captured["url"] = url
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "name": "Local",
+                "base_url": "http://localhost:8000/v1",
+                "model": "local-model",
+                "api_key": "local-secret",
+            },
+        )
+
+        assert response.json() == {
+            "ok": True,
+            "reachable": True,
+            "message": "",
+            "models": ["local-model"],
+        }
+        assert captured == {
+            "url": "http://localhost:8000/v1/models",
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": "Bearer local-secret",
+            },
+        }
 
 
 class TestDesktopCronTicker:

@@ -317,7 +317,10 @@ export function ZoneEditor() {
   ]
 
   return (
-    <div className="absolute inset-0 z-[70] flex flex-col gap-3 p-6 [-webkit-app-region:no-drag]" style={{ background: 'color-mix(in srgb, var(--ui-bg-chrome) 88%, transparent)', backdropFilter: 'blur(6px)' }}>
+    <div
+      className="absolute inset-0 z-[70] flex flex-col gap-3 p-6 [-webkit-app-region:no-drag]"
+      style={{ background: 'color-mix(in srgb, var(--ui-bg-chrome) 88%, transparent)', backdropFilter: 'blur(6px)' }}
+    >
       {/* Toolbar — Panel-style title + hint, template chooser on the right. */}
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
@@ -440,7 +443,9 @@ export function ZoneEditor() {
             <div
               className={cn(
                 'absolute z-10 flex items-center justify-center',
-                horizontal ? 'h-[10px] -translate-y-1/2 cursor-row-resize' : 'w-[10px] -translate-x-1/2 cursor-col-resize'
+                horizontal
+                  ? 'h-[10px] -translate-y-1/2 cursor-row-resize'
+                  : 'w-[10px] -translate-x-1/2 cursor-col-resize'
               )}
               data-resizer={i}
               key={`r-${i}`}

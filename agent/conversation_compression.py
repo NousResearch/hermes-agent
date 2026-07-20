@@ -76,6 +76,35 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
         return False
 
 
+def _refresh_persisted_compression_guards(compressor: Any) -> None:
+    """Refresh durable automatic-compression guards on a built-in compressor."""
+    method_calls = (
+        ("get_active_compression_failure_cooldown", {"refresh": True}),
+        ("_load_fallback_compression_streak", {}),
+    )
+    for method_name, kwargs in method_calls:
+        method = getattr(type(compressor), method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method(compressor, **kwargs)
+        except Exception as exc:
+            logger.debug("compression guard refresh failed (%s): %s", method_name, exc)
+
+
+def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> bool:
+    """Return whether another path already rotated this compression parent."""
+    getter = getattr(type(session_db), "get_session", None)
+    if not callable(getter):
+        return False
+    session = getter(session_db, session_id)
+    return bool(
+        session
+        and session.get("ended_at") is not None
+        and session.get("end_reason") == "compression"
+    )
+
+
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
 
@@ -415,43 +444,147 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
     return None
 
 
-def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
-    """Preserve a real user turn when a compressor returns assistant/tool-only context.
+_SYNTHETIC_USER_PREFIXES = (
+    "[System: Your previous response was truncated",
+    "[System: The previous response was cut off",
+    "[System: Your previous tool call",
+    "[Your active task list was preserved across context compression]",
+    "[IMPORTANT: Background process ",
+)
 
-    On repeated compaction the protected head decays to the system prompt only,
-    the middle summary can land as ``role="assistant"``, and a tool-heavy tail
-    can be all assistant/tool — so the compacted transcript can legitimately
-    contain zero user messages. Strict chat templates (LM Studio / llama.cpp
-    Jinja) then fail with "No user query found in messages" (#55677).
 
-    The restored turn is appended at the END: the guard only runs when
-    ``compressed`` currently ends with an assistant/tool message (any existing
-    user turn — including a todo-snapshot append — short-circuits the
-    ``any()`` check), so appending a user message never creates consecutive
-    same-role messages. ``_fresh_compaction_message_copy`` copies the message
-    and strips the ``_db_persisted`` marker so the rotation/in-place flush
-    still persists the restored row to the new session (#57491).
+def _message_text(message: Any) -> str:
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or part.get("content") or "")
+            for part in content
+            if isinstance(part, dict)
+        )
+    return ""
 
-    If the pre-compression transcript itself carried no user turn at all
-    (near-impossible — every real conversation opens with a user request —
-    but kept as a defensive backstop), a minimal continuation marker is
-    appended instead so strict templates still see a user message.
+
+_SYNTHETIC_USER_FLAGS = (
+    "_todo_snapshot_synthetic",
+    "_empty_recovery_synthetic",
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+
+def _is_real_user_message(message: Any) -> bool:
+    """Distinguish human intent from user-role runtime scaffolding.
+
+    A compaction summary pinned to ``role="user"`` (the compressor flips the
+    summary role to preserve alternation when the tail starts with an
+    assistant message) is scaffolding too: treating it as human intent would
+    short-circuit anchor restoration with a message the model is explicitly
+    told NOT to act on.
     """
-    if any(isinstance(msg, dict) and msg.get("role") == "user" for msg in compressed):
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
+        return False
+    text = _message_text(message).strip()
+    if not text:
+        return False
+    if text.startswith(_SYNTHETIC_USER_PREFIXES):
+        return False
+    from agent.context_compressor import ContextCompressor
+
+    return not ContextCompressor._is_context_summary_content(text)
+
+
+def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
+    """Fold the human anchor into an existing user-role scaffolding turn.
+
+    Used only when every insertion slot would create two consecutive
+    user-role messages. The anchor text leads (it is the active task), the
+    scaffolding content is preserved after it, and the synthetic flags are
+    cleared because the merged turn now carries real human intent.
+    """
+    anchor_content = anchor.get("content")
+    target_content = target.get("content")
+    if isinstance(anchor_content, list) or isinstance(target_content, list):
+        anchor_parts = (
+            list(anchor_content)
+            if isinstance(anchor_content, list)
+            else [{"type": "text", "text": str(anchor_content or "")}]
+        )
+        target_parts = (
+            list(target_content)
+            if isinstance(target_content, list)
+            else [{"type": "text", "text": str(target_content or "")}]
+        )
+        target["content"] = anchor_parts + target_parts
+    else:
+        merged = f"{anchor_content or ''}\n\n{target_content or ''}".strip()
+        target["content"] = merged
+    for flag in _SYNTHETIC_USER_FLAGS:
+        target.pop(flag, None)
+
+
+def _insert_real_user_anchor(messages: list, anchor: dict) -> None:
+    """Insert the latest human turn without breaking role alternation."""
+
+    def _role(msg: Any) -> Optional[str]:
+        return msg.get("role") if isinstance(msg, dict) else None
+
+    # Preferred: the summary boundary — before the first assistant message
+    # not already preceded by a user turn. The left neighbour is then
+    # non-user by construction and the right neighbour is an assistant.
+    for index, message in enumerate(messages):
+        if _role(message) != "assistant":
+            continue
+        previous_role = _role(messages[index - 1]) if index > 0 else None
+        if previous_role != "user":
+            messages.insert(index, anchor)
+            return
+    # Every assistant is user-preceded (or there are none). Appending is
+    # safe whenever the transcript does not already end with a user turn.
+    if not messages or _role(messages[-1]) != "user":
+        messages.append(anchor)
+        return
+    # The transcript ends with a user-role message and no slot avoids
+    # user/user adjacency.
+    from agent.context_compressor import ContextCompressor
+
+    if ContextCompressor._is_context_summary_content(
+        _message_text(messages[-1])
+    ):
+        # Never merge into a compaction summary: the summary prefix must
+        # stay at the start of its message for downstream summary detection.
+        # Appending after it makes the anchor "the latest user message after
+        # the summary" — exactly what the handoff prefix instructs — and the
+        # adjacent user turns are merged summary-first by
+        # repair_message_sequence before the next API call.
+        messages.append(anchor)
+        return
+    # Trailing user-role scaffolding (e.g. the todo snapshot): merge instead
+    # of inserting a consecutive same-role message (#55677 strict templates).
+    _merge_anchor_into_user_message(messages[-1], anchor)
+
+
+def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
+    """Preserve human intent, not merely a synthetic user-role placeholder."""
+    if any(_is_real_user_message(message) for message in compressed):
         return
     from agent.context_compressor import _fresh_compaction_message_copy
 
-    for msg in reversed(original_messages):
-        if not isinstance(msg, dict) or msg.get("role") != "user":
-            continue
-        compressed.append(_fresh_compaction_message_copy(msg))
-        return
+    for message in reversed(original_messages):
+        if _is_real_user_message(message):
+            _insert_real_user_anchor(
+                compressed,
+                _fresh_compaction_message_copy(message),
+            )
+            return
     compressed.append({
         "role": "user",
         "content": (
             "Continue from the compressed conversation context above. "
-            "This marker exists because the compacted transcript contained "
-            "no preserved user turn."
+            "This marker exists because no human user turn was available."
         ),
     })
 
@@ -508,6 +641,7 @@ def compress_context(
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
     # persisted fallback streak is loaded by bind_session_state() before this.
     if not force:
+        _refresh_persisted_compression_guards(agent.context_compressor)
         blocked = getattr(
             type(agent.context_compressor),
             "_automatic_compression_blocked",
@@ -710,6 +844,58 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
+    # A delayed contender can acquire the parent lock after the winning path
+    # has released it and completed rotation. The lock serializes work but does
+    # not by itself prove that this stale agent still owns a live parent.
+    if _lock_db is not None and _lock_sid:
+        try:
+            _parent_already_rotated = _session_was_rotated_by_compression(
+                _lock_db, _lock_sid
+            )
+        except Exception as _session_err:
+            logger.warning(
+                "compression session ownership lookup failed for session=%s "
+                "(%s: %s) - skipping compression this cycle",
+                _lock_sid,
+                type(_session_err).__name__,
+                _session_err,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+        if _parent_already_rotated:
+            logger.info(
+                "compression skipped: session=%s was already rotated by "
+                "another compression path",
+                _lock_sid,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+
+    # The agent may have been constructed before another path completed an
+    # in-place compaction on the same session. Re-read durable breaker state
+    # after acquiring the session lock so this final gate cannot act on the
+    # stale snapshot loaded by bind_session_state().
+    if not force:
+        compressor = agent.context_compressor
+        _refresh_persisted_compression_guards(compressor)
+        blocked = getattr(
+            type(compressor),
+            "_automatic_compression_blocked",
+            None,
+        )
+        if callable(blocked) and blocked(compressor):
+            _release_lock()
+            existing_prompt = getattr(agent, "_cached_system_prompt", None)
+            if not existing_prompt:
+                existing_prompt = agent._build_system_prompt(system_message)
+            return messages, existing_prompt
+
     # Notify external memory provider before compression discards context
     if agent._memory_manager:
         try:
@@ -780,6 +966,25 @@ def compress_context(
         _release_lock()
         return messages, _existing_sp
 
+    if not compressed:
+        logger.error(
+            "context compression returned an empty transcript; refusing to "
+            "rotate session=%s so the parent remains resumable",
+            agent.session_id or "none",
+        )
+        try:
+            agent._emit_warning(
+                "⚠ Compression returned an empty transcript. "
+                "No session split was performed; conversation continues unchanged."
+            )
+        except Exception:
+            pass
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
@@ -809,7 +1014,11 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+            compressed.append({
+                "role": "user",
+                "content": todo_snapshot,
+                "_todo_snapshot_synthetic": True,
+            })
         _ensure_compressed_has_user_turn(messages, compressed)
 
         agent._invalidate_system_prompt()
@@ -961,7 +1170,20 @@ def compress_context(
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
                 agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-                agent._last_flushed_db_idx = 0
+                if in_place:
+                    agent._last_flushed_db_idx = 0
+                else:
+                    # A headless turn can be killed before its finalizer. Persist
+                    # the rotated child's compacted handoff at the boundary so
+                    # the new session is immediately resumable.
+                    agent._session_db.replace_messages(agent.session_id, compressed)
+                    agent._last_flushed_db_idx = len(compressed)
+                    agent._flushed_db_message_session_id = agent.session_id
+                    agent._flushed_db_message_ids = {
+                        id(message)
+                        for message in compressed
+                        if isinstance(message, dict)
+                    }
             except Exception as e:
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and

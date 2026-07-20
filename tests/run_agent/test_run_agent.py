@@ -445,6 +445,40 @@ class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
 
+    def test_list_content_flattened_no_crash(self, agent):
+        """Anthropic-via-OpenRouter returns content as a block list.
+
+        A raw list reaching ``re.sub`` raised ``TypeError: expected string
+        or bytes-like object, got 'list'``, which the outer conversation
+        loop swallowed and retried forever (infinite "preparing terminal…"
+        loop). ``strip_think_blocks`` must flatten list content to visible
+        text and drop reasoning blocks.
+        """
+        result = agent._strip_think_blocks(
+            [
+                {"type": "text", "text": "visible answer"},
+                {"type": "thinking", "thinking": "internal reasoning"},
+            ]
+        )
+        assert isinstance(result, str)
+        assert "visible answer" in result
+        assert "internal reasoning" not in result
+
+    def test_dict_content_flattened_no_crash(self, agent):
+        """Some servers return content as a single dict block."""
+        result = agent._strip_think_blocks({"type": "text", "text": "hello world"})
+        assert isinstance(result, str)
+        assert "hello world" in result
+
+    def test_list_of_only_thinking_returns_empty(self, agent):
+        """A list carrying only reasoning blocks yields no visible text."""
+        assert (
+            agent._strip_think_blocks([{"type": "thinking", "thinking": "x"}]) == ""
+        )
+
+    def test_empty_list_returns_empty(self, agent):
+        assert agent._strip_think_blocks([]) == ""
+
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
@@ -1995,23 +2029,38 @@ class TestBuildApiKwargs:
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
-    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        """xhigh effort should normalize to high for Copilot GitHub Models."""
+    def test_reasoning_xhigh_preserved_for_copilot_when_supported(self, agent, monkeypatch):
+        """The registered Copilot profile must preserve a supported xhigh."""
         from agent.transports import get_transport
         from providers import get_provider_profile
 
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["none", "low", "medium", "high", "xhigh"],
+        )
         transport = get_transport("chat_completions")
         profile = get_provider_profile("copilot")
         msgs = [{"role": "user", "content": "hi"}]
         kwargs = transport.build_kwargs(
-            model="gpt-5.4",
+            model="gpt-5.5",
             messages=msgs,
             tools=None,
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "xhigh"},
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "xhigh"}
+
+    def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
+        """The core GitHub Responses path must preserve a supported xhigh."""
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["none", "low", "medium", "high", "xhigh"],
+        )
+        agent.model = "gpt-5.5"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"
@@ -3973,7 +4022,9 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         from agent.portal_tags import nous_portal_tags
 
-        assert kwargs["extra_body"]["tags"] == nous_portal_tags()
+        assert kwargs["extra_body"]["tags"] == nous_portal_tags(
+            session_id=agent.session_id
+        )
         assert kwargs["extra_body"]["provider"] == {
             "only": ["deepseek"],
             "ignore": ["deepinfra"],
@@ -3995,7 +4046,9 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         from agent.portal_tags import nous_portal_tags
 
-        assert kwargs["extra_body"] == {"tags": nous_portal_tags()}
+        assert kwargs["extra_body"] == {
+            "tags": nous_portal_tags(session_id=agent.session_id)
+        }
 
     def test_summary_drops_invalid_provider_sort(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
@@ -6166,9 +6219,16 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return current
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self,
+                *,
+                status_code,
+                error_context=None,
+                api_key_hint=None,
+            ):
                 assert status_code == 402
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6187,9 +6247,16 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self,
+                *,
+                status_code,
+                error_context=None,
+                api_key_hint=None,
+            ):
                 assert status_code == 400
                 assert error_context == {"reason": "out_of_extra_usage"}
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -7581,13 +7648,60 @@ class TestAnthropicInterruptHandler:
         assert "anthropic_messages" in source, \
             "interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
-    def test_interruptible_rebuilds_anthropic_client(self):
-        """After interrupting, the Anthropic client should be rebuilt."""
-        import inspect
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+        """#67142: a non-streaming Anthropic interrupt must abort the
+        request-local client from the poll thread, never close/rebuild the
+        shared _anthropic_client (which raced a live SSL BIO and corrupted an
+        unrelated SQLite DB via TLS-FD recycling).
+
+        Replaces the former source-reading assertion (which asserted the old,
+        now-removed rebuild-on-interrupt behavior) with a behavior test.
+        """
+        import threading
+        import time
+        from unittest.mock import MagicMock
+        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
-        source = inspect.getsource(interruptible_api_call)
-        assert "build_anthropic_client" in source, \
-            "interruptible_api_call must rebuild Anthropic client after interrupt"
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = MagicMock()
+        agent._rebuild_anthropic_client = MagicMock()
+        request_client = MagicMock()
+        agent._create_request_anthropic_client = MagicMock(return_value=request_client)
+        agent._abort_request_anthropic_client = MagicMock()
+        agent._close_request_anthropic_client = MagicMock()
+
+        def _create(_api_kwargs, *, client):
+            assert client is request_client
+            agent._interrupt_requested = True
+            time.sleep(1.0)
+            raise RuntimeError("forced close would have happened")
+
+        agent._anthropic_messages_create = MagicMock(side_effect=_create)
+
+        t0 = time.time()
+        with pytest.raises(InterruptedError):
+            interruptible_api_call(agent, {"model": "x", "messages": []})
+        elapsed = time.time() - t0
+
+        assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+        # The shared client is never closed/rebuilt from the poll thread.
+        agent._anthropic_client.close.assert_not_called()
+        agent._rebuild_anthropic_client.assert_not_called()
+        # The poll (stranger) thread aborts the request-local client's socket.
+        agent._abort_request_anthropic_client.assert_called_once_with(
+            request_client, reason="interrupt_abort"
+        )
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""

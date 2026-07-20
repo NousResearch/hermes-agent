@@ -15,7 +15,12 @@ import { useI18n } from '@/i18n'
 import { normalize } from '@/lib/text'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
+import {
+  $activeSessionId,
+  markComposerSelectionManual,
+  setCurrentFastMode,
+  setCurrentReasoningEffort
+} from '@/store/session'
 
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
@@ -120,6 +125,7 @@ export function ModelEditSubmenu({
       return
     }
 
+    markComposerSelectionManual()
     setCurrentReasoningEffort(next)
 
     // Preset-only without a session: `isActive` holds for the global/default
@@ -161,6 +167,7 @@ export function ModelEditSubmenu({
         return
       }
 
+      markComposerSelectionManual()
       setCurrentFastMode(enabled)
 
       // Preset-only without a session (see patchReasoning).

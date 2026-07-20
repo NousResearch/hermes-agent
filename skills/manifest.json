@@ -1,0 +1,297 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "name": "apple/apple-notes",
+      "path": "apple/apple-notes/SKILL.md"
+    },
+    {
+      "name": "apple/apple-reminders",
+      "path": "apple/apple-reminders/SKILL.md"
+    },
+    {
+      "name": "apple/findmy",
+      "path": "apple/findmy/SKILL.md"
+    },
+    {
+      "name": "apple/imessage",
+      "path": "apple/imessage/SKILL.md"
+    },
+    {
+      "name": "autonomous-ai-agents/claude-code",
+      "path": "autonomous-ai-agents/claude-code/SKILL.md"
+    },
+    {
+      "name": "autonomous-ai-agents/codex",
+      "path": "autonomous-ai-agents/codex/SKILL.md"
+    },
+    {
+      "name": "autonomous-ai-agents/hermes-agent",
+      "path": "autonomous-ai-agents/hermes-agent/SKILL.md"
+    },
+    {
+      "name": "autonomous-ai-agents/opencode",
+      "path": "autonomous-ai-agents/opencode/SKILL.md"
+    },
+    {
+      "name": "computer-use",
+      "path": "computer-use/SKILL.md"
+    },
+    {
+      "name": "creative/architecture-diagram",
+      "path": "creative/architecture-diagram/SKILL.md"
+    },
+    {
+      "name": "creative/ascii-art",
+      "path": "creative/ascii-art/SKILL.md"
+    },
+    {
+      "name": "creative/ascii-video",
+      "path": "creative/ascii-video/SKILL.md"
+    },
+    {
+      "name": "creative/baoyu-infographic",
+      "path": "creative/baoyu-infographic/SKILL.md"
+    },
+    {
+      "name": "creative/claude-design",
+      "path": "creative/claude-design/SKILL.md"
+    },
+    {
+      "name": "creative/comfyui",
+      "path": "creative/comfyui/SKILL.md"
+    },
+    {
+      "name": "creative/design-md",
+      "path": "creative/design-md/SKILL.md"
+    },
+    {
+      "name": "creative/excalidraw",
+      "path": "creative/excalidraw/SKILL.md"
+    },
+    {
+      "name": "creative/humanizer",
+      "path": "creative/humanizer/SKILL.md"
+    },
+    {
+      "name": "creative/manim-video",
+      "path": "creative/manim-video/SKILL.md"
+    },
+    {
+      "name": "creative/p5js",
+      "path": "creative/p5js/SKILL.md"
+    },
+    {
+      "name": "creative/popular-web-designs",
+      "path": "creative/popular-web-designs/SKILL.md"
+    },
+    {
+      "name": "creative/pretext",
+      "path": "creative/pretext/SKILL.md"
+    },
+    {
+      "name": "creative/sketch",
+      "path": "creative/sketch/SKILL.md"
+    },
+    {
+      "name": "creative/songwriting-and-ai-music",
+      "path": "creative/songwriting-and-ai-music/SKILL.md"
+    },
+    {
+      "name": "creative/touchdesigner-mcp",
+      "path": "creative/touchdesigner-mcp/SKILL.md"
+    },
+    {
+      "name": "data-science/jupyter-live-kernel",
+      "path": "data-science/jupyter-live-kernel/SKILL.md"
+    },
+    {
+      "name": "dogfood",
+      "path": "dogfood/SKILL.md"
+    },
+    {
+      "name": "email/himalaya",
+      "path": "email/himalaya/SKILL.md"
+    },
+    {
+      "name": "github/codebase-inspection",
+      "path": "github/codebase-inspection/SKILL.md"
+    },
+    {
+      "name": "github/github-auth",
+      "path": "github/github-auth/SKILL.md"
+    },
+    {
+      "name": "github/github-code-review",
+      "path": "github/github-code-review/SKILL.md"
+    },
+    {
+      "name": "github/github-issues",
+      "path": "github/github-issues/SKILL.md"
+    },
+    {
+      "name": "github/github-pr-workflow",
+      "path": "github/github-pr-workflow/SKILL.md"
+    },
+    {
+      "name": "github/github-repo-management",
+      "path": "github/github-repo-management/SKILL.md"
+    },
+    {
+      "name": "hermes-desktop-plugins",
+      "path": "hermes-desktop-plugins/SKILL.md"
+    },
+    {
+      "name": "media/gif-search",
+      "path": "media/gif-search/SKILL.md"
+    },
+    {
+      "name": "media/heartmula",
+      "path": "media/heartmula/SKILL.md"
+    },
+    {
+      "name": "media/songsee",
+      "path": "media/songsee/SKILL.md"
+    },
+    {
+      "name": "media/youtube-content",
+      "path": "media/youtube-content/SKILL.md"
+    },
+    {
+      "name": "mlops/evaluation/lm-evaluation-harness",
+      "path": "mlops/evaluation/lm-evaluation-harness/SKILL.md"
+    },
+    {
+      "name": "mlops/evaluation/weights-and-biases",
+      "path": "mlops/evaluation/weights-and-biases/SKILL.md"
+    },
+    {
+      "name": "mlops/huggingface-hub",
+      "path": "mlops/huggingface-hub/SKILL.md"
+    },
+    {
+      "name": "mlops/inference/llama-cpp",
+      "path": "mlops/inference/llama-cpp/SKILL.md"
+    },
+    {
+      "name": "mlops/inference/vllm",
+      "path": "mlops/inference/vllm/SKILL.md"
+    },
+    {
+      "name": "mlops/models/audiocraft",
+      "path": "mlops/models/audiocraft/SKILL.md"
+    },
+    {
+      "name": "mlops/models/segment-anything",
+      "path": "mlops/models/segment-anything/SKILL.md"
+    },
+    {
+      "name": "note-taking/obsidian",
+      "path": "note-taking/obsidian/SKILL.md"
+    },
+    {
+      "name": "productivity/airtable",
+      "path": "productivity/airtable/SKILL.md"
+    },
+    {
+      "name": "productivity/google-workspace",
+      "path": "productivity/google-workspace/SKILL.md"
+    },
+    {
+      "name": "productivity/maps",
+      "path": "productivity/maps/SKILL.md"
+    },
+    {
+      "name": "productivity/nano-pdf",
+      "path": "productivity/nano-pdf/SKILL.md"
+    },
+    {
+      "name": "productivity/notion",
+      "path": "productivity/notion/SKILL.md"
+    },
+    {
+      "name": "productivity/ocr-and-documents",
+      "path": "productivity/ocr-and-documents/SKILL.md"
+    },
+    {
+      "name": "productivity/petdex",
+      "path": "productivity/petdex/SKILL.md"
+    },
+    {
+      "name": "productivity/powerpoint",
+      "path": "productivity/powerpoint/SKILL.md"
+    },
+    {
+      "name": "productivity/teams-meeting-pipeline",
+      "path": "productivity/teams-meeting-pipeline/SKILL.md"
+    },
+    {
+      "name": "research/arxiv",
+      "path": "research/arxiv/SKILL.md"
+    },
+    {
+      "name": "research/blogwatcher",
+      "path": "research/blogwatcher/SKILL.md"
+    },
+    {
+      "name": "research/llm-wiki",
+      "path": "research/llm-wiki/SKILL.md"
+    },
+    {
+      "name": "research/polymarket",
+      "path": "research/polymarket/SKILL.md"
+    },
+    {
+      "name": "research/research-paper-writing",
+      "path": "research/research-paper-writing/SKILL.md"
+    },
+    {
+      "name": "smart-home/openhue",
+      "path": "smart-home/openhue/SKILL.md"
+    },
+    {
+      "name": "social-media/xurl",
+      "path": "social-media/xurl/SKILL.md"
+    },
+    {
+      "name": "software-development/hermes-agent-skill-authoring",
+      "path": "software-development/hermes-agent-skill-authoring/SKILL.md"
+    },
+    {
+      "name": "software-development/node-inspect-debugger",
+      "path": "software-development/node-inspect-debugger/SKILL.md"
+    },
+    {
+      "name": "software-development/plan",
+      "path": "software-development/plan/SKILL.md"
+    },
+    {
+      "name": "software-development/python-debugpy",
+      "path": "software-development/python-debugpy/SKILL.md"
+    },
+    {
+      "name": "software-development/requesting-code-review",
+      "path": "software-development/requesting-code-review/SKILL.md"
+    },
+    {
+      "name": "software-development/simplify-code",
+      "path": "software-development/simplify-code/SKILL.md"
+    },
+    {
+      "name": "software-development/spike",
+      "path": "software-development/spike/SKILL.md"
+    },
+    {
+      "name": "software-development/systematic-debugging",
+      "path": "software-development/systematic-debugging/SKILL.md"
+    },
+    {
+      "name": "software-development/test-driven-development",
+      "path": "software-development/test-driven-development/SKILL.md"
+    },
+    {
+      "name": "yuanbao",
+      "path": "yuanbao/SKILL.md"
+    }
+  ]
+}

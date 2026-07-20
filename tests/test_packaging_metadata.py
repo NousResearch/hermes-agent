@@ -1,8 +1,11 @@
 import ast
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
+import pathspec
 import pytest
 
 # setuptools is declared in the [dev] extra and is the build backend, but
@@ -115,6 +118,41 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+
+
+def test_gbrain_skill_contract_is_tracked_and_fresh():
+    subprocess.run(
+        [sys.executable, "scripts/build_gbrain_skill_contract.py", "--check"],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    assert (REPO_ROOT / "skills" / "RESOLVER.md").is_file()
+    assert (REPO_ROOT / "skills" / "manifest.json").is_file()
+
+
+def test_docker_build_checks_gbrain_skill_contract_after_source_copy():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    source_copy = dockerfile.index("COPY --link --chmod=a+rX,go-w . .")
+    gate = dockerfile.index(
+        "RUN /opt/hermes/.venv/bin/python "
+        "scripts/build_gbrain_skill_contract.py --check"
+    )
+    privilege_drop = dockerfile.index("USER root", source_copy)
+
+    assert source_copy < gate < privilege_drop
+
+
+def test_docker_build_context_includes_gbrain_skill_contract_only():
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    ignore_spec = pathspec.GitIgnoreSpec.from_lines(dockerignore.splitlines())
+
+    included = [
+        "skills/RESOLVER.md",
+        "skills/manifest.json",
+        "skills/software-development/hermes-agent-skill-authoring/SKILL.md",
+    ]
+    assert all(not ignore_spec.match_file(path) for path in included)
+    assert ignore_spec.match_file("README.md")
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():

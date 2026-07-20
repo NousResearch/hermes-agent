@@ -40,33 +40,28 @@ type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 
-/** Truecolor foreground wrap. Always emits an EXPLICIT color — never SGR dim
- *  and never inverse: both are terminal-interpreted relative to the default
- *  fg/bg, and on transparent profiles (terminal.background #00000000) they
- *  composite against a black RGB the user never sees elsewhere, rendering the
- *  hint as a black slab. A fixed mid-gray fallback is deterministic on every
- *  host when no theme color is provided. */
+// Placeholder styling is EXPLICIT truecolor only — never SGR dim/inverse:
+// both are terminal-interpreted relative to the default fg/bg, and on
+// transparent profiles (terminal.background #00000000) they composite
+// against a black RGB the user never sees — the hint rendered as a slab.
 const HINT_FALLBACK = '#808080'
 
-const colorizeHint = (s: string, hex?: string) => {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? '') ?? /^#([0-9a-f]{6})$/i.exec(HINT_FALLBACK)!
-  const n = parseInt(m[1]!, 16)
+const hintRgb = (hex?: string): [number, number, number] => {
+  const n = parseInt((/^#([0-9a-f]{6})$/i.exec(hex ?? '')?.[1] ?? HINT_FALLBACK.slice(1)) as string, 16)
 
-  return `${ESC}[38;2;${(n >> 16) & 0xff};${(n >> 8) & 0xff};${n & 0xff}m${s}${ESC}[39m`
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 }
 
-/** Synthetic placeholder cursor: an explicit-truecolor chip (hint-colored
- *  block, luminance-picked ink) instead of SGR inverse. Inverse swaps
- *  against the terminal's DEFAULT fg/bg, which on transparent profiles is a
- *  black RGB the user never sees — the "cursor" rendered as a black slab. */
+const colorizeHint = (s: string, hex?: string) => {
+  const [r, g, b] = hintRgb(hex)
+
+  return `${ESC}[38;2;${r};${g};${b}m${s}${ESC}[39m`
+}
+
+/** Synthetic placeholder cursor: a hint-colored chip with luminance-picked
+ *  ink, standing in for the hidden hardware cursor (bubbles pattern). */
 const hintCursorCell = (ch: string, hex?: string) => {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? '') ?? /^#([0-9a-f]{6})$/i.exec(HINT_FALLBACK)!
-  const n = parseInt(m[1]!, 16)
-
-  const r = (n >> 16) & 0xff,
-    g = (n >> 8) & 0xff,
-    b = n & 0xff
-
+  const [r, g, b] = hintRgb(hex)
   const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '0;0;0' : '255;255;255'
 
   return `${ESC}[48;2;${r};${g};${b}m${ESC}[38;2;${ink}m${ch}${ESC}[39m${ESC}[49m`

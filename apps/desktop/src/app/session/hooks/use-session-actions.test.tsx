@@ -472,6 +472,8 @@ function ResumeHarness({
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const runtimeMapRef = runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>())
+  const stateMapRef = sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>())
 
   const actions = useSessionActions({
     activeSessionId: null,
@@ -484,13 +486,16 @@ function ResumeHarness({
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: runtimeMapRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
-    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: stateMapRef,
     syncSessionStateToView: vi.fn(),
     updateSessionState: (sessionId, updater) => {
-      const next = updater({} as ClientSessionState)
+      const current = stateMapRef.current.get(sessionId) ?? ({} as ClientSessionState)
+      const next = updater(current)
+
+      stateMapRef.current.set(sessionId, next)
       onStateUpdate?.(sessionId, next)
 
       return next
@@ -1217,6 +1222,129 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(renderedMessages.filter(message => JSON.stringify(message).includes('current prompt'))).toHaveLength(1)
   })
 
+  it('preserves live cache updates that arrive while the persisted transcript is loading', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'runtime-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'recent prompt' }],
+        timestamp: 3
+      },
+      {
+        id: 'runtime-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'recent answer' }],
+        timestamp: 4
+      },
+      {
+        id: 'user-inflight-rt-A',
+        role: 'user',
+        parts: [{ type: 'text', text: 'current prompt' }]
+      },
+      {
+        id: 'assistant-stream-rt-A',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial A' }],
+        pending: true
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getSessionMessages>>>()
+
+    const compressedRuntimeMessages = [
+      { content: 'recent prompt', role: 'user', timestamp: 3 },
+      { content: 'recent answer', role: 'assistant', timestamp: 4 }
+    ]
+
+    vi.mocked(getSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: compressedRuntimeMessages.length,
+          messages: compressedRuntimeMessages,
+          running: true,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial A',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+    const liveState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+
+    const liveMessages = liveState.messages.map(message =>
+      message.id === 'assistant-stream-rt-A'
+        ? { ...message, parts: [{ type: 'text' as const, text: 'partial A + delta B' }] }
+        : message
+    )
+
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...liveState,
+      messages: [
+        ...liveMessages,
+        {
+          id: 'user-racing',
+          role: 'user',
+          parts: [{ type: 'text', text: 'racing prompt' }]
+        }
+      ]
+    })
+
+    await act(async () => {
+      persisted.resolve({
+        messages: [
+          { content: 'older prompt', role: 'user', timestamp: 1 },
+          { content: 'older answer', role: 'assistant', timestamp: 2 },
+          ...compressedRuntimeMessages
+        ],
+        session_id: 'stored-A'
+      } as never)
+      await resumePromise
+    })
+
+    const renderedText = JSON.stringify(resumedState?.messages)
+
+    expect(renderedText).toContain('older prompt')
+    expect(renderedText).toContain('partial A + delta B')
+    expect(renderedText).toContain('racing prompt')
+  })
+
   it('does not duplicate an in-flight user prompt already present in the persisted suffix', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
@@ -1238,6 +1366,12 @@ describe('resumeSession warm-cache mapping integrity', () => {
         id: 'user-optimistic',
         role: 'user',
         parts: [{ type: 'text', text: 'current prompt' }]
+      },
+      {
+        id: 'assistant-stream-rt-A',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial answer' }],
+        pending: true
       }
     ]
 

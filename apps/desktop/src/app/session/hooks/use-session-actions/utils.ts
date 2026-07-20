@@ -406,9 +406,11 @@ export function dedupeInflightUserAgainstTranscript(
     suffixStart = persistedAnchorIndex + 1
   }
 
-  const persistedUserPresent = persistedMessages
-    .slice(suffixStart)
-    .some(message => message.role === 'user' && normalizedMessageText(message) === inflightUser)
+  const persistedTail = persistedMessages.slice(suffixStart)
+  const lastPersistedMessage = persistedTail[persistedTail.length - 1]
+
+  const persistedUserPresent =
+    lastPersistedMessage?.role === 'user' && normalizedMessageText(lastPersistedMessage) === inflightUser
 
   if (!persistedUserPresent) {
     return projection
@@ -433,13 +435,14 @@ export function removeRepresentedLocalLiveProjection(
   projection: Pick<SessionResumeResponse, 'inflight' | 'queued'>
 ): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
   const queuedUser = projection.queued?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   const hasAssistantProjection = Boolean(
     projection.inflight?.assistant || projection.inflight?.streaming || (inflightUser && queuedUser)
   )
 
-  if (!inflightUser && !queuedUser && !hasAssistantProjection) {
+  if (!inflightUser || !hasAssistantProjection) {
     return previousMessages
   }
 
@@ -455,49 +458,84 @@ export function removeRepresentedLocalLiveProjection(
     }
   }
 
-  let removedInflightUser = false
-  let removedAssistant = false
-  let removedQueuedUser = false
+  const inflightUserIndex = previousMessages.findIndex(
+    (message, index) =>
+      index >= openTailStart &&
+      message.role === 'user' &&
+      message.id.startsWith('user-') &&
+      normalizedMessageText(message) === inflightUser
+  )
+
+  const assistantIndex = inflightUserIndex + 1
+  const assistant = previousMessages[assistantIndex]
+
+  const assistantMatches =
+    inflightUserIndex >= openTailStart &&
+    assistant?.role === 'assistant' &&
+    assistant.id.startsWith('assistant-stream-') &&
+    normalizedMessageText(assistant) === inflightAssistant
+
+  if (!assistantMatches) {
+    return previousMessages
+  }
+
+  let queuedUserIndex = -1
+
+  if (queuedUser) {
+    queuedUserIndex = previousMessages.findIndex(
+      (message, index) =>
+        index > assistantIndex &&
+        message.role === 'user' &&
+        message.id.startsWith('user-queued-') &&
+        normalizedMessageText(message) === queuedUser
+    )
+  }
+
+  return previousMessages.filter(
+    (_message, index) => index !== inflightUserIndex && index !== assistantIndex && index !== queuedUserIndex
+  )
+}
+
+/**
+ * Overlay messages that changed while activation waited on REST. Existing ids
+ * replace the older activation row; only rows added or changed since the warm
+ * cache baseline are appended. This is identity-based, never text-based.
+ */
+export function overlayConcurrentMessageChanges(
+  nextMessages: ChatMessage[],
+  baselineMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
+  const baselineById = new Map(baselineMessages.map(message => [message.id, message]))
+  const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
   let changed = false
+  const overlaid = [...nextMessages]
 
-  const remaining = previousMessages.filter((message, index) => {
-    if (index < openTailStart) {
-      return true
+  for (const current of currentMessages) {
+    const baseline = baselineById.get(current.id)
+    const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
+
+    if (!changedSinceBaseline) {
+      continue
     }
 
-    const text = normalizedMessageText(message)
-    const syntheticUser = message.role === 'user' && message.id.startsWith('user-')
+    const nextIndex = nextIndexById.get(current.id)
 
-    if (!removedInflightUser && inflightUser && syntheticUser && text === inflightUser) {
-      removedInflightUser = true
-      changed = true
+    if (nextIndex !== undefined) {
+      if (!chatMessagesEquivalent(overlaid[nextIndex], current)) {
+        overlaid[nextIndex] = current
+        changed = true
+      }
 
-      return false
+      continue
     }
 
-    if (
-      !removedAssistant &&
-      hasAssistantProjection &&
-      message.role === 'assistant' &&
-      message.id.startsWith('assistant-stream-')
-    ) {
-      removedAssistant = true
-      changed = true
+    nextIndexById.set(current.id, overlaid.length)
+    overlaid.push(current)
+    changed = true
+  }
 
-      return false
-    }
-
-    if (!removedQueuedUser && queuedUser && syntheticUser && text === queuedUser) {
-      removedQueuedUser = true
-      changed = true
-
-      return false
-    }
-
-    return true
-  })
-
-  return changed ? remaining : previousMessages
+  return changed ? overlaid : nextMessages
 }
 
 export interface BranchMessage {

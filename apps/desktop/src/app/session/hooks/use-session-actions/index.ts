@@ -71,6 +71,7 @@ import {
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
   isSessionGoneError,
+  overlayConcurrentMessageChanges,
   patchSessionWorkspace,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
@@ -704,6 +705,16 @@ export function useSessionActions({
                     liveProjection
                   )
                 }
+              }
+
+              const currentMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
+
+              if (currentMessages) {
+                activatedMessages = overlayConcurrentMessageChanges(
+                  activatedMessages,
+                  cachedViewState.messages,
+                  currentMessages
+                )
               }
 
               const activatedState = updateSessionState(

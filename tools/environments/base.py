@@ -478,7 +478,6 @@ class BaseEnvironment(ABC):
         # ``Directory \\drivers\\etc does not exist`` failure class.
         # On POSIX this is plain ``shlex.quote``.
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
-        _quoted_cwd_file = self._quote_shell_path(self._cwd_file)
         # Use atomic file replacement: assemble the snapshot in a temp file,
         # then mv it over the final path.  This prevents concurrent source()
         # calls from reading a half-written snapshot when another terminal
@@ -523,7 +522,6 @@ class BaseEnvironment(ABC):
             # partial temp rather than leave it to be sourced or orphaned.
             f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
             f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
-            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
@@ -602,10 +600,9 @@ class BaseEnvironment(ABC):
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
-        # Quote snapshot/cwd-file paths (see init_session — LocalEnvironment
-        # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle them).
+        # Quote the snapshot path (see init_session — LocalEnvironment
+        # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle it).
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
-        _quoted_cwd_file = self._quote_shell_path(self._cwd_file)
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
@@ -651,8 +648,8 @@ class BaseEnvironment(ABC):
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 
-        # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
+        # Emit the CWD stdout marker; all backends (including local, since
+        # PR #63255) parse it from output — no temp-file write needed.
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this

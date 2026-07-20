@@ -67,6 +67,9 @@ class BillingError(Exception):
         portal_url: Optional[str] = None,
         retry_after: Optional[int] = None,
         payload: Optional[dict[str, Any]] = None,
+        actor: Optional[str] = None,
+        code: Optional[str] = None,
+        recovery: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -74,6 +77,13 @@ class BillingError(Exception):
         self.portal_url = portal_url
         self.retry_after = retry_after
         self.payload = payload or {}
+        # Remote-Spending contract extras (NAS PR #481): `actor` (self|admin) on a
+        # revoke, `code` (the new machine code dual-emitted alongside `error`), and
+        # `recovery` (reconnect|login|enable_account_toggle). Additive — absent on
+        # older NAS / unrelated errors.
+        self.actor = actor
+        self.code = code
+        self.recovery = recovery
 
 
 class BillingScopeRequired(BillingError):
@@ -86,17 +96,73 @@ class BillingScopeRequired(BillingError):
     """
 
 
-class BillingRateLimited(BillingError):
+class BillingAuthError(BillingError):
+    """``401`` — missing/invalid bearer token (not logged in / expired)."""
+
+
+class BillingRemoteSpendingRevoked(BillingError):
+    """``403 remote_spending_revoked`` — THIS terminal's spending was revoked.
+
+    Distinct from ``insufficient_scope`` (never had the grant) and from
+    ``session_revoked`` (full logout). The terminal stays logged in; only the
+    money path is cut. ``actor`` is ``"admin"`` or ``"self"`` (absent → treat as
+    ``"self"``); recovery is **reconnect** (re-consent device-auth). The terminal
+    MUST disable charge/auto-reload immediately, without waiting for the next
+    token refresh (the current token still claims the scope for ~15 min).
+    """
+
+
+class BillingSessionRevoked(BillingAuthError):
+    """``401 session_revoked`` — the whole session was logged out.
+
+    Stronger than a spend-revoke: recovery is **re-login** (full device-auth),
+    not just reconnect. Subclass of :class:`BillingAuthError` so existing 401
+    handling still treats it as not-logged-in, but the typed code lets the
+    surface route to re-login with the right copy.
+    """
+
+
+class BillingTransient(BillingError):
+    """A deterministic non-charge outcome: the request definitely did NOT
+    reach/complete at Stripe, so it's always safe to retry after backoff —
+    never the "maybe charged" ambiguity of a real 5xx/timeout. Covers
+    429 rate limiting, 503 gate-unavailable, Stripe being down, and the
+    daily upgrade cap — distinct failure modes that share this one
+    contract property. Catch this (not the old ad-hoc subclass hierarchy)
+    wherever the intent is "any transient, definitely-not-charged billing
+    failure, back off and retry/poll".
+    """
+
+
+class BillingRateLimited(BillingTransient):
     """``429 rate_limited`` or ``503 temporarily_unavailable``.
 
     NOT a payment failure. Carries ``retry_after`` (seconds) — back off and tell
     the user "try again in N min"; never auto-retry-spam (the limiter is
-    5/org/hr + 5/token/hr and easy to dig deeper into).
+    5/org/hr + 5/token/hr and easy to dig deeper into). A 503 is the gate backend
+    failing closed — back off, do NOT treat as revoked.
     """
 
 
-class BillingAuthError(BillingError):
-    """``401`` — missing/invalid bearer token (not logged in / expired)."""
+class BillingStripeUnavailable(BillingTransient):
+    """``503 stripe_unavailable`` — Stripe itself is down.
+
+    TRANSIENT: back off and retry using Retry-After; this is NOT the same as
+    being throttled by our own rate limiter, so surfaces must not render "rate
+    limited" copy for it — they should read ``.error`` to tell the two apart.
+    A BillingTransient sibling of BillingRateLimited (not a subclass) — surfaces
+    must not render "rate limited" copy for it; read ``.error`` to distinguish it.
+    """
+
+
+class BillingUpgradeCapExceeded(BillingTransient):
+    """``429 upgrade_cap_exceeded`` — the org hit its 5-upgrades/day cap.
+
+    Distinct from the hourly ``rate_limited`` charge cap (same HTTP status,
+    different meaning + no useful short-Retry-After backoff). A BillingTransient
+    sibling of BillingRateLimited (not a subclass) — surfaces must read ``.error``
+    to distinguish the failure mode.
+    """
 
 
 # =============================================================================
@@ -146,6 +212,20 @@ def _absolutize_portal_url(portal_url: Optional[str]) -> Optional[str]:
 # normally (the cache holds a valid token, not the HTTP outcome).
 _TOKEN_CACHE_TTL_SECONDS = 30.0
 _token_cache: tuple[float, str, str] | None = None  # (cached_at, token, base)
+
+
+def invalidate_cached_token() -> None:
+    """Bust the 30s token cache so post-step-up replays use the freshly-scoped token.
+
+    ``_request`` only self-busts the cache on a 401 (an expired/invalid
+    token), not on a 403 scope denial — so after a step-up grant, the
+    cache would otherwise still hold the pre-grant unscoped token and
+    the immediate replay would 403 again. Callers outside this module
+    (e.g. the CLI's scope step-up flow) call this instead of poking
+    the private ``_token_cache`` global directly.
+    """
+    global _token_cache
+    _token_cache = None
 
 
 def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthError":
@@ -234,9 +314,21 @@ def _retry_after_seconds(headers: Any) -> Optional[int]:
 def _raise_for_error(
     status: int, payload: dict[str, Any], headers: Any = None
 ) -> None:
-    """Map an HTTP error response to the right typed :class:`BillingError`."""
+    """Map an HTTP error response to the right typed :class:`BillingError`.
+
+    Recognizes the Remote-Spending gate contract (NAS PR #481):
+    403 ``remote_spending_revoked`` (this terminal's spend revoked → reconnect),
+    401 ``session_revoked`` (full logout → re-login), 503 ``temporarily_unavailable``
+    (gate fail-closed → back off, NOT revoked). The business-denial codes
+    (``cli_billing_disabled`` + dual ``code:remote_spending_disabled``,
+    ``role_required``, ``idempotency_conflict``, …) flow through as a generic
+    BillingError carrying ``error``/``code``/``recovery`` for the surface to map.
+    """
     error = payload.get("error") if isinstance(payload, dict) else None
     message = payload.get("message") if isinstance(payload, dict) else None
+    code = payload.get("code") if isinstance(payload, dict) else None
+    actor = payload.get("actor") if isinstance(payload, dict) else None
+    recovery = payload.get("recovery") if isinstance(payload, dict) else None
     portal_url = _absolutize_portal_url(
         payload.get("portalUrl") if isinstance(payload, dict) else None
     )
@@ -248,14 +340,42 @@ def _raise_for_error(
         "portal_url": portal_url,
         "retry_after": retry_after,
         "payload": payload if isinstance(payload, dict) else None,
+        "actor": actor,
+        "code": code,
+        "recovery": recovery,
     }
 
-    if status == 401:
-        raise BillingAuthError(message or "Authentication required.", **common)
-    if status == 403 and error == "insufficient_scope":
-        raise BillingScopeRequired(
-            message or "This action needs the billing:manage scope.", **common
+    if error == "stripe_unavailable":
+        raise BillingStripeUnavailable(
+            message or "Stripe is temporarily unavailable — try again shortly.", **common
         )
+    if error == "upgrade_cap_exceeded":
+        raise BillingUpgradeCapExceeded(
+            message or "Daily plan-change limit reached — try again tomorrow.", **common
+        )
+
+    if status == 401:
+        # session_revoked is a full logout (→ re-login), stronger than a 401
+        # expired-token. Both stay BillingAuthError-compatible for legacy callers.
+        if error == "session_revoked":
+            raise BillingSessionRevoked(
+                message or "Your session was logged out — log in again.", **common
+            )
+        raise BillingAuthError(message or "Authentication required.", **common)
+    if status == 403:
+        # This terminal's spending was revoked (NOT the same as never having the
+        # scope). Disable spend UI immediately; recovery is reconnect.
+        if error == "remote_spending_revoked":
+            raise BillingRemoteSpendingRevoked(
+                message or "Remote Spending was revoked for this terminal.", **common
+            )
+        if error == "insufficient_scope":
+            raise BillingScopeRequired(
+                message or "This action needs the billing:manage scope.", **common
+            )
+        # Business 403s (cli_billing_disabled / role_required / no_payment_method /
+        # monthly_cap_exceeded / …) → generic BillingError with code/recovery.
+        raise BillingError(message or error or "Billing request denied.", **common)
     if status in (429, 503):
         raise BillingRateLimited(
             message or "Rate limited — try again shortly.", **common
@@ -296,7 +416,23 @@ def _request(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw.strip() else {}
+            if not raw.strip():
+                return {}
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                # A 2xx with a non-JSON body means the endpoint isn't actually
+                # serving the billing API here — e.g. a reverse-proxy / SPA
+                # fallback HTML page when the route isn't deployed on this
+                # deployment. Surface it as a typed, non-auth error so callers
+                # degrade gracefully ("unavailable") instead of crashing with a
+                # raw JSONDecodeError that reads as "not logged in".
+                raise BillingError(
+                    "Billing endpoint returned a non-JSON response "
+                    "(it may not be available on this deployment).",
+                    error="endpoint_unavailable",
+                    status=getattr(resp, "status", None),
+                ) from exc
     except urllib.error.HTTPError as exc:
         # A 401 on a cached token → drop the cache and retry once with a fresh
         # (refresh-aware) resolve before surfacing the auth error.
@@ -325,6 +461,13 @@ def _request(
     except urllib.error.URLError as exc:
         raise BillingError(
             f"Could not reach Nous Portal: {exc.reason}", error="network_error"
+        ) from exc
+    except TimeoutError as exc:
+        # urlopen() wraps CONNECT-phase timeouts in URLError, but a timeout
+        # during resp.read() surfaces as a bare TimeoutError — normalize it so
+        # transport failures always honor the typed-BillingError contract.
+        raise BillingError(
+            "Could not reach Nous Portal: timed out", error="network_error"
         ) from exc
 
 
@@ -404,3 +547,133 @@ def get_charge_status(
     # guard against a stray slash that would change the path shape.
     safe_id = urllib.parse.quote(charge_id.strip(), safe="")
     return _request("GET", f"/api/billing/charge/{safe_id}", timeout=timeout)
+
+
+def get_subscription_state(*, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
+    """``GET /api/billing/subscription`` — current plan, tiers, usage (no scope).
+
+    Returns the raw JSON dict from NAS (WS1 Phase A). Read-only — no
+    ``billing:manage`` scope required. Raises :class:`BillingAuthError`
+    on 401 and :class:`BillingError` on other non-2xx.
+    """
+    return _request("GET", "/api/billing/subscription", timeout=timeout)
+
+
+# =============================================================================
+# Subscription change (V3) — preview + the pending-change resource + upgrade
+# =============================================================================
+#
+# Mutating the plan splits into a chargeless lane and the single money route:
+#   - preview  → a quote (no mutation, no charge) of what a change would do.
+#   - PUT/DELETE pending-change → schedule / clear a downgrade or cancellation
+#     (chargeless; takes effect at period end).
+#   - POST upgrade → the ONE route that charges (prorate + charge the card on the
+#     subscription + flip the plan, in one Stripe op).
+# All require the ``billing:manage`` scope (a 403 insufficient_scope raises
+# :class:`BillingScopeRequired`, driving the device step-up) — including preview,
+# which issues live Stripe calls and reveals charge amounts.
+
+
+def post_subscription_preview(
+    *, subscription_type_id: str, timeout: float = DEFAULT_TIMEOUT
+) -> dict[str, Any]:
+    """``POST /api/billing/subscription/preview`` — a chargeless effect quote.
+
+    Quotes a change to ``subscription_type_id`` without mutating anything:
+    ``effect`` is ``charge_now`` (an upgrade → ``amountDueNowCents`` is the prorated
+    upfront charge), ``scheduled`` (a downgrade → ``effectiveAt`` is period end),
+    ``no_op`` (already on the tier), or ``blocked`` (``reason`` says why the commit
+    would be refused). Also returns the current + target tier and the monthly-credit
+    delta. ``amountDueNowCents`` is ``None`` when not a charge or when the proration
+    quote is unavailable. Requires ``billing:manage`` (live Stripe calls + amounts).
+    """
+    return _request(
+        "POST",
+        "/api/billing/subscription/preview",
+        body={"subscriptionTypeId": subscription_type_id},
+        timeout=timeout,
+    )
+
+
+def put_subscription_pending_change(
+    *,
+    subscription_type_id: str | None = None,
+    cancel: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
+    """``PUT /api/billing/subscription/pending-change`` — set the end-of-period intent.
+
+    A subscription has at most one pending disposition. Pass ``cancel=True`` to
+    schedule a cancellation, or a ``subscription_type_id`` to schedule a downgrade /
+    same-price change. UPGRADES are rejected here (they charge immediately — use
+    :func:`post_subscription_upgrade`). Chargeless; requires ``billing:manage``.
+    Returns ``{rail, changeType, targetTierName, message}`` for a tier change, or
+    ``{rail, cancelAtPeriodEnd, message}`` for a cancellation.
+    """
+    if cancel:
+        body: dict[str, Any] = {"type": "cancellation"}
+    else:
+        if not (
+            isinstance(subscription_type_id, str) and subscription_type_id.strip()
+        ):
+            raise BillingError(
+                "A subscription tier is required to schedule a plan change.",
+                error="invalid_subscription_type",
+            )
+        body = {
+            "type": "tier_change",
+            "subscriptionTypeId": subscription_type_id.strip(),
+        }
+    return _request(
+        "PUT",
+        "/api/billing/subscription/pending-change",
+        body=body,
+        timeout=timeout,
+    )
+
+
+def delete_subscription_pending_change(
+    *, timeout: float = DEFAULT_TIMEOUT
+) -> dict[str, Any]:
+    """``DELETE /api/billing/subscription/pending-change`` — clear it (resume / undo).
+
+    Removes a scheduled downgrade OR cancellation in one call, restoring the live
+    active tier and recurring renewal. Chargeless, but it re-enables recurring
+    spend, so it requires ``billing:manage`` and is honored by the org kill-switch.
+    Returns ``{rail, cancelAtPeriodEnd: false, message}``.
+    """
+    return _request(
+        "DELETE",
+        "/api/billing/subscription/pending-change",
+        timeout=timeout,
+    )
+
+
+def post_subscription_upgrade(
+    *,
+    subscription_type_id: str,
+    idempotency_key: str,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
+    """``POST /api/billing/subscription/upgrade`` — immediate paid upgrade.
+
+    The SINGLE money route: one Stripe op prorates, charges the card already on the
+    subscription, and flips the plan. ``Idempotency-Key`` is MANDATORY (a missing
+    header is a server 400, not a default) — reuse the same key on retry so a replay
+    cannot double-charge. Returns ``{status:"upgraded"|"already_on_tier", ...}`` on
+    success, or ``{status:"requires_action"|"payment_failed", reason, recoveryUrl}``
+    when the charge needs 3DS / was declined and must be finished in the portal at
+    ``recoveryUrl``. Requires ``billing:manage``.
+    """
+    if not (isinstance(idempotency_key, str) and idempotency_key.strip()):
+        raise BillingError(
+            "Idempotency-Key is required for an upgrade.",
+            error="idempotency_key_required",
+        )
+    return _request(
+        "POST",
+        "/api/billing/subscription/upgrade",
+        body={"subscriptionTypeId": subscription_type_id},
+        extra_headers={"Idempotency-Key": idempotency_key.strip()},
+        timeout=timeout,
+    )

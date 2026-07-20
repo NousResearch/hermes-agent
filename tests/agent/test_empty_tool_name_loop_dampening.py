@@ -95,6 +95,22 @@ def _tc_resp(name: str, args: str = "{}") -> dict:
     }
 
 
+def _batch_tc_resp(calls: list[tuple[str, str]]) -> dict:
+    """Multi-call batch response: calls = [(name, arguments), ...]."""
+    return {
+        "id": "m",
+        "choices": [{"index": 0, "message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [
+                {"id": f"call_{i}", "type": "function",
+                 "function": {"name": name, "arguments": args}}
+                for i, (name, args) in enumerate(calls)
+            ]},
+            "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+    }
+
+
 def _text_resp(text: str) -> dict:
     return {
         "id": "m",
@@ -181,3 +197,97 @@ def test_unknown_nonempty_name_keeps_catalog(agent_env):
     assert "frobnicate_xyz" in joined
     assert "Available tools:" in joined
     assert "tool name was empty" not in joined
+
+
+# ── Mixed batches: valid calls execute, invalid calls get error results ──
+#
+# Degrading models (observed with gpt-5.6 past ~350K input; jonny's July 2026
+# report) emit batches like 6 named calls + 1 blank-name call. Before the fix,
+# the whole turn was voided ("Skipped: another tool call in this turn used an
+# invalid name") and three such batches halted the session as partial even
+# though most of the model's work was coherent.
+
+
+def test_mixed_batch_executes_valid_and_errors_blank(agent_env):
+    """Valid siblings of a blank-name call must execute, not be skipped."""
+    agent, handler = agent_env
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", "{}")]))
+    handler.response_queue.append(_text_resp("done"))
+
+    result = agent.run_conversation("track work", conversation_history=[], task_id="t")
+
+    joined = " ".join(_tool_results(handler))
+    # The blank call got the terse anti-priming error...
+    assert "tool name was empty" in joined
+    # ...the valid sibling was NOT punished...
+    assert "Skipped: another tool call" not in joined
+    # ...and actually executed (todo returns its list, not an error result).
+    assert result.get("completed", False)
+
+
+def test_mixed_batch_preserves_tool_call_result_pairing(agent_env):
+    """Every emitted tool_call keeps a matching tool result (provider invariant)."""
+    agent, handler = agent_env
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", "{}")]))
+    handler.response_queue.append(_text_resp("done"))
+
+    result = agent.run_conversation("track work", conversation_history=[], task_id="t")
+
+    msgs = result["messages"]
+    tc_ids = []
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
+            tc_ids.extend(tc["id"] for tc in m["tool_calls"])
+    result_ids = [
+        m.get("tool_call_id") or "" for m in msgs
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    # Both the valid and blank call must appear in the assistant message,
+    # and each must have exactly one matching tool result.
+    assert set(tc_ids) == {"call_0", "call_1"}
+    assert sorted(result_ids) == sorted(tc_ids)
+
+
+def test_mixed_batches_do_not_strike_out_session(agent_env):
+    """4 consecutive mixed batches must not trip the 3-strike halt."""
+    agent, handler = agent_env
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    for _ in range(4):
+        handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", "{}")]))
+    handler.response_queue.append(_text_resp("survived"))
+
+    result = agent.run_conversation("keep going", conversation_history=[], task_id="t")
+
+    assert result.get("completed", False)
+    assert not result.get("partial", False)
+    assert "survived" in (result.get("final_response") or "")
+
+
+def test_all_invalid_batch_still_strikes_out(agent_env):
+    """A turn with NO valid call must still advance the 3-strike halt."""
+    agent, handler = agent_env
+    for _ in range(3):
+        handler.response_queue.append(_batch_tc_resp([("", "{}"), ("  ", "{}")]))
+
+    result = agent.run_conversation("degenerate", conversation_history=[], task_id="t")
+
+    assert result.get("partial", False)
+    assert "invalid tool call" in (result.get("error") or "")
+
+
+def test_mixed_batch_invalid_call_with_broken_json_does_not_retry_turn(agent_env):
+    """Broken args on a never-executing invalid call must not trigger the JSON retry loop."""
+    agent, handler = agent_env
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", '{"unclosed')]))
+    handler.response_queue.append(_text_resp("done"))
+
+    result = agent.run_conversation("track work", conversation_history=[], task_id="t")
+
+    assert result.get("completed", False)
+    # Exactly 2 chat API calls: the batch turn + the final answer. A JSON
+    # retry would add a third identical request.
+    chat_calls = [r for r in handler.captured_requests if "messages" in r]
+    assert len(chat_calls) == 2

@@ -1,7 +1,13 @@
 """Tests for config.yaml structure validation (validate_config_structure)."""
 
 
-from hermes_cli.config import validate_config_structure, ConfigIssue
+from hermes_cli.config import (
+    DEFAULT_CONFIG,
+    _EXTRA_KNOWN_ROOT_KEYS,
+    _KNOWN_ROOT_KEYS,
+    validate_config_structure,
+    ConfigIssue,
+)
 
 
 class TestCustomProvidersValidation:
@@ -205,3 +211,54 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestUnknownTopLevelKeys:
+    """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
+
+    Top-level scalars in config.yaml are forwarded into the environment
+    (gateway/run.py, hermes send) so users can feed skills and external apps
+    env-style keys like DISCORD_HOME_CHANNEL or MY_APP_TOKEN. A closed-world
+    allowlist can never enumerate those, so no "Unknown top-level config key"
+    warning may exist.
+    """
+
+    def test_arbitrary_top_level_keys_stay_silent(self):
+        """Env-style and custom keys must produce no unknown-key warnings."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "DISCORD_HOME_CHANNEL": "12345",
+            "TELEGRAM_HOME_CHANNEL": "-100987",
+            "DISCORD_ALLOW_ALL_USERS": True,
+            "MY_CUSTOM_SKILL_VAR": "hello",
+            "skillz": {"enabled": True},
+        })
+        assert not any("Unknown top-level config key" in i.message for i in issues)
+        assert issues == []
+
+    def test_known_root_keys_derived_from_default_config(self):
+        """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
+        assert set(DEFAULT_CONFIG.keys()).issubset(_KNOWN_ROOT_KEYS)
+        assert _EXTRA_KNOWN_ROOT_KEYS.issubset(_KNOWN_ROOT_KEYS)
+        assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
+
+    def test_provider_like_unknown_root_keeps_misplaced_message(self):
+        """Preserve existing base_url/api_key root-level guidance."""
+        issues = validate_config_structure({
+            "base_url": "https://example.com/v1",
+            "api_key": "secret",
+        })
+        misplaced = [
+            i for i in issues
+            if i.severity == "warning" and "looks misplaced" in i.message
+        ]
+        assert any("base_url" in i.message for i in misplaced)
+        assert any("api_key" in i.message for i in misplaced)
+
+    def test_private_underscore_keys_not_flagged(self):
+        """Internal keys starting with _ remain ignored."""
+        issues = validate_config_structure({
+            "_internal_scratch": True,
+            "model": {"provider": "openrouter"},
+        })
+        assert issues == []

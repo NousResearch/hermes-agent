@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
+import { Tip } from '@/components/ui/tooltip'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -94,17 +95,18 @@ function RowIconButton({
   title: string
 }) {
   return (
-    <Button
-      aria-label={title}
-      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
-      onClick={onClick}
-      size="icon-xs"
-      title={title}
-      type="button"
-      variant="ghost"
-    >
-      {children}
-    </Button>
+    <Tip label={title}>
+      <Button
+        aria-label={title}
+        className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+        onClick={onClick}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        {children}
+      </Button>
+    </Tip>
   )
 }
 

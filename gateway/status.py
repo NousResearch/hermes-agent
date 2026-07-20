@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import shlex
 import signal
@@ -23,7 +24,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -45,6 +46,84 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+
+logger = logging.getLogger(__name__)
+
+
+class StormInfo(NamedTuple):
+    """Result of a respawn-storm check: how many starts, over what window, and
+    the backoff the caller should sleep to break the storm."""
+
+    count: int
+    window_s: float
+    backoff_s: float
+
+
+def _get_starts_log_path() -> Path:
+    """Path to the append-only gateway-start ledger used by the respawn-storm
+    breaker. Distinct from ``restart_loop.json`` (the auto-resume guard) — no
+    collision."""
+    return get_hermes_home() / "gateway-starts.log"
+
+
+def record_start_and_check_storm(
+    max_starts: int = 5, window_s: float = 120.0, *, backoff_cap_s: float = 300.0
+) -> Optional[StormInfo]:
+    """Record this gateway start and report whether a respawn storm is underway.
+
+    Appends the current UTC timestamp to the starts-log, prunes entries older
+    than ``window_s``, and ring-buffers the file so it can't grow unbounded.
+    Returns a :class:`StormInfo` when more than ``max_starts`` starts landed in
+    the window (with an exponential backoff capped at ``backoff_cap_s``), else
+    ``None``.
+
+    Best-effort: any bookkeeping failure is logged and swallowed so a broken
+    ledger can never crash gateway startup.
+    """
+    try:
+        path = _get_starts_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now(timezone.utc).timestamp()
+
+        existing: list[float] = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    existing.append(float(line))
+                except ValueError:
+                    continue
+
+        existing.append(now)
+
+        # Keep only starts within the sliding window for the storm decision.
+        recent = [ts for ts in existing if now - ts <= window_s]
+
+        # Ring-buffer what we persist so the file stays bounded even if the
+        # window is wide or starts are frequent.
+        keep = max(max_starts * 4, 40)
+        to_write = existing[-keep:]
+
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            "\n".join(repr(ts) for ts in to_write) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+
+        if len(recent) > max_starts:
+            backoff = min(
+                backoff_cap_s, 5.0 * (2 ** min(len(recent) - max_starts, 6))
+            )
+            return StormInfo(count=len(recent), window_s=window_s, backoff_s=backoff)
+        return None
+    except Exception as _e:
+        logger.debug(
+            "respawn-storm breaker bookkeeping failed (non-fatal): %s", _e
+        )
+        return None
 
 
 def _get_process_hermes_home() -> Path:

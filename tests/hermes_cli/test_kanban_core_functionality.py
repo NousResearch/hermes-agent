@@ -890,7 +890,7 @@ def test_cli_gc_reports_counts(kanban_home):
 # run_slash parity — every verb returns a sensible, non-crashy string
 # ---------------------------------------------------------------------------
 
-def test_run_slash_every_verb_returns_sensible_output(kanban_home):
+def test_run_slash_every_verb_returns_sensible_output(kanban_home, tmp_path):
     """Smoke-test every verb with minimal args. None may raise, none may
     return the empty string (must either succeed or report a usage error)."""
     # Set up a pair of tasks to reference.
@@ -900,6 +900,9 @@ def test_run_slash_every_verb_returns_sensible_output(kanban_home):
         tid_b = kb.create_task(conn, title="b", parents=[tid_a])
     finally:
         conn.close()
+
+    attach_src = tmp_path / "smoke.txt"
+    attach_src.write_text("smoke")
 
     invocations = [
         "",                                  # no subcommand → help text
@@ -914,6 +917,8 @@ def test_run_slash_every_verb_returns_sensible_output(kanban_home):
         f"unlink {tid_a} {tid_b}",
         f"claim {tid_a}",
         f"comment {tid_a} hello",
+        f"attach {tid_a} {attach_src}",
+        f"attachments {tid_a}",
         f"complete {tid_a}",
         f"block {tid_b} need input",
         f"unblock {tid_b}",

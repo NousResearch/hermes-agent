@@ -36,16 +36,17 @@ export function validateCronEditor(input: CronEditorValidationInput): CronEditor
 
 export interface CronEditorSaveValues {
   deliver: string
+  /** Per-job model override ('' = follow the global default at fire time). */
+  model: string
   name: string
   prompt: string
+  /** Provider for the model override ('' = none). Always paired with model. */
+  provider: string
   schedule: string
 }
 
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */
-export function cronEditorUpdates(
-  values: CronEditorSaveValues,
-  options: { scriptOnlyJob: boolean }
-): CronJobUpdates {
+export function cronEditorUpdates(values: CronEditorSaveValues, options: { scriptOnlyJob: boolean }): CronJobUpdates {
   const updates: CronJobUpdates = {
     deliver: values.deliver,
     name: values.name,
@@ -56,6 +57,15 @@ export function cronEditorUpdates(
 
   if (!options.scriptOnlyJob || trimmedPrompt) {
     updates.prompt = trimmedPrompt
+  }
+
+  // Script-only jobs never run an agent, so the scheduler ignores model
+  // overrides — leave whatever is stored untouched. For agent jobs, always
+  // write both axes so resetting to "default" clears a previous pin (the
+  // backend normalizes null/'' to "no override").
+  if (!options.scriptOnlyJob) {
+    updates.model = values.model.trim() || null
+    updates.provider = values.provider.trim() || null
   }
 
   return updates

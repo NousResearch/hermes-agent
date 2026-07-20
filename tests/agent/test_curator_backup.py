@@ -400,6 +400,31 @@ def test_snapshot_cron_jobs_malformed_json_still_captured(backup_env):
     assert "parse_warning" in mf["cron_jobs"]
 
 
+def test_snapshot_cron_jobs_utf8_bom_counted_and_backup_bomless(backup_env):
+    """A UTF-8 BOM on jobs.json (Windows editors) must not break the job
+    count, and the snapshot copy is written BOM-less so rollback restores a
+    file cron/jobs.load_jobs can read."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    cron_dir = backup_env["home"] / "cron"
+    cron_dir.mkdir()
+    payload = json.dumps({"jobs": [{"id": "job-a"}, {"id": "job-b"}]})
+    (cron_dir / "jobs.json").write_bytes(b"\xef\xbb\xbf" + payload.encode())
+
+    snap = cb.snapshot_skills(reason="test")
+    assert snap is not None
+
+    mf = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert mf["cron_jobs"]["backed_up"] is True
+    assert mf["cron_jobs"]["jobs_count"] == 2
+    assert "parse_warning" not in mf["cron_jobs"]
+
+    # Backup copy is decoded text — no BOM survives into the snapshot.
+    backup_bytes = (snap / cb.CRON_JOBS_FILENAME).read_bytes()
+    assert not backup_bytes.startswith(b"\xef\xbb\xbf")
+    assert json.loads(backup_bytes) == json.loads(payload)
+
+
 def test_rollback_restores_cron_skill_links(backup_env):
     """End-to-end: snapshot with job [alpha,beta], curator-style in-place
     rewrite to [umbrella], then rollback → skills restored to [alpha,beta]."""

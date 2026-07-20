@@ -38,6 +38,32 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     assert "Approx request size: ~100 tokens (unchanged)" in output
 
 
+def test_manual_compress_reports_aborted_summary_without_success_banner(capsys):
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = shell.session_id
+    shell.agent.context_compressor._last_compress_aborted = True
+    shell.agent.context_compressor._last_summary_fallback_used = False
+    shell.agent.context_compressor._last_summary_error = (
+        "Provider 'opencode-zen' is set in config.yaml but no API key was found."
+    )
+    shell.agent._compress_context.return_value = (list(history), "")
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    output = capsys.readouterr().out
+    assert "⚠️ Compression aborted: 4 messages preserved" in output
+    assert "no messages were removed" in output
+    assert "no API key was found" in output
+    assert "✅ Compressed:" not in output
+
+
 def test_manual_compress_explains_when_token_estimate_rises(capsys):
     shell = _make_cli()
     history = _make_history()

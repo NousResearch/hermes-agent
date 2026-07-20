@@ -15,6 +15,7 @@ import time
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
+from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -409,8 +410,8 @@ def _handle_send(args):
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
         if platform_name == "weixin":
-            wx_token = os.getenv("WEIXIN_TOKEN", "").strip()
-            wx_account = os.getenv("WEIXIN_ACCOUNT_ID", "").strip()
+            wx_token = get_secret("WEIXIN_TOKEN", "").strip()
+            wx_account = get_secret("WEIXIN_ACCOUNT_ID", "").strip()
             if wx_token and wx_account:
                 from gateway.config import PlatformConfig
                 pconfig = PlatformConfig(
@@ -418,8 +419,8 @@ def _handle_send(args):
                     token=wx_token,
                     extra={
                         "account_id": wx_account,
-                        "base_url": os.getenv("WEIXIN_BASE_URL", "").strip(),
-                        "cdn_base_url": os.getenv("WEIXIN_CDN_BASE_URL", "").strip(),
+                        "base_url": get_secret("WEIXIN_BASE_URL", "").strip(),
+                        "cdn_base_url": get_secret("WEIXIN_CDN_BASE_URL", "").strip(),
                     },
                 )
             else:
@@ -1314,6 +1315,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     if _tg_caption is not None and not (ext in _VOICE_EXTS and is_voice):
                         media_kwargs["caption"] = _tg_caption
                         media_kwargs["parse_mode"] = send_parse_mode
+                    if (ext in _VOICE_EXTS and is_voice) or ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                        try:
+                            from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
+                            duration = await asyncio.to_thread(_probe_voice_duration_seconds, media_path)
+                            if duration is not None:
+                                media_kwargs["duration"] = duration
+                        except Exception:
+                            pass
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(

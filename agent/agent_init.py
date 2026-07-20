@@ -743,6 +743,25 @@ def init_agent(
     # commentary when the provider later returns it as a completed interim
     # assistant message.
     agent._current_streamed_assistant_text = ""
+    # Completed interim messages delivered during the current user turn.
+    # Unlike token-stream tracking, this spans Codex continuation/tool calls so
+    # repeated commentary is not re-sent before normalization can deduplicate it.
+    agent._delivered_interim_texts: set[str] = set()
+
+    # Single-writer guard for the streaming delta sink (#65991). A stale/
+    # superseded stream (e.g. one the stale-stream detector reconnected past,
+    # whose socket abort raced and never actually stopped the old worker) must
+    # NOT keep writing tokens into the turn alongside the retry's stream —
+    # otherwise two coherent responses interleave token-by-token into one
+    # transcript. Every streaming attempt claims a monotonic writer token; the
+    # delta sink drops chunks whose calling thread holds a stale token. The
+    # threading.local means threads that never claimed (non-streaming callers)
+    # are never fenced, so the guard can only ever drop a superseded stream,
+    # never the single legitimate writer.
+    agent._stream_writer_lock = threading.Lock()
+    agent._stream_writer_token = 0
+    agent._stream_writer_tls = threading.local()
+    agent._stream_writer_dropped = 0
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
@@ -1354,6 +1373,40 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    # Codex commentary visibility (display.show_commentary, default true).
+    # When true, completed Codex phase=commentary messages are delivered as
+    # visible mid-turn updates through the interim message path. When false,
+    # commentary falls back to the reasoning channel (visible only with
+    # show_reasoning enabled).
+    agent.show_commentary = True
+    try:
+        _display_section = _agent_cfg.get("display", {})
+        if isinstance(_display_section, dict):
+            agent.show_commentary = bool(_display_section.get("show_commentary", True))
+    except Exception:
+        agent.show_commentary = True
+
+    # LM Studio can either be explicitly preloaded through LM Studio's
+    # management API (the historical Hermes behavior) or left to LM Studio's
+    # just-in-time / Auto-Evict chat-completions path.  Keep the default
+    # explicit for backward compatibility; users with LM Studio Auto-Evict can
+    # opt into JIT via ``model.lmstudio_load_mode: jit``.
+    agent.lmstudio_load_mode = "explicit"
+    try:
+        _model_section = _agent_cfg.get("model", {})
+        if isinstance(_model_section, dict):
+            _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
+            if _load_mode in {"explicit", "jit"}:
+                agent.lmstudio_load_mode = _load_mode
+            else:
+                logger.warning(
+                    "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
+                    _model_section.get("lmstudio_load_mode"),
+                )
+    except Exception:
+        agent.lmstudio_load_mode = "explicit"
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

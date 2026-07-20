@@ -19,8 +19,10 @@ def _make_hermes_tree(root: Path) -> None:
     """Create a realistic ~/.hermes directory structure for testing."""
     (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
     (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n")
-    (root / "memory_store.db").write_bytes(b"fake-sqlite")
-    (root / "hermes_state.db").write_bytes(b"fake-state")
+    for db_name in ("memory_store.db", "hermes_state.db"):
+        with sqlite3.connect(root / db_name) as conn:
+            conn.execute("CREATE TABLE sample (value TEXT)")
+            conn.execute("INSERT INTO sample VALUES ('test')")
 
     # Sessions
     (root / "sessions").mkdir(exist_ok=True)
@@ -224,6 +226,65 @@ class TestBackup:
             assert "logs/agent.log" in names
             # Skins
             assert "skins/cyber.yaml" in names
+
+    def test_failed_sqlite_backup_never_raw_copies_live_wal_db(self, tmp_path, monkeypatch, capsys):
+        """A failed backup() must not silently archive the stale main DB file.
+
+        Keep a real, uncheckpointed WAL transaction live so a raw copy of only
+        ``state.db`` would be a valid-looking but torn snapshot.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        db_path = hermes_home / "state.db"
+
+        writer = sqlite3.connect(db_path)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE events (value TEXT)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("INSERT INTO events VALUES ('only-in-wal')")
+        writer.commit()
+        assert Path(f"{db_path}-wal").stat().st_size > 0
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        import hermes_cli.backup as backup_mod
+        real_connect = backup_mod.sqlite3.connect
+
+        class FailingBackupConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def backup(self, _destination):
+                raise sqlite3.OperationalError("forced backup failure")
+
+            def close(self):
+                self._connection.close()
+
+        def connect_with_failed_backup(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if str(database).startswith(f"file:{db_path}"):
+                return FailingBackupConnection(connection)
+            return connection
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", connect_with_failed_backup)
+        out_zip = tmp_path / "backup.zip"
+        try:
+            backup_mod.run_backup(Namespace(output=str(out_zip)))
+        finally:
+            writer.close()
+
+        with zipfile.ZipFile(out_zip) as zf:
+            assert "config.yaml" in zf.namelist()
+            assert "state.db" not in zf.namelist()
+
+        output = capsys.readouterr().out
+        assert "Backup incomplete" in output
+        assert "state.db: SQLite safe copy failed" in output
+        assert "Restore with:" not in output
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -1428,6 +1489,26 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         assert (hermes_home / "state-snapshots" / snap_id / "cron" / "jobs.json").exists()
 
+    def test_copies_discord_recovery_ledger(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+
+        gateway_dir = hermes_home / "gateway"
+        gateway_dir.mkdir()
+        ledger = gateway_dir / "discord_message_recovery.db"
+        conn = sqlite3.connect(ledger)
+        conn.execute("CREATE TABLE handled (message_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO handled VALUES ('123')")
+        conn.commit()
+        conn.close()
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        copied = hermes_home / "state-snapshots" / snap_id / "gateway" / ledger.name
+        assert copied.exists()
+        conn = sqlite3.connect(copied)
+        assert conn.execute("SELECT message_id FROM handled").fetchall() == [("123",)]
+        conn.close()
+
     def test_copies_channel_aliases(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
@@ -1448,6 +1529,40 @@ class TestQuickSnapshot:
         empty = tmp_path / "empty"
         empty.mkdir()
         assert create_quick_snapshot(hermes_home=empty) is None
+
+    def test_max_file_size_skips_oversized_file(self, hermes_home, capsys):
+        """Files above the cap are skipped with a warning; small files
+        (the pairing/cron data the snapshot exists for) still land."""
+        from hermes_cli.backup import create_quick_snapshot
+        # state.db in the fixture is a few KB — cap below it
+        cap = 1024
+        snap_id = create_quick_snapshot(
+            hermes_home=hermes_home, max_file_size=cap
+        )
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert not (snap_dir / "state.db").exists()
+        # Small files still captured
+        assert (snap_dir / "cron" / "jobs.json").exists()
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" not in meta["files"]
+        out = capsys.readouterr().out
+        assert "skipping state.db" in out
+        assert "exceeds" in out
+
+    def test_max_file_size_none_copies_everything(self, hermes_home):
+        """Default (no cap) preserves manual /snapshot behavior."""
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home, max_file_size=None)
+        assert (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
+
+    def test_max_file_size_under_cap_copies(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(
+            hermes_home=hermes_home, max_file_size=1 << 30
+        )
+        assert (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
 
     def test_list_snapshots(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
@@ -1868,6 +1983,53 @@ class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""
 
+    def test_failed_sqlite_snapshot_removes_incomplete_archive(self, tmp_path, monkeypatch):
+        """The non-interactive full-zip helper must fail the entire archive
+        rather than return success after omitting a live WAL database."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        db_path = hermes_home / "state.db"
+
+        writer = sqlite3.connect(db_path)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE events (value TEXT)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("INSERT INTO events VALUES ('only-in-wal')")
+        writer.commit()
+        assert Path(f"{db_path}-wal").stat().st_size > 0
+
+        import hermes_cli.backup as backup_mod
+        real_connect = backup_mod.sqlite3.connect
+
+        class FailingBackupConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def backup(self, _destination):
+                raise sqlite3.OperationalError("forced backup failure")
+
+            def close(self):
+                self._connection.close()
+
+        def connect_with_failed_backup(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if str(database).startswith(f"file:{db_path}"):
+                return FailingBackupConnection(connection)
+            return connection
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", connect_with_failed_backup)
+        out_zip = tmp_path / "pre-update.zip"
+        try:
+            result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+        finally:
+            writer.close()
+
+        assert result is None
+        assert not out_zip.exists()
+
     @pytest.fixture
     def hermes_home(self, tmp_path):
         root = tmp_path / ".hermes"
@@ -2030,7 +2192,8 @@ class TestPreUpdateBackup:
 
 class TestRunPreUpdateBackup:
     """Tests for the ``_run_pre_update_backup`` wrapper in main.py —
-    covers config gate, ``--no-backup`` flag, and user-facing output."""
+    covers the consolidated off/quick/full mode gate, CLI flags, and
+    user-facing output."""
 
     @pytest.fixture
     def hermes_home(self, tmp_path, monkeypatch):
@@ -2047,102 +2210,145 @@ class TestRunPreUpdateBackup:
                 del __import__("sys").modules[mod]
         return root
 
-    def test_backup_flag_creates_backup(self, hermes_home, capsys):
-        """--backup forces the pre-update backup for one run even when config is off."""
-        from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=False, backup=True))
-        out = capsys.readouterr().out
-        assert "Creating pre-update backup" in out
-        assert "Saved:" in out
-        assert "Restore:" in out
-        assert "hermes import" in out
-        assert "Disable:" in out
-        # Actual backup was created
-        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
-        assert len(backups) == 1
+    @staticmethod
+    def _set_mode(hermes_home, value):
+        import yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 22,
+            "updates": {"pre_update_backup": value},
+        }))
+        import sys as _sys
+        for mod in list(_sys.modules.keys()):
+            if mod.startswith("hermes_cli.config"):
+                del _sys.modules[mod]
 
-    def test_default_disabled_is_silent(self, hermes_home, capsys):
-        """With the default (``pre_update_backup: false``), ``hermes update``
-        does NOT create a backup and stays silent — zipping a large
-        HERMES_HOME can add minutes to every update. Users who want the
-        #48200 safety net opt in via the config knob or ``--backup``.
-        """
-        from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=False, backup=False))
-        out = capsys.readouterr().out
-        assert out == ""
-        assert not list((hermes_home / "backups").glob("pre-update-*.zip")) \
-            if (hermes_home / "backups").exists() else True
+    @staticmethod
+    def _zips(hermes_home):
+        d = hermes_home / "backups"
+        return list(d.glob("pre-update-*.zip")) if d.exists() else []
 
-    def test_no_backup_flag_skips(self, hermes_home, capsys):
+    @staticmethod
+    def _snaps(hermes_home):
+        d = hermes_home / "state-snapshots"
+        return [p for p in d.iterdir() if p.is_dir()] if d.exists() else []
+
+    def test_default_creates_quick_snapshot_only(self, hermes_home, capsys):
+        """With no config, the default mode is ``quick``: a state snapshot is
+        created but NOT the full zip."""
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=True, backup=False))
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
-        assert "skipped (--no-backup)" in out
+        assert snap_id is not None
+        assert "Pre-update snapshot" in out
         assert "Creating pre-update backup" not in out
-        # No backup written
-        assert not (hermes_home / "backups").exists() or not list(
-            (hermes_home / "backups").glob("pre-update-*.zip")
-        )
+        assert self._snaps(hermes_home)
+        assert not self._zips(hermes_home)
 
-    def test_config_enabled_creates_backup(self, hermes_home, capsys):
-        """Users who explicitly set updates.pre_update_backup: true still get
-        a backup on every update — this is the opt-in legacy behavior."""
-        import yaml
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
-            "_config_version": 22,
-            "updates": {"pre_update_backup": True},
-        }))
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
-
+    def test_backup_flag_forces_full(self, hermes_home, capsys):
+        """--backup forces the full zip (plus quick snapshot) for one run."""
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=True))
         out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "Pre-update snapshot" in out
         assert "Creating pre-update backup" in out
         assert "Saved:" in out
-        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
-        assert len(backups) == 1
+        assert "hermes import" in out
+        assert len(self._zips(hermes_home)) == 1
 
-    def test_config_disabled_is_silent(self, hermes_home, capsys):
-        """Explicit pre_update_backup: false behaves the same as the default —
-        silent no-op, no message spam."""
-        import yaml
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
-            "_config_version": 22,
-            "updates": {"pre_update_backup": False},
-        }))
-        # Ensure config module re-reads
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
-
+    def test_no_backup_flag_skips_everything(self, hermes_home, capsys):
+        """--no-backup skips BOTH the quick snapshot and the zip."""
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        snap_id = _run_pre_update_backup(Namespace(no_backup=True, backup=False))
         out = capsys.readouterr().out
-        assert out == ""
-        assert not list((hermes_home / "backups").glob("pre-update-*.zip")) \
-            if (hermes_home / "backups").exists() else True
-
-    def test_cli_flag_overrides_enabled_config(self, hermes_home, capsys):
-        """--no-backup wins even when config says pre_update_backup: true."""
-        import yaml
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
-            "_config_version": 22,
-            "updates": {"pre_update_backup": True},
-        }))
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
-
-        from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=True, backup=False))
-        out = capsys.readouterr().out
+        assert snap_id is None
         assert "skipped (--no-backup)" in out
+        assert "Pre-update snapshot" not in out
+        assert not self._snaps(hermes_home)
+        assert not self._zips(hermes_home)
+
+    def test_config_off_disables_everything_silently(self, hermes_home, capsys):
+        """pre_update_backup: off — an explicit opt-out disables the quick
+        snapshot too (it previously ran unconditionally), with no output."""
+        self._set_mode(hermes_home, "off")
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is None
+        assert out == ""
+        assert not self._snaps(hermes_home)
+        assert not self._zips(hermes_home)
+
+    def test_legacy_false_maps_to_off(self, hermes_home, capsys):
+        """Legacy boolean ``false`` (the old zip opt-out) now means off."""
+        self._set_mode(hermes_home, False)
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        assert snap_id is None
+        assert capsys.readouterr().out == ""
+        assert not self._snaps(hermes_home)
+        assert not self._zips(hermes_home)
+
+    def test_legacy_true_maps_to_full(self, hermes_home, capsys):
+        """Legacy boolean ``true`` (the old always-zip opt-in) means full."""
+        self._set_mode(hermes_home, True)
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "Creating pre-update backup" in out
+        assert "Saved:" in out
+        assert len(self._zips(hermes_home)) == 1
+
+    def test_config_full_mode(self, hermes_home, capsys):
+        self._set_mode(hermes_home, "full")
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "Pre-update snapshot" in out
+        assert "Creating pre-update backup" in out
+        assert len(self._zips(hermes_home)) == 1
+
+    def test_config_quick_mode(self, hermes_home, capsys):
+        self._set_mode(hermes_home, "quick")
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "Pre-update snapshot" in out
+        assert "Creating pre-update backup" not in out
+        assert not self._zips(hermes_home)
+
+    def test_unknown_mode_falls_back_to_quick(self, hermes_home, capsys):
+        self._set_mode(hermes_home, "bogus-mode")
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "Pre-update snapshot" in out
+        assert not self._zips(hermes_home)
+
+    def test_no_backup_flag_overrides_full_config(self, hermes_home, capsys):
+        """--no-backup wins even when config says full."""
+        self._set_mode(hermes_home, "full")
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=True, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is None
+        assert "skipped (--no-backup)" in out
+        assert not self._snaps(hermes_home)
+        assert not self._zips(hermes_home)
+
+    def test_backup_flag_overrides_off_config(self, hermes_home, capsys):
+        """--backup wins over config off for a single run."""
+        self._set_mode(hermes_home, "off")
+        from hermes_cli.main import _run_pre_update_backup
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=True))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "Creating pre-update backup" in out
+        assert len(self._zips(hermes_home)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2333,6 +2539,26 @@ class TestRestoreCronJobsIfEmptied:
 
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is None
+
+    def test_bom_live_file_still_counted(self, tmp_path):
+        """A UTF-8 BOM on the live jobs.json (Windows editors) must not make
+        _count_cron_jobs report None — that would silently disable the
+        auto-restore safety net. utf-8-sig matches cron/jobs.load_jobs."""
+        from hermes_cli.backup import _count_cron_jobs, restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Migration empties the file AND a Windows editor leaves a BOM.
+        jobs_path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"jobs": []}).encode())
+        assert _count_cron_jobs(jobs_path) == 0  # not None
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["job_count"] == 3
 
     def test_noop_when_live_file_unreadable(self, tmp_path):
         """An unparseable live file is left alone — that's a different failure

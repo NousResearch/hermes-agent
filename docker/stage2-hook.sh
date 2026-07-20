@@ -452,11 +452,12 @@ fi
 # the credential is replaced. An orchestrator that manages the container can
 # supply a freshly-issued session via HERMES_AUTH_JSON_REBOOTSTRAP (distinct
 # from the create-only *_BOOTSTRAP var); this helper swaps ONLY the
-# providers.nous entry, and ONLY when the on-disk entry is provably terminal.
-# Every other case (healthy, rotating, absent, or unparseable auth.json) is a
-# no-op, so it is safe to leave the env set across restarts and never risks
-# clobbering a good/rotated token. Runs as its own stdlib-only subprocess (no
-# app imports) and always exits 0.
+# providers.nous entry when the on-disk entry is provably terminal OR the
+# orchestrator seed has a later obtained_at timestamp. The latter covers the
+# stop/update/start sequence where NAS already revoked the still-healthy-looking
+# local session. Older/incomparable seeds remain no-ops, so leaving the env set
+# cannot roll a healthy rotated token backward. Runs as its own stdlib-only
+# subprocess (no app imports) and always exits 0.
 if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
     if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
         :

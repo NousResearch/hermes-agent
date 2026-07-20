@@ -715,6 +715,33 @@ def _save_disabled_set(disabled: set) -> None:
     save_config(config)
 
 
+_BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
+
+
+def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
+    """Re-enable the bundled basic dashboard-auth plugin in *cfg*.
+
+    ``hermes setup`` / ``hermes plugins disable basic`` can park the plugin
+    in ``plugins.disabled`` while ``dashboard.basic_auth`` is configured.
+    The basic provider is a bundled backend that still respects the
+    deny-list, so password auth silently fails until the block is removed.
+
+    Returns True when ``plugins.disabled`` was modified.
+    """
+    plugins_cfg = cfg.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return False
+    disabled = plugins_cfg.get("disabled")
+    if not isinstance(disabled, list):
+        return False
+    if not (set(disabled) & _BASIC_AUTH_PLUGIN_KEYS):
+        return False
+    plugins_cfg["disabled"] = sorted(
+        set(disabled) - _BASIC_AUTH_PLUGIN_KEYS
+    )
+    return True
+
+
 def _get_enabled_set() -> set:
     """Read the enabled plugins allow-list from config.yaml.
 

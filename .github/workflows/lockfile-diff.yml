@@ -1,0 +1,98 @@
+name: Lockfile diff
+
+# Advisory PR comment showing the *semantic* diff of package-lock.json
+# changes — which packages were added/removed/updated and their versions.
+# The raw textual diff of a lockfile is unreadable (npm reorders entries
+# and rewrites integrity hashes), so scripts/ci/lockfile_diff.py parses
+# the ``packages`` map at the merge base and at HEAD and set-diffs the
+# {install path: version} maps instead.
+#
+# The comment is upserted: the script embeds a hidden HTML marker and the
+# workflow PATCHes the existing comment when one is found, so a PR gets
+# exactly one lockfile-diff comment that tracks the latest push instead
+# of a stack of stale ones. When a later push reverts all lockfile
+# changes, the comment is updated to say so (deleting it would be more
+# surprising than telling the reviewer it's resolved).
+#
+# Never blocking — this is review signal, not enforcement. Exit is 0 even
+# when commenting fails (fork PRs get a read-only GITHUB_TOKEN).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write # post/update the diff comment
+
+concurrency:
+  group: lockfile-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    name: package-lock.json semantic diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need history for the merge base
+
+      - name: Generate semantic lockfile diff
+        id: diff
+        run: |
+          set -euo pipefail
+          # Three-dot semantics by hand: diff from the merge base with the
+          # target branch to the PR head, so changes that landed on main
+          # after the branch point don't show up as this PR's doing.
+          BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "Merge base: ${BASE_SHA}"
+          python3 scripts/ci/lockfile_diff.py \
+            --base "$BASE_SHA" \
+            --head HEAD \
+            --output /tmp/lockfile-diff.md
+          if [ -s /tmp/lockfile-diff.md ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            cat /tmp/lockfile-diff.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post or update PR comment
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED: ${{ steps.diff.outputs.changed }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- hermes-lockfile-diff -->'
+
+          # Find our previous comment (paginated — busy PRs exceed one page).
+          EXISTING=$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" \
+            | head -1 || true)
+
+          if [ "$CHANGED" != "true" ]; then
+            if [ -n "$EXISTING" ]; then
+              # A previous push changed the lockfile but the latest one
+              # doesn't — update the comment rather than leave stale info.
+              printf '%s\n✅ package-lock.json changes from an earlier push have been reverted — locked versions now match the target branch.\n' "$MARKER" > /tmp/lockfile-diff.md
+            else
+              echo "No lockfile changes and no existing comment — nothing to do."
+              exit 0
+            fi
+          fi
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing comment ${EXISTING}"
+            gh api --method PATCH "repos/${REPO}/issues/comments/${EXISTING}" \
+              -F body=@/tmp/lockfile-diff.md > /dev/null \
+              || echo "::warning::Could not update PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+          else
+            echo "Creating new comment"
+            gh api "repos/${REPO}/issues/${PR}/comments" \
+              -F body=@/tmp/lockfile-diff.md > /dev/null \
+              || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+          fi

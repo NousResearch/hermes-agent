@@ -218,6 +218,7 @@ function ReviewDirRow({
         <span className="min-w-0 flex-1 truncate" title={node.name}>
           {node.name}
         </span>
+        {!open && <DiffCount added={node.added} className="text-[0.64rem] leading-4" removed={node.removed} />}
       </div>
       {open && node.children && (
         <ReviewNodeList animate={animate} depth={depth + 1} motion={useMotion} nodes={node.children} />

@@ -339,168 +339,6 @@ def test_console_registry_covers_non_admin_cli_surface():
     assert missing == set()
 
 
-EXPECTED_HOSTED_CONSOLE_COMMANDS = {
-    ("status",),
-    ("doctor",),
-    ("logs",),
-    ("version",),
-    ("prompt-size",),
-    ("insights",),
-    ("security", "audit"),
-    ("portal", "info"),
-    ("portal", "tools"),
-    ("send",),
-    ("config", "show"),
-    ("config", "path"),
-    ("config", "env-path"),
-    ("config", "check"),
-    ("config", "migrate"),
-    ("config", "set"),
-    ("sessions", "list"),
-    ("sessions", "stats"),
-    ("sessions", "export"),
-    ("sessions", "rename"),
-    ("sessions", "optimize"),
-    ("sessions", "repair"),
-    ("cron", "list"),
-    ("cron", "status"),
-    ("cron", "create"),
-    ("cron", "edit"),
-    ("cron", "pause"),
-    ("cron", "resume"),
-    ("cron", "run"),
-    ("cron", "remove"),
-    ("cron", "tick"),
-    ("profile",),
-    ("profile", "list"),
-    ("profile", "show"),
-    ("profile", "info"),
-    ("tools", "list"),
-    ("tools", "enable"),
-    ("tools", "disable"),
-    ("tools", "post-setup"),
-    ("skills", "browse"),
-    ("skills", "search"),
-    ("skills", "inspect"),
-    ("skills", "list"),
-    ("skills", "check"),
-    ("skills", "list-modified"),
-    ("skills", "diff"),
-    ("skills", "install"),
-    ("skills", "update"),
-    ("skills", "audit"),
-    ("skills", "uninstall"),
-    ("skills", "reset"),
-    ("skills", "opt-in"),
-    ("skills", "opt-out"),
-    ("skills", "repair-official"),
-    ("skills", "snapshot", "export"),
-    ("skills", "tap", "list"),
-    ("mcp", "list"),
-    ("mcp", "catalog"),
-    ("mcp", "test"),
-    ("mcp", "add"),
-    ("mcp", "remove"),
-    ("mcp", "install"),
-    ("mcp", "login"),
-    ("mcp", "reauth"),
-    ("mcp", "configure"),
-    ("mcp", "picker"),
-    ("memory", "status"),
-    ("auth", "list"),
-    ("auth", "status"),
-    ("auth", "reset"),
-    ("auth", "spotify", "status"),
-    ("pairing", "list"),
-    ("pairing", "approve"),
-    ("pairing", "revoke"),
-    ("pairing", "clear-pending"),
-    ("webhook", "list"),
-    ("webhook", "subscribe"),
-    ("webhook", "remove"),
-    ("webhook", "test"),
-}
-
-
-def test_hosted_console_registry_exposes_only_hosted_safe_surface():
-    engine = HermesConsoleEngine(context="hosted")
-    hosted = {
-        path for path, command in engine.commands.items() if "hosted" in command.contexts
-    }
-
-    assert hosted == EXPECTED_HOSTED_CONSOLE_COMMANDS
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "portal login",
-        "auth add nous --type oauth",
-        "auth logout nous",
-        "profile create tester",
-        "profile use default",
-        "plugins list",
-        "plugins install owner/repo",
-        "kanban list",
-        "hooks list",
-        "checkpoints clear",
-        "curator pause",
-        "pets install cat",
-        "backup --quick",
-        "import /tmp/hermes-console-test.zip",
-        "mcp serve",
-        "model",
-        "setup",
-        "dashboard",
-        "gateway restart",
-        "update",
-        "uninstall",
-    ],
-)
-def test_hosted_console_rejects_local_only_or_dangerous_commands(line):
-    result = HermesConsoleEngine(context="hosted").execute(line)
-
-    assert result.status == "error"
-    assert result.output
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "mcp add demo --url https://example.com/sse",
-        "mcp install n8n",
-        "mcp configure github",
-        "mcp picker",
-        "config set display.interface cli",
-        "cron create 'every 1h' 'say hello'",
-    ],
-)
-def test_hosted_console_allows_guarded_useful_commands_before_confirmation(line):
-    result = HermesConsoleEngine(context="hosted").execute(line)
-
-    assert result.status == "confirm_required"
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "mcp add local --command npx --args foo",
-        "mcp add local --preset unsafe",
-        "mcp add local --url file:///tmp/server",
-        "config set model.provider openrouter",
-        "config set portal.url https://evil.example",
-        "cron create 'every 1h' 'say hello' --script scripts/ping.py",
-        "cron create 'every 1h' 'say hello' --no-agent",
-        "cron edit abc123 --workdir /tmp/project",
-    ],
-)
-def test_hosted_console_blocks_known_footgun_arguments_before_confirmation(line):
-    result = HermesConsoleEngine(context="hosted").execute(line)
-
-    assert result.status == "error"
-    assert result.output
-
-
 @pytest.mark.parametrize(
     "line",
     [
@@ -566,18 +404,21 @@ def test_help_lists_supported_commands_and_not_full_cli():
 def test_config_set_requires_confirmation_then_writes(_isolate_hermes_home):
     engine = HermesConsoleEngine()
 
-    pending = engine.execute("config set console.test true")
+    # Use a schema-known key path. Since #34067, `config set` refuses unknown
+    # top-level keys, so this flow test must target a valid path (telegram is a
+    # PlatformConfig-shaped dict that accepts arbitrary child keys).
+    pending = engine.execute("config set telegram.test true")
     assert pending.status == "confirm_required"
 
     from hermes_cli.config import read_raw_config
 
     assert read_raw_config() == {}
 
-    result = engine.execute("config set console.test true", confirmed=True)
+    result = engine.execute("config set telegram.test true", confirmed=True)
 
     assert result.status == "ok"
-    assert "console.test" in result.output
-    assert read_raw_config()["console"]["test"] is True
+    assert "telegram.test" in result.output
+    assert read_raw_config()["telegram"]["test"] is True
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
+  $activeSessionStoredIdRotation,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -11,6 +12,8 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -28,6 +31,54 @@ interface HarnessProps {
   onReady: (cache: Cache) => void
   selectedStoredSessionId: string | null
 }
+
+describe('useSessionStateCache — stored-id rotation provenance', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+  })
+
+  it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('does not publish a foreground-navigation event for a background runtime rotation', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-B')
+    render(
+      <Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+})
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
@@ -317,5 +368,23 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     })
 
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
+  })
+
+  it('only returns a runtime whose cached state owns the requested stored session', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.ensureSessionState('runtime-A', 'stored-A')
+      cache.ensureSessionState('runtime-B', 'stored-B')
+    })
+
+    expect(cache.getRuntimeIdForStoredSession('stored-A')).toBe('runtime-A')
+    expect(cache.getRuntimeIdForStoredSession('missing')).toBeNull()
+
+    // Simulate a recycled/cross-wired map entry. The reverse state ownership
+    // check must reject it instead of allowing a submit into stored-B.
+    cache.runtimeIdByStoredSessionIdRef.current.set('stored-A', 'runtime-B')
+    expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
   })
 })

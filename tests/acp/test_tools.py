@@ -376,6 +376,27 @@ class TestBuildToolComplete:
         assert "hello" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_for_execute_code_shows_truncation_metadata(self):
+        result = build_tool_complete(
+            "tc-code-truncated",
+            "execute_code",
+            (
+                '{"output":"HEAD\\n... [OUTPUT TRUNCATED - 10 bytes omitted out of 60 total] ...\\nTAIL",'
+                '"exit_code":0,'
+                '"stdout_truncated":true,'
+                '"stdout_bytes_captured":50,'
+                '"stdout_bytes_total":60,'
+                '"stdout_bytes_omitted":10,'
+                '"warning":"execute_code stdout was truncated; the script did run."}'
+            ),
+        )
+        text = result.content[0].content.text
+        assert "Exit code: 0" in text
+        assert "Output truncated: captured 50 of 60 bytes (10 omitted)." in text
+        assert "Warning:" in text
+        assert "the script did run" in text
+        assert result.raw_output is None
+
     def test_build_tool_complete_marks_success_false_as_failed(self):
         result = build_tool_complete("tc-fail", "skill_manage", '{"success": false, "error": "boom"}')
         assert result.status == "failed"

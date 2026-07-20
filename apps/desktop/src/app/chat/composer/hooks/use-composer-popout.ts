@@ -11,6 +11,8 @@ import {
 } from '@/store/composer-popout'
 import { isSecondaryWindow } from '@/store/windows'
 
+import { useComposerScope } from '../scope'
+
 import { useComposerPopoutGestures } from './use-popout-drag'
 
 interface UseComposerPopoutOptions {
@@ -25,7 +27,10 @@ interface UseComposerPopoutOptions {
  * window's composer out via the shared atom.
  */
 export function useComposerPopout({ composerRef }: UseComposerPopoutOptions) {
-  const popoutAllowed = !isSecondaryWindow()
+  // The floating composer is a window-level singleton: only the main scope
+  // (not tiles) in a primary window may pop out.
+  const scope = useComposerScope()
+  const popoutAllowed = !isSecondaryWindow() && scope.popoutAllowed
   const poppedOut = useStore($composerPoppedOut) && popoutAllowed
   const popoutPosition = useStore($composerPopoutPosition)
 

@@ -79,6 +79,21 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.codex_reasoning_items is None
 
 
+def test_normalize_codex_response_maps_incomplete_content_filter_to_refusal():
+    response = SimpleNamespace(
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="content_filter"),
+        output=[],
+        output_text="",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "content_filter"
+    assert assistant_message.content == ""
+    assert response.output
+
+
 # ---------------------------------------------------------------------------
 # Server-side built-in tool calls (xAI native web_search, code interpreter,
 # etc.) come back as discrete ``*_call`` output items that xAI's
@@ -493,14 +508,21 @@ def test_normalize_codex_response_salvage_strips_closing_tag():
 
 
 def test_normalize_codex_response_salvage_is_xai_scoped():
-    """Non-xAI issuers keep the reasoning-only → incomplete classification;
-    the Codex backend replays encrypted reasoning, so its continuation
-    genuinely progresses and must not be short-circuited."""
+    """Non-xAI special-cased issuers (Codex backend) keep the reasoning-only →
+    incomplete classification; the Codex backend replays encrypted reasoning,
+    so its continuation genuinely progresses and must not be short-circuited.
+
+    Pins ``issuer_kind="codex_backend"`` explicitly: with no issuer at all,
+    the unrecognized-backend rule (#64434) trusts ``status="completed"`` and
+    returns ``stop`` — that path is covered by the #64434 regression tests.
+    """
     response = _xai_reasoning_only_response(
         "Thinking.\n<response>The answer.</response>"
     )
 
-    assistant_message, finish_reason = _normalize_codex_response(response)
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
 
     assert finish_reason == "incomplete"
     assert assistant_message.content == ""

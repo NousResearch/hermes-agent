@@ -161,6 +161,30 @@ class TestProfileScopedMcp:
         listing = client.get("/api/mcp/servers").json()
         assert not any(s["name"] == "scoped-srv" for s in listing["servers"])
 
+    def test_mcp_bearer_secret_is_profile_scoped(self, client, isolated_profiles):
+        secret = "worker-only-secret"
+        response = client.post(
+            "/api/mcp/servers",
+            params={"profile": "worker_beta"},
+            json={
+                "name": "profile-bearer",
+                "url": "https://example.com/mcp",
+                "auth": "header",
+                "bearer_token": secret,
+            },
+        )
+
+        assert response.status_code == 200
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        assert worker_cfg["mcp_servers"]["profile-bearer"]["headers"] == {
+            "Authorization": "Bearer ${MCP_PROFILE_BEARER_API_KEY}",
+        }
+        assert secret in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert not (isolated_profiles["default"] / ".env").exists()
+        assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
+            "mcp_servers", {}
+        )
+
     def test_mcp_enabled_toggle_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  srv1:\n    url: http://x/sse\n", encoding="utf-8"

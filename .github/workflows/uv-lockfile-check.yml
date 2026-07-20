@@ -74,7 +74,20 @@ jobs:
       # rebase and regenerate uv.lock."
       - name: Verify uv.lock is up-to-date
         run: |
-          if ! uv lock --check; then
+          # uv lock --check re-resolves against PyPI (network). Retry so a
+          # registry blip doesn't read as "lockfile stale". A genuinely stale
+          # lockfile fails all attempts (deterministic), costing only seconds.
+          ok=false
+          for i in 1 2 3; do
+            if uv lock --check; then
+              ok=true
+              break
+            fi
+            [ "$i" = 3 ] && break
+            echo "::warning::uv lock --check failed (attempt $i); retrying in 10s"
+            sleep 10
+          done
+          if [ "$ok" != true ]; then
             cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           ## ❌ uv.lock is out of sync with pyproject.toml
 

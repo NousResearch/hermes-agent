@@ -404,6 +404,12 @@ def _run_references_parallel(
     results: list[tuple[str, str, Any] | None] = [None] * len(reference_models)
     futures = {}
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
+    # Reference slots run on bare executor threads, which start with an empty
+    # contextvars.Context — propagate the parent turn's context (approval
+    # callbacks + the Nous Portal conversation tag) into each worker so
+    # advisor calls attribute to the same conversation as the acting turn.
+    from tools.thread_context import propagate_context_to_thread
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -415,7 +421,7 @@ def _run_references_parallel(
                 continue
             futures[
                 executor.submit(
-                    _run_reference,
+                    propagate_context_to_thread(_run_reference),
                     slot,
                     ref_messages,
                     temperature=temperature,

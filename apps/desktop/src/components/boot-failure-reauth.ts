@@ -85,7 +85,10 @@ export function sshFailureMessage(
   return copy.sshErrUnknown || raw
 }
 
-export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined, error?: string | null): boolean {
+export function isRemoteReauthFailure(
+  config: DesktopConnectionConfig | null | undefined,
+  error?: string | null
+): boolean {
   return (
     isRemoteConfig(config) &&
     config!.remoteAuthMode === 'oauth' &&

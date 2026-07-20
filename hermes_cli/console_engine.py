@@ -19,15 +19,11 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
-from urllib.parse import urlparse
 
 from tools.ansi_strip import strip_ansi as _strip_ansi
 
 
 ConsoleStatus = Literal["ok", "error", "confirm_required", "exit", "clear"]
-ConsoleContext = Literal["local", "hosted"]
-ALL_CONTEXTS: frozenset[ConsoleContext] = frozenset({"local", "hosted"})
-LOCAL_CONTEXTS: frozenset[ConsoleContext] = frozenset({"local"})
 
 
 class ConsoleCommandError(RuntimeError):
@@ -50,7 +46,6 @@ class ConsoleCommand:
     handler: Callable[["HermesConsoleEngine", list[str]], str]
     mutating: bool = False
     confirmation: str = ""
-    contexts: frozenset[ConsoleContext] = LOCAL_CONTEXTS
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -149,89 +144,6 @@ def _format_job(job: dict, action: str) -> str:
     name = job.get("name") or "(unnamed)"
     state = job.get("state") or ("scheduled" if job.get("enabled", True) else "paused")
     return f"{action} job: {name} ({job_id}) [{state}]"
-
-
-EXPECTED_HOSTED_PATHS: tuple[tuple[str, ...], ...] = (
-    ("status",),
-    ("doctor",),
-    ("logs",),
-    ("version",),
-    ("prompt-size",),
-    ("insights",),
-    ("security", "audit"),
-    ("portal", "info"),
-    ("portal", "tools"),
-    ("send",),
-    ("config", "show"),
-    ("config", "path"),
-    ("config", "env-path"),
-    ("config", "check"),
-    ("config", "migrate"),
-    ("config", "set"),
-    ("sessions", "list"),
-    ("sessions", "stats"),
-    ("sessions", "export"),
-    ("sessions", "rename"),
-    ("sessions", "optimize"),
-    ("sessions", "repair"),
-    ("cron", "list"),
-    ("cron", "status"),
-    ("cron", "create"),
-    ("cron", "edit"),
-    ("cron", "pause"),
-    ("cron", "resume"),
-    ("cron", "run"),
-    ("cron", "remove"),
-    ("cron", "tick"),
-    ("profile",),
-    ("profile", "list"),
-    ("profile", "show"),
-    ("profile", "info"),
-    ("tools", "list"),
-    ("tools", "enable"),
-    ("tools", "disable"),
-    ("tools", "post-setup"),
-    ("skills", "browse"),
-    ("skills", "search"),
-    ("skills", "inspect"),
-    ("skills", "list"),
-    ("skills", "check"),
-    ("skills", "list-modified"),
-    ("skills", "diff"),
-    ("skills", "install"),
-    ("skills", "update"),
-    ("skills", "audit"),
-    ("skills", "uninstall"),
-    ("skills", "reset"),
-    ("skills", "opt-in"),
-    ("skills", "opt-out"),
-    ("skills", "repair-official"),
-    ("skills", "snapshot", "export"),
-    ("skills", "tap", "list"),
-    ("mcp", "list"),
-    ("mcp", "catalog"),
-    ("mcp", "test"),
-    ("mcp", "add"),
-    ("mcp", "remove"),
-    ("mcp", "install"),
-    ("mcp", "login"),
-    ("mcp", "reauth"),
-    ("mcp", "configure"),
-    ("mcp", "picker"),
-    ("memory", "status"),
-    ("auth", "list"),
-    ("auth", "status"),
-    ("auth", "reset"),
-    ("auth", "spotify", "status"),
-    ("pairing", "list"),
-    ("pairing", "approve"),
-    ("pairing", "revoke"),
-    ("pairing", "clear-pending"),
-    ("webhook", "list"),
-    ("webhook", "subscribe"),
-    ("webhook", "remove"),
-    ("webhook", "test"),
-)
 
 
 def _parser_root() -> tuple[_ArgumentParser, argparse._SubParsersAction]:
@@ -377,8 +289,7 @@ def _dispatch_extracted_subcommand(
     module_name: str,
     builder_name: str,
     main_handler_name: str,
-    console_context: ConsoleContext,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> str:
     parser, subparsers = _parser_root()
     module = importlib.import_module(module_name)
@@ -388,7 +299,7 @@ def _dispatch_extracted_subcommand(
     builder(subparsers, **{main_handler_name: main_handler})
     namespace = parser.parse_args([root, *fixed, *args])
     if namespace_update:
-        namespace_update(namespace, console_context)
+        namespace_update(namespace)
     return _capture_output(lambda: _invoke_namespace(namespace))
 
 
@@ -400,8 +311,7 @@ def _dispatch_registered_subcommand(
     module_name: str,
     register_name: str,
     handler_name: str | None = None,
-    console_context: ConsoleContext,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> str:
     parser, subparsers = _parser_root()
     module = importlib.import_module(module_name)
@@ -412,7 +322,7 @@ def _dispatch_registered_subcommand(
         top_parser.set_defaults(func=getattr(module, handler_name))
     namespace = parser.parse_args([root, *fixed, *args])
     if namespace_update:
-        namespace_update(namespace, console_context)
+        namespace_update(namespace)
     return _capture_output(lambda: _invoke_namespace(namespace))
 
 
@@ -424,8 +334,7 @@ def _dispatch_builder_subcommand(
     module_name: str,
     builder_name: str,
     main_handler_name: str,
-    console_context: ConsoleContext,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> str:
     parser, subparsers = _parser_root()
     module = importlib.import_module(module_name)
@@ -434,7 +343,7 @@ def _dispatch_builder_subcommand(
     top_parser.set_defaults(func=getattr(main_module, main_handler_name))
     namespace = parser.parse_args([root, *fixed, *args])
     if namespace_update:
-        namespace_update(namespace, console_context)
+        namespace_update(namespace)
     return _capture_output(lambda: _invoke_namespace(namespace))
 
 
@@ -445,15 +354,14 @@ def _dispatch_adder_subcommand(
     args: Sequence[str],
     module_name: str,
     add_name: str,
-    console_context: ConsoleContext,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> str:
     parser, subparsers = _parser_root()
     module = importlib.import_module(module_name)
     getattr(module, add_name)(subparsers)
     namespace = parser.parse_args([root, *fixed, *args])
     if namespace_update:
-        namespace_update(namespace, console_context)
+        namespace_update(namespace)
     return _capture_output(lambda: _invoke_namespace(namespace))
 
 
@@ -463,7 +371,7 @@ def _extracted_handler(
     module_name: str,
     builder_name: str,
     main_handler_name: str,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> Callable[["HermesConsoleEngine", list[str]], str]:
     def handler(_engine: HermesConsoleEngine, args: list[str]) -> str:
         return _dispatch_extracted_subcommand(
@@ -473,7 +381,6 @@ def _extracted_handler(
             module_name=module_name,
             builder_name=builder_name,
             main_handler_name=main_handler_name,
-            console_context=_engine.context,
             namespace_update=namespace_update,
         )
 
@@ -486,7 +393,7 @@ def _registered_handler(
     module_name: str,
     register_name: str,
     handler_name: str | None = None,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> Callable[["HermesConsoleEngine", list[str]], str]:
     def handler(_engine: HermesConsoleEngine, args: list[str]) -> str:
         return _dispatch_registered_subcommand(
@@ -496,7 +403,6 @@ def _registered_handler(
             module_name=module_name,
             register_name=register_name,
             handler_name=handler_name,
-            console_context=_engine.context,
             namespace_update=namespace_update,
         )
 
@@ -509,7 +415,7 @@ def _builder_handler(
     module_name: str,
     builder_name: str,
     main_handler_name: str,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> Callable[["HermesConsoleEngine", list[str]], str]:
     def handler(_engine: HermesConsoleEngine, args: list[str]) -> str:
         return _dispatch_builder_subcommand(
@@ -519,7 +425,6 @@ def _builder_handler(
             module_name=module_name,
             builder_name=builder_name,
             main_handler_name=main_handler_name,
-            console_context=_engine.context,
             namespace_update=namespace_update,
         )
 
@@ -531,7 +436,7 @@ def _adder_handler(
     fixed: Sequence[str],
     module_name: str,
     add_name: str,
-    namespace_update: Callable[[argparse.Namespace, ConsoleContext], None] | None = None,
+    namespace_update: Callable[[argparse.Namespace], None] | None = None,
 ) -> Callable[["HermesConsoleEngine", list[str]], str]:
     def handler(_engine: HermesConsoleEngine, args: list[str]) -> str:
         return _dispatch_adder_subcommand(
@@ -540,7 +445,6 @@ def _adder_handler(
             args=args,
             module_name=module_name,
             add_name=add_name,
-            console_context=_engine.context,
             namespace_update=namespace_update,
         )
 
@@ -554,13 +458,11 @@ def _register_command_family(
     paths: Iterable[Sequence[str]],
     handler_factory: Callable[[Sequence[str]], Callable[["HermesConsoleEngine", list[str]], str]],
     mutating: Iterable[Sequence[str]] = (),
-    hosted: Iterable[Sequence[str]] = (),
     summary: str = "",
     summaries: dict[tuple[str, ...], str] | None = None,
     confirmation: str = "",
 ) -> None:
     mutating_paths = {tuple(path) for path in mutating}
-    hosted_paths = {tuple(path) for path in hosted}
     for child_path in paths:
         child_key = tuple(child_path)
         full_path = (root, *tuple(child_path))
@@ -573,17 +475,13 @@ def _register_command_family(
             handler_factory(tuple(child_path)),
             mutating=child_key in mutating_paths,
             confirmation=confirmation or f"Run `hermes {usage}`?",
-            contexts=ALL_CONTEXTS if child_key in hosted_paths else LOCAL_CONTEXTS,
         )
 
 
 class HermesConsoleEngine:
     """Curated line-command executor for Hermes Console."""
 
-    def __init__(self, *, output_limit: int = 20000, context: ConsoleContext = "local"):
-        if context not in ALL_CONTEXTS:
-            raise ValueError(f"Unknown console context: {context}")
-        self.context = context
+    def __init__(self, *, output_limit: int = 20000):
         self.output_limit = output_limit
         self.history: list[str] = []
         self.commands: dict[tuple[str, ...], ConsoleCommand] = {}
@@ -641,8 +539,6 @@ class HermesConsoleEngine:
             "Supported commands:",
         ]
         for command in sorted(self.commands.values(), key=lambda c: c.usage):
-            if self.context not in command.contexts:
-                continue
             marker = " *" if command.mutating else "  "
             lines.append(f"{marker} {command.usage:<32} {_table_summary(command.summary)}")
         lines.extend(
@@ -655,13 +551,13 @@ class HermesConsoleEngine:
         return "\n".join(lines)
 
     def _register_defaults(self) -> None:
-        self.register(("status",), "status", "Show Hermes component status.", _status, contexts=ALL_CONTEXTS)
-        self.register(("doctor",), "doctor", "Run diagnostics without auto-fix.", _doctor, contexts=ALL_CONTEXTS)
-        self.register(("logs",), "logs [name] [-n N]", "Show recent Hermes logs.", _logs, contexts=ALL_CONTEXTS)
-        self.register(("sessions", "list"), "sessions list [--limit N]", "List recent sessions.", _sessions_list, contexts=ALL_CONTEXTS)
-        self.register(("sessions", "stats"), "sessions stats", "Show session store statistics.", _sessions_stats, contexts=ALL_CONTEXTS)
-        self.register(("config", "show"), "config show", "Show current configuration.", _config_show, contexts=ALL_CONTEXTS)
-        self.register(("config", "path"), "config path", "Print config.yaml path.", _config_path, contexts=ALL_CONTEXTS)
+        self.register(("status",), "status", "Show Hermes component status.", _status)
+        self.register(("doctor",), "doctor", "Run diagnostics without auto-fix.", _doctor)
+        self.register(("logs",), "logs [name] [-n N]", "Show recent Hermes logs.", _logs)
+        self.register(("sessions", "list"), "sessions list [--limit N]", "List recent sessions.", _sessions_list)
+        self.register(("sessions", "stats"), "sessions stats", "Show session store statistics.", _sessions_stats)
+        self.register(("config", "show"), "config show", "Show current configuration.", _config_show)
+        self.register(("config", "path"), "config path", "Print config.yaml path.", _config_path)
         self.register(
             ("config", "set"),
             "config set <key> <value>",
@@ -669,10 +565,9 @@ class HermesConsoleEngine:
             _config_set,
             mutating=True,
             confirmation="Update Hermes configuration?",
-            contexts=ALL_CONTEXTS,
         )
-        self.register(("cron", "list"), "cron list [--all]", "List scheduled jobs.", _cron_list, contexts=ALL_CONTEXTS)
-        self.register(("cron", "status"), "cron status", "Show cron scheduler status.", _cron_status, contexts=ALL_CONTEXTS)
+        self.register(("cron", "list"), "cron list [--all]", "List scheduled jobs.", _cron_list)
+        self.register(("cron", "status"), "cron status", "Show cron scheduler status.", _cron_status)
         self.register(
             ("cron", "pause"),
             "cron pause <job>",
@@ -680,7 +575,6 @@ class HermesConsoleEngine:
             _cron_pause,
             mutating=True,
             confirmation="Pause this cron job?",
-            contexts=ALL_CONTEXTS,
         )
         self.register(
             ("cron", "resume"),
@@ -689,7 +583,6 @@ class HermesConsoleEngine:
             _cron_resume,
             mutating=True,
             confirmation="Resume this cron job?",
-            contexts=ALL_CONTEXTS,
         )
         self.register(
             ("cron", "run"),
@@ -698,7 +591,6 @@ class HermesConsoleEngine:
             _cron_run,
             mutating=True,
             confirmation="Trigger this cron job?",
-            contexts=ALL_CONTEXTS,
         )
         self._register_broad_cli_surface()
 
@@ -1214,8 +1106,6 @@ class HermesConsoleEngine:
                 ),
             )
 
-        self._mark_hosted(EXPECTED_HOSTED_PATHS)
-
     def register(
         self,
         path: Iterable[str],
@@ -1225,7 +1115,6 @@ class HermesConsoleEngine:
         *,
         mutating: bool = False,
         confirmation: str = "",
-        contexts: Iterable[ConsoleContext] = LOCAL_CONTEXTS,
     ) -> None:
         key = tuple(path)
         self.commands[key] = ConsoleCommand(
@@ -1235,19 +1124,8 @@ class HermesConsoleEngine:
             handler=handler,
             mutating=mutating,
             confirmation=confirmation,
-            contexts=frozenset(contexts),
         )
 
-    def _mark_hosted(self, paths: Iterable[Sequence[str]]) -> None:
-        for path in paths:
-            key = tuple(path)
-            command = self.commands.get(key)
-            if command is None:
-                raise RuntimeError(f"Hosted console policy references unknown command: {' '.join(key)}")
-            self.commands[key] = replace(
-                command,
-                contexts=command.contexts | frozenset({"hosted"}),
-            )
 
     def _execute_builtin(self, tokens: list[str]) -> ConsoleResult | None:
         head = tokens[0]
@@ -1275,28 +1153,13 @@ class HermesConsoleEngine:
             key = tuple(tokens[:size])
             command = self.commands.get(key)
             if command:
-                if self.context not in command.contexts:
-                    raise ConsoleCommandError(
-                        f"`hermes {command.usage}` is not available in "
-                        f"{self.context} Hermes Console."
-                    )
-                self._enforce_context_policy(command, list(tokens[size:]))
                 return command, list(tokens[size:])
 
-        available = [
-            " ".join(path)
-            for path, command in self.commands.items()
-            if self.context in command.contexts
-        ]
+        available = [" ".join(path) for path in self.commands]
         probe = " ".join(tokens[:2]) if len(tokens) > 1 else tokens[0]
         suggestions = difflib.get_close_matches(probe, available, n=3, cutoff=0.45)
         suffix = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
         raise ConsoleCommandError(f"Unsupported Hermes Console command: {probe}.{suffix}")
-
-    def _enforce_context_policy(self, command: ConsoleCommand, args: list[str]) -> None:
-        if self.context != "hosted":
-            return
-        _enforce_hosted_line_policy(command.path, args)
 
     def _rejection_for(self, tokens: Sequence[str]) -> str:
         first = tokens[0]
@@ -1368,117 +1231,7 @@ def _expect_no_args(args: Sequence[str], usage: str) -> None:
         raise ConsoleCommandError(f"Usage: {usage}")
 
 
-HOSTED_CONFIG_ALLOWED_PREFIXES = (
-    "display.",
-    "ui.",
-    "tts.",
-    "voice.",
-    "speech.",
-    "sessions.",
-    "cron.",
-)
-HOSTED_CONFIG_ALLOWED_KEYS = {
-    "display.interface",
-}
-HOSTED_CONFIG_BLOCKED_PREFIXES = (
-    "auth.",
-    "dashboard.",
-    "gateway.",
-    "managed.",
-    "model.",
-    "portal.",
-    "provider.",
-    "providers.",
-    "tool_gateway.",
-    "custom_providers.",
-    "mcp_servers.",
-)
-HOSTED_CONFIG_BLOCKED_NAMES = {
-    "portal_url",
-    "portal.url",
-    "portal.base_url",
-    "inference_url",
-    "inference.url",
-    "inference.base_url",
-    "nous.portal_url",
-    "nous.inference_url",
-    "openrouter_api_key",
-    "openai_api_key",
-    "anthropic_api_key",
-}
-
-
-def _flag_present(args: Sequence[str], flag: str) -> bool:
-    return any(arg == flag or arg.startswith(f"{flag}=") for arg in args)
-
-
-def _flag_value(args: Sequence[str], flag: str) -> str | None:
-    for index, arg in enumerate(args):
-        if arg == flag:
-            if index + 1 < len(args):
-                return args[index + 1]
-            return ""
-        prefix = f"{flag}="
-        if arg.startswith(prefix):
-            return arg[len(prefix) :]
-    return None
-
-
-def _hosted_config_key_allowed(key: str) -> bool:
-    normalized = key.strip().lower()
-    if normalized in HOSTED_CONFIG_BLOCKED_NAMES:
-        return False
-    if normalized.startswith(HOSTED_CONFIG_BLOCKED_PREFIXES):
-        return False
-    return normalized in HOSTED_CONFIG_ALLOWED_KEYS or normalized.startswith(
-        HOSTED_CONFIG_ALLOWED_PREFIXES
-    )
-
-
-def _enforce_hosted_line_policy(path: tuple[str, ...], args: Sequence[str]) -> None:
-    if path == ("config", "set"):
-        key = args[0] if args else ""
-        if key and not _hosted_config_key_allowed(key):
-            raise ConsoleCommandError(
-                f"`config set {key}` is not available in hosted Hermes Console. "
-                "Use the dashboard setting for hosted account/provider changes."
-            )
-        return
-
-    if path == ("mcp", "add"):
-        if _flag_present(args, "--command") or _flag_present(args, "--args"):
-            raise ConsoleCommandError(
-                "Hosted Hermes Console does not add stdio MCP servers. "
-                "Use catalog install or an HTTP/SSE URL."
-            )
-        if _flag_present(args, "--preset"):
-            raise ConsoleCommandError(
-                "Hosted Hermes Console does not add MCP presets directly. "
-                "Use `mcp install <catalog-name>`."
-            )
-        url = _flag_value(args, "--url")
-        if not url:
-            raise ConsoleCommandError(
-                "Hosted Hermes Console requires `mcp add` to use --url with "
-                "an HTTP/SSE endpoint."
-            )
-        scheme = urlparse(url).scheme.lower()
-        if scheme not in {"http", "https"}:
-            raise ConsoleCommandError(
-                "Hosted Hermes Console only accepts http:// or https:// MCP URLs."
-            )
-        return
-
-    if path in {("cron", "create"), ("cron", "edit")}:
-        for flag in ("--script", "--no-agent", "--workdir"):
-            if _flag_present(args, flag):
-                raise ConsoleCommandError(
-                    f"`cron {' '.join(path[1:])} {flag}` is not available in "
-                    "hosted Hermes Console."
-                )
-
-
-def _apply_confirmed_defaults(args: argparse.Namespace, context: ConsoleContext) -> None:
+def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
     """Skip nested prompts after the console-level confirmation has happened."""
 
     for attr in ("yes",):
@@ -1764,7 +1517,6 @@ def _profile_status(_engine: HermesConsoleEngine, args: list[str]) -> str:
         module_name="hermes_cli.subcommands.profile",
         builder_name="build_profile_parser",
         main_handler_name="cmd_profile",
-        console_context=_engine.context,
     )
 
 

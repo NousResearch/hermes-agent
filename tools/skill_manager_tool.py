@@ -869,6 +869,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
+    # Invalidate the semantic skill index so the next session build re-ranks.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([name])
+    except Exception:
+        pass  # index is best-effort; never block skill management
     if category:
         result["category"] = category
     result["hint"] = (
@@ -1041,6 +1047,12 @@ def _patch_skill(
         "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
+    # Invalidate the semantic skill index so the next session build re-ranks.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([name])
+    except Exception:
+        pass  # index is best-effort; never block skill management
     return result
 
 
@@ -1118,6 +1130,13 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         curator_pass = is_background_review()
     except Exception:
         curator_pass = False
+
+    # Invalidate the semantic skill index so the deleted/archived skill is dropped.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([name])
+    except Exception:
+        pass  # index is best-effort; never block skill management
 
     if curator_pass:
         try:

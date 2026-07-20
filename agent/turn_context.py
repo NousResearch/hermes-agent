@@ -45,6 +45,7 @@ def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
     plugin_user_context: str,
+    retrieved_skills_context: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
@@ -71,6 +72,8 @@ def compose_user_api_content(
             injections.append(fenced)
     if plugin_user_context:
         injections.append(plugin_user_context)
+    if retrieved_skills_context:
+        injections.append(retrieved_skills_context)
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
@@ -263,6 +266,8 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Retrieved semantic skills context (appended to user message dynamically per-turn).
+    retrieved_skills_context: str = ""
 
 
 def build_turn_context(
@@ -801,6 +806,42 @@ def build_turn_context(
         except Exception:
             pass
 
+    # Retrieve semantic skills context per turn if enabled
+    retrieved_skills_context = ""
+    try:
+        from hermes_cli.config import load_config as _load_config
+        _cfg = _load_config()
+        _ss = (_cfg.get("skills") or {}).get("semantic_search") or {}
+        _semantic_enabled = _ss.get("enabled", True)
+    except Exception:
+        _semantic_enabled = True
+
+    if _semantic_enabled and any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
+        try:
+            from agent.prompt_builder import build_retrieved_skills_context
+            from run_agent import get_toolset_for_tool
+            _compact_cats = frozenset()
+            try:
+                from agent.coding_context import coding_compact_skill_categories
+                _compact_cats = coding_compact_skill_categories(
+                    platform=agent.platform, cwd=resolve_context_cwd()
+                )
+            except Exception:
+                pass
+            avail_toolsets = {
+                get_toolset_for_tool(tool_name)
+                for tool_name in agent.valid_tool_names
+            }
+            avail_toolsets = {ts for ts in avail_toolsets if ts}
+            retrieved_skills_context = build_retrieved_skills_context(
+                query_text=user_message,
+                available_tools=agent.valid_tool_names,
+                available_toolsets=avail_toolsets,
+                compact_categories=_compact_cats or None,
+            )
+        except Exception as e:
+            logger.debug("Failed to retrieve semantic skills context: %s", e)
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
@@ -826,7 +867,10 @@ def build_turn_context(
     ):
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
-            _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+            _turn_user_msg.get("content", ""),
+            ext_prefetch_cache,
+            plugin_user_context,
+            retrieved_skills_context=retrieved_skills_context,
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
@@ -899,4 +943,5 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        retrieved_skills_context=retrieved_skills_context,
     )

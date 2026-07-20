@@ -401,6 +401,18 @@ class TestPromptBuilderImports:
 
 class TestBuildSkillsSystemPrompt:
     @pytest.fixture(autouse=True)
+    def _mock_semantic_search_disabled(self):
+        from unittest.mock import patch
+        with patch("hermes_cli.config.load_config", return_value={
+            "skills": {
+                "semantic_search": {
+                    "enabled": False,
+                }
+            }
+        }):
+            yield
+
+    @pytest.fixture(autouse=True)
     def _clear_skills_cache(self):
         """Ensure the in-process skills prompt cache doesn't leak between tests."""
         from agent.prompt_builder import clear_skills_system_prompt_cache

@@ -1750,12 +1750,13 @@ def _image_source_from_openai_url(url: str) -> Dict[str, str]:
         sniffed_type = _sniff_mime_from_bytes(raw)
         if sniffed_type in _ANTHROPIC_IMAGE_MEDIA_TYPES:
             media_type = sniffed_type
-        elif media_type not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
+        else:
             transcoded = _transcode_to_png(raw)
             if transcoded is None:
                 raise ValueError(
-                    f"Anthropic does not support image media type {media_type!r}, "
-                    "and the image could not be converted to PNG"
+                    f"Anthropic image payload declared as {media_type!r} has an "
+                    "unsupported or unrecognized byte format and could not be "
+                    "converted to PNG"
                 )
             media_type = "image/png"
             data = base64.b64encode(transcoded).decode("ascii")

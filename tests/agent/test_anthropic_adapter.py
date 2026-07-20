@@ -900,12 +900,19 @@ class TestConvertMessages:
         ]
 
     def test_converts_data_url_image_blocks_to_base64_anthropic_image_blocks(self):
+        png_data = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNg"
+            "YAAAAAMAASsJTYQAAAAASUVORK5CYII="
+        )
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": "What is in this screenshot?"},
-                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{png_data}",
+                    },
                 ],
             }
         ]
@@ -922,7 +929,7 @@ class TestConvertMessages:
                         "source": {
                             "type": "base64",
                             "media_type": "image/png",
-                            "data": "AAAA",
+                            "data": png_data,
                         },
                     },
                 ],
@@ -930,6 +937,10 @@ class TestConvertMessages:
         ]
 
     def test_normalizes_jpg_alias_before_anthropic_request(self):
+        image_module = pytest.importorskip("PIL.Image")
+        buffer = BytesIO()
+        image_module.new("RGB", (1, 1), color="red").save(buffer, format="JPEG")
+        jpeg_data = base64.b64encode(buffer.getvalue()).decode("ascii")
         messages = [
             {
                 "role": "user",
@@ -937,7 +948,7 @@ class TestConvertMessages:
                     {"type": "input_text", "text": "Describe this image"},
                     {
                         "type": "input_image",
-                        "image_url": "data:image/jpg;base64,QUJD",
+                        "image_url": f"data:image/jpg;base64,{jpeg_data}",
                     },
                 ],
             }
@@ -948,7 +959,7 @@ class TestConvertMessages:
         assert result[0]["content"][1]["source"] == {
             "type": "base64",
             "media_type": "image/jpeg",
-            "data": "QUJD",
+            "data": jpeg_data,
         }
 
     def test_uses_magic_bytes_when_data_url_label_is_wrong(self):
@@ -975,7 +986,7 @@ class TestConvertMessages:
         assert source["media_type"] == "image/png"
         assert source["data"] == png_data
 
-    def test_transcodes_unsupported_raster_image_to_png(self):
+    def test_transcodes_raster_bytes_even_when_declared_type_is_native(self):
         image_module = pytest.importorskip("PIL.Image")
         buffer = BytesIO()
         image_module.new("RGB", (1, 1), color="red").save(buffer, format="BMP")
@@ -987,7 +998,7 @@ class TestConvertMessages:
                     {"type": "input_text", "text": "Describe this image"},
                     {
                         "type": "input_image",
-                        "image_url": f"data:image/bmp;base64,{bmp_data}",
+                        "image_url": f"data:image/png;base64,{bmp_data}",
                     },
                 ],
             }
@@ -999,9 +1010,17 @@ class TestConvertMessages:
         assert source["media_type"] == "image/png"
         assert base64.b64decode(source["data"]).startswith(b"\x89PNG\r\n\x1a\n")
 
-    def test_rejects_unsupported_vector_image_without_mime_spoofing(self):
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>',
+            b"not an image",
+        ],
+        ids=["svg", "corrupt"],
+    )
+    def test_rejects_unconvertible_bytes_even_when_declared_type_is_native(self, raw):
         svg_data = base64.b64encode(
-            b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+            raw
         ).decode("ascii")
         messages = [
             {
@@ -1010,13 +1029,13 @@ class TestConvertMessages:
                     {"type": "input_text", "text": "Describe this image"},
                     {
                         "type": "input_image",
-                        "image_url": f"data:image/svg+xml;base64,{svg_data}",
+                        "image_url": f"data:image/png;base64,{svg_data}",
                     },
                 ],
             }
         ]
 
-        with pytest.raises(ValueError, match="does not support image media type"):
+        with pytest.raises(ValueError, match="could not be converted to PNG"):
             convert_messages_to_anthropic(messages)
 
     def test_converts_tool_calls(self):
@@ -1335,6 +1354,10 @@ class TestConvertMessages:
         assert assistant_blocks[1]["type"] == "tool_use"
 
     def test_converts_data_url_image_to_anthropic_image_block(self):
+        png_data = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNg"
+            "YAAAAAMAASsJTYQAAAAASUVORK5CYII="
+        )
         messages = [
             {
                 "role": "user",
@@ -1342,7 +1365,7 @@ class TestConvertMessages:
                     {"type": "text", "text": "Describe this image"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
+                        "image_url": {"url": f"data:image/png;base64,{png_data}"},
                     },
                 ],
             }
@@ -1356,7 +1379,7 @@ class TestConvertMessages:
             "source": {
                 "type": "base64",
                 "media_type": "image/png",
-                "data": "ZmFrZQ==",
+                "data": png_data,
             },
         }
 

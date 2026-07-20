@@ -5,34 +5,29 @@ manifest_version: 1
 name: arcade-agent
 description: Parse codebases, recover architecture, detect smells, and compute quality metrics.
 source: https://github.com/lemduc/arcade-agent
-platforms: [linux, macos]
 
 transport:
   type: stdio
-  # Safe because the top-level platform gate rejects native Windows before
-  # installation; this pinned Arcade revision has no cross-platform launcher.
-  command: "${INSTALL_DIR}/.venv/bin/arcade-mcp"
-  version: d6956936fdb985116b101f51bfbd84d6fe221c07
-
-install:
-  type: git
-  url: https://github.com/lemduc/arcade-agent.git
-  # Pin a reviewed main commit from 2026-06-08, beyond the catalog's two-week
-  # supply-chain cooldown while retaining the advertised analysis tool surface.
-  ref: d6956936fdb985116b101f51bfbd84d6fe221c07
-  requires:
-    - python3.12
-  bootstrap:
-    - "python3.12 -m venv .venv"
-    - ".venv/bin/python -m ensurepip --upgrade"
-    - ".venv/bin/python -m pip install '.[mcp]'"
+  # uvx manages the Python 3.12 runtime and isolates the exact PyPI release.
+  command: uvx
+  args:
+    - --python
+    - "3.12"
+    - --from
+    - "arcade-agent[mcp]==0.1.0"
+    - arcade-mcp
+  version: "0.1.0"
+  # Fail closed: even if a caller requests use_llm=true, Arcade must not
+  # invoke the external Claude CLI unless the user explicitly removes this.
+  env:
+    ARCADE_MOCK: "1"
 
 auth:
   type: none
 
 # Keep Hermes's model-tool footprint focused while exposing the complete
-# architecture workflow supported on Arcade Agent's main branch. Session IDs
-# from parse and recover feed the downstream tools without large payloads.
+# architecture workflow available in the pinned stable release. Session IDs
+# from parse and recover feed downstream tools without large payloads.
 tools:
   default_enabled:
     - summarize
@@ -43,10 +38,14 @@ tools:
     - get_full_result
 
 post_install: |
-  Arcade Agent runs locally and needs no credentials. The default tool set
-  covers codebase summary, architecture recovery, smell detection, metrics,
-  and result retrieval using the stable tools currently supported on main.
-  It requires Python 3.12 or newer exposed as python3.12 on Linux or macOS.
+  Arcade Agent runs locally and needs no credentials. uvx downloads the
+  pinned release on first use, manages Python 3.12, and reuses its own cache
+  afterwards. Parsing and summaries may write .arcade-cache in the analyzed
+  repository.
+
+  ARCADE_MOCK=1 prevents detect_smells(use_llm=true) from invoking the external
+  Claude CLI. Remove that environment override from mcp_servers.arcade-agent
+  only if you explicitly opt in to sending architecture context to Claude.
 
   Start a new Hermes session, then ask it to analyze a local repository. Pass
   the session ID returned by parse into recover, then reuse both session IDs

@@ -7,7 +7,7 @@ upstream advisories without auth or extra binaries:
 2. Python deps declared by user-installed plugins under ``~/.hermes/plugins``
    (``requirements.txt`` + ``pyproject.toml`` best-effort pin extraction).
 3. MCP servers wired in ``config.yaml`` whose ``command/args`` look like
-   ``npx -y <pkg>@<ver>`` or ``uvx <pkg>==<ver>``.
+   ``npx -y <pkg>@<ver>`` or ``uvx [--from] <pkg>==<ver>``.
 
 Vulnerabilities are looked up against OSV.dev (``api.osv.dev/v1/querybatch``
 + ``/v1/vulns/{id}``). Single-shot, on-demand, never daily — see the design
@@ -210,7 +210,10 @@ _NPX_PKG = re.compile(r"^(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)@([A-
 # uvx forms:
 #   uvx pkg==1.2.3
 #   uvx --with pkg==1.2.3 entrypoint
-_UVX_PKG = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9._+!-]+)$")
+#   uvx --from 'pkg[extra]==1.2.3' entrypoint
+_UVX_PKG = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?==([A-Za-z0-9._+!-]+)$"
+)
 
 
 def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> Optional[Component]:
@@ -240,9 +243,31 @@ def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> O
             return None  # First non-flag token isn't a pinned ref
     # uvx (any prefix path)
     if cmd.endswith("uvx") or cmd == "uvx":
-        for token in args:
-            if token.startswith("-"):
-                continue
+        explicit_from = None
+        for index, token in enumerate(args):
+            if token == "--from" and index + 1 < len(args):
+                explicit_from = args[index + 1]
+                break
+            elif token.startswith("--from="):
+                explicit_from = token.removeprefix("--from=")
+                break
+
+        package_tokens = [explicit_from] if explicit_from is not None else []
+        if explicit_from is None:
+            skip_next = False
+            for token in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if token in {"--python", "--with"}:
+                    skip_next = True
+                    continue
+                if token.startswith("-"):
+                    continue
+                package_tokens.append(token)
+                break
+
+        for token in package_tokens:
             m = _UVX_PKG.match(token)
             if m:
                 return Component(
@@ -251,7 +276,7 @@ def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> O
                     ecosystem="PyPI",
                     source=f"mcp:{server_name}",
                 )
-            return None
+        return None
     return None
 
 

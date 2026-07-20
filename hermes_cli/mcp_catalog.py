@@ -30,7 +30,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -97,7 +96,6 @@ class InstallSpec:
     type: str  # "git"
     url: str
     ref: str  # commit/tag/branch — pinned, never floats
-    requires: List[str] = field(default_factory=list)
     bootstrap: List[str] = field(default_factory=list)
 
 
@@ -124,7 +122,6 @@ class CatalogEntry:
     auth: AuthSpec
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
-    platforms: List[str] = field(default_factory=list)
     post_install: str = ""
     manifest_path: Path = field(default_factory=Path)
 
@@ -185,19 +182,6 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         raise CatalogError(f"{path}: 'description' required")
 
     source = str(data.get("source") or "").strip()
-
-    platforms_raw = data.get("platforms") or []
-    if not isinstance(platforms_raw, list) or not all(
-        isinstance(platform_name, str) for platform_name in platforms_raw
-    ):
-        raise CatalogError(f"{path}: 'platforms' must be a list of strings")
-    platforms = [platform_name.lower() for platform_name in platforms_raw]
-    supported_platforms = {"linux", "macos", "windows"}
-    invalid_platforms = sorted(set(platforms) - supported_platforms)
-    if invalid_platforms:
-        raise CatalogError(
-            f"{path}: unsupported platform name(s): {', '.join(invalid_platforms)}"
-        )
 
     transport_raw = data.get("transport") or {}
     if not isinstance(transport_raw, dict):
@@ -274,19 +258,10 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         bootstrap = install_raw.get("bootstrap") or []
         if not isinstance(bootstrap, list):
             raise CatalogError(f"{path}: install.bootstrap must be a list")
-        requires = install_raw.get("requires") or []
-        if not isinstance(requires, list) or not all(
-            isinstance(executable, str) and executable.strip()
-            for executable in requires
-        ):
-            raise CatalogError(
-                f"{path}: install.requires must be a list of executable names"
-            )
         install = InstallSpec(
             type=i_type,
             url=url,
             ref=ref,
-            requires=[executable.strip() for executable in requires],
             bootstrap=[str(c) for c in bootstrap],
         )
 
@@ -298,7 +273,6 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         auth=auth,
         tools=tools_spec,
         install=install,
-        platforms=platforms,
         post_install=str(data.get("post_install") or ""),
         manifest_path=path,
     )
@@ -418,13 +392,6 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     bootstrap commands. Returns the install directory."""
     assert entry.install is not None and entry.install.type == "git"
     install = entry.install
-
-    for executable in install.requires:
-        if not shutil.which(executable):
-            raise CatalogError(
-                f"{entry.name} requires '{executable}' on PATH before installation"
-            )
-
     dest = _install_root() / entry.name
 
     git = shutil.which("git")
@@ -470,27 +437,6 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         _run_bootstrap(dest, install.bootstrap)
 
     return dest
-
-
-def _current_platform() -> str:
-    """Return the manifest platform name for the running interpreter."""
-    if sys.platform == "darwin":
-        return "macos"
-    if sys.platform == "win32":
-        return "windows"
-    if sys.platform.startswith("linux"):
-        return "linux"
-    return sys.platform
-
-
-def _ensure_platform_supported(entry: CatalogEntry) -> None:
-    """Reject platform-gated entries before installation has side effects."""
-    current = _current_platform()
-    if entry.platforms and current not in entry.platforms:
-        supported = ", ".join(entry.platforms)
-        raise CatalogError(
-            f"{entry.name} supports only {supported}; current platform is {current}"
-        )
 
 
 def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
@@ -755,8 +701,6 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
            ``tools.default_enabled`` or all-on.
         6. Print post_install notes.
     """
-    _ensure_platform_supported(entry)
-
     print()
     print(color(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD))
     if entry.description:

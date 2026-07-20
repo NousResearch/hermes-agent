@@ -88,8 +88,21 @@ def _parse_package_from_args(
     # binary. Without this the first bare positional (often the command name)
     # is mistaken for the package.
     package_token = None
+    if ecosystem == "PyPI":
+        for index, arg in enumerate(args):
+            if not isinstance(arg, str):
+                continue
+            if arg == "--from" and index + 1 < len(args):
+                candidate = args[index + 1]
+                if isinstance(candidate, str):
+                    package_token = candidate
+                    break
+            if arg.startswith("--from="):
+                package_token = arg[len("--from="):]
+                break
+
     take_next = False
-    for arg in args:
+    for arg in args if package_token is None else ():
         if not isinstance(arg, str):
             continue
         if take_next:

@@ -122,27 +122,6 @@ class TestManifestParsing:
         assert e.transport.args == ["-y", "demo-mcp"]
         assert e.auth.type == "none"
         assert e.install is None
-        assert e.platforms == []
-
-    def test_platforms_parsed(self, catalog_dir):
-        _write_manifest(
-            catalog_dir,
-            "demo",
-            _basic_manifest(platforms=["linux", "macos"]),
-        )
-        from hermes_cli.mcp_catalog import list_catalog
-
-        assert list_catalog()[0].platforms == ["linux", "macos"]
-
-    def test_invalid_platform_rejected(self, catalog_dir):
-        _write_manifest(
-            catalog_dir,
-            "demo",
-            _basic_manifest(platforms=["plan9"]),
-        )
-        from hermes_cli.mcp_catalog import list_catalog
-
-        assert list_catalog() == []
 
     def test_api_key_auth(self, catalog_dir):
         body = _basic_manifest(
@@ -171,7 +150,6 @@ class TestManifestParsing:
                 "type": "git",
                 "url": "https://example.com/demo.git",
                 "ref": "v1.0.0",
-                "requires": ["python3.12"],
                 "bootstrap": ["pip install -r requirements.txt"],
             },
             transport={
@@ -187,7 +165,6 @@ class TestManifestParsing:
         assert e.install is not None
         assert e.install.url == "https://example.com/demo.git"
         assert e.install.ref == "v1.0.0"
-        assert e.install.requires == ["python3.12"]
         assert e.install.bootstrap == ["pip install -r requirements.txt"]
 
     def test_invalid_manifest_skipped(self, catalog_dir):
@@ -254,25 +231,6 @@ class TestManifestParsing:
 
 
 class TestInstall:
-    def test_install_rejects_unsupported_platform_before_side_effects(
-        self, catalog_dir, monkeypatch
-    ):
-        _write_manifest(
-            catalog_dir,
-            "demo",
-            _basic_manifest(platforms=["linux", "macos"]),
-        )
-        from hermes_cli import mcp_catalog
-        from hermes_cli.config import load_config
-        from hermes_cli.mcp_catalog import CatalogError, install_entry
-
-        monkeypatch.setattr(mcp_catalog, "_current_platform", lambda: "windows")
-
-        with pytest.raises(CatalogError, match="supports only linux, macos"):
-            install_entry(_entry("demo"), enable=True)
-
-        assert "demo" not in load_config().get("mcp_servers", {})
-
     def test_install_simple_stdio_writes_config(self, catalog_dir):
         _write_manifest(catalog_dir, "demo", _basic_manifest())
         from hermes_cli.mcp_catalog import install_entry
@@ -714,33 +672,6 @@ class TestCustomMcpRows:
 
 
 class TestGitInstallShaRef:
-    def test_missing_prerequisite_fails_before_clone(
-        self, catalog_dir, monkeypatch
-    ):
-        body = _basic_manifest(
-            install={
-                "type": "git",
-                "url": "https://example.com/x.git",
-                "ref": "abc1234567890abcdef1234567890abcdef12345",
-                "requires": ["python3.12"],
-                "bootstrap": [],
-            },
-            transport={
-                "type": "stdio",
-                "command": "${INSTALL_DIR}/run.sh",
-                "args": [],
-            },
-        )
-        _write_manifest(catalog_dir, "demo", body)
-
-        from hermes_cli import mcp_catalog
-        from hermes_cli.mcp_catalog import CatalogError, _do_git_install
-
-        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda name: None)
-
-        with pytest.raises(CatalogError, match="requires 'python3.12' on PATH"):
-            _do_git_install(_entry("demo"))
-
     def test_sha_ref_skips_branch_attempt(self, catalog_dir, monkeypatch, tmp_path):
         """When install.ref is a SHA-shaped hex string, _do_git_install
         skips the `git clone --branch <ref>` attempt (which would always fail
@@ -945,7 +876,17 @@ class TestShippedCatalog:
 
             t = entry.transport
             if t.type == "stdio" and (t.command or "") in launcher_commands:
-                pkg_args = [a for a in t.args if not a.startswith("-")]
+                pkg_args = []
+                if t.command in {"uvx", "pipx"}:
+                    for index, arg in enumerate(t.args):
+                        if arg == "--from" and index + 1 < len(t.args):
+                            pkg_args = [t.args[index + 1]]
+                            break
+                        if arg.startswith("--from="):
+                            pkg_args = [arg.removeprefix("--from=")]
+                            break
+                if not pkg_args:
+                    pkg_args = [a for a in t.args if not a.startswith("-")]
                 if not pkg_args:
                     problems.append(f"{entry.name}: launcher {t.command} has no package arg")
                     continue

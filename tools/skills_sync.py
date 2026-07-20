@@ -759,9 +759,20 @@ def _rmtree_writable(path: Path) -> None:
     def _on_error(func, fpath, exc_info):
         # Unlinking a child requires the parent dir to be writable, so chmod
         # the parent as well as the failing path, then retry.
+        #
+        # ADD owner rwx to the existing mode rather than REPLACING it with
+        # ``0o700``. ``os.chmod(target, stat.S_IRWXU)`` is an assignment that
+        # discards all group/other bits; because this handler also chmods
+        # ``os.path.dirname(fpath)``, a failure on a direct child of the
+        # skills root clamps the *root itself* to ``0o700``, permanently
+        # stripping the group/other permissions a shared install relies on —
+        # and it re-clamps on every ``hermes update`` (#67496). Merging the
+        # owner-write bits in keeps the entry removable (the stated intent —
+        # #34860, #34972) without touching anyone else's access.
         for target in (os.path.dirname(fpath), fpath):
             try:
-                os.chmod(target, stat.S_IRWXU)
+                current = os.stat(target).st_mode
+                os.chmod(target, current | stat.S_IRWXU)
             except OSError:
                 pass
         func(fpath)

@@ -2,6 +2,7 @@
 
 import shutil
 import json
+import sys
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -270,6 +271,70 @@ class TestRmtreeWritableScopeGuard:
 
         assert skills.exists()
         assert not sub.exists()
+
+
+class TestRmtreeWritablePreservesParentMode:
+    """``_rmtree_writable``'s error handler must ADD owner-write to a
+    directory's mode, not REPLACE it with ``0o700`` (#67496).
+
+    The handler chmods ``os.path.dirname(fpath)`` to make a read-only entry
+    removable (Nix/deb/rpm sources — #34860, #34972). When the failing entry
+    is a direct child of the skills root, that parent *is* the skills root.
+    The previous ``os.chmod(target, stat.S_IRWXU)`` assignment discarded the
+    group/other bits, clamping the root to ``0o700`` on every ``hermes
+    update`` and breaking traversal for every non-owner role on a
+    group-shared install. The handler must instead OR owner-rwx into the
+    existing mode so shared permissions survive.
+    """
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"), reason="POSIX permission semantics"
+    )
+    def test_parent_group_other_bits_survive_rmtree(self, tmp_path):
+        import os
+        import stat
+
+        from tools.skills_sync import _rmtree_writable
+
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses permission checks; _on_error never fires")
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        # A skill directory directly under the root, with a file inside it.
+        skill = skills / "youtube-content"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# skill")
+
+        # Group-shared install with group traversal + a non-writable root.
+        # Removing the file inside ``skill`` succeeds (owner can write to
+        # ``skill``), but ``os.rmdir(skill)`` then fails because it needs
+        # write permission on the *parent* (the 0o550 root). rmtree falls
+        # into ``_on_error`` with ``fpath == skill`` (a direct child of the
+        # root), whose ``dirname`` is the root itself — exactly the path that
+        # clamped the root in #67496. 0o550 = r-xr-x--- (owner has NO write,
+        # group keeps r-x).
+        os.chmod(skills, 0o550)
+        captured_mode = None
+        try:
+            with patch("tools.skills_sync.SKILLS_DIR", skills):
+                _rmtree_writable(skill)
+            # Capture the root's mode BEFORE any cleanup restores it.
+            captured_mode = stat.S_IMODE(os.stat(skills).st_mode)
+        finally:
+            # Ensure pytest can clean up regardless of outcome.
+            os.chmod(skills, 0o755)
+
+        assert not skill.exists()  # the tree was actually removed
+        assert captured_mode is not None
+        mode = captured_mode
+        # Owner-write was added to make removal possible, but the group
+        # traversal bits that existed before MUST survive — the root must not
+        # collapse to 0o700.
+        assert mode & stat.S_IRGRP, f"group-read stripped: {oct(mode)}"
+        assert mode & stat.S_IXGRP, f"group-exec stripped: {oct(mode)}"
+        # Regression assertion: the root is NOT clamped to 0o700 (#67496).
+        assert mode != 0o700, "skills root was clamped to 0o700 (#67496 regression)"
 
 
 class TestExternalDirsIndexing:

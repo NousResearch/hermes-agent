@@ -305,6 +305,38 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    def test_probe_api_models_uses_explicit_native_catalog_url(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"models": [{"key": "loaded-chat", "type": "llm"}, {"key": "embed-only", "type": "embedding"}]}'
+
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=_Resp(),
+        ) as mock_urlopen:
+            probe = probe_api_models(
+                "key",
+                "https://inference.example.com/v1",
+                request_headers={"X-Catalog-Token": "catalog-token"},
+                models_url="https://catalog.example.com/api/v1/models",
+            )
+
+        assert mock_urlopen.call_count == 1
+        request = mock_urlopen.call_args[0][0]
+        assert request.full_url == "https://catalog.example.com/api/v1/models"
+        assert request.get_header("Authorization") == "Bearer key"
+        assert request.get_header("X-catalog-token") == "catalog-token"
+        assert probe["models"] == ["loaded-chat"]
+        assert probe["resolved_base_url"] == "https://inference.example.com/v1"
+        assert probe["suggested_base_url"] is None
+        assert probe["used_fallback"] is False
+
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):
@@ -623,6 +655,30 @@ class TestValidateApiFound:
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is True
+
+    def test_named_provider_uses_explicit_catalog_url_and_headers(self):
+        headers = {"X-Catalog-Token": "catalog-token"}
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["catalog-model"],
+        ) as mock_fetch:
+            result = validate_requested_model(
+                "catalog-model",
+                "private-gateway",
+                api_key="gateway-key",
+                base_url="https://inference.example.com/v1",
+                models_url="https://catalog.example.com/models",
+                headers=headers,
+            )
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        mock_fetch.assert_called_once_with(
+            "gateway-key",
+            "https://inference.example.com/v1",
+            headers=headers,
+            models_url="https://catalog.example.com/models",
+        )
 
 
 # -- validate — API not found ------------------------------------------------

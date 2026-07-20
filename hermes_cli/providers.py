@@ -242,6 +242,7 @@ class ProviderDef:
     auth_type: str = "api_key"
     doc: str = ""
     source: str = ""                      # "models.dev", "hermes", "user-config"
+    models_url: str = ""                  # explicit catalog URL, separate from inference
 
 
 # -- Aliases ------------------------------------------------------------------
@@ -629,6 +630,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     # Extract fields
     display_name = entry.get("name", "") or name
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
+    models_url = entry.get("models_url", "") or ""
     key_env = entry.get("key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
 
@@ -642,6 +644,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
         transport=transport,
         api_key_env_vars=tuple(env_vars),
         base_url=api_url,
+        models_url=models_url,
         is_aggregator=False,
         auth_type="api_key",
         source="user-config",
@@ -674,7 +677,7 @@ def resolve_custom_provider(
     # from a prior model-switch bug), fall back to the first custom
     # provider entry so existing configs self-heal.  (GH #17478)
     bare_custom_fallback = requested == "custom"
-    first_valid: Optional[Tuple[str, str, Tuple[str, ...]]] = None
+    first_valid: Optional[Tuple[str, str, str, Tuple[str, ...]]] = None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -687,6 +690,7 @@ def resolve_custom_provider(
             or entry.get("api", "")
             or ""
         ).strip()
+        models_url = (entry.get("models_url") or "").strip()
         if not display_name or not api_url:
             continue
 
@@ -697,7 +701,7 @@ def resolve_custom_provider(
 
         # Stash the first valid entry for bare-"custom" fallback
         if first_valid is None:
-            first_valid = (display_name, api_url, tuple(env_vars))
+            first_valid = (display_name, api_url, models_url, tuple(env_vars))
 
         slug = custom_provider_slug(display_name)
         if requested not in {display_name.lower(), slug}:
@@ -709,6 +713,7 @@ def resolve_custom_provider(
             transport="openai_chat",
             api_key_env_vars=tuple(env_vars),
             base_url=api_url,
+            models_url=models_url,
             is_aggregator=False,
             auth_type="api_key",
             source="user-config",
@@ -716,7 +721,7 @@ def resolve_custom_provider(
 
     # Self-heal: bare "custom" matched nothing — return first valid entry
     if bare_custom_fallback and first_valid:
-        dname, aurl, denv = first_valid
+        dname, aurl, murl, denv = first_valid
         slug = custom_provider_slug(dname)
         return ProviderDef(
             id=slug,
@@ -724,6 +729,7 @@ def resolve_custom_provider(
             transport="openai_chat",
             api_key_env_vars=denv,
             base_url=aurl,
+            models_url=murl,
             is_aggregator=False,
             auth_type="api_key",
             source="user-config",

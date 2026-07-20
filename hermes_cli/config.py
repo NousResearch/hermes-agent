@@ -4973,6 +4973,7 @@ def _normalize_custom_provider_entry(
     _CAMEL_ALIASES: Dict[str, str] = {
         "apiKey": "api_key",
         "baseUrl": "base_url",
+        "modelsUrl": "models_url",
         "apiMode": "api_mode",
         "keyEnv": "key_env",
         "apiKeyEnv": "key_env",  # alias — OpenClaw-compatible + docs variant
@@ -4991,7 +4992,7 @@ def _normalize_custom_provider_entry(
         # into provider entries. Accept it silently so those (self-written)
         # configs don't warn on every load.
         "provider",
-        "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
+        "name", "api", "url", "base_url", "models_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
@@ -5056,6 +5057,22 @@ def _normalize_custom_provider_entry(
         "name": name,
         "base_url": base_url,
     }
+
+    raw_models_url = entry.get("models_url")
+    if isinstance(raw_models_url, str) and raw_models_url.strip():
+        models_url = raw_models_url.strip()
+        if re.search(r"\{[^}]+\}", models_url):
+            normalized["models_url"] = models_url
+        else:
+            parsed_models_url = urlparse(models_url)
+            if parsed_models_url.scheme and parsed_models_url.netloc:
+                normalized["models_url"] = models_url
+            else:
+                logger.warning(
+                    "providers.%s: 'models_url' value '%s' is not a valid URL "
+                    "(no scheme or host) — ignored",
+                    provider_key or "?", models_url,
+                )
 
     provider_key = provider_key.strip()
     if provider_key:
@@ -5158,6 +5175,7 @@ def _custom_provider_entry_to_provider_config(
 
     for field in (
         "name",
+        "models_url",
         "api_key",
         "key_env",
         "models",
@@ -5524,7 +5542,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
-    "name", "base_url", "api_key", "api_mode", "model", "models",
+    "name", "base_url", "models_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py

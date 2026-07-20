@@ -239,6 +239,8 @@ def test_is_routing_aggregator_excludes_flat_namespace_resellers():
 
 def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
+    validation_calls = []
+
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kwargs: {
@@ -247,7 +249,11 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    def fake_validate(*args, **kwargs):
+        validation_calls.append((args, kwargs))
+        return _MOCK_VALIDATION
+
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", fake_validate)
     monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
@@ -263,6 +269,7 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
             {
                 "name": "Local (127.0.0.1:4141)",
                 "base_url": "http://127.0.0.1:4141/v1",
+                "models_url": "http://127.0.0.1:4141/api/v1/models",
                 "model": "rotator-openrouter-coding",
             }
         ],
@@ -274,6 +281,9 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+    assert validation_calls[0][1]["models_url"] == (
+        "http://127.0.0.1:4141/api/v1/models"
+    )
 
 
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
@@ -957,6 +967,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
             "name": "my-gateway",
             "api_key": "sk-gateway-key",
             "base_url": "https://gateway.example.com/v1",
+            "models_url": "https://catalog.example.com/models",
             "model": "gateway-model-a",
             "models": {
                 "gateway-model-a": {"context_length": 128000},
@@ -983,7 +994,14 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     assert gateway_prov is not None, "Custom provider group not found in results"
     assert calls == [
-        ("sk-gateway-key", "https://gateway.example.com/v1", {"headers": None})
+        (
+            "sk-gateway-key",
+            "https://gateway.example.com/v1",
+            {
+                "headers": None,
+                "models_url": "https://catalog.example.com/models",
+            },
+        )
     ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",
@@ -1293,6 +1311,7 @@ def test_resolve_custom_provider_passes_key_env():
             {
                 "name": "token-plan",
                 "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "models_url": "https://catalog.xiaomimimo.com/models",
                 "key_env": "XIAOMI_MIMO_API_KEY",
                 "model": "mimo-v2-pro",
             }
@@ -1302,6 +1321,7 @@ def test_resolve_custom_provider_passes_key_env():
     assert resolved is not None
     assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)
     assert resolved.base_url == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert resolved.models_url == "https://catalog.xiaomimimo.com/models"
 
 
 def test_resolve_custom_provider_bare_custom_self_heal_passes_key_env():

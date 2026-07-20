@@ -101,8 +101,8 @@ def test_tool_preview_truncated_to_cap():
         enqueue_tool_line=lines.append, tool_mode="all", preview_max_len=10,
     )
     d.dispatch(ToolCallChunk(tool_name="x", preview="0123456789ABCDEF"))
-    # capped at 10 → 7 chars + "..." (then wrapped in quotes by the renderer)
-    assert '"0123456..."' in lines[0]
+    # capped at 10 → 7 chars + "..." (then wrapped in backticks by the renderer)
+    assert '`0123456...`' in lines[0]
     assert "89ABCDEF" not in lines[0]
 
 

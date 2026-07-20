@@ -2737,10 +2737,10 @@ class BasePlatformAdapter(ABC):
                 args_str = json.dumps(event.args, ensure_ascii=False, default=str)
                 if preview_max_len > 0 and len(args_str) > preview_max_len:
                     args_str = args_str[:preview_max_len - 3] + "..."
-                return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
+                return f"{emoji} `{event.tool_name}`({list(event.args.keys())})\n`{args_str}`"
             if event.preview:
-                return f"{emoji} {event.tool_name}: \"{event.preview}\""
-            return f"{emoji} {event.tool_name}..."
+                return f"{emoji} `{event.tool_name}`: `{event.preview}`"
+            return f"{emoji} `{event.tool_name}`..."
 
         # "all" / "new": short preview, capped (default 40 to keep gateway
         # progress bubbles compact — they persist as permanent messages).
@@ -2749,8 +2749,8 @@ class BasePlatformAdapter(ABC):
             cap = preview_max_len if preview_max_len > 0 else 40
             if len(preview) > cap:
                 preview = preview[:cap - 3] + "..."
-            return f"{emoji} {event.tool_name}: \"{preview}\""
-        return f"{emoji} {event.tool_name}..."
+            return f"{emoji} `{event.tool_name}`: `{preview}`"
+        return f"{emoji} `{event.tool_name}`..."
 
     @property
     def has_fatal_error(self) -> bool:

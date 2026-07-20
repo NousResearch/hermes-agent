@@ -108,6 +108,7 @@ import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { preparePooledRemoteBackend, preparePrimaryRemoteBackend } from './remote-readiness'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -4601,6 +4602,14 @@ async function waitForHermes(baseUrl, token) {
   throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
 }
 
+function remoteReadinessDeps() {
+  return {
+    fetchStatus: (baseUrl, token, options) => fetchJson(`${baseUrl}/api/status`, token, options),
+    mintTicket: mintGatewayWsTicket,
+    WebSocketImpl: globalThis.WebSocket
+  }
+}
+
 function getWindowButtonPosition() {
   if (!IS_MAC) {
     return null
@@ -6810,10 +6819,10 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
+    const readyRemote = await preparePooledRemoteBackend(remote, remoteReadinessDeps())
 
     return {
-      ...remote,
+      ...readyRemote,
       profile,
       logs: hermesLog.slice(-80),
       ...getWindowState()
@@ -7035,7 +7044,7 @@ async function startHermes() {
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+      const readyRemote = await preparePrimaryRemoteBackend(remote, remoteReadinessDeps())
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -7045,12 +7054,12 @@ async function startHermes() {
       })
 
       return {
-        baseUrl: remote.baseUrl,
+        baseUrl: readyRemote.baseUrl,
         mode: 'remote',
-        source: remote.source,
-        authMode: remote.authMode || 'token',
-        token: remote.token,
-        wsUrl: remote.wsUrl,
+        source: readyRemote.source,
+        authMode: readyRemote.authMode || 'token',
+        token: readyRemote.token,
+        wsUrl: readyRemote.wsUrl,
         logs: hermesLog.slice(-80),
         ...getWindowState()
       }

@@ -246,6 +246,22 @@ except ImportError:
         DEFAULT_TYPE = Any
     ContextTypes = _MockContextTypes
 
+# PTB's Update.ALL_TYPES is a hardcoded enumeration of update kinds PTB has a
+# typed field for. Bot API 10.0's guest_message isn't one of them yet (see
+# _handle_guest_message_update's docstring), so passing Update.ALL_TYPES
+# verbatim as allowed_updates tells Telegram to send everything EXCEPT
+# guest_message -- the update is dropped server-side, before it ever reaches
+# this process, so guest mode fails with zero client-side error or log trace.
+# Older PTB releases used an empty list for ALL_TYPES, which Telegram treats
+# as "send every type including ones the client doesn't know about" -- this
+# explicit append restores that behavior for the one type PTB can't name yet.
+# getattr-guarded: some tests inject a minimal fake `telegram` module (e.g.
+# Update = object) into sys.modules before importing this adapter, which
+# satisfies `from telegram import Update` without raising ImportError but
+# has no ALL_TYPES attribute -- this must degrade to [] there, not crash
+# the whole module import.
+_ALLOWED_UPDATES_WITH_GUEST = [*getattr(Update, "ALL_TYPES", []), "guest_message"] if TELEGRAM_AVAILABLE else []
+
 import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
@@ -2147,7 +2163,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await asyncio.wait_for(
                 app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=_ALLOWED_UPDATES_WITH_GUEST,
                     drop_pending_updates=drop_pending_updates,
                     error_callback=_generation_error_callback,
                 ),
@@ -3693,7 +3709,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     url_path=webhook_path,
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=_ALLOWED_UPDATES_WITH_GUEST,
                     # Webhooks are push-based — Telegram does not hold a
                     # server-side getUpdates queue, so this flag is a no-op
                     # in practice. Mirror the polling path's reconnect

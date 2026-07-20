@@ -1,6 +1,10 @@
+import { terminalBackgroundHex } from '@hermes/ink'
+
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
+import { detectLightMode } from '../../../theme.js'
 import type { DialogState } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
+import { getUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const GRID_TEST_USAGE = 'usage: /grid-test [cols]x[rows]  ·  /grid-test [cols] [rows]  ·  /grid-test streams'
@@ -128,6 +132,31 @@ export const debugCommands: SlashCommand[] = [
         ctx.transcript.sys(`heapdump: ${r.heapPath}`)
         ctx.transcript.sys(`diagnostics: ${r.diagPath}`)
       })
+    }
+  },
+
+  {
+    help: 'print live theme diagnostics (background probe, light mode, palette)',
+    name: 'theme-info',
+    run: (_arg, ctx) => {
+      const { theme } = getUiState()
+
+      ctx.transcript.panel('Theme', [
+        {
+          rows: [
+            ['OSC-11 background', terminalBackgroundHex() ?? '(no reply)'],
+            ['HERMES_TUI_BACKGROUND', process.env.HERMES_TUI_BACKGROUND ?? '(unset)'],
+            ['HERMES_TUI_THEME', process.env.HERMES_TUI_THEME ?? '(unset)'],
+            ['COLORFGBG', process.env.COLORFGBG ?? '(unset)'],
+            ['TERM_PROGRAM', process.env.TERM_PROGRAM ?? '(unset)'],
+            ['detected mode', detectLightMode() ? 'light' : 'dark'],
+            ['text', theme.color.text],
+            ['completionBg', theme.color.completionBg],
+            ['selectionBg', theme.color.selectionBg],
+            ['statusBg', theme.color.statusBg]
+          ]
+        }
+      ])
     }
   },
 

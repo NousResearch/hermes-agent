@@ -200,13 +200,26 @@ describe('fromSkin', () => {
     expect(fromSkin({ banner_title: '#FF0000' }, {}).color.accent).toBe(DEFAULT_THEME.color.accent)
   })
 
-  it('derives completion current background from resolved completion background', async () => {
-    const { fromSkin } = await importThemeWithCleanEnv()
+  it('derives completion current background from resolved completion background (polarity-compatible)', async () => {
+    // Light terminal + light-authored menu fill: the skin's fill is honored
+    // and the current-row derivation mixes off it.
+    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
 
     const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
 
     expect(theme.color.completionBg).toBe('#ffffff')
     expect(theme.color.completionCurrentBg).toBe('#bfbfbf')
+  })
+
+  it('rejects wrong-polarity fills even when skin-authored (terminal owns the canvas)', async () => {
+    // Dark terminal + white menu fill: unlike the desktop app, the TUI cannot
+    // paint its own canvas, so cross-polarity fills fall back to the base.
+    const { DARK_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
+
+    expect(theme.color.completionBg).toBe(DARK_THEME.color.completionBg)
+    expect(theme.color.completionCurrentBg).toBe(DARK_THEME.color.completionCurrentBg)
   })
 
   it('uses active completion color as the selection highlight fallback', async () => {
@@ -286,11 +299,15 @@ describe('fromSkin', () => {
     expect(theme.color.prompt).toBe('ansi256(136)')
   })
 
-  it('does not normalize light Apple Terminal when truecolor is advertised', async () => {
+  it('keeps truecolor light Apple Terminal in truecolor (adapting, not ansi256-bucketing)', async () => {
     const { fromSkin } = await importThemeWithEnv({ COLORTERM: 'truecolor', TERM_PROGRAM: 'Apple_Terminal' })
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
-    expect(theme.color.text).toBe('#FFF8DC')
+    // No ansi256 bucketing on truecolor terminals — but a cream foreground on
+    // a light background is exactly the washout the adaptation exists to fix,
+    // so the value is clamped to a readable truecolor hex rather than kept.
+    expect(theme.color.text).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(luminance(theme.color.text)).toBeLessThanOrEqual(0.45)
   })
 
   it('normalizes Apple Terminal names before matching', async () => {
@@ -311,7 +328,101 @@ describe('fromSkin', () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { color } = fromSkin({ ui_ok: '#008000' }, {})
 
-    expect(color.ok).toBe('#008000')
-    expect(color.statusGood).toBe('#008000')
+    // The exact value may be contrast-lifted against the background; the
+    // contract is the cascade (ok drives statusGood) and the hue surviving.
+    expect(color.statusGood).toBe(color.ok)
+    expect(color.ok).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(luminance(color.ok)).toBeGreaterThan(0)
+  })
+})
+
+// Rec. 709-ish relative luminance, local to the test so assertions are
+// independent of the implementation under test.
+const luminance = (hex: string): number => {
+  const n = parseInt(hex.replace('#', ''), 16)
+
+  const channel = (v: number) => {
+    const c = v / 255
+
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+
+  return 0.2126 * channel((n >> 16) & 0xff) + 0.7152 * channel((n >> 8) & 0xff) + 0.0722 * channel(n & 0xff)
+}
+
+// The bundled slate skin's actual color block — dark-authored (pale pastels,
+// no completion/selection backgrounds defined).
+const SLATE_COLORS = {
+  banner_accent: '#8EA8FF',
+  banner_border: '#4169e1',
+  banner_dim: '#4b5563',
+  banner_text: '#c9d1d9',
+  banner_title: '#7eb8f6',
+  prompt: '#c9d1d9',
+  session_border: '#4b5563',
+  session_label: '#7eb8f6',
+  ui_accent: '#7eb8f6',
+  ui_error: '#F7A072',
+  ui_label: '#8EA8FF',
+  ui_ok: '#63D0A6',
+  ui_warn: '#e6a855'
+}
+
+describe('background-aware adaptation (OSC-11 light terminals)', () => {
+  it('keeps a dark-authored skin readable on a light background', async () => {
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { color } = fromSkin(SLATE_COLORS, {})
+
+    // Foreground roles must clear WCAG contrast against the actual white
+    // background — hue survives, washout doesn't.
+    for (const key of ['text', 'prompt', 'accent', 'label', 'ok', 'error', 'primary'] as const) {
+      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(3.8)
+    }
+
+    // Softer roles (muted/warn/border) get a looser but real floor.
+    for (const key of ['muted', 'warn', 'border'] as const) {
+      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(2.7)
+    }
+
+    // Background roles the skin never defined must be light-polarity fills,
+    // not the dark base's navy.
+    for (const key of ['completionBg', 'completionCurrentBg', 'statusBg', 'selectionBg'] as const) {
+      expect(luminance(color[key]), `${key} ${color[key]}`).toBeGreaterThanOrEqual(0.4)
+    }
+  })
+
+  it('leaves the same skin untouched on a dark background', async () => {
+    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#1e1e2e' })
+    const { color } = fromSkin(SLATE_COLORS, {})
+
+    expect(color.text).toBe('#c9d1d9')
+    expect(color.accent).toBe('#7eb8f6')
+    expect(luminance(color.completionBg)).toBeLessThanOrEqual(0.35)
+  })
+
+  it('empty skin on a light background resolves to the light base palette', async () => {
+    const { fromSkin, LIGHT_THEME } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    expect(fromSkin({}, {}).color).toEqual(LIGHT_THEME.color)
+  })
+
+  it('base palettes are fixed points of the adaptation', async () => {
+    const dark = await importThemeWithCleanEnv()
+
+    expect(dark.fromSkin({}, {}).color).toEqual(dark.DARK_THEME.color)
+
+    const light = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#fafafa' })
+
+    expect(light.fromSkin({}, {}).color).toEqual(light.LIGHT_THEME.color)
+  })
+
+  it('defaultThemeForCurrentBackground follows a late HERMES_TUI_BACKGROUND write', async () => {
+    const { DEFAULT_THEME, defaultThemeForCurrentBackground, LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    // Module loaded dark (clean env)…
+    expect(DEFAULT_THEME.color.completionBg).toBe('#1a1a2e')
+
+    // …then the OSC-11 answer lands and is cached into the env slot.
+    expect(defaultThemeForCurrentBackground({ HERMES_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
   })
 })

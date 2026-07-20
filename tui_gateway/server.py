@@ -2400,6 +2400,10 @@ def resolve_skin() -> dict:
         return {
             "name": skin.name,
             "colors": skin.colors,
+            # Paired palettes: the TUI detects the terminal's polarity and
+            # prefers the matching hand-tuned block over adapting `colors`.
+            "light_colors": skin.light_colors,
+            "dark_colors": skin.dark_colors,
             "branding": skin.branding,
             "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero,
@@ -11804,6 +11808,15 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "theme":
+        # TUI light/dark mode pin: 'light'/'dark' beat background
+        # auto-detection (xterm.js hosts misreport OSC 11); 'auto' trusts it.
+        raw = str(value or "").strip().lower()
+        if raw not in {"auto", "light", "dark"}:
+            return _err(rid, 4002, f"unknown theme value: {value} (use auto|light|dark)")
+        _write_config_key("display.tui_theme", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "statusbar":
         raw = str(value or "").strip().lower()
         display = _load_cfg().get("display")
@@ -12645,6 +12658,10 @@ def _(rid, params: dict) -> dict:
     if key == "compact":
         on = bool((_load_cfg().get("display") or {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
+    if key == "theme":
+        display = _load_cfg().get("display")
+        raw = str(display.get("tui_theme", "auto") if isinstance(display, dict) else "auto").strip().lower()
+        return _ok(rid, {"value": raw if raw in {"auto", "light", "dark"} else "auto"})
     if key == "statusbar":
         display = _load_cfg().get("display")
         raw = (

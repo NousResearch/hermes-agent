@@ -14,6 +14,7 @@ import { GridTestOverlay } from './gridTestOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
+import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
@@ -346,13 +347,20 @@ export function FloatingOverlays({
       id: 'completions',
       render: () => (
         <FloatBox color={theme.color.primary}>
+          {/* No painted panel fill: FloatBox is `opaque`, so rows sit on the
+              terminal's own background — the one color that is always right
+              on a canvas we don't own (a full completionBg fill was the lone
+              surface painting its own background, which is why it could
+              disagree with every other overlay). Only the ACTIVE row carries
+              a selection chip, mirroring the session switcher. */}
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
             {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
+              const row = listRowStyle(theme, active)
 
               return (
                 <Box
-                  backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
+                  backgroundColor={row.backgroundColor}
                   flexDirection="row"
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
@@ -367,10 +375,7 @@ export function FloatingOverlays({
                     </Text>
                   </Box>
                   {item.meta ? (
-                    <Text
-                      backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
-                      color={theme.color.muted}
-                    >
+                    <Text backgroundColor={row.backgroundColor} color={theme.color.muted}>
                       {' '}
                       {item.meta}
                     </Text>

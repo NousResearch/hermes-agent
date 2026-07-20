@@ -1,3 +1,5 @@
+import { onTerminalBackground } from '@hermes/ink'
+
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
@@ -14,7 +16,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
-import { fromSkin } from '../theme.js'
+import { defaultThemeForCurrentBackground, detectLightMode, fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -29,17 +31,99 @@ const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
-const applySkin = (s: GatewaySkin) =>
-  patchUiState({
-    theme: fromSkin(
-      s.colors ?? {},
-      s.branding ?? {},
-      s.banner_logo ?? '',
-      s.banner_hero ?? '',
-      s.tool_prefix ?? '',
-      s.help_header ?? ''
-    )
+// The last gateway skin, kept so the theme can be re-derived when the OSC-11
+// background answer arrives after (or without) gateway.ready.
+let lastSkin: GatewaySkin | null = null
+
+const themeForSkin = (s: GatewaySkin) => {
+  // Prefer the skin's hand-tuned palette for the terminal's polarity
+  // (desktop colors/darkColors contract). Without a paired block, `colors`
+  // goes through fromSkin's automatic contrast adaptation instead.
+  const paired = detectLightMode() ? s.light_colors : s.dark_colors
+  const colors = paired && Object.keys(paired).length ? paired : (s.colors ?? {})
+
+  return fromSkin(colors, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '', s.tool_prefix ?? '', s.help_header ?? '')
+}
+
+const applySkin = (s: GatewaySkin) => {
+  lastSkin = s
+  patchUiState({ theme: themeForSkin(s) })
+}
+
+/** Re-derive the theme from current detection signals (env overrides, cached
+ *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
+export function reapplyTheme(): void {
+  patchUiState({ theme: lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground() })
+}
+
+/**
+ * Apply the persisted mode pin (`display.tui_theme`). 'light'/'dark' bridge
+ * to HERMES_TUI_THEME — the priority-2 signal `detectLightMode` already
+ * honors (only an explicit HERMES_TUI_LIGHT env var outranks it); 'auto'
+ * clears the pin so the OSC-11 probe + env heuristics decide. The pin exists
+ * because the probe cannot always be trusted: xterm.js hosts report #000000
+ * regardless of the painted background when the editor theme leaves the
+ * terminal background unset.
+ */
+export function applyConfiguredTuiTheme(raw: unknown): void {
+  const mode = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+
+  const current = process.env.HERMES_TUI_THEME ?? ''
+
+  if (mode === 'light' || mode === 'dark') {
+    if (current === mode) {
+      return
+    }
+
+    process.env.HERMES_TUI_THEME = mode
+  } else {
+    if (!current) {
+      return
+    }
+
+    delete process.env.HERMES_TUI_THEME
+  }
+
+  reapplyTheme()
+}
+
+let themeBackgroundSyncStarted = false
+
+/**
+ * Re-derive the theme from the terminal's ACTUAL background color once the
+ * OSC-11 probe answers. The env heuristics `detectLightMode` runs at module
+ * load are blind in xterm.js hosts (VS Code / Cursor set no COLORFGBG), so a
+ * light editor terminal otherwise gets the dark fallback palette. The answer
+ * is cached into HERMES_TUI_BACKGROUND — the slot `detectLightMode` already
+ * reads (and child processes inherit) — then the current skin (or the
+ * skinless default) is re-applied against the corrected base. Explicit
+ * HERMES_TUI_LIGHT / HERMES_TUI_THEME overrides still win inside
+ * detectLightMode, so users can pin a mode regardless of the probe.
+ */
+export function syncThemeToTerminalBackground(): void {
+  if (themeBackgroundSyncStarted) {
+    return
+  }
+
+  themeBackgroundSyncStarted = true
+
+  onTerminalBackground(hex => {
+    // xterm.js hosts (VS Code / Cursor) answer OSC 11 with #000000 when the
+    // editor theme sets no explicit terminal background — the renderer's
+    // unset DEFAULT, not the painted color (observed: pure black reported on
+    // a white terminal). A real vscode dark theme reports its actual surface
+    // (#1e1e1e etc.), so exactly-#000000 from a vscode host carries no
+    // signal: skip the cache and leave detection to env/config overrides.
+    if (hex === '#000000' && (process.env.TERM_PROGRAM ?? '') === 'vscode') {
+      return
+    }
+
+    process.env.HERMES_TUI_BACKGROUND = hex
+    reapplyTheme()
   })
+}
 
 const dropBgTask = (taskId: string) =>
   patchUiState(state => {
@@ -79,6 +163,8 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 }
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
+  syncThemeToTerminalBackground()
+
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system

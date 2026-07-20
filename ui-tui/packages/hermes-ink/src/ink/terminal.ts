@@ -172,6 +172,104 @@ export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = pro
   return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
 }
 
+// -- OSC-11-detected terminal background (populated async at startup) --
+//
+// Env heuristics (COLORFGBG, TERM_PROGRAM allow-lists) can't see the actual
+// terminal background — xterm.js hosts (VS Code / Cursor) set neither, so a
+// light-themed editor terminal reads as "dark" and gets an unreadable
+// palette. OSC 11 asks the terminal directly; App.tsx fires the query in the
+// same startup batch as XTVERSION and calls setTerminalBackgroundHex() when
+// the reply lands. Readers treat undefined as "not yet known / unsupported".
+
+let terminalBackground: string | undefined
+const terminalBackgroundListeners = new Set<(hex: string) => void>()
+
+/** Record the OSC 11 response. First writer wins (defend against re-probe). */
+export function setTerminalBackgroundHex(hex: string): void {
+  if (terminalBackground !== undefined) {
+    return
+  }
+
+  terminalBackground = hex
+
+  for (const listener of terminalBackgroundListeners) {
+    listener(hex)
+  }
+
+  terminalBackgroundListeners.clear()
+}
+
+/** The terminal's reported background as `#rrggbb`, or undefined if the
+ *  reply hasn't arrived (or the terminal ignored the query). */
+export function terminalBackgroundHex(): string | undefined {
+  return terminalBackground
+}
+
+/** Subscribe to the background color. Fires immediately when already known,
+ *  otherwise once when the OSC 11 reply arrives. */
+export function onTerminalBackground(listener: (hex: string) => void): void {
+  if (terminalBackground !== undefined) {
+    listener(terminalBackground)
+
+    return
+  }
+
+  terminalBackgroundListeners.add(listener)
+}
+
+/**
+ * Parse an OSC color reply payload into `#rrggbb`.
+ *
+ * Terminals answer OSC 10/11 queries with X11 color specs: most commonly
+ * `rgb:RRRR/GGGG/BBBB` (1-4 hex digits per channel, scaled to the channel
+ * max), sometimes `rgba:...` (alpha ignored) or a plain `#hex` form.
+ * Returns undefined for anything unrecognized.
+ */
+export function parseOscColor(data: string): string | undefined {
+  const value = data.trim().toLowerCase()
+
+  const scaled = (component: string): null | number => {
+    if (!/^[0-9a-f]{1,4}$/.test(component)) {
+      return null
+    }
+
+    const max = 16 ** component.length - 1
+
+    return Math.round((parseInt(component, 16) / max) * 255)
+  }
+
+  const rgbMatch = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})(?:\/[0-9a-f]{1,4})?$/.exec(value)
+
+  if (rgbMatch) {
+    const channels = [rgbMatch[1]!, rgbMatch[2]!, rgbMatch[3]!].map(scaled)
+
+    if (channels.every(c => c !== null)) {
+      return '#' + channels.map(c => c!.toString(16).padStart(2, '0')).join('')
+    }
+
+    return undefined
+  }
+
+  const hexMatch = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{12})$/.exec(value)
+
+  if (!hexMatch) {
+    return undefined
+  }
+
+  const hex = hexMatch[1]!
+
+  if (hex.length === 6) {
+    return `#${hex}`
+  }
+
+  if (hex.length === 3) {
+    return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
+  }
+
+  // 12-digit form: 4 digits per channel, take the top byte of each.
+  return `#${hex.slice(0, 2)}${hex.slice(4, 6)}${hex.slice(8, 10)}`
+}
+
 // Terminals known to correctly implement the Kitty keyboard protocol
 // (CSI >1u) and/or xterm modifyOtherKeys (CSI >4;2m) for ctrl+shift+<letter>
 // disambiguation. We previously enabled unconditionally (#23350), assuming

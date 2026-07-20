@@ -21,8 +21,8 @@ import {
 import reconciler from '../reconciler.js'
 import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
-import { decrqm, TerminalQuerier, xtversion } from '../terminal-querier.js'
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
+import { decrqm, oscColor, TerminalQuerier, xtversion } from '../terminal-querier.js'
+import { isXtermJs, parseOscColor, setTerminalBackgroundHex, setXtversionName, supportsExtendedKeys } from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -336,14 +336,28 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
-          void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
-            if (r) {
-              setXtversionName(r.name)
-              logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
-            } else {
-              logForDebugging('XTVERSION: no reply (terminal ignored query)')
+          // OSC 11 rides the same batch: the terminal's actual background
+          // color drives light/dark theme detection where env heuristics
+          // (COLORFGBG, TERM_PROGRAM) are blind — notably xterm.js hosts.
+          void Promise.all([this.querier.send(xtversion()), this.querier.send(oscColor(11)), this.querier.flush()]).then(
+            ([r, bg]) => {
+              if (r) {
+                setXtversionName(r.name)
+                logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
+              } else {
+                logForDebugging('XTVERSION: no reply (terminal ignored query)')
+              }
+
+              const bgHex = bg ? parseOscColor(bg.data) : undefined
+
+              if (bgHex) {
+                setTerminalBackgroundHex(bgHex)
+                logForDebugging(`OSC11: terminal background is ${bgHex}`)
+              } else {
+                logForDebugging('OSC11: no reply (terminal ignored query)')
+              }
             }
-          })
+          )
         })
 
         // Re-assert mouse tracking on raw-mode re-entry. <AlternateScreen>

@@ -20518,6 +20518,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
         self._pending_messages.pop(session_key, None)
+        # Cancel any pending clarify prompts NOW, not just in the turn's
+        # ``finally`` cleanup.  The /stop'd turn's thread may still be parked
+        # inside ``clarify_gateway.wait_for_response`` (the cooperative
+        # interrupt can't reach a blocked thread), so without this the stale
+        # entry survives the stop and the user's NEXT message is intercepted
+        # by ``handle_message``'s clarify hook and fed to the dead turn —
+        # whose generation was just invalidated, so the reply is suppressed
+        # and the message is silently swallowed (observed 2026-07-19: user
+        # had to double-message after /stop).  ``clear_session`` also
+        # unblocks the waiting thread immediately (empty-string sentinel),
+        # letting the drain finish faster.  Idempotent and best-effort.
+        try:
+            from tools.clarify_gateway import clear_session as _clear_clarify
+
+            _cancelled = _clear_clarify(session_key)
+            if _cancelled:
+                logger.info(
+                    "Cancelled %d pending clarify prompt(s) for %s on %s",
+                    _cancelled,
+                    session_key,
+                    interrupt_reason,
+                )
+        except Exception:
+            logger.debug(
+                "clarify cancel skipped for %s", session_key, exc_info=True
+            )
         if release_running_state:
             # Register a DRAINING turn BEFORE releasing state (which pops the
             # task handle). If the turn's coroutine is still mid-flight (its

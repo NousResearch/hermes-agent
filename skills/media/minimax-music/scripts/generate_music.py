@@ -12,17 +12,48 @@ ENDPOINTS = {
     "cn": "https://api.minimaxi.com/v1/music_generation",
 }
 MODELS = {
-    "music-3.0", "music-2.6", "music-3.0-free", "music-2.6-free",
-    "music-cover", "music-cover-free",
+    "music-3.0",
+    "music-2.6",
+    "music-3.0-free",
+    "music-2.6-free",
+    "music-cover",
+    "music-cover-free",
+}
+COVER_MODELS = {"music-cover", "music-cover-free"}
+API_KEY_ENV = {
+    "global": "MINIMAX_API_KEY",
+    "cn": "MINIMAX_CN_API_KEY",
 }
 
 
+def validate_cover_inputs(args):
+    direct_inputs = [value for value in (args.audio_url, args.audio_base64) if value]
+    has_feature = bool(args.cover_feature_id)
+    if args.model not in COVER_MODELS:
+        if direct_inputs or has_feature:
+            raise SystemExit("cover inputs require a music-cover model")
+        return
+    if has_feature:
+        if direct_inputs:
+            raise SystemExit(
+                "--cover-feature-id cannot be combined with direct audio input"
+            )
+        if not args.lyrics:
+            raise SystemExit("--lyrics is required with --cover-feature-id")
+    elif len(direct_inputs) != 1:
+        raise SystemExit(
+            "cover models require exactly one of --audio-url or --audio-base64"
+        )
+
+
 def generate(args, opener=urlopen):
-    api_key = os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
-        raise SystemExit("MINIMAX_API_KEY is required")
     if args.model not in MODELS:
         raise SystemExit(f"unsupported model: {args.model}")
+    validate_cover_inputs(args)
+    api_key_env = API_KEY_ENV[args.region]
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        raise SystemExit(f"{api_key_env} is required")
     payload = {
         "model": args.model,
         "prompt": args.prompt,
@@ -40,7 +71,10 @@ def generate(args, opener=urlopen):
     request = Request(
         ENDPOINTS[args.region],
         data=json.dumps(payload).encode(),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
         method="POST",
     )
     with opener(request, timeout=300) as response:
@@ -78,4 +112,3 @@ def parser():
 
 if __name__ == "__main__":
     print(generate(parser().parse_args()))
-

@@ -861,3 +861,41 @@ class TestSendTimeEmptyAssistantPad:
             "tool_calls is accepted by every provider and normalizing it "
             "would alter prompt-cache keys."
         )
+
+
+class TestSendTimePadMultimodalSafety:
+    """Regression: the send-time pad must skip multimodal (list) assistant
+    content instead of crashing — a forked session whose new user turn
+    attaches an image hit AttributeError: 'list' object has no attribute
+    'strip' inside the pad loop."""
+
+    def test_multimodal_assistant_content_not_touched(self, loop_agent):
+        from tests.run_agent.test_run_agent import _mock_response
+        multimodal = [
+            {"role": "user", "content": "look at this"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "I see an image"},
+            ]},
+            {"role": "user", "content": [
+                {"type": "text", "text": "animate it"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            ]},
+        ]
+        loop_agent.client.chat.completions.create.return_value = _mock_response(
+            content="ok", finish_reason="stop",
+        )
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation(
+                "animate it", conversation_history=multimodal,
+            )
+        assert result["completed"] is True
+        kwargs = loop_agent.client.chat.completions.create.call_args_list[0]
+        sent = kwargs.kwargs.get("messages") or kwargs.args[0].get("messages")
+        mm = next(m for m in sent if isinstance(m.get("content"), list) and m.get("role") == "assistant")
+        assert mm["content"] == [{"type": "text", "text": "I see an image"}], (
+            "Multimodal assistant content must pass through untouched."
+        )

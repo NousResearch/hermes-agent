@@ -1092,7 +1092,8 @@ def run_conversation(
             if (
                 am.get("role") == "assistant"
                 and not am.get("tool_calls")
-                and not (am.get("content") or "").strip()
+                and isinstance(am.get("content"), str)
+                and not am["content"].strip()
             ):
                 am["content"] = " "
 

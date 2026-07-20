@@ -180,7 +180,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
-      { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
+      {
+        failMessage: t.shell.modelOptions.updateFailed,
+        primary: view.kind === 'primary',
+        request: requestGateway,
+        sessionId: activeSessionId
+      }
     )
   }
 

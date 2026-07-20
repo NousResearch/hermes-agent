@@ -425,13 +425,16 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
 }
 
-/** Rewrite `$sessionTiles` to match layout-tree strip / zone encounter order
- *  and stamp each tile's `before` so the next adopt restores adjacency. */
+/** Reorder `$sessionTiles` to match layout-tree encounter order. Restore
+ *  replays the array through sequential adoption (each center tile APPENDS
+ *  after the ones before it), so array order IS strip order — no `before`
+ *  stamping needed; a stale `before` naming an absent pane falls back to
+ *  append anyway (see insertAtGroup). */
 function syncTileStripOrder() {
   const tree = $layoutTree.get()
   const tiles = $sessionTiles.get()
 
-  if (!tree || tiles.length === 0) {
+  if (!tree || tiles.length < 2) {
     return
   }
 
@@ -453,46 +456,14 @@ function syncTileStripOrder() {
 
   walk(tree)
 
-  if (order.length === 0) {
-    return
-  }
+  const rank = new Map(order.map((id, i) => [id, i]))
 
-  const byId = new Map(tiles.map(t => [t.storedSessionId, t]))
-  const next: SessionTile[] = []
+  // Tiles not yet adopted into the tree sort after placed ones, stably.
+  const next = [...tiles].sort(
+    (a, b) => (rank.get(a.storedSessionId) ?? Infinity) - (rank.get(b.storedSessionId) ?? Infinity)
+  )
 
-  for (let i = 0; i < order.length; i++) {
-    const id = order[i]
-    const tile = byId.get(id)
-
-    if (!tile) {
-      continue
-    }
-
-    byId.delete(id)
-    const prevInStrip = i > 0 ? `${TILE_PANE_PREFIX}${order[i - 1]}` : 'workspace'
-    next.push({
-      ...tile,
-      before: tile.dir === 'center' ? prevInStrip : tile.before
-    })
-  }
-
-  for (const tile of tiles) {
-    if (byId.has(tile.storedSessionId)) {
-      next.push(tile)
-    }
-  }
-
-  const changed =
-    next.length !== tiles.length ||
-    next.some(
-      (t, i) =>
-        t.storedSessionId !== tiles[i]?.storedSessionId ||
-        t.before !== tiles[i]?.before ||
-        t.anchor !== tiles[i]?.anchor ||
-        t.dir !== tiles[i]?.dir
-    )
-
-  if (changed) {
+  if (next.some((t, i) => t !== tiles[i])) {
     saveTiles(next)
   }
 }

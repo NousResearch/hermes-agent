@@ -342,6 +342,37 @@ class TestAllResolvableCommandsBypassGuard:
         # A file path split on whitespace: '/path/to/file.py' -> 'path/to/file.py'
         assert should_bypass_active_session("path/to/file.py") is False
 
+    def test_registered_plugin_command_bypasses_in_both_name_forms(self):
+        from hermes_cli.commands import should_bypass_active_session
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        manager = PluginManager()
+        context = PluginContext(PluginManifest(name="control", source="user"), manager)
+        context.register_command("hermes-control", lambda _args: "ok")
+
+        from unittest.mock import patch
+        with patch("hermes_cli.plugins._plugin_manager", manager):
+            assert should_bypass_active_session("hermes-control") is True
+            assert should_bypass_active_session("hermes_control") is True
+
+    @pytest.mark.asyncio
+    async def test_registered_plugin_command_bypasses_active_adapter_guard(self):
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from unittest.mock import patch
+
+        manager = PluginManager()
+        context = PluginContext(PluginManifest(name="control", source="user"), manager)
+        context.register_command("hermes-control", lambda _args: "ok")
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        with patch("hermes_cli.plugins._plugin_manager", manager):
+            await adapter.handle_message(_make_event("/hermes_control status"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:hermes_control" in r for r in adapter.sent_responses)
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass messages still get queued

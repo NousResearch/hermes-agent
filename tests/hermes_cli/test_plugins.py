@@ -11,11 +11,13 @@ import yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
+    GatewayCommandContext,
     VALID_HOOKS,
     PluginContext,
     PluginManager,
     PluginManifest,
     get_plugin_command_handler,
+    get_plugin_command_registration,
     get_plugin_commands,
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
@@ -1813,6 +1815,38 @@ class TestPluginCommands:
         assert entry["plugin"] == "test-plugin"
         # args_hint defaults to empty string when not passed.
         assert entry["args_hint"] == ""
+        assert entry["gateway_context"] is False
+
+    def test_register_command_can_opt_in_to_gateway_context(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        handler = lambda args, *, context: (args, context)
+
+        ctx.register_command("mycmd", handler, gateway_context=True)
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert get_plugin_command_registration("mycmd") == (handler, True)
+
+    def test_gateway_command_context_is_frozen_and_slot_backed(self):
+        context = GatewayCommandContext(
+            schema_version="1",
+            platform="telegram",
+            user_id="42",
+            chat_id="84",
+            chat_type="dm",
+            thread_id=None,
+            message_id="7",
+            platform_update_id=11,
+            is_bot=False,
+            internal=False,
+            received_at="2026-07-20T12:00:00+00:00",
+            command_name="hermes-control",
+        )
+
+        with pytest.raises(AttributeError):
+            context.user_id = "forged"
+        assert not hasattr(context, "__dict__")
 
     def test_register_command_with_args_hint(self):
         """args_hint is stored and surfaced for gateway-native UI registration."""

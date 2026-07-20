@@ -79,6 +79,29 @@ class PluginToolOverrideError(PermissionError):
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class GatewayCommandContext:
+    """Immutable gateway provenance passed to opted-in plugin commands.
+
+    The snapshot contains copied scalar values only. It deliberately excludes
+    the mutable MessageEvent/SessionSource objects, raw platform payloads,
+    message text, display names, metadata, credentials, and configuration.
+    """
+
+    schema_version: str
+    platform: str
+    user_id: Optional[str]
+    chat_id: str
+    chat_type: str
+    thread_id: Optional[str]
+    message_id: Optional[str]
+    platform_update_id: Optional[int]
+    is_bot: bool
+    internal: bool
+    received_at: str
+    command_name: str
+
+
 # ---------------------------------------------------------------------------
 # Plugin developer debug logging
 # ---------------------------------------------------------------------------
@@ -532,11 +555,17 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        *,
+        gateway_context: bool = False,
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
-        The handler signature is ``fn(raw_args: str) -> str | None``.
-        It may also be an async callable — the gateway dispatch handles both.
+        The default handler signature is ``fn(raw_args: str) -> str | None``.
+        With ``gateway_context=True``, the gateway instead calls
+        ``fn(raw_args, context=GatewayCommandContext(...))``. Both forms may
+        be async. CLI and TUI callers continue to use the one-argument form;
+        context-aware handlers should therefore define ``context=None`` and
+        reject that value explicitly if they are gateway-only.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
@@ -577,6 +606,7 @@ class PluginContext:
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "gateway_context": bool(gateway_context),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -2346,6 +2376,14 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_command_registration(name: str) -> Optional[tuple[Callable, bool]]:
+    """Return a plugin command's handler and gateway-context opt-in flag."""
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    if not entry:
+        return None
+    return entry["handler"], bool(entry.get("gateway_context", False))
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

@@ -9944,6 +9944,77 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _dispatch_plugin_command(
+        self,
+        event: MessageEvent,
+        command_name: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Dispatch a plugin slash command with optional gateway provenance.
+
+        Callers must invoke this only after the gateway authorization and slash
+        access checks. The returned boolean distinguishes an unregistered
+        command from a registered handler that intentionally returned no text.
+        """
+        normalized_name = command_name.replace("_", "-")
+        try:
+            from hermes_cli.plugins import (
+                GatewayCommandContext,
+                get_plugin_command_handler,
+                get_plugin_command_registration,
+            )
+
+            registration = get_plugin_command_registration(normalized_name)
+            if registration is None:
+                legacy_handler = get_plugin_command_handler(normalized_name)
+                if legacy_handler is not None:
+                    registration = (legacy_handler, False)
+        except Exception as exc:
+            logger.warning("Plugin command lookup failed: %s", exc)
+            return False, None
+
+        if registration is None:
+            return False, None
+
+        handler, wants_gateway_context = registration
+        try:
+            raw_args = event.get_command_args().strip()
+            if wants_gateway_context:
+                source = event.source
+                platform = source.platform.value if source.platform else ""
+                timestamp = event.timestamp
+                received_at = (
+                    timestamp.isoformat()
+                    if hasattr(timestamp, "isoformat")
+                    else str(timestamp)
+                )
+                context = GatewayCommandContext(
+                    schema_version="1",
+                    platform=platform,
+                    user_id=source.user_id,
+                    chat_id=source.chat_id,
+                    chat_type=source.chat_type,
+                    thread_id=source.thread_id,
+                    message_id=event.message_id,
+                    platform_update_id=event.platform_update_id,
+                    is_bot=bool(source.is_bot),
+                    internal=bool(event.internal),
+                    received_at=received_at,
+                    command_name=normalized_name,
+                )
+                result = handler(raw_args, context=context)
+            else:
+                result = handler(raw_args)
+            if inspect.isawaitable(result):
+                result = await result
+            return True, str(result) if result else None
+        except Exception:
+            logger.warning(
+                "Plugin command '/%s' dispatch failed",
+                normalized_name,
+                exc_info=True,
+            )
+            return True, "Plugin command failed. Check the gateway logs for details."
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -10332,10 +10403,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
                 ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
+                is_gateway_known_command as _is_gateway_known_command_inner,
                 resolve_command as _resolve_cmd_inner,
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+            _normalized_evt_cmd = _evt_cmd.replace("_", "-") if _evt_cmd else None
+            _effective_cmd_inner = (
+                _cmd_def_inner.name
+                if _cmd_def_inner
+                else (
+                    _normalized_evt_cmd
+                    if _is_gateway_known_command_inner(_normalized_evt_cmd)
+                    else None
+                )
+            )
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -10343,10 +10425,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /status above is intentionally pre-gate so users always see
             # session state. /help and /whoami fall under the always-allowed
             # floor inside _check_slash_access.
-            if _evt_cmd and _cmd_def_inner is not None:
-                _denied = self._check_slash_access(source, _cmd_def_inner.name)
+            if _evt_cmd and _effective_cmd_inner is not None:
+                _denied = self._check_slash_access(source, _effective_cmd_inner)
                 if _denied is not None:
                     return _denied
+
+            if _effective_cmd_inner and _cmd_def_inner is None:
+                _plugin_handled, _plugin_response = await self._dispatch_plugin_command(
+                    event,
+                    _effective_cmd_inner,
+                )
+                if _plugin_handled:
+                    return _plugin_response
 
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
@@ -11184,22 +11274,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
-        # Plugin-registered slash commands
+        # Plugin-registered slash commands. This runs after transport auth,
+        # slash access control, alias expansion, and command-hook rewrites.
         if command:
-            try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so Telegram's underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return str(result) if result else None
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
+            plugin_handled, plugin_response = await self._dispatch_plugin_command(
+                event,
+                command,
+            )
+            if plugin_handled:
+                return plugin_response
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen

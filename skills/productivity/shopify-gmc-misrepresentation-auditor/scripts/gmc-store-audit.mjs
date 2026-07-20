@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
+import { fetchPublic } from './public-fetch.mjs';
 
 // ─── Minimal fetch with timeout ──────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ async function fetchPage(url, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeout || 15000);
   try {
-    const res = await fetch(url, {
+    const res = await fetchPublic(url, {
       signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; GMC-Auditor/1.0; +https://selofy.com)',
@@ -59,8 +60,7 @@ async function fetchPage(url, opts = {}) {
         'Accept-Language': 'en-US,en;q=0.9',
         ...opts.headers,
       },
-      redirect: 'follow',
-    });
+    }, { timeoutMs: opts.timeout || 15000 });
     const text = await res.text();
     return { ok: res.ok, status: res.status, url: res.url, text };
   } catch (e) {
@@ -77,12 +77,10 @@ async function headUrl(url) {
     return { ok: false, status: 0 };
   }
   try {
-    const res = await fetch(url, {
+    const res = await fetchPublic(url, {
       method: 'HEAD',
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GMC-Auditor/1.0)' },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(8000),
-    });
+    }, { timeoutMs: 8000 });
     return { ok: res.ok, status: res.status };
   } catch {
     return { ok: false, status: 0 };
@@ -155,16 +153,18 @@ async function checkRobots(storeUrl) {
   if (!res.ok) return { blocked: false, note: 'robots.txt not found' };
 
   const lines = res.text.split('\n');
-  let currentAgent = null;
+  let currentAgents = [];
   let googleBlocked = false;
   let productPathBlocked = false;
 
   for (const line of lines) {
     const l = line.trim().toLowerCase();
     if (l.startsWith('user-agent:')) {
-      currentAgent = l.replace('user-agent:', '').trim();
+      currentAgents = [l.replace('user-agent:', '').trim()];
+    } else if (!l && currentAgents.length) {
+      currentAgents = [];
     }
-    if ((currentAgent === 'googlebot' || currentAgent === '*') && l.startsWith('disallow:')) {
+    if ((currentAgents.includes('gmc-auditor') || currentAgents.includes('googlebot') || currentAgents.includes('*')) && l.startsWith('disallow:')) {
       const path = l.replace('disallow:', '').trim();
       if (path === '/' || path === '/products' || path === '/products/') {
         googleBlocked = true;
@@ -577,8 +577,10 @@ async function runStoreAudit(storeUrl) {
   if (robots.blocked) {
     result.checks.push({ id: 'technical:robots_blocks_googlebot', severity: 'critical', confidence: 1.0,
       message: 'robots.txt blocks Googlebot from crawling product pages — GMC cannot index your products',
-      evidence: robots.robotsUrl,
-      policyBasis: 'Google must be able to crawl product pages' });
+       evidence: robots.robotsUrl,
+       policyBasis: 'Google must be able to crawl product pages' });
+    result.score = computeScore(result.checks);
+    return result;
   }
 
   // 2. Fetch homepage

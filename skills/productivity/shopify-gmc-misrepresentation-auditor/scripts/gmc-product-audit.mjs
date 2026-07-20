@@ -17,6 +17,7 @@
 
 import { writeFileSync, readFileSync } from 'fs';
 import { resolve } from 'path';
+import { fetchPublic } from './public-fetch.mjs';
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ async function fetchPage(url, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeout || 15000);
   try {
-    const res = await fetch(url, {
+    const res = await fetchPublic(url, {
       signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; GMC-Auditor/1.0; +https://selofy.com)',
@@ -87,8 +88,7 @@ async function fetchPage(url, opts = {}) {
         'Accept-Language': 'en-US,en;q=0.9',
         ...opts.headers,
       },
-      redirect: 'follow',
-    });
+    }, { timeoutMs: opts.timeout || 15000 });
     const text = await res.text();
     return { ok: res.ok, status: res.status, url: res.url, text };
   } catch (e) {

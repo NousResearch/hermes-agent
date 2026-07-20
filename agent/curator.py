@@ -323,11 +323,20 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 
     cron_referenced = _cron_referenced_skills()
 
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
+    counts = {
+        "marked_stale": 0,
+        "archived": 0,
+        "reactivated": 0,
+        "checked": 0,
+        "seeded": 0,
+        "needs_review": 0,
+    }
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
+        if row.get("needs_review"):
+            counts["needs_review"] += 1
         if row.get("pinned"):
             continue
 
@@ -1565,6 +1574,8 @@ def run_curator_review(
         auto_summary_parts.append(f"{counts['archived']} archived")
     if counts["reactivated"]:
         auto_summary_parts.append(f"{counts['reactivated']} reactivated")
+    if counts["needs_review"]:
+        auto_summary_parts.append(f"{counts['needs_review']} needs review")
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
 
     # Persist state before the LLM pass so a crash mid-review still records

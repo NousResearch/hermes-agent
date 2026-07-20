@@ -155,6 +155,45 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
     assert get_record("skill-b")["use_count"] == 1
 
 
+def test_bump_outcome_sets_needs_review_and_failure_rate(skills_home):
+    from tools.skill_usage import bump_outcome, failure_rate, get_record
+
+    for success in (False, False, False, True):
+        bump_outcome("problematic", success)
+
+    rec = get_record("problematic")
+    assert rec["needs_review"] is True
+    assert rec["needs_review_since"] is not None
+    assert rec["recent_outcomes"] == [False, False, False, True]
+    assert failure_rate("problematic") == 0.75
+
+
+def test_bump_outcome_clears_needs_review_after_recovery(skills_home):
+    from tools.skill_usage import bump_outcome, get_record
+
+    for success in (False, False, False, True):
+        bump_outcome("recovering", success)
+    assert get_record("recovering")["needs_review"] is True
+
+    for success in (True, True, True, True):
+        bump_outcome("recovering", success)
+
+    rec = get_record("recovering")
+    assert rec["needs_review"] is False
+    assert rec["needs_review_since"] is None
+    assert rec["recent_outcomes"][-4:] == [True, True, True, True]
+
+
+def test_bump_outcome_returns_none_before_minimum_samples(skills_home):
+    from tools.skill_usage import bump_outcome, failure_rate
+
+    bump_outcome("small-sample", False)
+    bump_outcome("small-sample", True)
+    bump_outcome("small-sample", False)
+
+    assert failure_rate("small-sample") is None
+
+
 def test_concurrent_bump_view_preserves_all_updates(skills_home):
     from tools.skill_usage import get_record
 

@@ -494,7 +494,26 @@ def _empty_record() -> Dict[str, Any]:
         "state": STATE_ACTIVE,
         "pinned": False,
         "archived_at": None,
+        # Outcome telemetry. Distinct from use_count: use_count answers "was
+        # this touched", these answer "did touching it work". A bounded
+        # recent-outcomes window lets a skill recover after a fix instead of
+        # being haunted by lifetime failures.
+        "recent_outcomes": [],
+        "needs_review": False,
+        "needs_review_since": None,
     }
+
+
+# Bound on len(recent_outcomes) — keeps the sidecar small and keeps the signal
+# focused on recent behavior rather than lifetime history.
+_OUTCOME_WINDOW = 20
+
+# A skill flips to needs_review when it has at least this many recent
+# outcomes and its failure rate over the window is at or above this threshold.
+# The minimum-sample floor prevents one unlucky early failure from flagging
+# a brand-new skill.
+_OUTCOME_MIN_SAMPLES = 4
+_OUTCOME_FAILURE_THRESHOLD = 0.5
 
 
 def load_usage() -> Dict[str, Dict[str, Any]]:
@@ -643,6 +662,47 @@ def bump_patch(skill_name: str) -> None:
     _mutate(skill_name, _apply)
 
 
+def bump_outcome(skill_name: str, success: bool) -> None:
+    """Record whether a use of *skill_name* succeeded or failed.
+
+    "Failed" means the use could not show that the work held up. Appends to a
+    capped recent-outcomes window and re-derives needs_review from it.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        outcomes = rec.get("recent_outcomes")
+        if not isinstance(outcomes, list):
+            outcomes = []
+        outcomes.append(bool(success))
+        if len(outcomes) > _OUTCOME_WINDOW:
+            outcomes = outcomes[-_OUTCOME_WINDOW:]
+        rec["recent_outcomes"] = outcomes
+
+        was_needs_review = bool(rec.get("needs_review"))
+        samples = len(outcomes)
+        failures = sum(1 for o in outcomes if not o)
+        should_flag = (
+            samples >= _OUTCOME_MIN_SAMPLES
+            and (failures / samples) >= _OUTCOME_FAILURE_THRESHOLD
+        )
+        if should_flag and not was_needs_review:
+            rec["needs_review"] = True
+            rec["needs_review_since"] = _now_iso()
+        elif not should_flag and was_needs_review:
+            rec["needs_review"] = False
+            rec["needs_review_since"] = None
+
+    _mutate(skill_name, _apply)
+
+
+def failure_rate(skill_name: str) -> Optional[float]:
+    """Recent-window failure rate for *skill_name*, or None with too few samples."""
+    rec = get_record(skill_name)
+    outcomes = rec.get("recent_outcomes")
+    if not isinstance(outcomes, list) or len(outcomes) < _OUTCOME_MIN_SAMPLES:
+        return None
+    return sum(1 for o in outcomes if not o) / len(outcomes)
+
+
 def mark_agent_created(skill_name: str) -> None:
     """Opt a skill created by skill_manage into curator management.
 
@@ -664,6 +724,8 @@ def set_state(skill_name: str, state: str) -> None:
         rec["state"] = state
         if state == STATE_ARCHIVED:
             rec["archived_at"] = _now_iso()
+            rec["needs_review"] = False
+            rec["needs_review_since"] = None
         elif state == STATE_ACTIVE:
             rec["archived_at"] = None
     _mutate(skill_name, _apply, require_curation_eligible=True)
@@ -889,6 +951,11 @@ def agent_created_report() -> List[Dict[str, Any]]:
         row = {"name": name, **rec, "_persisted": persisted}
         row["last_activity_at"] = latest_activity_at(row)
         row["activity_count"] = activity_count(row)
+        outcomes = row.get("recent_outcomes")
+        if isinstance(outcomes, list) and len(outcomes) >= _OUTCOME_MIN_SAMPLES:
+            row["failure_rate"] = sum(1 for o in outcomes if not o) / len(outcomes)
+        else:
+            row["failure_rate"] = None
         rows.append(row)
     return rows
 

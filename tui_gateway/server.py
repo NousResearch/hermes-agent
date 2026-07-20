@@ -30,6 +30,7 @@ from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
+    TeeTransport,
     Transport,
     bind_transport,
     current_transport,
@@ -1731,6 +1732,42 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
+def _is_stdio_transport(transport: Transport | None) -> bool:
+    """Return whether *transport* ultimately writes to the stdio sink.
+
+    The sidecar publisher wraps the real stdio transport in ``TeeTransport``.
+    Unwrap only that known wrapper (including nested wrappers) and require the
+    primary to be an actual ``StdioTransport``; WebSocket transports must never
+    inherit stdio launch-cwd semantics.
+    """
+    seen: set[int] = set()
+    while isinstance(transport, TeeTransport):
+        marker = id(transport)
+        if marker in seen:
+            return False
+        seen.add(marker)
+        transport = getattr(transport, "_primary", None)
+    return isinstance(transport, StdioTransport)
+
+
+def _stdio_launch_cwd() -> str:
+    """Resolve the real cwd of a stdio TUI launch.
+
+    The TUI launcher passes its validated launch directory as ``HERMES_CWD``.
+    That process-local value must win over a profile's configured
+    ``terminal.cwd``: the latter is a terminal backend setting, while stdio's
+    cwd is the workspace the current Ink process was actually launched in.
+    """
+    raw = os.environ.get("HERMES_CWD") or os.getcwd()
+    try:
+        resolved = os.path.abspath(os.path.expanduser(str(raw)))
+        if os.path.isdir(resolved):
+            return resolved
+    except Exception:
+        pass
+    return os.path.abspath(os.getcwd())
+
+
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
     raw = (
@@ -1870,7 +1907,10 @@ def _display_session_cwd(session: dict | None) -> str:
 
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
-        session["cwd"] = healed
+        with _sessions_lock:
+            session["cwd"] = healed
+            session["git_branch"] = None
+            session["git_repo_root"] = None
         try:
             with _session_db(session) as db:
                 if db is not None:
@@ -1903,6 +1943,19 @@ def _register_session_cwd(session: dict | None) -> None:
         pass
 
 
+def _session_cwd_should_persist(session: dict) -> bool:
+    """Return whether this session's effective cwd is durable metadata.
+
+    Desktop/WebSocket sessions intentionally remain unbound when the client did
+    not choose a folder.  The stdio Ink client has a real launch workspace,
+    however, so its completion cwd is meaningful even without an RPC ``cwd``.
+    """
+    if session.get("explicit_cwd"):
+        return True
+    transport = session.get("transport")
+    return _is_stdio_transport(transport)
+
+
 def _ensure_session_db_row(session: dict) -> None:
     """Idempotently persist the session's DB row on first real activity.
 
@@ -1911,12 +1964,9 @@ def _ensure_session_db_row(session: dict) -> None:
     Uses INSERT OR IGNORE under the hood, so re-calls (and the AIAgent's own
     lazy create) are no-ops.
 
-    Only an *explicitly chosen* workspace is persisted as the session's cwd.
-    The agent still runs in the auto-detected directory (session["cwd"]), but
-    we don't stamp that onto the row — otherwise every session the user never
-    picked a folder for gets grouped under whatever directory the desktop
-    happened to launch in (e.g. "desktop"). Leaving it null groups them under
-    "No workspace", which is the desired default.
+    Desktop/WebSocket sessions only persist an explicitly chosen workspace. The
+    stdio Ink client is different: its launch directory is the user's workspace
+    even when no ``cwd`` RPC parameter was sent.
     """
     key = session.get("session_key")
     if not key:
@@ -1997,6 +2047,7 @@ def _ensure_session_db_row(session: dict) -> None:
     parent_session_id = session.get("parent_session_id") or None
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
+    persisted_cwd = _session_cwd(session) if _session_cwd_should_persist(session) else None
     try:
         db.create_session(
             key,
@@ -2004,10 +2055,13 @@ def _ensure_session_db_row(session: dict) -> None:
             model=row_model,
             model_config=model_config or None,
             parent_session_id=parent_session_id,
-            cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+            cwd=persisted_cwd,
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
+    else:
+        if persisted_cwd:
+            _persist_session_git_meta(session, persisted_cwd)
     finally:
         if close_db:
             try:
@@ -2081,10 +2135,10 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
     or on an unreachable mount. Run them on a short-lived daemon thread instead
     and persist via the same profile-aware db the caller writes ``cwd`` to.
 
-    Best-effort: ``cwd`` itself is persisted synchronously by the caller, so a
-    probe failure just leaves these enrichment columns unset (the project tree
-    falls back to its live resolver / lazy backfill). Daemon, so a mid-flight
-    probe never delays gateway shutdown.
+    The database update is a compare-and-set on ``session_key`` + captured cwd.
+    Only after that succeeds do we update the live in-memory cache, and only when
+    the same live session still points at the captured cwd. This prevents a late
+    probe for cwd A from repopulating metadata after the session moved to cwd B.
     """
     session_key = session.get("session_key", "")
     if not session_key or not cwd:
@@ -2092,6 +2146,7 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
     # Snapshot the routing fields now; the live session dict may be gone by the
     # time the thread runs. `_session_db` reopens the profile-correct db inside.
     db_session = {"session_key": session_key, "profile_home": session.get("profile_home")}
+    live_session = session
 
     def _run() -> None:
         try:
@@ -2100,8 +2155,22 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
             if not (branch or root):
                 return
             with _session_db(db_session) as db:
-                if db is not None:
-                    db.update_session_cwd(session_key, cwd, branch, root)
+                if db is None:
+                    return
+                updated = db.update_session_git_meta_if_cwd_matches(
+                    session_key, cwd, branch, root
+                )
+            if not updated:
+                return
+            # Keep the cache coherent with the CAS-protected row. The lock also
+            # serializes this check with cwd-changing paths below.
+            with _sessions_lock:
+                if live_session.get("cwd") != cwd:
+                    return
+                if not any(candidate is live_session for candidate in _sessions.values()):
+                    return
+                live_session["git_branch"] = (branch or "").strip() or None
+                live_session["git_repo_root"] = (root or "").strip() or None
         except Exception:
             logger.debug("failed to persist session git metadata", exc_info=True)
 
@@ -2115,7 +2184,12 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(cwd))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
-    session["cwd"] = resolved
+    with _sessions_lock:
+        session["cwd"] = resolved
+        # A cwd move invalidates metadata captured for the previous workspace;
+        # the new cwd's async enrichment may repopulate it later.
+        session["git_branch"] = None
+        session["git_repo_root"] = None
     # An explicit user choice — persist it as the workspace (and let a later
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
@@ -3799,7 +3873,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd,
-        "branch": _git_branch_for_cwd(cwd),
+        "branch": (session or {}).get("git_branch"),
         "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
@@ -4386,7 +4460,10 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     if not os.path.isdir(resolved):
         return
 
-    session["cwd"] = resolved
+    with _sessions_lock:
+        session["cwd"] = resolved
+        session["git_branch"] = None
+        session["git_repo_root"] = None
     session["explicit_cwd"] = True
     _register_session_cwd(session)
 
@@ -4406,7 +4483,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
             if agent is not None
             else {
                 "cwd": resolved,
-                "branch": _git_branch_for_cwd(resolved),
+                "branch": None,
                 "project": _project_info_for_cwd(resolved),
                 "lazy": True,
             }
@@ -5148,6 +5225,8 @@ def _init_session(
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
+            "git_branch": None,
+            "git_repo_root": None,
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -5170,6 +5249,8 @@ def _init_session(
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["cwd"] = row["cwd"]
+                    _sessions[sid]["git_branch"] = row.get("git_branch")
+                    _sessions[sid]["git_repo_root"] = row.get("git_repo_root")
         else:
             try:
                 _cwd = _sessions[sid]["cwd"]
@@ -5746,7 +5827,12 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
-    resolved_cwd = _completion_cwd(params)
+    resolved_cwd = (
+        _stdio_launch_cwd()
+        if not raw_cwd
+        and _is_stdio_transport(current_transport() or _stdio_transport)
+        else _completion_cwd(params)
+    )
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     _enable_gateway_prompts()
 
@@ -5868,7 +5954,9 @@ def _(rid, params: dict) -> dict:
                 "tools": {},
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
-                "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
+                # Git enrichment is deliberately asynchronous; probing here
+                # would block session.create and race with cwd changes.
+                "branch": None,
                 "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -6010,12 +6098,14 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
+def _lazy_resume_info(
+    cwd: str, *, model: str = "", provider: str = "", branch: str | None = None
+) -> dict:
     """session.info for a not-yet-built session (the shape session.create
     returns). tools/skills land later when the deferred build emits session.info."""
     info = {
         "cwd": cwd,
-        "branch": _git_branch_for_cwd(cwd),
+        "branch": branch,
         "project": _project_info_for_cwd(cwd),
         "model": model or _resolve_model(),
         "tools": {},
@@ -6043,6 +6133,8 @@ def _deferred_session_record(
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
+    git_branch: str | None = None,
+    git_repo_root: str | None = None,
 ) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
@@ -6058,6 +6150,8 @@ def _deferred_session_record(
         "created_at": now,
         "cwd": cwd,
         "display_history_prefix": display_history_prefix or [],
+        "git_branch": git_branch,
+        "git_repo_root": git_repo_root,
         "edit_snapshots": {},
         "explicit_cwd": False,
         "history": history,
@@ -6247,6 +6341,8 @@ def _(rid, params: dict) -> dict:
             close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
             profile_home=profile_home,
             lazy=True,
+            git_branch=found.get("git_branch"),
+            git_repo_root=found.get("git_repo_root"),
         )
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
             return _ok(rid, _reuse_live_payload(*live))
@@ -6261,7 +6357,9 @@ def _(rid, params: dict) -> dict:
                 "resumed": target,
                 "message_count": len(messages),
                 "messages": messages,
-                "info": _lazy_resume_info(cwd),
+                "info": _lazy_resume_info(
+                    cwd, branch=found.get("git_branch")
+                ),
                 "inflight": None,
                 "running": child_running,
                 "session_key": target,
@@ -6329,6 +6427,8 @@ def _(rid, params: dict) -> dict:
             profile_home=profile_home,
             model_override=overrides.get("model_override"),
             resume_runtime_overrides=overrides or None,
+            git_branch=found.get("git_branch"),
+            git_repo_root=found.get("git_repo_root"),
         )
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
             return _ok(rid, _reuse_live_payload(*live))
@@ -6348,6 +6448,7 @@ def _(rid, params: dict) -> dict:
                     cwd,
                     model=model_override.get("model") or "",
                     provider=overrides.get("provider_override") or "",
+                    branch=found.get("git_branch"),
                 ),
                 "inflight": None,
                 "running": False,
@@ -6510,7 +6611,9 @@ def _(rid, params: dict) -> dict:
     agent = session.get("agent")
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
-        "branch": _git_branch_for_cwd(cwd),
+        # Git enrichment is deliberately asynchronous; probing here would
+        # block session.cwd.set and race with cwd changes.
+        "branch": None,
         "project": _project_info_for_cwd(cwd),
         "lazy": True,
     }

@@ -195,6 +195,49 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_local_and_plugin_qualified_same_bytes_have_distinct_identities(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.skills_tool import clear_skill_view_dedupe_session, skill_view
+
+        session_id = "session-a"
+        clear_skill_view_dedupe_session(session_id)
+        plugin_content = (
+            "---\nname: sample\ndescription: sample desc\n---\n\n"
+            "Sample body.\n"
+        )
+        plugin_banner = (
+            "[Bundle context: This skill is part of the 'plugin' plugin.]\n\n"
+        )
+        local_dir = tmp_path / "local-skills" / "sample"
+        local_dir.mkdir(parents=True)
+        (local_dir / "SKILL.md").write_text(plugin_banner + plugin_content)
+        self._register_skill(
+            tmp_path,
+            plugin="plugin",
+            name="sample",
+            content=plugin_content,
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "local-skills")
+
+        try:
+            local_first = json.loads(skill_view("sample", session_id=session_id))
+            plugin_first = json.loads(
+                skill_view("plugin:sample", session_id=session_id)
+            )
+            local_second = json.loads(skill_view("sample", session_id=session_id))
+            plugin_second = json.loads(
+                skill_view("plugin:sample", session_id=session_id)
+            )
+        finally:
+            clear_skill_view_dedupe_session(session_id)
+
+        assert "content" in local_first
+        assert "content" in plugin_first
+        assert local_first["content_hash"] == plugin_first["content_hash"]
+        assert "content" not in local_second
+        assert "content" not in plugin_second
+
     def test_invalid_namespace_returns_error(self, tmp_path):
         from tools.skills_tool import skill_view
 

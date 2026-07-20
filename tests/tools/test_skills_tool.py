@@ -1,6 +1,7 @@
 """Tests for tools/skills_tool.py — skill discovery and viewing."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from tools.skills_tool import (
     skill_matches_platform,
     skills_list,
     skill_view,
+    clear_skill_view_dedupe_session,
     MAX_DESCRIPTION_LENGTH,
 )
 
@@ -570,6 +572,236 @@ class TestSkillView:
         assert view_result["available_skills"] == [
             skill["name"] for skill in list_result["skills"]
         ]
+
+
+class TestSkillViewDedupe:
+    def setup_method(self):
+        self._session_ids = {
+            "session-a",
+            "session-b",
+            "session-c",
+            "session-capacity",
+            "identity-session",
+            "wrapper-session",
+        }
+        for session_id in self._session_ids:
+            clear_skill_view_dedupe_session(session_id)
+        for key in skills_tool_module._skill_view_dedupe_counters:
+            skills_tool_module._skill_view_dedupe_counters[key] = 0
+
+    def teardown_method(self):
+        for session_id in self._session_ids:
+            clear_skill_view_dedupe_session(session_id)
+        for key in skills_tool_module._skill_view_dedupe_counters:
+            skills_tool_module._skill_view_dedupe_counters[key] = 0
+
+    def test_same_session_same_main_skill_returns_compact_receipt(self, tmp_path):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = json.loads(skill_view("sample", session_id="session-a"))
+            second = json.loads(skill_view("sample", session_id="session-a"))
+
+        assert first["content"].rstrip().endswith("Instructions")
+        assert "content" not in second
+        assert second["success"] is True
+        assert second["unchanged"] is True
+        assert second["content_hash"] == first["content_hash"]
+
+    def test_same_session_changed_rendered_content_returns_full_payload(self, tmp_path):
+        skill = _make_skill(tmp_path, "sample", body="First")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = json.loads(skill_view("sample", session_id="session-a"))
+            skill.joinpath("SKILL.md").write_text(
+                "---\nname: sample\ndescription: Description for sample.\n---\n\n"
+                "# sample\n\nSecond"
+            )
+            second = json.loads(skill_view("sample", session_id="session-a"))
+
+        assert first["content_hash"] != second["content_hash"]
+        assert second["content"].endswith("Second")
+
+    def test_different_sessions_each_receive_full_payload(self, tmp_path):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = json.loads(skill_view("sample", session_id="session-a"))
+            second = json.loads(skill_view("sample", session_id="session-b"))
+
+        assert "content" in first
+        assert "content" in second
+
+    def test_missing_session_id_fails_open_with_full_payload(self, tmp_path):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = json.loads(skill_view("sample"))
+            second = json.loads(skill_view("sample"))
+
+        assert "content" in first
+        assert "content" in second
+
+    def test_main_skill_and_linked_file_with_same_bytes_do_not_collide(self, tmp_path):
+        skill = _make_skill(tmp_path, "sample", body="Instructions")
+        references = skill / "references"
+        references.mkdir()
+        (references / "api.md").write_text((skill / "SKILL.md").read_text())
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            main = json.loads(
+                skill_view("sample", preprocess=False, session_id="session-a")
+            )
+            linked = json.loads(
+                skill_view(
+                    "sample",
+                    file_path="references/api.md",
+                    preprocess=False,
+                    session_id="session-a",
+                )
+            )
+            linked_again = json.loads(
+                skill_view(
+                    "sample",
+                    file_path="references/api.md",
+                    preprocess=False,
+                    session_id="session-a",
+                )
+            )
+            main_again = json.loads(
+                skill_view("sample", preprocess=False, session_id="session-a")
+            )
+
+        assert "content" in main
+        assert "content" in linked
+        assert main["content_hash"] == linked["content_hash"]
+        assert "content" not in linked_again
+        assert "content" not in main_again
+
+    def test_preprocessed_content_changes_get_a_new_hash(self, tmp_path):
+        _make_skill(tmp_path, "sample", body="Original")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.preprocess_skill_content",
+                side_effect=["rendered-first", "rendered-second"],
+            ) as preprocess,
+        ):
+            first = json.loads(
+                skill_view("sample", task_id="task-a", session_id="session-a")
+            )
+            second = json.loads(
+                skill_view("sample", task_id="task-a", session_id="session-a")
+            )
+
+        assert first["content"] == "rendered-first"
+        assert second["content"] == "rendered-second"
+        assert first["content_hash"] != second["content_hash"]
+        assert preprocess.call_args_list[0].kwargs["session_id"] == "task-a"
+
+    def test_capacity_eviction_causes_safe_full_reload(self, tmp_path, monkeypatch):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        for name in ("identity-a", "identity-b", "identity-c"):
+            _make_skill(tmp_path, name, body=name)
+
+        monkeypatch.setattr(skills_tool_module, "_SKILL_VIEW_DEDUPE_MAX_SESSIONS", 2)
+        monkeypatch.setattr(
+            skills_tool_module, "_SKILL_VIEW_DEDUPE_MAX_IDENTITIES_PER_SESSION", 2
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_view("sample", session_id="session-a")
+            skill_view("sample", session_id="session-b")
+            skill_view("sample", session_id="session-c")
+            evicted_session = json.loads(
+                skill_view("sample", session_id="session-a")
+            )
+
+            skill_view("identity-a", session_id="identity-session")
+            skill_view("identity-b", session_id="identity-session")
+            skill_view("identity-c", session_id="identity-session")
+            evicted_identity = json.loads(
+                skill_view("identity-a", session_id="identity-session")
+            )
+
+        assert "content" in evicted_session
+        assert "content" in evicted_identity
+        assert len(skills_tool_module._skill_view_dedupe) <= 2
+        assert all(
+            len(identity_map) <= 2
+            for identity_map in skills_tool_module._skill_view_dedupe.values()
+        )
+
+    def test_state_failure_fails_open_without_logging_content(self, tmp_path, caplog):
+        class BrokenStore:
+            def setdefault(self, *_args, **_kwargs):
+                raise RuntimeError("state unavailable")
+
+        _make_skill(tmp_path, "sample", body="Instructions")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(skills_tool_module, "_skill_view_dedupe", BrokenStore()),
+            caplog.at_level(logging.WARNING, logger="tools.skills_tool"),
+        ):
+            first = json.loads(skill_view("sample", session_id="session-a"))
+            second = json.loads(skill_view("sample", session_id="session-a"))
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert "content" in first
+        assert "content" in second
+        assert any("failed open" in record.message for record in caplog.records)
+        assert all("Instructions" not in record.message for record in caplog.records)
+
+    def test_dedupe_counters_are_metadata_only_and_count_avoided_content(
+        self, tmp_path
+    ):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = json.loads(skill_view("sample", session_id="session-a"))
+            second = json.loads(skill_view("sample", session_id="session-a"))
+
+        counters = skills_tool_module._skill_view_dedupe_counters
+        assert set(counters) == {
+            "skill_view_dedupe_hits",
+            "skill_view_chars_avoided",
+            "skill_view_approx_tokens_avoided",
+        }
+        assert counters["skill_view_dedupe_hits"] == 1
+        assert counters["skill_view_chars_avoided"] == len(first["content"])
+        assert counters["skill_view_approx_tokens_avoided"] == (
+            len(first["content"]) + 3
+        ) // 4
+        assert all(isinstance(value, int) for value in counters.values())
+        assert "content" not in second
+
+    def test_registry_wrapper_passes_session_id_and_keeps_usage_bumps(
+        self, tmp_path
+    ):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        from tools.registry import registry
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skill_usage.bump_view") as bump_view,
+            patch("tools.skill_usage.bump_use") as bump_use,
+        ):
+            first = json.loads(
+                registry.dispatch(
+                    "skill_view",
+                    {"name": "sample"},
+                    task_id="task-a",
+                    session_id="wrapper-session",
+                )
+            )
+            second = json.loads(
+                registry.dispatch(
+                    "skill_view",
+                    {"name": "sample"},
+                    task_id="task-b",
+                    session_id="wrapper-session",
+                )
+            )
+
+        assert "content" in first
+        assert "content" not in second
+        assert bump_view.call_args_list == [(("sample",),), (("sample",),)]
+        assert bump_use.call_args_list == [(("sample",),), (("sample",),)]
 
 
 class TestSkillViewSecureSetupOnLoad:

@@ -852,7 +852,18 @@ window.addEventListener("hub:auth-required", () => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => { /* http or old browser */ });
+  // When a new service worker takes control (e.g. after a deploy), reload once
+  // so the page picks up the latest JS/HTML automatically — important for
+  // installed PWAs that can't be hard-refreshed by the user.
+  let reloadedForSW = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadedForSW) return;
+    reloadedForSW = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register("/sw.js")
+    .then((reg) => { reg.update?.(); })
+    .catch(() => { /* http or old browser */ });
 }
 
 bindShortcuts();

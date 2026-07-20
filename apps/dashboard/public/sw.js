@@ -5,7 +5,7 @@
 //                 (news, weather, worldstate…) still renders with no signal
 // POST /api/*   → network only (agent, sync writes never come from cache)
 
-const VERSION = "hub-v53";
+const VERSION = "hub-v54";
 const SHELL = [
   "/",
   "/css/dashboard.css",
@@ -60,19 +60,18 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Static shell: serve from cache, refresh in the background.
+  // Static shell: NETWORK-FIRST so an online load always gets the latest HTML/JS
+  // (installed PWAs can't hard-refresh — stale-while-revalidate could otherwise
+  // strand a user on an old build). Falls back to cache only when offline.
   event.respondWith(
-    caches.match(request).then((hit) => {
-      const refresh = fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(VERSION).then((cache) => cache.put(request, copy));
-          }
-          return response;
-        })
-        .catch(() => hit);
-      return hit || refresh;
-    }),
+    fetch(request)
+      .then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(VERSION).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request)),
   );
 });

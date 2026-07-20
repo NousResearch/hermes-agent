@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2204,19 +2205,45 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "encoding": "utf-8",
                 "errors": "replace",
             }
+        else:
+            # Own session/process-group so a timeout can reap the WHOLE tree.
+            # subprocess.run's timeout SIGKILLs only the direct child, orphaning
+            # backgrounded grandchildren; a child wedged in D-state then hangs
+            # the reap, leaking stuck processes (the 2026-07-15 tegrastats
+            # incident class). A new session lets us kill the process group.
+            popen_kwargs["start_new_session"] = True
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
-        result = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=str(path.parent),
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            out, err = proc.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the entire process group (backgrounded grandchildren too),
+            # not just the direct child. Best-effort on a wedged/D-state tree:
+            # SIGKILL the group, then reap without blocking forever.
+            if sys.platform != "win32":
+                try:
+                    os.killpg(os.getpgid(proc.pid), getattr(signal, "SIGKILL", signal.SIGTERM))  # windows-footgun: ok
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            else:
+                proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            raise
+        returncode = proc.returncode
+        stdout = (out or "").strip()
+        stderr = (err or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2228,8 +2255,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if returncode != 0:
+            parts = [f"Script exited with code {returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:

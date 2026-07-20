@@ -108,7 +108,9 @@ describe('Hermes REST session helpers', () => {
       if (path.startsWith('/api/profiles/sessions/sidebar')) {
         // The exact skew failure: Electron surfaces the backend catch-all.
         return Promise.reject(
-          new Error('Error invoking remote method \'hermes:api\': Error: 404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}')
+          new Error(
+            'Error invoking remote method \'hermes:api\': Error: 404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'
+          )
         )
       }
 

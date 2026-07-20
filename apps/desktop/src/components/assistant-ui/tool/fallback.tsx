@@ -381,7 +381,10 @@ function ToolEntry({ part }: ToolEntryProps) {
   )
 
   const showRawSearchDrilldown =
-    part.toolName === 'web_search' && part.result !== undefined && toolViewMode !== 'technical' && Boolean(rawResult.trim())
+    part.toolName === 'web_search' &&
+    part.result !== undefined &&
+    toolViewMode !== 'technical' &&
+    Boolean(rawResult.trim())
 
   const hasExpandableContent = Boolean(
     view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
@@ -596,9 +599,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {showRawSearchDrilldown && (
             <details className="max-w-full">
               <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {rawResult}
-              </pre>
+              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>{rawResult}</pre>
             </details>
           )}
           {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (

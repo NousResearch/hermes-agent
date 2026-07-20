@@ -10,21 +10,43 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.metadata
 import json
 import logging
 import os
+import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+import threading
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.plugin_supply_chain import (
+    LOCK_FILENAME,
+    PluginCapabilityReport,
+    PluginProvenance,
+    build_capability_report,
+    read_provenance_lock,
+    validate_full_commit_sha,
+    validate_source_url,
+    write_provenance_lock,
+)
 
 logger = logging.getLogger(__name__)
+
+_OPERATION_MUTEXES_GUARD = threading.Lock()
+_OPERATION_MUTEXES: dict[str, threading.Lock] = {}
 
 
 @functools.lru_cache(maxsize=1)
@@ -66,6 +88,23 @@ class PluginOperationError(Exception):
     """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
 
 
+@dataclass(frozen=True)
+class InstallResult:
+    """Complete result of a successfully published plugin installation."""
+
+    target: Path
+    manifest: dict[str, Any]
+    name: str
+    provenance: PluginProvenance
+    capabilities: PluginCapabilityReport
+
+    def __iter__(self):
+        """Keep the historical three-value unpacking contract for callers."""
+        yield self.target
+        yield self.manifest
+        yield self.name
+
+
 # Minimum manifest version this installer understands.
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
@@ -77,6 +116,78 @@ def _plugins_dir() -> Path:
     plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
+
+
+@contextmanager
+def _plugin_operation_lock(target: Path):
+    """Serialize all Hermes install/update operations for one canonical target."""
+    canonical_target = target.resolve(strict=False)
+    plugins_root = _plugins_dir().resolve(strict=True)
+    try:
+        canonical_target.relative_to(plugins_root)
+    except ValueError:
+        raise PluginOperationError("Plugin operation lock target must remain under plugins root.")
+    key = hashlib.sha256(os.fsencode(str(canonical_target))).hexdigest()
+    with _OPERATION_MUTEXES_GUARD:
+        mutex = _OPERATION_MUTEXES.setdefault(key, threading.Lock())
+
+    with mutex:
+        lock_dir = plugins_root / ".operation-locks"
+        try:
+            lock_dir.mkdir(mode=0o700, exist_ok=True)
+            directory_metadata = lock_dir.lstat()
+            if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(directory_metadata.st_mode):
+                raise PluginOperationError("Plugin operation lock directory is unsafe.")
+            if os.name == "posix":
+                os.chmod(lock_dir, 0o700)
+            lock_path = lock_dir / f"{key}.lock"
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            before = None
+            if not nofollow:
+                try:
+                    before = lock_path.lstat()
+                except FileNotFoundError:
+                    pass
+                if before is not None and not stat.S_ISREG(before.st_mode):
+                    raise PluginOperationError("Plugin operation lock must be a regular file.")
+            flags = os.O_RDWR | os.O_CREAT | nofollow
+            descriptor = os.open(lock_path, flags, 0o600)
+        except (OSError, ValueError) as exc:
+            raise PluginOperationError("Plugin operation lock is unsafe or unavailable.") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise PluginOperationError("Plugin operation lock must be a regular file.")
+            if metadata.st_nlink != 1:
+                raise PluginOperationError("Plugin operation lock must have a single link.")
+            if before is not None and (before.st_dev, before.st_ino) != (
+                metadata.st_dev,
+                metadata.st_ino,
+            ):
+                raise PluginOperationError("Plugin operation lock must be a regular file.")
+            if os.name == "posix":
+                os.fchmod(descriptor, 0o600)
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            else:
+                import msvcrt
+
+                if metadata.st_size == 0:
+                    os.write(descriptor, b"\0")
+                    os.fsync(descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                if os.name == "posix":
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                else:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(descriptor)
 
 
 def _sanitize_plugin_name(
@@ -211,10 +322,18 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
         return git_url, (subdir or None)
 
     raise ValueError(
-        f"Invalid plugin identifier: '{identifier}'. "
-        "Use a Git URL or 'owner/repo' shorthand (optionally with a subdirectory: "
-        "'owner/repo/path/to/plugin')."
+        "Invalid plugin identifier. Use a Git URL or 'owner/repo' shorthand "
+        "(optionally with a subdirectory: 'owner/repo/path/to/plugin')."
     )
+
+
+def _resolve_validated_plugin_source(identifier: str) -> tuple[str, Optional[str]]:
+    """Resolve an identifier and reject unsafe source metadata uniformly."""
+    try:
+        git_url, subdir = _resolve_git_url(identifier)
+        return validate_source_url(git_url), subdir
+    except ValueError as exc:
+        raise PluginOperationError(str(exc)) from exc
 
 
 def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
@@ -282,18 +401,43 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
     Skips files that already exist to avoid overwriting user config on reinstall.
     """
     for example_file in plugin_dir.glob("*.example"):
-        real_name = example_file.stem  # e.g. "config.yaml" from "config.yaml.example"
+        real_name = example_file.stem
         real_path = plugin_dir / real_name
-        if not real_path.exists():
+        try:
+            real_path.lstat()
+            continue
+        except FileNotFoundError:
+            pass
+        except OSError:
+            console.print("[yellow]Warning:[/yellow] Skipped an unsafe example destination.")
+            continue
+        try:
+            content = _read_bounded_regular_file(example_file, 1024 * 1024)
+            assert content is not None
+            descriptor = os.open(
+                real_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
             try:
-                shutil.copy2(example_file, real_path)
-                console.print(
-                    f"[dim]  Created {real_name} from {example_file.name}[/dim]"
-                )
-            except OSError as e:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Failed to copy {example_file.name}: {e}"
-                )
+                try:
+                    destination = os.fdopen(descriptor, "wb")
+                except Exception:
+                    os.close(descriptor)
+                    raise
+                with destination:
+                    destination.write(content)
+            except Exception:
+                try:
+                    real_path.unlink()
+                except OSError:
+                    pass
+                raise
+            console.print(f"[dim]  Created {real_name} from {example_file.name}[/dim]")
+        except (OSError, PluginOperationError):
+            console.print(
+                "[yellow]Warning:[/yellow] Skipped an unsafe or unreadable example file."
+            )
 
 
 def _missing_requires_env_names(manifest: dict) -> list[str]:
@@ -398,13 +542,12 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     console = Console()
     after_install = plugin_dir / "after-install.md"
 
-    if after_install.exists():
-        content = after_install.read_text(encoding="utf-8")
-        md = Markdown(content)
-        console.print()
-        console.print(Panel(md, border_style="green", expand=False))
-        console.print()
-    else:
+    try:
+        raw = _read_bounded_regular_file(after_install, 256 * 1024, missing_ok=True)
+    except PluginOperationError:
+        console.print("[yellow]Warning:[/yellow] Skipped unsafe after-install instructions.")
+        return
+    if raw is None:
         console.print()
         console.print(
             Panel(
@@ -416,6 +559,16 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
             )
         )
         console.print()
+        return
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        console.print("[yellow]Warning:[/yellow] Skipped invalid after-install instructions.")
+        return
+    md = Markdown(content)
+    console.print()
+    console.print(Panel(md, border_style="green", expand=False))
+    console.print()
 
 
 def _display_removed(name: str, plugins_dir: Path) -> None:
@@ -446,111 +599,452 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
-    """Clone Git plugin into ``~/.hermes/plugins``.
+MAX_INSPECT_MANIFEST_BYTES = 256 * 1024
 
-    Returns ``(target_dir, installed_manifest, canonical_name)``.
-    Raises ``PluginOperationError`` on failure.
-    """
-    import tempfile
+
+def _read_bounded_regular_file(
+    path: Path, max_bytes: int, *, missing_ok: bool = False
+) -> bytes | None:
+    """Read a bounded regular file without following its final path component."""
+    try:
+        before = path.lstat()
+    except FileNotFoundError as exc:
+        if missing_ok:
+            return None
+        raise PluginOperationError("Required file is missing.") from exc
+    except OSError as exc:
+        raise PluginOperationError("File could not be read safely.") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise PluginOperationError("File must be a regular file.")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise PluginOperationError("File must be a regular file.")
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise PluginOperationError("File changed while being read.")
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            os.close(descriptor)
+    except PluginOperationError:
+        raise
+    except OSError as exc:
+        raise PluginOperationError("File could not be read safely.") from exc
+    raw = b"".join(chunks)
+    if len(raw) > max_bytes:
+        raise PluginOperationError("File is too large.")
+    return raw
+
+
+def _parse_manifest_file(path: Path) -> dict[str, Any]:
+    """Safely read and parse one explicit manifest candidate."""
+    raw = _read_bounded_regular_file(path, MAX_INSPECT_MANIFEST_BYTES)
+    assert raw is not None
+    try:
+        text = raw.decode("utf-8")
+        import yaml
+
+        manifest = yaml.safe_load(text)
+    except Exception as exc:
+        raise PluginOperationError("Plugin manifest is malformed.") from exc
+    if not isinstance(manifest, dict) or not manifest:
+        raise PluginOperationError("Plugin manifest is malformed.")
+    return manifest
+
+
+def _inspection_git_env() -> dict[str, str]:
+    """Return an environment that cannot inherit Git execution configuration."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GIT_", "GCM_")) and key != "SSH_ASKPASS"
+    }
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "Never",
+            "GIT_ALLOW_PROTOCOL": "file:https:http:ssh",
+        }
+    )
+    return env
+
+
+def _run_inspect_git(
+    command: list[str], *, operation: str, cwd: Path | None = None
+) -> str:
+    failures = {
+        "clone": "Git clone failed.",
+        "checkout": "Git checkout failed.",
+        "resolve commit": "Git resolve commit failed.",
+    }
+    failure = failures.get(operation, "Git operation failed.")
+    safe_command = [command[0], "-c", f"core.hooksPath={os.devnull}", *command[1:]]
+    try:
+        result = subprocess.run(
+            safe_command,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=_inspection_git_env(),
+        )
+    except FileNotFoundError as exc:
+        raise PluginOperationError("git is not installed or not in PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise PluginOperationError(f"{failure[:-1]} (timed out).") from exc
+    if result.returncode != 0:
+        raise PluginOperationError(failure)
+    return result.stdout.strip()
+
+
+def _read_inspection_manifest(plugin_dir: Path) -> dict[str, Any]:
+    """Strictly read plugin.yaml for remote inspection."""
+    try:
+        return _parse_manifest_file(plugin_dir / "plugin.yaml")
+    except PluginOperationError as exc:
+        raise PluginOperationError(f"Plugin manifest plugin.yaml is invalid: {exc}") from exc
+
+
+def _read_install_manifest(plugin_dir: Path) -> dict[str, Any]:
+    """Read plugin.yaml, legacy plugin.yml, or accept a manifestless plugin."""
+    for filename in ("plugin.yaml", "plugin.yml"):
+        candidate = plugin_dir / filename
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise PluginOperationError("Plugin manifest could not be inspected safely.") from exc
+        return _parse_manifest_file(candidate)
+    return {}
+
+
+def inspect_plugin_source(
+    identifier: str, *, requested_ref: str | None = None
+) -> dict[str, Any]:
+    """Inspect source metadata in a temporary clone without loading or installing it."""
+    from hermes_cli.plugin_supply_chain import (
+        build_capability_report,
+        validate_full_commit_sha,
+        validate_source_url,
+    )
+
+    if requested_ref is not None:
+        try:
+            requested_ref = validate_full_commit_sha(requested_ref)
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
+    source_url, subdir = _resolve_validated_plugin_source(identifier)
+
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+
+    with tempfile.TemporaryDirectory() as temporary:
+        clone_root = Path(temporary) / "plugin"
+        _run_inspect_git(
+            [git_exe, "clone", source_url, str(clone_root)], operation="clone"
+        )
+        if requested_ref is not None:
+            _run_inspect_git(
+                [git_exe, "checkout", "--detach", requested_ref],
+                operation="checkout",
+                cwd=clone_root,
+            )
+        resolved_commit = _run_inspect_git(
+            [git_exe, "rev-parse", "HEAD"], operation="resolve commit", cwd=clone_root
+        )
+        try:
+            resolved_commit = validate_full_commit_sha(resolved_commit)
+        except ValueError as exc:
+            raise PluginOperationError(f"Git returned an invalid commit: {exc}") from exc
+        if requested_ref is not None and resolved_commit != requested_ref:
+            raise PluginOperationError(
+                "Checked out commit does not exactly match the requested ref."
+            )
+
+        plugin_dir = (
+            _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
+        )
+        manifest = _read_inspection_manifest(plugin_dir)
+        capability = asdict(build_capability_report(plugin_dir, manifest))
+        capability = {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in capability.items()
+        }
+        fallback_name = (
+            subdir.rstrip("/").rsplit("/", 1)[-1]
+            if subdir
+            else _repo_name_from_url(source_url)
+        )
+        name = manifest.get("name")
+        if name is None or name == "":
+            name = fallback_name
+        elif not isinstance(name, str):
+            raise PluginOperationError("Plugin manifest field 'name' must be a string.")
+        version = manifest.get("version")
+        if version is not None and not isinstance(version, str):
+            raise PluginOperationError("Plugin manifest field 'version' must be a string.")
+        description = manifest.get("description")
+        if description is not None and not isinstance(description, str):
+            raise PluginOperationError("Plugin manifest field 'description' must be a string.")
+        return {
+            "source_url": source_url,
+            "subdir": subdir,
+            "requested_ref": requested_ref,
+            "resolved_commit": resolved_commit,
+            "plugin": {
+                "name": name,
+                "version": version,
+                "description": description,
+            },
+            "capabilities": capability,
+        }
+
+
+def _cmd_inspect_impl(
+    identifier: str, *, requested_ref: str | None = None, json_output: bool = False
+) -> dict[str, Any]:
+    """Inspect and print a remote plugin's declared metadata."""
+    try:
+        result = inspect_plugin_source(identifier, requested_ref=requested_ref)
+    except PluginOperationError as exc:
+        if json_output:
+            print(json.dumps({"error": str(exc)}, sort_keys=True))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from exc
+    except Exception:
+        message = "Plugin inspection failed unexpectedly."
+        if json_output:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Error:[/red] {message}")
+        raise SystemExit(1) from None
+
+    if json_output:
+        try:
+            serialized = json.dumps(result, sort_keys=True)
+        except (TypeError, ValueError):
+            print(
+                json.dumps(
+                    {"error": "Inspection result could not be serialized as JSON."},
+                    sort_keys=True,
+                )
+            )
+            raise SystemExit(1) from None
+        print(serialized)
+    else:
+        from rich.console import Console
+
+        console = Console()
+        plugin = result["plugin"]
+        capabilities = result["capabilities"]
+        console.print(f"[bold]{plugin['name']}[/bold] {plugin['version'] or ''}")
+        if plugin["description"]:
+            console.print(plugin["description"])
+        console.print(f"[dim]Source:[/dim] {result['source_url']}")
+        console.print(f"[dim]Commit:[/dim] {result['resolved_commit']}")
+        console.print(f"Hooks: {', '.join(capabilities['hooks']) or '(none)'}")
+        console.print(f"Tools: {', '.join(capabilities['tools']) or '(none)'}")
+        console.print("[yellow]This inspection is not a security audit.[/yellow]")
+    return result
+
+
+def cmd_inspect(
+    identifier: str, *, requested_ref: str | None = None, json_output: bool = False
+) -> dict[str, Any]:
+    """Inspect a plugin while containing unexpected boundary failures."""
+    try:
+        return _cmd_inspect_impl(
+            identifier, requested_ref=requested_ref, json_output=json_output
+        )
+    except Exception:
+        message = "Plugin inspection failed unexpectedly."
+        if json_output:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Error:[/red] {message}")
+        raise SystemExit(1) from None
+
+
+def _remove_partial_plugin_target(target: Path) -> None:
+    """Best-effort removal of a failed publication, never its backup."""
+    try:
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+    except OSError:
+        logger.warning("Failed to remove partial plugin publication at %s", target)
+
+
+def _restore_plugin_backup(backup: Path, target: Path) -> None:
+    """Restore *backup* canonically, preserving it when recovery cannot finish."""
+    _remove_partial_plugin_target(target)
+    try:
+        os.replace(backup, target)
+        return
+    except OSError:
+        pass
 
     try:
-        git_url, subdir = _resolve_git_url(identifier)
-    except ValueError as e:
-        raise PluginOperationError(str(e)) from e
+        shutil.copytree(backup, target, symlinks=True)
+        if not target.exists():
+            raise OSError("restored target is unavailable after copy")
+    except OSError as exc:
+        _remove_partial_plugin_target(target)
+        recovery_path = backup.resolve()
+        raise PluginOperationError(
+            "PLUGIN_BACKUP_PRESERVED: automatic restoration failed; the old plugin "
+            f"is preserved at {recovery_path}. Manual recovery is required."
+        ) from exc
+
+    try:
+        shutil.rmtree(backup)
+    except OSError:
+        logger.warning("Restored previous plugin, but failed to clean up its backup at %s", backup)
+
+
+def _install_plugin_core(
+    identifier: str, *, force: bool, requested_ref: str | None = None
+) -> InstallResult:
+    """Clone, inspect, and atomically publish a Git plugin."""
+    if requested_ref is not None:
+        try:
+            requested_ref = validate_full_commit_sha(requested_ref)
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
+    source_url, subdir = _resolve_validated_plugin_source(identifier)
 
     plugins_dir = _plugins_dir()
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
 
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_clone = Path(tmp) / "plugin"
-
-        git_exe = _resolve_git_executable()
-        if not git_exe:
-            raise PluginOperationError("git is not installed or not in PATH.")
-
-        try:
-            result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
-                capture_output=True,
-                text=True,
-                timeout=60,
+        clone_root = Path(tmp) / "plugin"
+        _run_inspect_git([git_exe, "clone", source_url, str(clone_root)], operation="clone")
+        if requested_ref is not None:
+            _run_inspect_git(
+                [git_exe, "checkout", "--detach", requested_ref],
+                operation="checkout",
+                cwd=clone_root,
             )
-        except FileNotFoundError as e:
-            raise PluginOperationError(
-                "git is not installed or not in PATH.",
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise PluginOperationError(
-                "Git clone timed out after 60 seconds.",
-            ) from e
-
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
-            raise PluginOperationError(f"Git clone failed:\n{err}")
-
-        # Resolve the directory within the clone that holds the plugin.
-        if subdir:
-            tmp_target = _resolve_subdir_within(tmp_clone, subdir)
-        else:
-            tmp_target = tmp_clone
-
-        manifest = _read_manifest(tmp_target)
-        plugin_name = manifest.get("name") or (
-            subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
+        resolved_commit = _run_inspect_git(
+            [git_exe, "rev-parse", "HEAD"], operation="resolve commit", cwd=clone_root
         )
+        try:
+            resolved_commit = validate_full_commit_sha(resolved_commit)
+        except ValueError as exc:
+            raise PluginOperationError(f"Git returned an invalid commit: {exc}") from exc
+        if requested_ref is not None and resolved_commit != requested_ref:
+            raise PluginOperationError("Checked out commit does not exactly match the requested ref.")
+
+        source_dir = _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
+        manifest = _read_install_manifest(source_dir)
+        fallback_name = subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(source_url)
+        plugin_name = manifest.get("name")
+        if plugin_name is None or plugin_name == "":
+            plugin_name = fallback_name
+        elif not isinstance(plugin_name, str):
+            raise PluginOperationError("Plugin manifest field 'name' must be a string.")
+        for field in ("version", "description"):
+            value = manifest.get(field)
+            if value is not None and not isinstance(value, str):
+                raise PluginOperationError(f"Plugin manifest field '{field}' must be a string.")
 
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
-        except ValueError as e:
-            raise PluginOperationError(str(e)) from e
-
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
         mv = manifest.get("manifest_version")
         if mv is not None:
             try:
                 mv_int = int(mv)
             except (ValueError, TypeError):
                 raise PluginOperationError(
-                    f"Plugin '{plugin_name}' has invalid manifest_version "
-                    f"'{mv}' (expected an integer).",
+                    f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer)."
                 ) from None
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
                 from hermes_cli.config import recommended_update_command
-
                 raise PluginOperationError(
                     f"Plugin '{plugin_name}' requires manifest_version {mv}, "
                     f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
-                    f"Run {recommended_update_command()} to update Hermes.",
+                    f"Run {recommended_update_command()} to update Hermes."
                 ) from None
+        staging_root = Path(tempfile.mkdtemp(prefix=".install-", dir=plugins_dir))
+        staged = staging_root / "payload"
+        try:
+            shutil.copytree(source_dir, staged, symlinks=True)
+            from rich.console import Console
+            _copy_example_files(staged, Console())
+            installed_manifest = _read_install_manifest(staged)
+            installed_name = installed_manifest.get("name") or target.name
+            capabilities = build_capability_report(staged, installed_manifest)
+            provenance = PluginProvenance(
+                source_url=source_url,
+                subdir=subdir,
+                resolved_commit=resolved_commit,
+                requested_ref=requested_ref,
+                inspected_at=datetime.now(timezone.utc).isoformat(),
+            )
+            try:
+                write_provenance_lock(staged, provenance)
+            except Exception as exc:
+                raise PluginOperationError("Failed to write plugin provenance lock.") from exc
+            with _plugin_operation_lock(target):
+                if target.exists() and not force:
+                    raise PluginOperationError(
+                        f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                        f"or run `hermes plugins update {plugin_name}`."
+                    )
+                backup: Path | None = None
+                try:
+                    if target.exists():
+                        backup = Path(tempfile.mkdtemp(prefix=".backup-", dir=plugins_dir))
+                        backup.rmdir()
+                        os.replace(target, backup)
+                    os.replace(staged, target)
+                except OSError as exc:
+                    if backup is not None and backup.exists():
+                        _restore_plugin_backup(backup, target)
+                    raise PluginOperationError("Failed to publish plugin installation.") from exc
 
-        if target.exists():
-            if not force:
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                    f"or run `hermes plugins update {plugin_name}`.",
-                )
-            shutil.rmtree(target)
-
-        shutil.move(str(tmp_target), str(target))
-
-    has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
-    if not has_yaml and not (target / "__init__.py").exists():
-        logger.warning(
-            "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
-            plugin_name,
-        )
-
-    from rich.console import Console
-
-    _copy_example_files(target, Console())
-    installed_manifest = _read_manifest(target)
-    installed_name = installed_manifest.get("name") or target.name
-    return target, installed_manifest, installed_name
+                if backup is not None and backup.exists():
+                    try:
+                        shutil.rmtree(backup)
+                    except OSError:
+                        logger.warning("Installed plugin, but failed to clean up previous installation backup")
+                return InstallResult(target, installed_manifest, installed_name, provenance, capabilities)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
+    requested_ref: str | None = None,
 ) -> None:
     """Install a plugin from a Git URL or owner/repo shorthand.
 
@@ -562,8 +1056,8 @@ def cmd_install(
     console = Console()
 
     try:
-        git_url, _subdir = _resolve_git_url(identifier)
-    except ValueError as e:
+        git_url, _subdir = _resolve_validated_plugin_source(identifier)
+    except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
@@ -579,14 +1073,18 @@ def cmd_install(
         console.print(f"[dim]Cloning {git_url}...[/dim]")
 
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(
+        install_result = _install_plugin_core(
             identifier,
             force=force,
+            requested_ref=requested_ref,
         )
     except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    target = install_result.target
+    installed_manifest = install_result.manifest
+    installed_name = install_result.name
     if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
         target / "__init__.py"
     ).exists():
@@ -613,12 +1111,13 @@ def cmd_install(
             should_enable = False
 
     if should_enable:
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
+        try:
+            _set_plugin_activation(installed_name, enabled=True)
+        except Exception:
+            console.print(
+                "[red]Error:[/red] Plugin installed, but activation could not be saved."
+            )
+            sys.exit(1)
         console.print(
             f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
         )
@@ -646,31 +1145,44 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    if not (target / ".git").exists():
-        console.print(
-            f"[red]Error:[/red] Plugin '{name}' was not installed from git "
-            f"(no .git directory). Cannot update."
-        )
+    try:
+        with _plugin_operation_lock(target):
+            provenance = _update_provenance_preflight(target, name)
+            if not (target / ".git").exists():
+                console.print(
+                    f"[red]Error:[/red] Plugin '{name}' was not installed from git "
+                    f"(no .git directory). Cannot update."
+                )
+                sys.exit(1)
+            console.print(f"[dim]Updating {name}...[/dim]")
+            _validate_update_local_git_config(target, provenance)
+            ok, output = _git_pull_plugin_dir(
+                target,
+                source_url=provenance.source_url if provenance is not None else None,
+            )
+            if not ok:
+                console.print(f"[red]Error:[/red] {output}")
+                sys.exit(1)
+            if provenance is not None:
+                try:
+                    _refresh_update_provenance(target, provenance)
+                except Exception:
+                    console.print(
+                        "[red]Error:[/red] Git pull succeeded, but provenance lock refresh failed."
+                    )
+                    sys.exit(1)
+            _copy_example_files(target, console)
+            out = output.strip()
+            if "Already up to date" in out:
+                console.print(
+                    f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
+                )
+            else:
+                console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
+                console.print(f"[dim]{out}[/dim]")
+    except PluginOperationError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
-
-    console.print(f"[dim]Updating {name}...[/dim]")
-
-    ok, output = _git_pull_plugin_dir(target)
-    if not ok:
-        console.print(f"[red]Error:[/red] {output}")
-        sys.exit(1)
-
-    # Copy any new .example files
-    _copy_example_files(target, console)
-
-    out = output.strip()
-    if "Already up to date" in out:
-        console.print(
-            f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
-        )
-    else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
 
 
 def cmd_remove(name: str) -> None:
@@ -767,6 +1279,31 @@ def _save_enabled_set(enabled: set) -> None:
     if "plugins" not in config:
         config["plugins"] = {}
     config["plugins"]["enabled"] = sorted(enabled)
+    save_config(config)
+
+
+def _set_plugin_activation(name: str, *, enabled: bool) -> None:
+    """Atomically update both plugin activation lists with one config save."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        plugins_cfg = {}
+        config["plugins"] = plugins_cfg
+
+    enabled_values = plugins_cfg.get("enabled", [])
+    disabled_values = plugins_cfg.get("disabled", [])
+    enabled_set = set(enabled_values) if isinstance(enabled_values, list) else set()
+    disabled_set = set(disabled_values) if isinstance(disabled_values, list) else set()
+    if enabled:
+        enabled_set.add(name)
+        disabled_set.discard(name)
+    else:
+        enabled_set.discard(name)
+        disabled_set.add(name)
+    plugins_cfg["enabled"] = sorted(enabled_set)
+    plugins_cfg["disabled"] = sorted(disabled_set)
     save_config(config)
 
 
@@ -1764,6 +2301,7 @@ def dashboard_install_plugin(
     *,
     force: bool,
     enable: bool,
+    requested_ref: str | None = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
     warnings: list[str] = []
@@ -1777,33 +2315,48 @@ def dashboard_install_plugin(
         pass
 
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(
+        install_result = _install_plugin_core(
             identifier,
             force=force,
+            requested_ref=requested_ref,
         )
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
+    target = install_result.target
+    installed_manifest = install_result.manifest
+    installed_name = install_result.name
     missing_env = _missing_requires_env_names(installed_manifest)
-    if enable:
-        en = _get_enabled_set()
-        dis = _get_disabled_set()
-        en.add(installed_name)
-        dis.discard(installed_name)
-        _save_enabled_set(en)
-        _save_disabled_set(dis)
-
     hint: str | None = None
     ap = target / "after-install.md"
     if ap.exists():
         hint = str(ap)
-
-    return {
-        "ok": True,
+    details = {
+        "installed": True,
         "plugin_name": installed_name,
         "warnings": warnings,
         "missing_env": missing_env,
         "after_install_path": hint,
+        "provenance": asdict(install_result.provenance),
+        "capabilities": {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in asdict(install_result.capabilities).items()
+        },
+    }
+    if enable:
+        try:
+            _set_plugin_activation(installed_name, enabled=True)
+        except Exception:
+            return {
+                "ok": False,
+                **details,
+                "enabled": False,
+                "error": "Plugin installed, but activation could not be saved.",
+            }
+
+    return {
+        "ok": True,
+        **details,
         "enabled": enable,
     }
 
@@ -1944,34 +2497,239 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {_plugins_dir()}.",
         }
 
-    if not (target / ".git").exists():
-        return {
-            "ok": False,
-            "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
-        }
+    try:
+        with _plugin_operation_lock(target):
+            provenance = _update_provenance_preflight(target, name)
+            if not (target / ".git").exists():
+                return {
+                    "ok": False,
+                    "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
+                }
+            _validate_update_local_git_config(target, provenance)
+            ok, msg = _git_pull_plugin_dir(
+                target,
+                source_url=provenance.source_url if provenance is not None else None,
+            )
+            if not ok:
+                return {"ok": False, "error": msg}
+            if provenance is not None:
+                try:
+                    _refresh_update_provenance(target, provenance)
+                except Exception:
+                    unchanged = "Already up to date" in msg
+                    return {
+                        "ok": False,
+                        "pull_succeeded": True,
+                        "unchanged": unchanged,
+                        "error": "Git pull succeeded, but provenance lock refresh failed.",
+                        "name": name,
+                    }
+            from rich.console import Console
 
-    ok, msg = _git_pull_plugin_dir(target)
-    if not ok:
-        return {"ok": False, "error": msg}
-
-    from rich.console import Console
-
-    _copy_example_files(target, Console())
-    unchanged = "Already up to date" in msg
-    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+            _copy_example_files(target, Console())
+            unchanged = "Already up to date" in msg
+            return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+    except PluginOperationError as exc:
+        return {"ok": False, "error": str(exc), "name": name}
 
 
-def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+def _update_provenance_preflight(
+    target: Path, name: str
+) -> PluginProvenance | None:
+    """Fail closed on unsafe locks and reject drift of pinned installs."""
+    lock_path = target / LOCK_FILENAME
+    try:
+        lock_path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PluginOperationError(
+            "Plugin provenance lock is malformed or unreadable."
+        ) from exc
+    try:
+        provenance = read_provenance_lock(target)
+    except (OSError, ValueError) as exc:
+        raise PluginOperationError(
+            "Plugin provenance lock is malformed or unreadable."
+        ) from exc
+    if provenance is None:
+        raise PluginOperationError("Plugin provenance lock is malformed or unreadable.")
+    if provenance.requested_ref is not None:
+        source = provenance.source_url
+        if provenance.subdir:
+            source = f"{source}#{provenance.subdir}"
+        if os.name == "nt":
+            guidance = (
+                f"Source: {source}. Run `hermes plugins install <source-shown-above> "
+                "--ref <40-char-sha> --force`."
+            )
+        else:
+            guidance = (
+                "Reinstall with a new exact SHA: "
+                f"`hermes plugins install {shlex.quote(source)} "
+                "--ref <40-char-sha> --force`."
+            )
+        raise PluginOperationError(
+            "Pinned plugins cannot be updated in place. " + guidance
+        )
+    return provenance
+
+
+_UNSAFE_LOCAL_GIT_CONFIG = re.compile(
+    r"(?:"
+    r"filter\..+\.(?:clean|smudge|process|required)|"
+    r"core\.(?:fsmonitor|sshcommand|gitproxy|hookspath)|"
+    r"credential(?:\..+)?\.helper|"
+    r"include\.path|includeif\..+\.path|"
+    r"remote\..+\.(?:uploadpack|receivepack|proxy)|"
+    r"url\..+\.(?:insteadof|pushinsteadof)|"
+    r"protocol\..+\.allow|"
+    r"diff\..+\.command|merge\..+\.driver|"
+    r"difftool\..+\.cmd|mergetool\..+\.cmd|"
+    r"alias\..+"
+    r")\Z",
+    re.IGNORECASE,
+)
+_UNSAFE_LOCAL_GIT_MESSAGE = "Unsafe local Git configuration; reinstall the plugin instead."
+
+
+def _safe_local_git_config_query(target: Path, args: list[str]) -> bytes:
+    """Run a local-only, no-includes config query without exposing its output on failure."""
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+    try:
+        result = subprocess.run(
+            [git_exe, "-c", f"core.hooksPath={os.devnull}", "config", "--local", "--no-includes", *args],
+            cwd=str(target),
+            capture_output=True,
+            timeout=60,
+            env=_inspection_git_env(),
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE) from exc
+    if result.returncode != 0:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+    return result.stdout
+
+
+def _validate_update_local_git_config(
+    target: Path, provenance: PluginProvenance | None
+) -> None:
+    """Reject local Git configuration that can execute, rewrite, or drift an update."""
+    names = _safe_local_git_config_query(target, ["--name-only", "--null", "--list"])
+    try:
+        decoded_names = [name.decode("utf-8") for name in names.split(b"\0") if name]
+    except UnicodeDecodeError as exc:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE) from exc
+    if any(_UNSAFE_LOCAL_GIT_CONFIG.fullmatch(name) for name in decoded_names):
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+
+    # Legacy installs retain their historical remote compatibility. Provenance-backed
+    # installs must still point exactly at the source Hermes inspected and locked.
+    if provenance is not None:
+        raw_urls = _safe_local_git_config_query(
+            target, ["--null", "--get-all", "remote.origin.url"]
+        )
+        try:
+            values = raw_urls.split(b"\0")
+            if values[-1:] == [b""]:
+                values.pop()
+            if len(values) != 1:
+                raise ValueError("origin must have exactly one URL")
+            remote_url = values[0].decode("utf-8")
+            validated_url = validate_source_url(remote_url)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE) from exc
+        if validated_url != provenance.source_url:
+            raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+
+
+def _refresh_update_provenance(target: Path, provenance: PluginProvenance) -> None:
+    """Atomically advance an unpinned install lock after a successful pull."""
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+    head = _run_inspect_git(
+        [git_exe, "rev-parse", "HEAD"], operation="resolve commit", cwd=target
+    )
+    head = validate_full_commit_sha(head)
+    write_provenance_lock(
+        target,
+        PluginProvenance(
+            source_url=provenance.source_url,
+            subdir=provenance.subdir,
+            resolved_commit=head,
+            requested_ref=None,
+            inspected_at=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+
+
+def _git_pull_plugin_dir(
+    target: Path, *, source_url: str | None = None
+) -> tuple[bool, str]:
+    """Fast-forward a plugin, binding provenance updates to their locked URL."""
+    if source_url is not None:
+        try:
+            source_url = validate_source_url(source_url)
+        except ValueError:
+            return False, "Git fetch failed."
     git_exe = _resolve_git_executable()
     if not git_exe:
         return False, "git is not installed or not in PATH."
+
+    if source_url is not None:
+        def run_fixed(args: list[str], failure: str) -> tuple[bool, str]:
+            try:
+                result = subprocess.run(
+                    [git_exe, "-c", f"core.hooksPath={os.devnull}", *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=str(target),
+                    env=_inspection_git_env(),
+                )
+            except (FileNotFoundError, OSError):
+                return False, failure
+            except subprocess.TimeoutExpired:
+                return False, f"{failure[:-1]} (timed out)."
+            if result.returncode != 0:
+                return False, failure
+            return True, result.stdout.strip()
+
+        ok, old_head = run_fixed(["rev-parse", "--verify", "HEAD^{commit}"], "Git resolve commit failed.")
+        if not ok:
+            return False, old_head
+        try:
+            old_head = validate_full_commit_sha(old_head)
+        except ValueError:
+            return False, "Git resolve commit failed."
+        ok, message = run_fixed(
+            ["fetch", "--no-tags", "--", source_url, "HEAD"], "Git fetch failed."
+        )
+        if not ok:
+            return False, message
+        ok, message = run_fixed(["merge", "--ff-only", "FETCH_HEAD"], "Git merge failed.")
+        if not ok:
+            return False, message
+        ok, new_head = run_fixed(["rev-parse", "--verify", "HEAD^{commit}"], "Git resolve commit failed.")
+        if not ok:
+            return False, new_head
+        try:
+            new_head = validate_full_commit_sha(new_head)
+        except ValueError:
+            return False, "Git resolve commit failed."
+        return (True, "Already up to date.") if old_head == new_head else (True, "Updated.")
+
     try:
         result = subprocess.run(
-            [git_exe, "pull", "--ff-only"],
+            [git_exe, "-c", f"core.hooksPath={os.devnull}", "pull", "--ff-only"],
             capture_output=True,
             text=True,
             timeout=60,
             cwd=str(target),
+            env=_inspection_git_env(),
         )
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
@@ -1979,9 +2737,10 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return False, "Git pull timed out after 60 seconds."
 
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or result.stdout.strip()
-        return False, err or "git pull failed."
-    return True, result.stdout.strip()
+        return False, "Git pull failed."
+    if "Already up to date" in result.stdout:
+        return True, "Already up to date."
+    return True, "Updated."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
@@ -2017,9 +2776,16 @@ def plugins_command(args) -> None:
             args.identifier,
             force=getattr(args, "force", False),
             enable=enable_arg,
+            requested_ref=getattr(args, "requested_ref", None),
         )
     elif action == "update":
         cmd_update(args.name)
+    elif action == "inspect":
+        cmd_inspect(
+            args.identifier,
+            requested_ref=getattr(args, "requested_ref", None),
+            json_output=getattr(args, "json", False),
+        )
     elif action in {"remove", "rm", "uninstall"}:
         cmd_remove(args.name)
     elif action == "enable":

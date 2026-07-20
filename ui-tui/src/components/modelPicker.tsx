@@ -10,6 +10,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
+import { chipRowProps } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -596,9 +597,8 @@ export function ModelPicker({
 
             return row ? (
               <Text
-                bold={providerIdx === idx}
-                color={providerIdx === idx ? t.color.accent : dimmed ? t.color.label : t.color.muted}
-                inverse={providerIdx === idx}
+                color={dimmed ? t.color.label : t.color.muted}
+                {...chipRowProps(t, providerIdx === idx)}
                 key={p?.slug ?? `row-${idx}`}
                 wrap="truncate-end"
               >
@@ -669,9 +669,8 @@ export function ModelPicker({
 
         return (
           <Text
-            bold={modelIdx === idx}
-            color={modelIdx === idx ? t.color.accent : t.color.muted}
-            inverse={modelIdx === idx}
+            color={t.color.muted}
+            {...chipRowProps(t, modelIdx === idx)}
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
             wrap="truncate-end"
           >

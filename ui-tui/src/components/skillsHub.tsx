@@ -6,6 +6,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
+import { chipRowProps } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -220,13 +221,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
           const idx = offset + i
 
           return (
-            <Text
-              bold={catIdx === idx}
-              color={catIdx === idx ? t.color.accent : t.color.muted}
-              inverse={catIdx === idx}
-              key={row}
-              wrap="truncate-end"
-            >
+            <Text color={t.color.muted} {...chipRowProps(t, catIdx === idx)} key={row} wrap="truncate-end">
               {catIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>
@@ -256,13 +251,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
           const idx = offset + i
 
           return (
-            <Text
-              bold={skillIdx === idx}
-              color={skillIdx === idx ? t.color.accent : t.color.muted}
-              inverse={skillIdx === idx}
-              key={row}
-              wrap="truncate-end"
-            >
+            <Text color={t.color.muted} {...chipRowProps(t, skillIdx === idx)} key={row} wrap="truncate-end">
               {skillIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>

@@ -86,6 +86,16 @@ export function listRowStyle(t: Theme, active: boolean): { backgroundColor?: str
   return { backgroundColor, color: liftForContrast(t.color.text, backgroundColor, 4.5) }
 }
 
+/** Spreadable props for a selectable row: chip bg + ink + bold when active.
+ *  Spread AFTER `color` so the chip ink wins on the active row. Replaces
+ *  `inverse`, which swaps against the terminal's unknowable default colors
+ *  (a black slab on transparent profiles). */
+export function chipRowProps(t: Theme, active: boolean): { backgroundColor?: string; bold: boolean; color?: string } {
+  const row = listRowStyle(t, active)
+
+  return { backgroundColor: row.backgroundColor, bold: active, ...(row.color ? { color: row.color } : {}) }
+}
+
 /** A numbered menu row with the ▸ cursor (mirrors ClarifyPrompt). Active rows
  *  carry the shared list-row selection chip — same treatment as completions
  *  and the session switcher — instead of `inverse`, whose contrast depends on

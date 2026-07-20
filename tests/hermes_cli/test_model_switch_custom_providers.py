@@ -1479,3 +1479,40 @@ def test_save_discovered_models_noop_on_empty_args(monkeypatch):
     _save_discovered_models_to_config("", [])
 
     assert load_calls == 0, "load_config must not be called for empty args"
+
+
+def test_save_discovered_models_preserves_dict_form(monkeypatch):
+    """``_save_discovered_models_to_config`` must not replace a dict-form
+    ``models`` mapping (per-model metadata like ``context_length``) with
+    a flat list of strings (#67841)."""
+    from hermes_cli.model_switch import _save_discovered_models_to_config
+
+    save_calls = []
+
+    def fake_save(config):
+        save_calls.append(dict(config))
+
+    monkeypatch.setattr("hermes_cli.config.save_config", fake_save)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "my-gateway",
+                    "base_url": "https://gateway.example.com/v1",
+                    "models": {
+                        "configured-model": {"context_length": 8192},
+                    },
+                }
+            ]
+        },
+    )
+
+    # Dict-form models must NOT be overwritten by discovered models
+    _save_discovered_models_to_config(
+        "https://gateway.example.com/v1",
+        ["configured-model", "discovered-model"],
+    )
+    assert save_calls == [], (
+        "Dict-form models must not be replaced with a flat list"
+    )

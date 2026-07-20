@@ -247,7 +247,9 @@ class CLIAgentSetupMixin:
         wait_for_mcp_discovery()
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
-        if self._session_db is None:
+        # --no-session (#66319) leaves _session_db None on purpose; without the
+        # guard this lazy re-open would silently undo the ephemeral contract.
+        if self._session_db is None and not getattr(self, "no_session", False):
             try:
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
@@ -381,6 +383,7 @@ class CLIAgentSetupMixin:
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,
+                persist_disabled=getattr(self, "no_session", False),
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
 

@@ -3722,6 +3722,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        no_session: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -3929,6 +3930,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
+        # --no-session: ephemeral one-shot — the agent is constructed with
+        # persist_disabled=True so no session row, message flush, JSON
+        # snapshot, or memory extraction ever happens (#66319).
+        # CLI flag only, deliberately no env-var form: AGENTS.md:102-107 bans
+        # new user-facing non-secret HERMES_* env vars, and flag-only keeps
+        # main()'s one-shot validation the single unbypassable gate.
+        # MUST stay assigned before the SessionDB block below, which reads it.
+        self.no_session = no_session
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -4002,35 +4011,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         self._session_db_unavailable = False
-        try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-        except Exception as e:
-            # #41386: a failed session store means the transcript is NOT
-            # persisted to state.db — the live chat looks healthy but resume
-            # later shows a truncated/empty session. A buried log line is not
-            # enough; surface it prominently so the user knows persistence is
-            # off for this run and can fix the store before relying on resume.
-            self._session_db_unavailable = True
-            logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+        # ORDERING REQUIREMENT: self.no_session is assigned above (see the
+        # --no-session comment near self.ignore_rules) and is read here. Do not
+        # move this block above that assignment or ephemeral runs will open the
+        # session store anyway.
+        # Ephemeral one-shot never touches state.db. Note we deliberately leave
+        # _session_db_unavailable False: that flag drives the #41386 "persistence
+        # off / resume broken" warning, which would be wrong noise when the user
+        # explicitly asked for no session.
+        if not self.no_session:
             try:
-                # Console is imported at module scope; do NOT re-import it here.
-                # A function-local `import` would make `Console` a local name for
-                # the whole __init__ body and break the earlier `self.console =
-                # Console()` with UnboundLocalError.
-                Console(stderr=True).print(
-                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] to disk and "
-                    "cannot be resumed later. Searching past sessions is also disabled.\n"
-                    f"  Reason: {e}\n"
-                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
-                )
-            except Exception:
-                # Never let the warning path itself break startup.
-                print(
-                    "WARNING: Session store unavailable — this conversation will NOT be "
-                    f"saved to disk and cannot be resumed later. Reason: {e}"
-                )
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception as e:
+                # #41386: a failed session store means the transcript is NOT
+                # persisted to state.db — the live chat looks healthy but resume
+                # later shows a truncated/empty session. A buried log line is not
+                # enough; surface it prominently so the user knows persistence is
+                # off for this run and can fix the store before relying on resume.
+                self._session_db_unavailable = True
+                logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+                try:
+                    # Console is imported at module scope; do NOT re-import it here.
+                    # A function-local `import` would make `Console` a local name for
+                    # the whole __init__ body and break the earlier `self.console =
+                    # Console()` with UnboundLocalError.
+                    Console(stderr=True).print(
+                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                        "this conversation will [bold]NOT be saved[/bold] to disk and "
+                        "cannot be resumed later. Searching past sessions is also disabled.\n"
+                        f"  Reason: {e}\n"
+                        "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                    )
+                except Exception:
+                    # Never let the warning path itself break startup.
+                    print(
+                        "WARNING: Session store unavailable — this conversation will NOT be "
+                        f"saved to disk and cannot be resumed later. Reason: {e}"
+                    )
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so
@@ -15405,10 +15423,11 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_session: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
-    
+
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
@@ -15492,7 +15511,25 @@ def main(
     
     # Handle query shorthand
     query = query or q
-    
+
+    # --no-session is one-shot-only: interactive mode has slash commands
+    # (/new -> cli.py:7136 create_session, /branch) that create session rows
+    # directly, bypassing the agent-level _persist_disabled guard, and resuming
+    # a persisted session into an ephemeral run makes no sense. Reject both up
+    # front (#66319).
+    # --no-session is a CLI flag only, by policy: AGENTS.md:102-107 bans new
+    # user-facing non-secret HERMES_* env vars, so there is no env form that
+    # could reach HermesCLI without passing through this check. That is what
+    # makes this the single unbypassable gate keeping /new and /branch
+    # unreachable in ephemeral mode.
+    if no_session:
+        if resume:
+            raise ValueError("--no-session cannot be combined with --resume")
+        if not (query or image):
+            raise ValueError(
+                "--no-session requires a one-shot invocation (-q/--query or --image)"
+            )
+
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
     toolsets_list = None
@@ -15540,6 +15577,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        no_session=no_session,
     )
 
     if parsed_skills:

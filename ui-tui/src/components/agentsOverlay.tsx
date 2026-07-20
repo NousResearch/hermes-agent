@@ -22,6 +22,7 @@ import {
   fmtTokens,
   formatSummary,
   hotnessBucket,
+  isFailedSubagent,
   peakHotness,
   sparkline,
   topLevelSubagents,
@@ -81,11 +82,7 @@ const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
   all: () => true,
   leaf: n => n.children.length === 0,
   running: n => n.item.status === 'running' || n.item.status === 'queued',
-  failed: n =>
-    n.item.status === 'error' ||
-    n.item.status === 'failed' ||
-    n.item.status === 'interrupted' ||
-    n.item.status === 'timeout'
+  failed: n => isFailedSubagent(n.item)
 }
 
 const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
@@ -123,10 +120,25 @@ const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
 const statusGlyph = (item: SubagentProgress, t: Theme) => {
-  // Defensive fallback for cross-version snapshots with unknown statuses.
-  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
+  if (item.status === 'running' || item.status === 'queued') {
+    const g = STATUS_GLYPH[item.status]
 
-  return { color: g.color(t), glyph: g.glyph }
+    return { color: g.color(t), glyph: g.glyph, label: item.status }
+  }
+
+  if (isFailedSubagent(item)) {
+    const g = STATUS_GLYPH.failed
+
+    return { color: g.color(t), glyph: g.glyph, label: 'failed' }
+  }
+
+  if (item.outcome === 'partial') {
+    return { color: t.color.warn, glyph: '◐', label: 'partial' }
+  }
+
+  // A terminal lifecycle without a failed/partial logical outcome is output
+  // that still needs parent verification. Never render it as completed.
+  return { color: t.color.warn, glyph: '◇', label: 'verification required' }
 }
 
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
@@ -318,7 +330,7 @@ function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode })
 
 function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) {
   const { aggregate: agg, item } = node
-  const { color, glyph } = statusGlyph(item, t)
+  const { color, glyph, label } = statusGlyph(item, t)
 
   const inputTokens = item.inputTokens ?? 0
   const outputTokens = item.outputTokens ?? 0
@@ -343,7 +355,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
+        <Field name="depth" t={t} value={`${item.depth} · ${label}`} />
         {item.model ? <Field name="model" t={t} value={item.model} /> : null}
         {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
         <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
@@ -453,7 +465,7 @@ function ListRow({
   t: Theme
   width: number
 }) {
-  const { color, glyph } = statusGlyph(node.item, t)
+  const { color, glyph, label } = statusGlyph(node.item, t)
   const palette = heatPalette(t)
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
@@ -478,6 +490,8 @@ function ListRow({
       {heatMarker ? <Text color={active ? fg : heatMarker}>▍</Text> : null}
       <Text color={active ? fg : color}>{glyph}</Text> {goal}
       <Text color={active ? fg : t.color.muted}>
+        {' · '}
+        {label}
         {toolsCount}
         {kids}
         {trailing}
@@ -519,11 +533,11 @@ function DiffPane({
         {topLevelSubagents(snapshot.subagents)
           .slice(0, 8)
           .map(s => {
-            const { color, glyph } = statusGlyph(s, t)
+            const { color, glyph, label: statusLabel } = statusGlyph(s, t)
 
             return (
               <Text color={t.color.muted} key={s.id} wrap="truncate-end">
-                <Text color={color}>{glyph}</Text> {s.goal || 'subagent'}
+                <Text color={color}>{glyph}</Text> {s.goal || 'subagent'} · {statusLabel}
               </Text>
             )
           })}

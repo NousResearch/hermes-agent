@@ -1083,6 +1083,7 @@ export const ja = defineLocale({
     running: '実行中',
     failed: '失敗',
     done: '完了',
+    verificationRequired: '検証が必要',
     streaming: 'ストリーミング中',
     files: 'ファイル',
     moreFiles: count => `+${count} 件のファイル`,
@@ -2602,6 +2603,8 @@ export const ja = defineLocale({
       statusError: 'エラー',
       statusRecovered: '回復しました',
       statusDone: '完了',
+      statusUnverified: '未検証',
+      statusPartial: '部分的',
       memoryWriteNoted: 'メモリへの書き込みを記録',
       actions: {
         read: '読み取り完了',

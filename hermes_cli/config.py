@@ -2318,6 +2318,13 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Evidence-gated episode log (not system-prompt injected). Built-in;
+        # independent of external memory.provider plugins and Honcho.
+        "episodes_enabled": True,
+        # FTS corpus roots under HERMES_HOME for episode(action=recall).
+        # "episodes" is always meaningful; "memories" indexes MEMORY.md/USER.md
+        # and sibling markdown; "skills" indexes installed skill markdown.
+        "episode_corpus_roots": ["episodes", "memories"],
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

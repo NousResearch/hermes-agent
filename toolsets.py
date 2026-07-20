@@ -51,7 +51,7 @@ _HERMES_CORE_TOOLS = [
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo", "memory", "episode",
     # NOTE: the desktop Project tools (project_list/create/switch) are
     # deliberately NOT here. They only make sense where a GUI can follow the
     # move, so they live in the `project` toolset and are enabled solely by the
@@ -208,8 +208,8 @@ TOOLSETS = {
     },
     
     "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "description": "Persistent memory across sessions (personal notes, user profile, evidence-gated episodes)",
+        "tools": ["memory", "episode"],
         "includes": []
     },
 
@@ -357,7 +357,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo", "memory", "episode",
             "session_search", "clarify",
             "execute_code", "delegate_task",
         ],
@@ -389,7 +389,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo", "memory", "episode",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -415,7 +415,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
-            "todo", "memory",
+            "todo", "memory", "episode",
             # Session history search
             "session_search",
             # Code execution + delegation

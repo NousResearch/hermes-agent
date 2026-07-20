@@ -193,18 +193,33 @@ hermes sessions list    # Browse past sessions
 
 See [Session Search Tool](/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
 
-### session_search vs memory
+### session_search vs memory vs episodes
 
-| Feature | Persistent Memory | Session Search |
-|---------|------------------|----------------|
-| **Capacity** | ~1,300 tokens total | Unlimited (all sessions) |
-| **Speed** | Instant (in system prompt) | ~20ms FTS5 query, ~1ms scroll |
-| **Cost** | Token cost in every prompt | Free — no LLM calls |
-| **Use case** | Key facts always available | Finding specific past conversations |
-| **Management** | Manually curated by agent | Automatic — all sessions stored |
-| **Token cost** | Fixed per session (~1,300 tokens) | On-demand (searched when needed) |
+| Feature | Persistent Memory | Episodes | Session Search |
+|---------|------------------|----------|----------------|
+| **Capacity** | ~1,300 tokens total | Unlimited (on disk) | Unlimited (all sessions) |
+| **Speed** | Instant (in system prompt) | ~ms FTS5 query | ~20ms FTS5 query, ~1ms scroll |
+| **Cost** | Token cost in every prompt | Free until recalled | Free — no LLM calls |
+| **Use case** | Key facts always available | Durable lessons with proof | Finding specific past conversations |
+| **Write gate** | Optional user approval | **Evidence required** | Automatic — all sessions stored |
+| **Management** | Manually curated by agent | Checkpoint-only lessons | Automatic |
+| **Token cost** | Fixed per session (~1,300 tokens) | On-demand | On-demand |
 
-**Memory** is for critical facts that should always be in context. **Session search** is for "did we discuss X last week?" queries where the agent needs to recall specifics from past conversations.
+**Memory** is for critical facts that should always be in context. **Episodes** are for lessons that should survive for months without burning that budget — every write needs evidence (path, commit SHA, PR/issue URL, or log path). **Session search** is for "did we discuss X last week?" queries.
+
+### Episode tool
+
+```text
+episode(action="remember", content="...", evidence="path|sha|url", source="agent", tags=["fix"])
+episode(action="recall", query="gateway reconnect flake", k=5)
+episode(action="list")
+episode(action="get", path="2026-07-21-gateway-reconnect.md")
+episode(action="reindex")
+```
+
+Episodes live in `~/.hermes/memories/episodes/` as markdown files with frontmatter. They are **not** injected into the system prompt. Recall uses a local SQLite FTS5 index (stdlib only) over episodes and optional HERMES_HOME roots (`memories` by default; add `skills` via config).
+
+Write only at verified checkpoints. Prefer lessons that will still be true in a month. Do not store phase/queue status, secrets, or unverified claims.
 
 ## Configuration
 
@@ -216,6 +231,11 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  episodes_enabled: true    # evidence-gated episode log (default on)
+  episode_corpus_roots:     # FTS roots under HERMES_HOME for episode recall
+    - episodes
+    - memories
+    # - skills   # optional: index installed skill markdown too
 ```
 
 ## Controlling memory writes (`write_approval`)

@@ -215,17 +215,36 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "shell_dollar": "#4dabf7",
             "voice_status_bg": "#1a1a2e",
         },
-        # No paired light_colors. On a light (in practice transparent) terminal
-        # the beloved classic look is these vivid golds rendered RAW — xterm
-        # applies no contrast lift over a transparent bg, so #FFD700 shows as
-        # bright #F5C242, not a WCAG-darkened mustard. The TUI's display shim
-        # only flips fills to light polarity and rescues genuinely-invisible
-        # near-white text; the golds pass through untouched. A hand-authored
-        # dark "light palette" here is exactly what made it read as mud.
+        # Light overlay (merged onto `colors`; dark mode renders the vivid
+        # block above untouched). The goldenrod ladder: on white, the vivid
+        # #FFD700/#FFBF00 read as glare and WCAG-darkened mustard (#867000)
+        # reads as mud — the sweet spot is the statusbar's goldenrod family
+        # (#B8860B/#DAA520): hue kept, saturation tamed, mid luminance.
+        # Hierarchy on white: ink body 8.9:1 > fade 5.2 > label 3.7 >
+        # muted 3.3 > title 2.7 > headers 2.4 (accents recede last, like
+        # slate's pastels — the raw-canon look, just not neon).
         "light_colors": {
-            # Fills only: on a light terminal the dark navy menu/status fills
-            # must flip to light. Foregrounds intentionally inherit the vivid
-            # `colors` above so they render raw.
+            "banner_title": "#C8961E",
+            "banner_accent": "#D89B04",
+            "banner_dim": "#B8860B",
+            "banner_text": "#5C4718",
+            "ui_accent": "#D89B04",
+            "ui_label": "#A97E10",
+            "ui_ok": "#2E7D32",
+            "ui_error": "#C62828",
+            "ui_warn": "#D97706",
+            "prompt": "#5C4718",
+            "response_border": "#C8961E",
+            "session_label": "#A97E10",
+            "status_bar_text": "#6F6F6F",
+            "status_bar_strong": "#C8961E",
+            "status_bar_dim": "#9A8A5A",
+            "status_bar_good": "#2E7D32",
+            "status_bar_warn": "#C8961E",
+            "status_bar_bad": "#C2410C",
+            "status_bar_critical": "#B91C1C",
+            "shell_dollar": "#1E6FC0",
+            # Fills: flip the dark navy surfaces to light polarity.
             "completion_menu_bg": "#F5F5F5",
             "completion_menu_current_bg": "#E0D1BF",
             "selection_bg": "#D4E4F7",

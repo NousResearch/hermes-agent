@@ -23,6 +23,7 @@ from agent.plugin_llm import (
     PluginLlmTrustError,
     PluginLlmTextInput,
     _check_task,
+    _resolve_attribution,
     _resolve_task_ownership,
     _TrustPolicy,
     make_plugin_llm_for_test,
@@ -239,6 +240,19 @@ class TestRouting:
         # The caller must never run for a rejected task — no wrong-model call.
         assert captured == {}
 
+    def test_unknown_task_raises_before_invoking_caller(self, monkeypatch):
+        _set_registry(monkeypatch, [])
+        _set_builtins(monkeypatch, [])
+        captured: Dict[str, Any] = {}
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_policy(),
+            sync_caller=_capturing_caller(captured),
+        )
+        with pytest.raises(PluginLlmTrustError):
+            llm.complete([{"role": "user", "content": "hi"}], task="unknown")
+        assert captured == {}
+
     def test_structured_routes_task(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
@@ -290,25 +304,81 @@ class TestRouting:
         assert captured["task"] == "classifier"
         assert result.audit["task"] == "classifier"
 
+    def test_async_variants_log_exact_route(self, monkeypatch, caplog):
+        _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
+        _set_builtins(monkeypatch, [])
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_policy(),
+            async_caller=_async_capturing_caller({}),
+        )
+
+        with caplog.at_level(logging.INFO, logger="agent.plugin_llm"):
+            asyncio.run(
+                llm.acomplete(
+                    [{"role": "user", "content": "hi"}],
+                    task="classifier",
+                    purpose="plain",
+                )
+            )
+            asyncio.run(
+                llm.acomplete_structured(
+                    instructions="classify",
+                    input=[PluginLlmTextInput(text="payload")],
+                    task="classifier",
+                    purpose="structured",
+                )
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "plugin_llm.acomplete plugin=my-plugin provider=aux-provider "
+            "model=aux-model task=classifier purpose=plain tokens=8" in message
+            for message in messages
+        )
+        assert any(
+            "plugin_llm.acomplete_structured plugin=my-plugin provider=aux-provider "
+            "model=aux-model task=classifier purpose=structured "
+            "content_type=text tokens=8" in message
+            for message in messages
+        )
+
+
+def test_successful_fallback_route_beats_requested_route_for_attribution():
+    provider, model = _resolve_attribution(
+        provider_override="primary-provider",
+        model_override="primary-model",
+        response=_fake_response(),
+        route_info={"provider": "fallback-provider", "model": "fallback-model"},
+    )
+    assert (provider, model) == ("fallback-provider", "fallback-model")
+
 
 class TestForwardsToCallLlm:
     """Cover the production ``_invoke_*`` path (no injected caller), which is
     where the previously-hardcoded ``task=None`` is replaced by the routed
     key. The injected-caller tests above bypass this line."""
 
-    def test_sync_forwards_task_to_call_llm(self, monkeypatch):
+    def test_sync_task_uses_auxiliary_attribution_and_log(self, monkeypatch, caplog):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
         seen: Dict[str, Any] = {}
 
         def fake_call_llm(**kwargs: Any):
             seen.update(kwargs)
+            kwargs["route_info"].update(provider="aux-provider", model="aux-model")
             return _fake_response()
 
         monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
-        llm.complete([{"role": "user", "content": "hi"}], task="classifier")
+        with caplog.at_level(logging.INFO, logger="agent.plugin_llm"):
+            result = llm.complete([{"role": "user", "content": "hi"}], task="classifier")
         assert seen["task"] == "classifier"
+        assert (result.provider, result.model) == ("aux-provider", "aux-model")
+        assert any(
+            "provider=aux-provider model=aux-model task=classifier" in record.getMessage()
+            for record in caplog.records
+        )
 
     def test_sync_default_forwards_task_none(self, monkeypatch):
         _set_registry(monkeypatch, [])
@@ -324,21 +394,23 @@ class TestForwardsToCallLlm:
         llm.complete([{"role": "user", "content": "hi"}])
         assert seen["task"] is None
 
-    def test_async_forwards_task_to_async_call_llm(self, monkeypatch):
+    def test_async_task_uses_auxiliary_attribution(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
         seen: Dict[str, Any] = {}
 
         async def fake_async_call_llm(**kwargs: Any):
             seen.update(kwargs)
+            kwargs["route_info"].update(provider="aux-provider", model="aux-model")
             return _fake_response()
 
         monkeypatch.setattr("agent.auxiliary_client.async_call_llm", fake_async_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
-        asyncio.run(
+        result = asyncio.run(
             llm.acomplete([{"role": "user", "content": "hi"}], task="classifier")
         )
         assert seen["task"] == "classifier"
+        assert (result.provider, result.model) == ("aux-provider", "aux-model")
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +469,191 @@ class TestOwnershipIntegration:
             _check_task(
                 _policy(plugin_id="other"), plugin_id="other", requested_task="classifier"
             )
+
+    def test_auto_task_reports_configured_fallback_provider_and_model(self, tmp_path, monkeypatch):
+        from agent import auxiliary_client as auxiliary_mod
+        from hermes_cli import config as config_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """
+auxiliary:
+  classifier:
+    provider: auto
+    fallback_chain:
+      - provider: fallback-provider
+        model: fallback-model
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(config_mod, "_LOAD_CONFIG_CACHE", {})
+        monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
+
+        manager = self._make_manager()
+        ctx = self._register(manager, name="my-plugin", key="my-plugin", task_key="classifier")
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda: manager)
+        _set_builtins(monkeypatch, [])
+        monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "")
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "")
+
+        captured: Dict[str, Any] = {}
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_kwargs: _fake_response())
+            )
+        )
+
+        real_provider_client = auxiliary_mod.resolve_provider_client
+
+        def fake_provider_client(provider, model, _async_mode=False, **kwargs):
+            if provider == "auto":
+                return real_provider_client(provider, model, _async_mode, **kwargs)
+            captured.update(provider=provider, model=model, **kwargs)
+            return client, model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", fake_provider_client
+        )
+
+        result = ctx.llm.complete(
+            [{"role": "user", "content": "hi"}], task="classifier"
+        )
+
+        assert (captured["provider"], captured["model"]) == (
+            "fallback-provider", "fallback-model"
+        )
+        assert (result.provider, result.model) == (
+            "fallback-provider", "fallback-model"
+        )
+
+    def test_async_auto_resolution_preserves_route_provider(self, monkeypatch):
+        from agent import auxiliary_client
+
+        sync_client = SimpleNamespace()
+        async_client = SimpleNamespace()
+        monkeypatch.setattr(
+            auxiliary_client,
+            "_resolve_auto_route",
+            lambda **_kwargs: (sync_client, "fallback-model", "fallback-provider"),
+        )
+        monkeypatch.setattr(
+            auxiliary_client,
+            "_to_async_client",
+            lambda _client, model, **_kwargs: (async_client, model),
+        )
+
+        resolved_client, model = auxiliary_client.resolve_provider_client(
+            "auto", async_mode=True, task="classifier"
+        )
+
+        assert resolved_client is async_client
+        assert auxiliary_client._effective_provider_for_client(
+            resolved_client, "auto"
+        ) == "fallback-provider"
+        assert model == "fallback-model"
+
+    def test_sync_fallback_reports_the_successful_route(self, tmp_path, monkeypatch):
+        from hermes_cli import config as config_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """
+auxiliary:
+  classifier:
+    provider: primary-provider
+    model: primary-model
+    fallback_chain:
+      - provider: fallback-provider
+        model: fallback-model
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(config_mod, "_LOAD_CONFIG_CACHE", {})
+        monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
+        _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
+        _set_builtins(monkeypatch, [])
+
+        def fail(**_kwargs):
+            raise ConnectionError("connection refused")
+
+        failed_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=fail))
+        )
+        fallback_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: _fake_response()))
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda provider, model, **_kwargs: (failed_client, model),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client",
+            lambda provider, model, **_kwargs: (fallback_client, model),
+        )
+        monkeypatch.setattr("agent.auxiliary_client._transient_retry_count", lambda: 0)
+
+        result = make_plugin_llm_for_test(
+            plugin_id="my-plugin", policy=_policy()
+        ).complete([{"role": "user", "content": "hi"}], task="classifier")
+
+        assert (result.provider, result.model) == ("fallback-provider", "fallback-model")
+
+    def test_async_fallback_reports_the_successful_route(self, tmp_path, monkeypatch):
+        from hermes_cli import config as config_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """
+auxiliary:
+  classifier:
+    provider: primary-provider
+    model: primary-model
+    fallback_chain:
+      - provider: fallback-provider
+        model: fallback-model
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(config_mod, "_LOAD_CONFIG_CACHE", {})
+        monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
+        _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
+        _set_builtins(monkeypatch, [])
+
+        async def fail(**_kwargs):
+            raise ConnectionError("connection refused")
+
+        async def succeed(**_kwargs):
+            return _fake_response()
+
+        failed_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=fail))
+        )
+        fallback_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=succeed))
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda provider, model, **_kwargs: (failed_client, model),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client",
+            lambda provider, model, **_kwargs: (fallback_client, model),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._to_async_client",
+            lambda client, model, **_kwargs: (client, model),
+        )
+
+        result = asyncio.run(
+            make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy()).acomplete(
+                [{"role": "user", "content": "hi"}], task="classifier"
+            )
+        )
+
+        assert (result.provider, result.model) == ("fallback-provider", "fallback-model")

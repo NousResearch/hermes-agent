@@ -3149,6 +3149,17 @@ def _set_relay_auxiliary_route(
     context["api_mode"] = str(api_mode or "chat_completions")
 
 
+def _record_route_info(
+    route_info: Optional[Dict[str, str]],
+    provider: Optional[str],
+    model: Optional[str],
+) -> None:
+    """Expose the concrete route selected for one auxiliary call."""
+    if route_info is not None:
+        route_info["provider"] = provider or "auto"
+        route_info["model"] = model or "default"
+
+
 def _relay_auxiliary_metadata(
     *,
     provider: str | None = None,
@@ -4809,7 +4820,10 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
 
 def _fallback_provider_from_label(label: str) -> str:
     """Recover the provider identifier from a fallback display label."""
-    match = re.match(r"(?:fallback_chain\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
+    match = re.match(
+        r"(?:fallback_chain\[\d+\]|fallback_providers\[\d+\]|main-agent)\(([^)]+)\)$",
+        label or "",
+    )
     return match.group(1).strip() if match else str(label or "").strip()
 
 
@@ -8881,6 +8895,7 @@ def call_llm(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    route_info: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     semaphore = _acquire_sync_aux_semaphore(task)
@@ -8905,6 +8920,7 @@ def call_llm(
             api_mode=api_mode,
             stream=stream,
             stream_options=stream_options,
+            route_info=route_info,
         )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -8950,6 +8966,7 @@ def _call_llm_impl(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    route_info: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -9087,6 +9104,9 @@ def _call_llm_impl(
         request_provider,
         final_model,
         resolved_api_mode,
+    )
+    _record_route_info(
+        route_info, _fallback_provider_from_label(request_provider), final_model
     )
 
     # Log what we're about to do — makes auxiliary operations visible
@@ -9607,6 +9627,9 @@ def _call_llm_impl(
                         failed_model=_chain_failed_model)
 
             if fb_client is not None:
+                _record_route_info(
+                    route_info, _fallback_provider_from_label(fb_label), fb_model
+                )
                 fb_resp = _call_fallback_candidate_sync(
                     fb_client, fb_model, fb_label,
                     task=task, messages=messages,
@@ -9622,6 +9645,9 @@ def _call_llm_impl(
                 fb_client, fb_model, fb_label = _try_payment_fallback(
                     resolved_provider, task, reason="stale fallback credential")
                 if fb_client is not None:
+                    _record_route_info(
+                        route_info, _fallback_provider_from_label(fb_label), fb_model
+                    )
                     fb_resp = _call_fallback_candidate_sync(
                         fb_client, fb_model, fb_label,
                         task=task, messages=messages,
@@ -9725,6 +9751,7 @@ async def async_call_llm(
     timeout: float = None,
     extra_body: dict = None,
     reasoning_config: Optional[dict] = None,
+    route_info: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
     semaphore = _acquire_async_aux_semaphore(task)
@@ -9745,6 +9772,7 @@ async def async_call_llm(
             timeout=timeout,
             extra_body=extra_body,
             reasoning_config=reasoning_config,
+            route_info=route_info,
         )
     finally:
         if semaphore is not None:
@@ -9766,6 +9794,7 @@ async def _async_call_llm_impl(
     timeout: float = None,
     extra_body: dict = None,
     reasoning_config: Optional[dict] = None,
+    route_info: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -9861,6 +9890,9 @@ async def _async_call_llm_impl(
         request_provider,
         final_model,
         resolved_api_mode,
+    )
+    _record_route_info(
+        route_info, _fallback_provider_from_label(request_provider), final_model
     )
 
     # Pass the client's actual base_url (not just resolved_base_url) so
@@ -10263,6 +10295,11 @@ async def _async_call_llm_impl(
                 async_fb, async_fb_model = _to_async_client(
                     fb_client, fb_model or "", is_vision=(task == "vision")
                 )
+                _record_route_info(
+                    route_info,
+                    _fallback_provider_from_label(fb_label),
+                    async_fb_model or fb_model,
+                )
                 fb_resp = await _call_fallback_candidate_async(
                     async_fb, async_fb_model or fb_model, fb_label,
                     task=task, messages=messages,
@@ -10279,6 +10316,11 @@ async def _async_call_llm_impl(
                 if fb_client is not None:
                     async_fb, async_fb_model = _to_async_client(
                         fb_client, fb_model or "", is_vision=(task == "vision")
+                    )
+                    _record_route_info(
+                        route_info,
+                        _fallback_provider_from_label(fb_label),
+                        async_fb_model or fb_model,
                     )
                     fb_resp = await _call_fallback_candidate_async(
                         async_fb, async_fb_model or fb_model, fb_label,

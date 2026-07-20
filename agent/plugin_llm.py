@@ -656,6 +656,7 @@ def _resolve_attribution(
     provider_override: Optional[str],
     model_override: Optional[str],
     response: Any,
+    route_info: Optional[Dict[str, str]] = None,
 ) -> tuple[str, str]:
     """Decide what to record as ``result.provider`` / ``result.model``.
 
@@ -664,20 +665,24 @@ def _resolve_attribution(
     1. Explicit overrides win — if the plugin asked for ``provider="x"``
        or ``model="y"``, that's what we record (it's what the call
        actually targeted).
-    2. Otherwise we ask the host for the current main provider/model
-       via :func:`_read_main_provider` / :func:`_read_main_model`, since
-       those are what ``call_llm`` resolves to when ``provider=None``
-       and ``model=None`` are passed through. They reflect runtime
-       overrides set by ``set_runtime_main()``.
-    3. ``response.model`` (if present) overrides the recorded model
+    2. ``response.model`` (if present) overrides the recorded model
        string. Providers post-resolution often return a slightly
        different model id than the request (e.g. ``gpt-4o`` →
        ``gpt-4o-2024-08-06``); the plugin's audit log should reflect
        what actually ran.
-    4. If everything above is empty, fall back to ``"auto"`` /
+    3. The route selected by ``auxiliary_client`` supplies the provider/model
+       when no override or response model is available.
+    4. Otherwise the current main provider/model is used.
+    5. If everything above is empty, fall back to ``"auto"`` /
        ``"default"`` so the result object has non-empty strings.
     """
-    if provider_override:
+    route_info = route_info or {}
+    route_provider = route_info.get("provider")
+    route_model = route_info.get("model")
+
+    if route_provider:
+        provider = route_provider
+    elif provider_override:
         provider = provider_override
     else:
         try:
@@ -689,6 +694,8 @@ def _resolve_attribution(
     response_model = getattr(response, "model", None)
     if isinstance(response_model, str) and response_model.strip():
         model = response_model.strip()
+    elif route_model:
+        model = route_model
     elif model_override:
         model = model_override
     else:
@@ -938,7 +945,7 @@ class PluginLlm:
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
-        return PluginLlmCompleteResult(
+        result = PluginLlmCompleteResult(
             text=text,
             provider=real_provider,
             model=real_model,
@@ -951,6 +958,13 @@ class PluginLlm:
                 "task": eff_task or "",
             },
         )
+        logger.info(
+            "plugin_llm.acomplete plugin=%s provider=%s model=%s task=%s "
+            "purpose=%s tokens=%d",
+            self._plugin_id, real_provider, real_model, eff_task or "",
+            purpose or "", usage.total_tokens,
+        )
+        return result
 
     async def acomplete_structured(
         self,
@@ -1011,7 +1025,7 @@ class PluginLlm:
         parsed, content_type = _parse_structured_text(
             text=text, json_mode=json_mode, json_schema=json_schema
         )
-        return PluginLlmStructuredResult(
+        result = PluginLlmStructuredResult(
             text=text,
             provider=real_provider,
             model=real_model,
@@ -1027,6 +1041,13 @@ class PluginLlm:
                 "task": eff_task or "",
             },
         )
+        logger.info(
+            "plugin_llm.acomplete_structured plugin=%s provider=%s model=%s "
+            "task=%s purpose=%s content_type=%s tokens=%d",
+            self._plugin_id, real_provider, real_model, eff_task or "",
+            purpose or "", content_type, usage.total_tokens,
+        )
+        return result
 
     # -- internals ---------------------------------------------------------
 
@@ -1088,6 +1109,7 @@ class PluginLlm:
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+        route_info: Optional[Dict[str, str]] = {} if task else None
         response = call_llm(
             task=task,
             provider=provider_override,
@@ -1097,11 +1119,13 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
+            route_info=route_info,
         )
         provider, model = _resolve_attribution(
             provider_override=provider_override,
             model_override=model_override,
             response=response,
+            route_info=route_info,
         )
         return provider, model, response
 
@@ -1134,6 +1158,7 @@ class PluginLlm:
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+        route_info: Optional[Dict[str, str]] = {} if task else None
         response = await async_call_llm(
             task=task,
             provider=provider_override,
@@ -1143,11 +1168,13 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
+            route_info=route_info,
         )
         provider, model = _resolve_attribution(
             provider_override=provider_override,
             model_override=model_override,
             response=response,
+            route_info=route_info,
         )
         return provider, model, response
 

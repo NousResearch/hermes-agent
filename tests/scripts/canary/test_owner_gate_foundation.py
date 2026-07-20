@@ -244,6 +244,16 @@ def test_iam_is_exact_disk_and_instance_without_operation_permission() -> None:
     assert plan["architecture"]["target_instance_id"] == gate.TARGET_INSTANCE_ID
 
 
+def test_read_only_role_can_execute_compute_permission_probes() -> None:
+    assert {
+        "compute.disks.list",
+        "compute.instances.list",
+    } <= set(gate.READ_ONLY_IAM_PERMISSIONS)
+    assert not set(gate.READ_ONLY_IAM_PERMISSIONS) & set(
+        gate.MUTATION_PERMISSIONS
+    )
+
+
 def test_no_owner_editor_key_or_runtime_shell_surface() -> None:
     plan = _plan().report()
     text = repr(plan)

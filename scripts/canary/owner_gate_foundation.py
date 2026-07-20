@@ -118,6 +118,8 @@ MUTATION_PERMISSIONS = (
 )
 EXECUTION_PERMISSIONS = MUTATION_PERMISSIONS
 READ_ONLY_IAM_PERMISSIONS = (
+    "compute.disks.list",
+    "compute.instances.list",
     "iam.roles.get",
     "iam.serviceAccountKeys.list",
     "iam.serviceAccounts.get",

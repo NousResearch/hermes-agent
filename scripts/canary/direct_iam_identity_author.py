@@ -1594,6 +1594,7 @@ def collect_and_publish_canonical_authority(
     release_public_key: Ed25519PublicKey,
     network_collector_public_key: Ed25519PublicKey,
     project_ancestry_collector_public_key: Ed25519PublicKey,
+    predecessor_authority_file_sha256: str | None = None,
 ) -> Mapping[str, Any]:
     from scripts.canary import full_canary_owner_launcher as owner_launcher
 
@@ -1679,14 +1680,23 @@ def collect_and_publish_canonical_authority(
         return authority.raw
 
     try:
-        result = source_publication._run_direct_iam(
-            owner_home=owner_home,
-            chain=_direct_publication_chain(projection),
-            maximum=authority_schema.MAX_BYTES,
-            validator=validate,
-            collector=collect,
-            _recovery_only=recovery_only,
-        )
+        publication_arguments = {
+            "owner_home": owner_home,
+            "chain": _direct_publication_chain(projection),
+            "maximum": authority_schema.MAX_BYTES,
+            "validator": validate,
+            "collector": collect,
+            "_recovery_only": recovery_only,
+        }
+        if predecessor_authority_file_sha256 is None:
+            result = source_publication._run_direct_iam(
+                **publication_arguments,
+            )
+        else:
+            result = source_publication._run_direct_iam_rotation(
+                predecessor_file_sha256=predecessor_authority_file_sha256,
+                **publication_arguments,
+            )
     except source_publication._SourceArtifactPublicationError as exc:
         _error("direct_iam_identity_author_publication_failed", exc)
     authority = result.value
@@ -1761,6 +1771,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         required=True,
     )
+    parser.add_argument(
+        "--rotate-predecessor-authority-file-sha256",
+        dest="predecessor_authority_file_sha256",
+    )
     arguments = parser.parse_args(argv)
     try:
         release_public_key = pre_foundation.load_pinned_public_key(
@@ -1795,6 +1809,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         release_public_key=release_public_key,
         network_collector_public_key=network_public_key,
         project_ancestry_collector_public_key=ancestry_public_key,
+        predecessor_authority_file_sha256=(
+            arguments.predecessor_authority_file_sha256
+        ),
     )
     publication = result.get("publication") if isinstance(result, Mapping) else None
     expected_output = str(

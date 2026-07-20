@@ -70,6 +70,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | Scope | Purpose |
 |-------|---------|
 | `chat:write` | Send messages as the bot |
+| `chat:write.customize` | Use configured Hermes profile names and avatars on outgoing messages |
 | `app_mentions:read` | Detect when @mentioned in channels |
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |
@@ -689,6 +690,31 @@ slack:
 ```
 
 Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+
+## Profile Visual Identities
+
+One Slack app can visually distinguish Hermes profiles without creating a bot
+per profile. Configure a display name and either an avatar URL or emoji for
+each profile whose outgoing messages should have a custom presentation:
+
+```yaml
+slack:
+  profile_identities:
+    orchestrator:
+      username: "Orchestrator"
+      icon_url: "https://example.com/orchestrator.png"
+    support:
+      username: "Support Agent"
+      icon_emoji: ":office:"
+```
+
+Hermes uses the routed multiplexed profile when one is present, otherwise
+`HERMES_PROFILE`, a profile-shaped `HERMES_HOME`, then `default`. An absent or
+invalid matching entry leaves the normal Hermes bot identity unchanged.
+
+This feature requires Slack's `chat:write.customize` bot scope. Reinstall the
+Slack app after adding that scope. Configure profile identities only for Hermes
+profiles, never to impersonate people.
 
 ## Per-Channel Skill Bindings
 

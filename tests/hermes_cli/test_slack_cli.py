@@ -52,6 +52,11 @@ class TestSlackFullManifest:
         bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
         assert "groups:read" in bot_scopes
 
+    def test_custom_profile_identity_scope_is_included(self):
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        assert "chat:write.customize" in manifest["oauth_config"]["scopes"]["bot"]
+
     def test_group_dm_scopes_and_event_are_included(self):
         """Group DMs (mpim) need message.mpim + mpim:history or Slack never
         delivers them — the adapter classifies mpim as a DM and replies

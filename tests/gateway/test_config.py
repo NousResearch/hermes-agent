@@ -1573,6 +1573,35 @@ class TestLoadGatewayConfig:
             "C01ABC": "Code review mode",
         }
 
+    def test_bridges_slack_profile_identities_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  profile_identities:\n"
+            "    orchestrator:\n"
+            "      username: Orchestrator\n"
+            "      icon_url: https://example.com/orchestrator.png\n"
+            "    support:\n"
+            "      username: Support Agent\n"
+            "      icon_emoji: ':office:'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].extra["profile_identities"] == {
+            "orchestrator": {
+                "username": "Orchestrator",
+                "icon_url": "https://example.com/orchestrator.png",
+            },
+            "support": {
+                "username": "Support Agent",
+                "icon_emoji": ":office:",
+            },
+        }
+
     def test_bridges_feishu_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

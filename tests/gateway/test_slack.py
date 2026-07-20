@@ -98,6 +98,34 @@ def _fake_create_task(coro):
     return loop.create_task(_pending_for_fake_task())
 
 
+class _StandaloneSlackResponse:
+    async def json(self):
+        return {"ok": True, "ts": "171.222"}
+
+
+class _StandaloneSlackPost:
+    async def __aenter__(self):
+        return _StandaloneSlackResponse()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _StandaloneSlackSession:
+    def __init__(self):
+        self.payload = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, _url, **kwargs):
+        self.payload = kwargs["json"]
+        return _StandaloneSlackPost()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -115,6 +143,51 @@ def adapter():
     # Capture events instead of processing them
     a.handle_message = AsyncMock()
     return a
+
+
+class TestProfileVisualIdentities:
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_profile_identity(self, adapter):
+        adapter.config.extra["profile_identities"] = {
+            "orchestrator": {
+                "username": "Orchestrator",
+                "icon_url": "https://example.com/orchestrator.png",
+            }
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "171.111"})
+
+        await adapter.send("C123", "hello", metadata={"profile": "orchestrator"})
+
+        kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
+        assert kwargs["username"] == "Orchestrator"
+        assert kwargs["icon_url"] == "https://example.com/orchestrator.png"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_uses_profile_identity(self, monkeypatch):
+        from types import SimpleNamespace
+
+        session = _StandaloneSlackSession()
+        monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                SimpleNamespace(
+                    token="xoxb-test",
+                    extra={
+                        "profile_identities": {
+                            "orchestrator": {
+                                "username": "Orchestrator",
+                                "icon_emoji": ":robot_face:",
+                            }
+                        }
+                    },
+                ),
+                "C123",
+                "hello",
+            )
+
+        assert result["success"] is True
+        assert session.payload["username"] == "Orchestrator"
+        assert session.payload["icon_emoji"] == ":robot_face:"
 
 
 @pytest.fixture(autouse=True)

@@ -739,7 +739,18 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          // Self-heal a stale composingRef from a dropped compositionend.
+          // input/keydown handlers also recover (see handleEditorInput /
+          // handleEditorKeyDown), but a direct Send click fires blur then
+          // submit without passing through either handler — the form
+          // onSubmit guard would block a stuck ref permanently.
+          if (composingRef.current) {
+            composingRef.current = false
+          }
+
+          window.setTimeout(closeTrigger, 80)
+        }}
         onCompositionEnd={event => {
           composingRef.current = false
 

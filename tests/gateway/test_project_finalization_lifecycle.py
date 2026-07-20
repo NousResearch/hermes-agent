@@ -683,6 +683,49 @@ def test_rejected_delivery_schedules_retry_without_terminalizing(board):
     assert get_project_finalization(board, board_id="default", root_task_id=root, generation=1).terminal_outcome is None
 
 
+def test_delivery_retry_reuses_already_sealed_artifacts(board):
+    root, _, _ = _setup(board, complete_checker=True, verdict="PASS")
+    clock = {"now": 100}
+
+    async def rejected(*_):
+        return {"rejected": True, "error": "provider refused"}
+
+    first = _run(
+        ProjectFinalizationService(
+            kb.connect,
+            owner="test-owner",
+            now=lambda: clock["now"],
+            deliver=rejected,
+            enabled=True,
+            canary_scope=("*",),
+        )
+    )
+    before = get_project_finalization(board, board_id="default", root_task_id=root, generation=1)
+    assert first.delivered == first.terminalized == 0
+    assert before.final_report_sha256 and before.manifest_sha256
+
+    clock["now"] = 130
+
+    async def accepted(*_):
+        return {"provider_message_id": "m-retry"}
+
+    completed = _run(
+        ProjectFinalizationService(
+            kb.connect,
+            owner="test-owner",
+            now=lambda: clock["now"],
+            deliver=accepted,
+            enabled=True,
+            canary_scope=("*",),
+        )
+    )
+    after = get_project_finalization(board, board_id="default", root_task_id=root, generation=1)
+    assert completed.delivered == completed.terminalized == 1
+    assert after.terminal_outcome == "COMPLETE"
+    assert after.final_report_sha256 == before.final_report_sha256
+    assert after.manifest_sha256 == before.manifest_sha256
+
+
 def test_restart_recovers_durable_rejected_delivery_before_retry(board):
     root, _, _ = _setup(board, complete_checker=True, verdict="PASS")
     identity = dict(

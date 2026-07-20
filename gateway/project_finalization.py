@@ -342,11 +342,16 @@ class ProjectFinalizationService:
             lock_owner=self._owner,
             evaluation_time=now,
         )
-        snapshot = self._artifact_snapshot(conn, frozen, evaluation, outcome)
-        published = publish_project_final_artifacts(conn, snapshot)
         durable = get_project_finalization(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
         if durable is None:
             raise ValueError("project finalization disappeared after artifact publication")
+        published = self._recorded_artifacts(durable, evaluation.candidate_snapshot_version)
+        if published is None:
+            snapshot = self._artifact_snapshot(conn, frozen, evaluation, outcome)
+            published = publish_project_final_artifacts(conn, snapshot)
+            durable = get_project_finalization(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
+            if durable is None:
+                raise ValueError("project finalization disappeared after artifact publication")
         destination = self._destination(conn, durable)
         if destination.status != DESTINATION_FOUND:
             # No route is safe to infer, and no outcome may become terminal
@@ -381,6 +386,66 @@ class ProjectFinalizationService:
             cleanup_after = (datetime.fromtimestamp(now, UTC) + timedelta(days=current.retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             schedule_project_cleanup(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, cleanup_after=cleanup_after)
         return result.plus(delivered=1, terminalized=1)
+
+    @staticmethod
+    def _recorded_artifacts(
+        current: Any,
+        candidate_snapshot_version: str,
+    ) -> ProjectFinalArtifacts | None:
+        """Rehydrate an already sealed artifact set for a delivery retry.
+
+        Delivery retries must not rebuild terminal reports: a retry can occur
+        after usage or other live state has changed, while the report and
+        manifest bound to the frozen candidate are intentionally immutable.
+        Reuse them only when every persisted identity and on-disk byte stream
+        still agrees; otherwise fail closed instead of replacing evidence.
+        """
+        required = (
+            current.final_report_path,
+            current.final_report_sha256,
+            current.manifest_path,
+            current.manifest_sha256,
+            current.usage_summary_json,
+        )
+        if not any(required):
+            return None
+        if not all(required):
+            raise ValueError("recorded artifact identity is incomplete")
+        if current.artifact_candidate_snapshot_version != candidate_snapshot_version:
+            return None
+
+        report_path = Path(current.final_report_path)
+        manifest_path = Path(current.manifest_path)
+        usage_path = report_path.parent / "usage-summary.json"
+        if manifest_path.parent != report_path.parent:
+            raise ValueError("recorded artifact paths have different roots")
+        try:
+            report = report_path.read_bytes()
+            manifest = manifest_path.read_bytes()
+            usage = usage_path.read_bytes()
+            usage_json = usage.decode("utf-8").rstrip("\n")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError("recorded artifacts are unavailable") from exc
+
+        report_sha256 = hashlib.sha256(report).hexdigest()
+        manifest_sha256 = hashlib.sha256(manifest).hexdigest()
+        usage_sha256 = hashlib.sha256(usage).hexdigest()
+        if (
+            report_sha256 != current.final_report_sha256
+            or manifest_sha256 != current.manifest_sha256
+            or usage_json != current.usage_summary_json
+        ):
+            raise ValueError("recorded artifact identity verification failed")
+        return ProjectFinalArtifacts(
+            root_path=str(report_path.parent),
+            report_path=str(report_path),
+            report_sha256=report_sha256,
+            manifest_path=str(manifest_path),
+            manifest_sha256=manifest_sha256,
+            usage_summary_path=str(usage_path),
+            usage_summary_sha256=usage_sha256,
+            usage_summary_json=usage_json,
+        )
 
     def _terminal_message(self, current: Any, outcome: str, published: ProjectFinalArtifacts) -> str:
         artifact_names = (

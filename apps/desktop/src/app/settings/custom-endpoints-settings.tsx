@@ -73,10 +73,7 @@ function toPayload(form: EndpointForm): CustomEndpointUpdate {
   }
 }
 
-export function CustomEndpointsSettings({
-  onConfigSaved,
-  onMainModelChanged
-}: CustomEndpointsSettingsProps) {
+export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -164,7 +161,9 @@ export function CustomEndpointsSettings({
 
         notify({
           kind: 'success',
-          message: response.models.length ? `Endpoint is reachable. Found ${response.models.length} models.` : 'Endpoint is reachable.'
+          message: response.models.length
+            ? `Endpoint is reachable. Found ${response.models.length} models.`
+            : 'Endpoint is reachable.'
         })
       } else {
         notify({
@@ -252,7 +251,9 @@ export function CustomEndpointsSettings({
                       )}
                       {endpoint.source === 'direct-config' && <Pill>config.yaml</Pill>}
                     </div>
-                    <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground">{endpoint.base_url}</div>
+                    <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground">
+                      {endpoint.base_url}
+                    </div>
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                       <span>{endpoint.model}</span>
                       {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? 'API key set'}</span>}
@@ -369,7 +370,11 @@ export function CustomEndpointsSettings({
               </label>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button disabled={testing || !form.baseUrl.trim()} onClick={() => void handleValidate()} variant="outline">
+              <Button
+                disabled={testing || !form.baseUrl.trim()}
+                onClick={() => void handleValidate()}
+                variant="outline"
+              >
                 {testing ? <Loader2 className="animate-spin" /> : <Zap />}
                 Test
               </Button>

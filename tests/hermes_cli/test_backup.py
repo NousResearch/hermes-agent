@@ -2693,8 +2693,9 @@ class TestMemoryProviderExternalPaths:
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
-        # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        # Credential-shaped file tightened where POSIX mode bits are supported.
+        if os.name != "nt":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
 

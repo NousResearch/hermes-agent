@@ -13,22 +13,22 @@ import {
   sortProviders
 } from '@/components/onboarding'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { disconnectOAuthProvider, getCustomEndpoint, listOAuthProviders, saveCustomEndpoint } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import type { CustomEndpointConfig, EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
-import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
-import { CustomEndpointsSettings } from './custom-endpoints-settings'
+import { CREDENTIAL_CONTROL_CLASS, isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
-import { LoadingState, SettingsContent } from './primitives'
+import { ListRow, LoadingState, SettingsContent } from './primitives'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
 // exists in the Electron desktop shell, not the web dashboard.
@@ -45,7 +45,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
 }
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints'] as const
+export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -301,33 +301,214 @@ function NoProviderKeys() {
   )
 }
 
-// Surfaces the "Local / custom endpoint" entry point directly in the API-keys
-// tab so users can add any OpenAI-compatible endpoint (Zyphra, vLLM, Ollama…)
-// from the GUI. The composer pill and the providers "have an API key" affordance
-// both dead-end on the env-var-driven key catalog, which never lists a custom
-// endpoint — so without this row there is no reachable Desktop path to it.
-// The whole row is the button so the click target and a11y focus match the
-// visible area (the chevron + gutter are inside the button, not beside it).
-// Pass reason: null — the onboarding overlay renders an unmapped reason string
-// verbatim as a banner (see ReasonNotice in onboarding/index.tsx), and we don't
-// want a raw identifier like "providers-keys-tab" showing as literal text.
-function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void }) {
+function CustomEndpointKeyCard() {
   const { t } = useI18n()
-  const copy = t.settings.providers.localEndpoint
+  const ce = t.settings.providers.customEndpoint
+  const [expanded, setExpanded] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [savedBaseUrl, setSavedBaseUrl] = useState('')
+  const [baseUrlDraft, setBaseUrlDraft] = useState('')
+  const [apiKeyDraft, setApiKeyDraft] = useState<string | null>(null)
+  const [apiKeySet, setApiKeySet] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void getCustomEndpoint()
+      .then(config => {
+        if (cancelled) return
+        setSavedBaseUrl(config.base_url)
+        setBaseUrlDraft(config.base_url)
+        setApiKeySet(config.api_key_set)
+        setApiKeyDraft(null)
+      })
+      .catch(err => notifyError(err, ce.failedLoad))
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const keyEditing = apiKeyDraft !== null
+  const baseUrlDirty = baseUrlDraft.trim() !== savedBaseUrl
+  const apiKeyDirty = Boolean(apiKeyDraft?.trim())
+  const dirty = baseUrlDirty || apiKeyDirty
+  const busy = saving
+
+  function startKeyEdit() {
+    if (!keyEditing) setApiKeyDraft('')
+  }
+
+  function cancelKeyEdit() {
+    setApiKeyDraft(null)
+  }
+
+  async function save() {
+    if (!baseUrlDraft.trim() || !dirty) return
+    setSaving(true)
+    try {
+      const saved = await saveCustomEndpoint({
+        ...(apiKeyDirty ? { api_key: apiKeyDraft!.trim() } : {}),
+        base_url: baseUrlDraft
+      })
+      setSavedBaseUrl(saved.base_url)
+      setBaseUrlDraft(saved.base_url)
+      setApiKeyDraft(null)
+      setApiKeySet(apiKeyDirty || saved.api_key_set)
+      notify({ kind: 'success', message: ce.saved })
+    } catch (err) {
+      notifyError(err, ce.failedSave)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function removeApiKey() {
+    if (!window.confirm(ce.removeConfirm)) return
+    if (!savedBaseUrl.trim()) return
+    setSaving(true)
+    try {
+      await saveCustomEndpoint({ api_key: '', base_url: savedBaseUrl })
+      setApiKeyDraft(null)
+      setApiKeySet(false)
+      notify({ kind: 'success', message: ce.apiKeyRemoved })
+    } catch (err) {
+      notifyError(err, ce.failedRemove)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <RowButton
-      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
-      onClick={() => onOpen(null)}
+    <div
+      className={cn(
+        '@container group/card rounded-[6px] p-3 transition-colors',
+        expanded ? 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)' : 'cursor-pointer row-hover'
+      )}
+      onClick={() => setExpanded(value => !value)}
+      onKeyDown={e => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          setExpanded(value => !value)
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{copy.title}</span>
-        <span className="truncate text-[length:var(--conversation-caption-font-size)] leading-5 text-muted-foreground">
-          {copy.description}
-        </span>
+      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:gap-y-3">
+        <div className="flex h-8 min-w-0 items-center gap-2">
+          <span
+            className={cn('size-2 shrink-0 rounded-full', savedBaseUrl ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
+          />
+          <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            {ce.title}
+          </span>
+          <ChevronDown
+            className={cn(
+              'size-3.5 shrink-0 text-muted-foreground transition',
+              expanded ? 'rotate-180 opacity-100' : 'opacity-0 group-hover/card:opacity-100'
+            )}
+          />
+        </div>
+
+        <div className="min-w-0" onClick={e => e.stopPropagation()} onFocus={() => setExpanded(true)}>
+          {apiKeySet && !keyEditing ? (
+            <Input
+              className={cn(
+                CREDENTIAL_CONTROL_CLASS,
+                !expanded && 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8! @2xl:px-2.5! @2xl:py-1.5!',
+                'cursor-pointer text-muted-foreground'
+              )}
+              onFocus={startKeyEdit}
+              readOnly
+              value="••••••••"
+            />
+          ) : (
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+              <Input
+                autoFocus={keyEditing}
+                className={cn(
+                  CREDENTIAL_CONTROL_CLASS,
+                  !expanded && 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8! @2xl:px-2.5! @2xl:py-1.5!'
+                )}
+                onChange={e => setApiKeyDraft(e.target.value)}
+                onFocus={startKeyEdit}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && dirty) void save()
+                  if (e.key === 'Escape' && keyEditing) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    cancelKeyEdit()
+                  }
+                }}
+                placeholder={ce.pasteApiKey}
+                type="password"
+                value={apiKeyDraft ?? ''}
+              />
+              {keyEditing && (apiKeySet || apiKeyDirty) && (
+                <div className="flex items-center gap-1">
+                  {apiKeySet && (
+                    <Button
+                      aria-label={ce.removeApiKey}
+                      className="text-muted-foreground hover:text-destructive"
+                      disabled={busy}
+                      onClick={() => void removeApiKey()}
+                      size="icon-xs"
+                      title={ce.removeApiKey}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                  {dirty && (
+                    <Button
+                      className="h-8"
+                      disabled={busy || !baseUrlDraft.trim()}
+                      onClick={() => void save()}
+                      size="sm"
+                    >
+                      {busy ? <Loader2 className="animate-spin" /> : <Check />}
+                      {t.common.save}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {expanded && (
+          <div className="grid gap-3 @2xl:col-span-2" onClick={e => e.stopPropagation()}>
+            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {ce.description}
+            </p>
+            <ListRow
+              action={
+                <Input
+                  className={CREDENTIAL_CONTROL_CLASS}
+                  onChange={e => setBaseUrlDraft(e.target.value)}
+                  placeholder="https://…/v1"
+                  value={loading ? '' : baseUrlDraft}
+                />
+              }
+              title={ce.baseUrlLabel}
+            />
+            {baseUrlDirty && !keyEditing && (
+              <div>
+                <Button className="h-8" disabled={busy || !baseUrlDraft.trim()} onClick={() => void save()} size="sm">
+                  {busy ? <Loader2 className="animate-spin" /> : <Check />}
+                  {t.common.save}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
-      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
-    </RowButton>
+    </div>
   )
 }
 
@@ -437,7 +618,7 @@ export function ProvidersSettings({
   const hasOauth = oauthProviders.length > 0
   // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
   // providers there's nothing for the "Accounts" view to show, so fall to keys.
-  const showApiKeys = view === 'keys' || (!hasOauth && view !== 'custom-endpoints')
+  const showApiKeys = view === 'keys' || !hasOauth
 
   const keyGroups = buildProviderKeyGroups(vars)
 
@@ -454,7 +635,6 @@ export function ProvidersSettings({
 
     return (
       <SettingsContent>
-        <LocalEndpointRow onOpen={startManualLocalEndpoint} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField
@@ -476,6 +656,7 @@ export function ProvidersSettings({
                     rowProps={rowProps}
                   />
                 ))}
+                <CustomEndpointKeyCard />
               </div>
             ) : (
               <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
@@ -484,14 +665,13 @@ export function ProvidersSettings({
             )}
           </div>
         ) : (
-          <NoProviderKeys />
+          <div className="grid gap-2">
+            <NoProviderKeys />
+            <CustomEndpointKeyCard />
+          </div>
         )}
       </SettingsContent>
     )
-  }
-
-  if (view === 'custom-endpoints') {
-    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
   }
 
   return (

@@ -7126,6 +7126,16 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         if entry.get("api_key") and isinstance(cfg["model"], dict):
             cfg["model"]["api_key"] = entry["api_key"]
 
+
+    # Sync to .env so runtime_provider picks up changes immediately (#68043).
+    # Without this, stale CUSTOM_BASE_URL / CUSTOM_API_KEY in .env silently
+    # override the config.yaml values the user just saved.
+    save_env_value("CUSTOM_BASE_URL", base_url)
+    if body.api_key is not None:
+        if body.api_key.strip():
+            save_env_value("CUSTOM_API_KEY", body.api_key.strip())
+        else:
+            remove_env_value("CUSTOM_API_KEY")
     return endpoint_id, entry
 
 
@@ -7200,6 +7210,10 @@ def delete_custom_endpoint(endpoint_id: str):
         cfg["providers"] = providers
         _detach_main_model_from_provider(cfg, provider_key)
         save_config(cfg)
+
+        # Clean up .env so stale values don't resurrect the deleted endpoint.
+        remove_env_value("CUSTOM_BASE_URL")
+        remove_env_value("CUSTOM_API_KEY")
         response = _custom_endpoint_response(cfg)
         response["ok"] = True
         return response

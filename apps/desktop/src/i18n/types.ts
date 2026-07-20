@@ -435,6 +435,7 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      personalityLabels: Record<string, string>
     }
     credentials: {
       pasteKey: string

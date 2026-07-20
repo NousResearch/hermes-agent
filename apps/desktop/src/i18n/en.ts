@@ -523,7 +523,25 @@ export const en: Translations = {
       failedLoad: 'Settings failed to load',
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
-      invalidJson: 'Invalid config JSON'
+      invalidJson: 'Invalid config JSON',
+      // Display names for the built-in personalities (config IDs stay English).
+      // Custom personalities fall back to prettyName(id) in the picker.
+      personalityLabels: {
+        helpful: 'Helpful',
+        concise: 'Concise',
+        technical: 'Technical',
+        creative: 'Creative',
+        teacher: 'Teacher',
+        kawaii: 'Kawaii',
+        catgirl: 'Catgirl',
+        pirate: 'Pirate',
+        shakespeare: 'Shakespeare',
+        surfer: 'Surfer',
+        noir: 'Noir',
+        uwu: 'uwu',
+        philosopher: 'Philosopher',
+        hype: 'Hype'
+      }
     },
     credentials: {
       pasteKey: 'Paste key',

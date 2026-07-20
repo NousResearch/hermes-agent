@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n/catalog'
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { BUILTIN_PERSONALITIES } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   enumOptionsFor,
@@ -38,6 +40,26 @@ describe('settings helpers', () => {
     it('treats built-in aliases and empty values as not external', () => {
       for (const value of ['', 'builtin', 'built-in', 'Builtin', 'none', '  ', undefined, null, 7]) {
         expect(isExternalMemoryProvider(value)).toBe(false)
+      }
+    })
+  })
+
+  describe('personalityLabels', () => {
+    it('covers every built-in personality in every locale', () => {
+      for (const [locale, catalog] of Object.entries(TRANSLATIONS)) {
+        for (const id of BUILTIN_PERSONALITIES) {
+          expect(catalog.settings.config.personalityLabels[id], `${locale}: ${id}`).toBeTruthy()
+        }
+      }
+    })
+
+    it('actually translates labels in non-English locales (not just the English fallback)', () => {
+      const english = TRANSLATIONS.en.settings.config.personalityLabels
+
+      for (const locale of ['zh', 'zh-hant', 'ja'] as const) {
+        const labels = TRANSLATIONS[locale].settings.config.personalityLabels
+        expect(labels.pirate, `${locale}: pirate should differ from English`).not.toBe(english.pirate)
+        expect(labels.teacher, `${locale}: teacher should differ from English`).not.toBe(english.teacher)
       }
     })
   })

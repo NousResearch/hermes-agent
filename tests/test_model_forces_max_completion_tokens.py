@@ -135,3 +135,18 @@ class TestEdgeCases:
     def test_gpt_5_substring_in_middle_not_matched(self):
         # Only a prefix should match — "local-gpt-5-clone" is a different model.
         assert model_forces_max_completion_tokens("local-gpt-5-clone") is False
+
+    def test_family_prefix_requires_a_model_boundary(self):
+        # Custom model names that merely begin with a known family must keep
+        # using max_tokens. Only the bare family, dotted releases, and hyphen
+        # variants are part of the documented OpenAI model families.
+        for model in (
+            "gpt-4ocean",
+            "gpt-4.1custom",
+            "gpt-5clone",
+            "o123",
+            "o3mega",
+            "o4custom",
+            "vendor/o1clone",
+        ):
+            assert model_forces_max_completion_tokens(model) is False

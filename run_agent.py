@@ -772,41 +772,66 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
-    def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
-        """
-        Preload the LM Studio model unless configured to rely on LM Studio JIT loading.
-        """
+    @staticmethod
+    def _effective_lmstudio_context_length(
+        config_context_length: Optional[int],
+        runtime_context_length: Any,
+    ) -> Optional[int]:
+        """Return a safe context budget from explicit intent and verified runtime."""
+        explicit = (
+            config_context_length
+            if isinstance(config_context_length, int)
+            and not isinstance(config_context_length, bool)
+            and config_context_length > 0
+            else None
+        )
+        runtime_value = getattr(runtime_context_length, "context_length", runtime_context_length)
+        runtime = (
+            runtime_value
+            if isinstance(runtime_value, int)
+            and not isinstance(runtime_value, bool)
+            and runtime_value > 0
+            else None
+        )
+        if bool(getattr(runtime_context_length, "rejected", False)) or (
+            bool(getattr(runtime_context_length, "load_attempted", False))
+            and runtime is None
+        ):
+            return None
+        if runtime is not None and explicit is not None:
+            return min(runtime, explicit)
+        return runtime if runtime is not None else explicit
+
+    @staticmethod
+    def _lmstudio_load_was_unverified(load_result: Any) -> bool:
+        """Return true when a management load was rejected or unverifiable."""
+        return bool(getattr(load_result, "rejected", False)) or (
+            bool(getattr(load_result, "load_attempted", False))
+            and getattr(load_result, "context_length", None) is None
+        )
+
+    def _ensure_lmstudio_runtime_loaded(
+        self,
+        config_context_length: Optional[int] = None,
+    ) -> Any:
+        """Preload LM Studio unless configured to rely on JIT loading."""
         if (self.provider or "").strip().lower() != "lmstudio":
-            return
+            return None
         if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
             logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
-            return
-        try:
-            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-            from hermes_cli.models import ensure_lmstudio_model_loaded
-            if config_context_length is None:
-                config_context_length = getattr(self, "_config_context_length", None)
-            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
-            loaded_ctx = ensure_lmstudio_model_loaded(
-                self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
-            )
-            if loaded_ctx:
-                # Push into the live compressor so the status bar reflects the
-                # real loaded ctx the moment the load resolves, instead of
-                # holding the previous model's value (or "ctx --") through the
-                # next render tick.
-                cc = getattr(self, "context_compressor", None)
-                if cc is not None:
-                    cc.update_model(
-                        model=self.model,
-                        context_length=loaded_ctx,
-                        base_url=self.base_url,
-                        api_key=getattr(self, "api_key", ""),
-                        provider=self.provider,
-                        api_mode=self.api_mode,
-                    )
-        except Exception as err:
-            logger.debug("LM Studio preload skipped: %s", err)
+            return None
+
+        from hermes_cli.models import ensure_lmstudio_model_loaded
+
+        if config_context_length is None:
+            config_context_length = getattr(self, "_config_context_length", None)
+        return ensure_lmstudio_model_loaded(
+            self.model,
+            self.base_url,
+            getattr(self, "api_key", ""),
+            config_context_length,
+            return_load_result=True,
+        )
 
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""

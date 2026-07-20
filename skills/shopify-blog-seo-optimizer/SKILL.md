@@ -2,7 +2,7 @@
 name: "shopify-blog-seo-optimizer"
 slug: "shopify-blog-seo-optimizer"
 displayName: "Shopify Blog SEO Optimizer"
-description: "Audit a Shopify Article, research content and E-E-A-T gaps, generate a reviewable HTML candidate, and produce one audit-plus-storefront-preview report before any approved update. Use when a merchant gives an Article URL, title, or Article ID and wants safer blog SEO and reading-experience improvements."
+description: "Audit Shopify articles for SEO gaps."
 version: 1.0.0
 author: "Selofy (lvsao)"
 license: MIT
@@ -56,6 +56,7 @@ metadata:
     homepage: "https://github.com/lvsao/shopify-skill-hub"
   hermes:
     tags: [Shopify, Ecommerce, SEO, E-E-A-T, Content]
+    category: productivity
     related_skills: [seo-audit, shopify-admin]
 ---
 
@@ -63,7 +64,7 @@ metadata:
 
 This is an Admin write skill with preview, content audit, research, and post-write verification.
 
-## What the merchant experiences
+## When to Use
 
 1. Install the skill and configure one private `skill-hub.env` file.
 2. Run a connection check. The skill reports the store, connection mode, granted scopes, and the next action.
@@ -75,7 +76,7 @@ This is an Admin write skill with preview, content audit, research, and post-wri
 
 The merchant should never have to hand-write `audit-plan.json` or an access token. The agent owns the candidate and report data; the deterministic helper validates and renders it.
 
-## Required references
+## Prerequisites
 
 - Read `references/onboarding-guide.md` for the first-run conversation and connection boundary.
 - Read `references/audit-checklist.md` for deterministic checks and severity rules.
@@ -83,7 +84,7 @@ The merchant should never have to hand-write `audit-plan.json` or an access toke
 - Read `references/report-schema.md` before creating candidate or approval artifacts.
 - Read `references/storefront-preview.md` before rendering the combined HTML report.
 
-### Connection errors
+## Connection Errors
 
 Only after a request fails; keep the selected access method.
 - Network (`fetch failed`, `ETIMEDOUT`, `ECONNRESET`, `ENETUNREACH`): never guess proxy ports. If the runtime is configured to use an approved proxy, retry once; otherwise ask the merchant to expose one to this process.
@@ -94,7 +95,7 @@ Only after a request fails; keep the selected access method.
 - `shop_not_permitted`: use an app permitted for this store; do not loop. GraphQL errors: fix query/input; do not retry blindly.
 - Suggest another access method only after this path fails and the user agrees.
 
-## Install and first connection
+## How to Run
 
 Install from the public source:
 
@@ -129,7 +130,7 @@ node <absolute-path-to-skill>/scripts/shopify-blog-seo-admin.mjs connection-chec
 
 Do not continue when the connection check reports a missing read scope. For a missing write scope, the skill may continue with audit and report, but must stop before an approved write until the permission update is approved.
 
-## Target selection
+## Quick Reference
 
 Accept exactly one of:
 
@@ -139,7 +140,7 @@ Accept exactly one of:
 
 Confirm the matched title, handle, blog, Article ID, publication state, author, update date, and storefront URL. Never silently choose the first close match. A public URL is only a locator; Admin GraphQL is the source of truth.
 
-## Audit and candidate workflow
+## Procedure
 
 Use the helper for deterministic retrieval and checks:
 
@@ -166,7 +167,7 @@ The report must contain:
 - a responsive candidate article preview with clickable TOC and usable FAQ disclosure;
 - `real-storefront-reference` only when the live page was reachable, otherwise `theme-like-fallback` with the access reason.
 
-## Safe optimization scope
+## Pitfalls
 
 Default low-risk changes are stable heading IDs, a clickable TOC, useful FAQ/HowTo content supported by evidence, readable headings and lists, spelling and grammar fixes, empty-element cleanup, verified link repairs, context-accurate image alt text, and a concise summary when the current summary is blank.
 
@@ -191,10 +192,12 @@ node <absolute-path-to-skill>/scripts/shopify-blog-seo-admin.mjs verify --env sk
 
 The helper only writes `body` and `summary`, checks `userErrors`, and rejects `--execute` without an explicit approval marker. Afterward compare semantic markers, not byte-for-byte HTML, because Shopify may normalize markup.
 
-## Failure handling
+## Verification
 
 - `ARTICLE_NOT_FOUND`: show the candidates or ask for a different locator.
 - `SCOPE_UPDATE_REQUIRED`: show the exact missing scope family and stop before writing.
 - `shop_not_permitted`: explain that direct client credentials work only for an eligible installed store; offer the CLI OAuth fallback.
 - Password-protected or blocked storefront: generate the report with a clearly labelled theme-like fallback; never claim a real frontend was verified.
 - Research uncertainty: preserve the original claim, mark it for review, and do not manufacture authority.
+
+After an approved write, rerun `verify`, compare semantic markers and links, confirm the publication state is unchanged, and report the exact fields changed. Never report success from a mutation response without a post-write read.

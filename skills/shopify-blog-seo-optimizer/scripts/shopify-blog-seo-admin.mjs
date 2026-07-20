@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { shopifyGraphql, loadShopifyConfig, connectionStatus } from "./lib/shopify-dev-dashboard-auth.mjs";
+import { fetchPublic } from "./lib/public-fetch.mjs";
 
 const DEFAULT_ENV = "skill-hub.env";
 const REQUIRED_READ_SCOPES = ["read_content", "read_online_store_pages"];
@@ -57,10 +58,21 @@ function safeArticleHtml(value) {
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<(iframe|object|embed|form|input|button|textarea|select)\b[\s\S]*?>[\s\S]*?<\/\1>/gi, "")
-    .replace(/\son[a-z]+\s*=\s*(["'])[^"']*\1/gi, "")
+    .replace(/<(iframe|object|embed|form|input|button|textarea|select)\b[^>]*\/?\s*>/gi, "")
+    .replace(/\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s+(?:style|srcdoc|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(/javascript:/gi, "")
     .replace(/<(html|head|body|main)\b[^>]*>|<\/(html|head|body|main)>/gi, "")
-    .replace(/\s(href|src)\s*=\s*(["'])\s*(?!https?:|\/|#|mailto:)[^"']*\2/gi, " $1=\"#\"");
+    .replace(/\s(href|src)\s*=\s*(["'])\s*([^"']*)\2/gi, (full, attribute, quote, target) => {
+      const value = String(target).trim();
+      const safe = /^(?:https?:\/\/|\/|#|mailto:)/i.test(value) && !/^https?:\/\/[^\s/]+\/(?:\/|%2f)?(?:etc|proc|sys)(?:\/|$)/i.test(value);
+      return ` ${attribute}=${quote}${safe ? value : "#"}${quote}`;
+    })
+    .replace(/\s(href|src)\s*=\s*([^\s>]+)/gi, (full, attribute, target) => {
+      const value = String(target).replace(/["']/g, "").trim();
+      const safe = /^(?:https?:\/\/|\/|#|mailto:)/i.test(value);
+      return ` ${attribute}=\"${safe ? value : "#"}\"`;
+    });
 }
 
 function previewFaqHtml(value) {
@@ -113,7 +125,7 @@ function extractMeta(html, pattern) { return String(html).match(pattern)?.[1]?.t
 
 async function publicUrlSignals(rawUrl) {
   try {
-    const response = await fetch(rawUrl, { redirect: "follow" });
+    const response = await fetchPublic(rawUrl, {}, { timeoutMs: 15000 });
     const html = await response.text();
     const passwordPage = /\/password(?:["'/?#]|$)/i.test(response.url);
     const accessible = response.ok && !passwordPage && !/form[^>]+action=["'][^"']*password/i.test(html);
@@ -236,16 +248,12 @@ function auditHtml(article) {
 async function checkLinkConnectivity(links) {
   const candidates = [...new Set(links.map((link) => link.href).filter((href) => /^https?:\/\//i.test(href || "")))].slice(0, 30);
   const results = await Promise.all(candidates.map(async (url) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
-      let response = await fetch(url, { method: "HEAD", redirect: "follow", signal: controller.signal });
-      if ([403, 405, 501].includes(response.status)) response = await fetch(url, { method: "GET", redirect: "follow", signal: controller.signal });
+      let response = await fetchPublic(url, { method: "HEAD" }, { timeoutMs: 8000 });
+      if ([403, 405, 501].includes(response.status)) response = await fetchPublic(url, { method: "GET" }, { timeoutMs: 8000 });
       return { url, ok: response.ok, status: response.status, finalUrl: response.url };
     } catch (error) {
       return { url, ok: false, status: null, error: error.name === "AbortError" ? "timeout" : error.message };
-    } finally {
-      clearTimeout(timeout);
     }
   }));
   return { status: "complete", checkedCount: candidates.length, skippedCount: Math.max(0, links.filter((link) => /^https?:\/\//i.test(link.href || "")).length - candidates.length), results };
@@ -297,9 +305,17 @@ async function initEnv(args) {
   const method = args.method || "shopify_cli_oauth";
   if (!["dev_dashboard_client_credentials", "shopify_cli_oauth"].includes(method)) throw new Error("INVALID_ACCESS_METHOD: use dev_dashboard_client_credentials or shopify_cli_oauth.");
   const text = `SKILL_HUB_SHOPIFY_ACCESS_METHOD=${method}\nSKILL_HUB_SHOPIFY_STORE_DOMAIN=\n# Direct Dev Dashboard mode only:\n# SKILL_HUB_SHOPIFY_CLIENT_ID=\n# SKILL_HUB_SHOPIFY_CLIENT_SECRET=\n# Optional: only for approved Dev Dashboard permission releases; never a store API credential.\n# SKILL_HUB_SHOPIFY_APP_AUTOMATION_TOKEN=\n`;
-  await fs.writeFile(output, text, { encoding: "utf8", flag: "wx" }).catch(() => {});
+  let created = true;
+  try {
+    await fs.writeFile(output, text, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (error?.code === "EEXIST") created = false;
+    else throw new Error(`INIT_ENV_WRITE_FAILED: ${error.message}`);
+  }
   console.log(JSON.stringify({
     ok: true,
+    created,
+    note: created ? "Created a new private environment template." : "Environment file already exists; it was preserved.",
     env: path.resolve(output),
     method,
     requiredScopes: "read_content|read_online_store_pages,write_content|write_online_store_pages",

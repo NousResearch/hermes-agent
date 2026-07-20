@@ -97,6 +97,48 @@ class TestQQAdapterInit:
 
 
 # ---------------------------------------------------------------------------
+# Approval interaction authorization
+# ---------------------------------------------------------------------------
+
+class TestApprovalInteractionAuthorization:
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @staticmethod
+    def _event(operator_openid):
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+        return InteractionEvent(user_openid=operator_openid)
+
+    def test_dm_session_authorizes_matching_operator(self):
+        adapter = self._make_adapter()
+        event = self._event("user-123")
+
+        assert adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:dm:user-123",
+        ) is True
+
+    def test_dm_session_rejects_different_operator(self):
+        adapter = self._make_adapter()
+        event = self._event("attacker-456")
+
+        assert adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:dm:user-123",
+        ) is False
+
+    def test_c2c_session_still_authorizes_matching_operator(self):
+        adapter = self._make_adapter()
+        event = self._event("user-123")
+
+        assert adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:c2c:user-123",
+        ) is True
+
+
+# ---------------------------------------------------------------------------
 # _coerce_list
 # ---------------------------------------------------------------------------
 

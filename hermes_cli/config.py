@@ -35,6 +35,31 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
+KANBAN_REVIEW_POLICY_REVIEW_REQUIRED = "review-required"
+KANBAN_REVIEW_POLICY_COMPLETE_WITH_EVIDENCE = "complete-with-evidence"
+KANBAN_REVIEW_POLICIES = frozenset({
+    KANBAN_REVIEW_POLICY_REVIEW_REQUIRED,
+    KANBAN_REVIEW_POLICY_COMPLETE_WITH_EVIDENCE,
+})
+
+
+def resolve_kanban_review_policy(config: Optional[Dict[str, Any]]) -> str:
+    """Resolve the explicit Kanban worker review policy from config.
+
+    The safe/backward-compatible behavior is ``review-required``. Invalid,
+    missing, null, or non-string values must never opt a worker into the more
+    permissive reviewer-lane completion contract.
+    """
+    if not isinstance(config, dict):
+        return KANBAN_REVIEW_POLICY_REVIEW_REQUIRED
+    kanban_config = config.get("kanban", {})
+    if not isinstance(kanban_config, dict):
+        return KANBAN_REVIEW_POLICY_REVIEW_REQUIRED
+    policy = kanban_config.get("review_policy")
+    if isinstance(policy, str) and policy in KANBAN_REVIEW_POLICIES:
+        return policy
+    return KANBAN_REVIEW_POLICY_REVIEW_REQUIRED
+
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
@@ -2841,6 +2866,12 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Worker handoff policy. Default preserves the historical convention:
+        # most code-changing tasks comment evidence, then block with
+        # ``review-required: ...`` for a reviewer to approve/unblock. Set a
+        # coding lane/profile to ``complete-with-evidence`` only when an
+        # explicit downstream reviewer/QA lane is the review path.
+        "review_policy": KANBAN_REVIEW_POLICY_REVIEW_REQUIRED,
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false

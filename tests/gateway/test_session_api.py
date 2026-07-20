@@ -69,7 +69,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
-    assert features["run_session_continuation"] is True
+    assert features["run_session_continuation"] is False
     assert features["run_session_continuation_version"] == 1
     assert features["run_session_continuation_exact_revision"] is True
     assert features["run_session_continuation_stoppable"] is True
@@ -86,6 +86,20 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         "method": "GET",
         "path": "/v1/sessions/{session_id}/continuation",
     }
+
+
+@pytest.mark.asyncio
+async def test_continuation_refuses_an_unkeyed_api_server(adapter, session_db):
+    session_id = session_db.create_session("private-session", "api_server")
+    session_db.append_message(session_id, "user", "private history")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/v1/sessions/{session_id}/continuation")
+        payload = await response.json()
+
+    assert response.status == 403
+    assert payload["error"]["code"] == "session_continuation_auth_required"
+    assert "private" not in str(payload)
 
 
 @pytest.mark.asyncio

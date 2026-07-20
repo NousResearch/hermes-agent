@@ -164,6 +164,16 @@ class TestStartRun:
 
 
 class TestExactSessionContinuation:
+    @pytest.fixture(autouse=True)
+    def _configured_key_for_continuation_logic(self, adapter):
+        """Exercise continuation state logic with its required key configured.
+
+        The HTTP bearer gate itself has dedicated coverage below; these tests
+        focus on descriptor binding, races, and lifecycle behavior.
+        """
+        adapter._api_key = "sk-secret"
+        adapter._check_auth = lambda _request: None
+
     @pytest.mark.asyncio
     async def test_verified_continuation_loads_history_into_stoppable_run(
         self,
@@ -216,6 +226,32 @@ class TestExactSessionContinuation:
                 ("assistant", "earlier answer"),
             ]
             assert adapter._active_continuation_sessions == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_continuation_submission_refuses_an_unkeyed_api_server(
+        self, tmp_path
+    ):
+        adapter = _make_adapter()
+        db = SessionDB(tmp_path / "unkeyed-continuation.db")
+        adapter._session_db = db
+        try:
+            session_id = db.create_session("private-session", "api_server")
+            db.append_message(session_id, "user", "private history")
+            descriptor = _continuation_descriptor(db, session_id)
+            app = _create_runs_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "continuation": descriptor},
+                )
+                payload = await response.json()
+
+            assert response.status == 403
+            assert payload["error"]["code"] == "session_continuation_auth_required"
+            assert "private" not in str(payload)
+            assert adapter._run_statuses == {}
         finally:
             db.close()
 

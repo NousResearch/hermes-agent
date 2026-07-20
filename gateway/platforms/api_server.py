@@ -2070,7 +2070,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
-                "run_session_continuation": True,
+                "run_session_continuation": bool(self._api_key),
                 "run_session_continuation_version": RUN_SESSION_CONTINUATION_VERSION,
                 "run_session_continuation_exact_revision": True,
                 "run_session_continuation_stoppable": True,
@@ -2469,6 +2469,14 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication",
+                    code="session_continuation_auth_required",
+                ),
+                status=403,
+            )
 
         session_id = request.match_info["session_id"]
         db = await self._ensure_session_db_async()
@@ -4943,6 +4951,14 @@ class APIServerAdapter(BasePlatformAdapter):
         continuation_claim_key: Optional[tuple[Optional[str], str]] = None
         raw_continuation = body.get("continuation")
         if raw_continuation is not None:
+            if not self._api_key:
+                return web.json_response(
+                    _openai_error(
+                        "Session continuation requires API key authentication",
+                        code="session_continuation_auth_required",
+                    ),
+                    status=403,
+                )
             if not isinstance(raw_continuation, dict):
                 return web.json_response(
                     _openai_error(

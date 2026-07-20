@@ -26,6 +26,8 @@ export const fr = defineLocale({
     done: 'Terminé',
     error: 'Erreur',
     failed: 'Échec',
+    expand: 'Développer',
+    formatJson: 'Formater JSON',
     free: 'Gratuit',
     loading: 'Chargement…',
     notSet: 'Non défini',
@@ -38,6 +40,7 @@ export const fr = defineLocale({
     set: 'Définir',
     skip: 'Passer',
     update: 'Mettre à jour',
+    tryHint: (term: string) => `Essayez « ${term} »`,
     on: 'On',
     off: 'Off'
   },
@@ -66,10 +69,10 @@ export const fr = defineLocale({
       loadingSettings: 'Chargement des paramètres Hermes',
       loadingSessions: 'Chargement des sessions récentes',
       startingDesktopConnection: 'Démarrage de la connexion bureau',
-      startingHermesDesktop: 'Lancement de Hermes Desktop…'
+      startingHermesDesktop: 'Lancement de Hermes Desktop…',
+      connectingPrefix: 'CONN',
+      connectingTail: 'EXION',
     },
-    connectingPrefix: 'CONN',
-    connectingTail: 'EXION',
     errors: {
       backgroundExited: 'Le processus Hermes en arrière-plan s\'est arrêté.',
       backgroundExitedDuringStartup: 'Le processus Hermes en arrière-plan s\'est arrêté pendant le démarrage.',
@@ -86,12 +89,14 @@ export const fr = defineLocale({
       remoteTitle: 'Connexion à la passerelle distante requise',
       remoteDescription:
         'Votre session de passerelle distante a expiré. Reconnectez-vous pour rétablir la connexion. Rien ici ne supprime vos conversations ou paramètres.',
+      gatewaySettings: 'Paramètres de passerelle',
+      back: 'Retour',
       retry: 'Réessayer',
       repairInstall: 'Réparer l\'installation',
       useLocalGateway: 'Utiliser la passerelle locale',
       openLogs: 'Ouvrir les logs',
       repairHint: 'La réparation réexécute l\'installateur et peut prendre quelques minutes.',
-      remoteSignInHint: 'Ouvre la fenêtre de connexion à la passerelle. Utilisez la passerelle locale pour basculer vers le backend intégré.',
+      remoteSignInHint: (signInLabel: string) => `Ouvre la fenêtre de connexion ${signInLabel}. Utilisez la passerelle locale pour basculer vers le backend intégré.`,
       hideRecentLogs: 'Masquer les logs récents',
       showRecentLogs: 'Afficher les logs récents',
       signedInTitle: 'Connecté',
@@ -101,7 +106,9 @@ export const fr = defineLocale({
       signInFailed: 'Échec de la connexion',
       signInToRemoteGateway: 'Se connecter à la passerelle distante',
       signInWithProvider: provider => `Se connecter avec ${provider}`,
-      identityProvider: 'votre fournisseur d\'identité'
+      identityProvider: 'votre fournisseur d\'identité',
+      signOutAndSignIn: 'Se déconnecter et se reconnecter',
+      remoteFailureHint: 'Vérifiez l\'URL de la passerelle et connectez-vous dans les paramètres de passerelle, ou basculez vers la passerelle locale.'
     }
   },
 
@@ -116,6 +123,7 @@ export const fr = defineLocale({
     copyDetail: 'Copier le détail',
     copyDetailFailed: 'Impossible de copier le détail de la notification',
     backendOutOfDateTitle: 'Backend obsolète',
+    installMethodUnsupportedTitle: "Cette méthode d'installation n'est pas supportée",
     backendOutOfDateMessage:
       'Votre backend Hermes est plus ancien que cette version du bureau et pourrait ne pas fonctionner correctement. Mettez à jour pour les aligner.',
     updateHermes: 'Mettre à jour Hermes',
@@ -167,8 +175,7 @@ export const fr = defineLocale({
 
   remoteDisplayBanner: {
     message: reason =>
-      `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter le scintillement.`,
-    dismiss: 'Ignorer'
+      `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter le scintillement.`
   },
 
   titlebar: {
@@ -184,12 +191,15 @@ export const fr = defineLocale({
     unmuteHaptics: 'Activer les vibrations',
     openSettings: 'Ouvrir les paramètres',
     openStarmap: 'Ouvrir le graphe mémoire',
-    openKeybinds: 'Raccourcis clavier'
+    openKeybinds: 'Raccourcis clavier',
+    layoutEditor: 'Éditeur de disposition',
+    layoutEditorTitle: 'Éditeur de disposition des panneaux'
   },
 
   keybinds: {
     title: 'Raccourcis clavier',
     subtitle: open => `Cliquez sur un raccourci pour le modifier · ${open} rouvre ce panneau.`,
+    search: 'Rechercher un raccourci…',
     rebind: 'Réassigner',
     reset: 'Réinitialiser',
     resetAll: 'Tout réinitialiser',
@@ -215,6 +225,7 @@ export const fr = defineLocale({
       'nav.cron': 'Ouvrir les tâches planifiées',
       'nav.agents': 'Ouvrir les agents',
       'session.new': 'Nouvelle session',
+      'session.newTab': 'Nouvel onglet de session',
       'session.newWindow': 'Nouvelle session dans une fenêtre',
       'session.next': 'Session suivante',
       'session.prev': 'Session précédente',
@@ -231,13 +242,22 @@ export const fr = defineLocale({
       'session.togglePin': 'Épingler / désépingler la session',
       'composer.focus': 'Focus compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
+      'composer.voice': 'Démarrer/arrêter la conversation vocale',
       'view.toggleSidebar': 'Afficher/masquer la barre latérale',
       'view.toggleRightSidebar': 'Afficher/masquer l\'explorateur de fichiers',
       'view.showFiles': 'Afficher l\'explorateur de fichiers',
       'view.showTerminal': 'Afficher le terminal',
       'view.terminalSelection': 'Envoyer la sélection du terminal au compositeur',
       'view.closePreviewTab': 'Fermer l\'onglet d\'aperçu',
+      'view.closeTab': 'Fermer l\'onglet',
+      'view.closeTerminal': 'Fermer le terminal',
+      'view.newTerminal': 'Nouveau terminal',
+      'view.nextTerminal': 'Terminal suivant',
+      'view.prevTerminal': 'Terminal précédent',
+      'view.reopenTab': 'Rouvrir l\'onglet fermé',
+      'view.toggleReview': 'Basculer le panneau de revue',
       'view.flipPanes': 'Inverser les côtés',
+      'workspace.newWorktree': 'Nouvel arbre de travail',
       'appearance.toggleMode': 'Basculer clair / sombre',
       'profile.default': 'Passer au profil par défaut',
       'profile.switch.1': 'Passer au profil 1',
@@ -304,7 +324,24 @@ export const fr = defineLocale({
       mcp: 'MCP',
       archivedChats: 'Conversations archivées',
       about: 'À propos',
+      keybinds: 'Raccourcis',
+      billing: 'Facturation',
+      plugins: 'Extensions',
       notifications: 'Notifications'
+    },
+    plugins: {
+      title: 'Extensions de bureau',
+      blurb:
+        'Extensions d\'interface chargées dans cette application — incluses dans la version ou déposées dans le dossier desktop-plugins (y compris celles écrites par Hermes). Désactiver décharge une extension immédiatement et survit aux redémarrages.',
+      count: n => `${n} installée${n === 1 ? '' : 's'}`,
+      openFolder: 'Ouvrir le dossier des extensions',
+      rescan: 'Réanalyser',
+      reveal: 'Afficher dans le gestionnaire de fichiers',
+      enable: 'Activer',
+      disable: 'Désactiver',
+      failed: 'échec',
+      empty: 'Aucune extension de bureau installée.',
+      kinds: { bundled: 'intégrée', disk: 'sur disque', runtime: 'exécution' }
     },
     notifications: {
       title: 'Notifications',
@@ -375,8 +412,13 @@ export const fr = defineLocale({
       colorModeDesc: 'Choisissez un mode fixe ou laissez Hermes suivre le paramètre système.',
       toolViewTitle: 'Affichage des outils',
       toolViewDesc: 'Le mode Produit masque les données brutes des outils ; le mode Technique affiche les entrées/sorties complètes.',
+      uiScaleTitle: 'Échelle de l\'UI',
+      uiScaleDesc: (percent: number) =>
+        `Redimensionne le texte et les contrôles dans toute l\'application. Ctrl avec +, - et 0 fonctionne aussi. Actuel : ${percent}%.`,
       translucencyTitle: 'Transparence de la fenêtre',
       translucencyDesc: 'Voir votre bureau à travers toute la fenêtre. macOS et Windows uniquement.',
+      backdropTitle: 'Arrière-plan du chat',
+      backdropDesc: "L'image de statue en filigrane derrière la conversation.",
       embedsTitle: 'Intégrations inline',
       embedsDesc:
         'Les aperçus riches proviennent de sites tiers (YouTube, X, …). Demander affiche un placeholder jusqu\'à autorisation ; Toujours les charge automatiquement ; Jamais garde les liens bruts.',
@@ -503,6 +545,7 @@ export const fr = defineLocale({
       },
       stt: {
         enabled: 'Reconnaissance vocale',
+        echoTranscripts: 'Afficher les transcriptions',
         provider: 'Fournisseur STT',
         local: {
           model: 'Modèle de transcription local',
@@ -652,6 +695,7 @@ export const fr = defineLocale({
       },
       stt: {
         enabled: 'Activer la transcription vocale locale ou via un fournisseur.',
+        echoTranscripts: 'Afficher la transcription brute 🎙️ des messages vocaux dans le chat.',
         provider: 'Fournisseur de reconnaissance vocale.',
         local: {
           model: 'Modèle de transcription local à utiliser.',
@@ -751,7 +795,7 @@ export const fr = defineLocale({
       invalidJson: 'JSON de configuration invalide',
       keepAwakeTitle: 'Empêcher la mise en veille',
       keepAwakeDesc:
-        'Empêcher cette machine de se mettre en veille pendant les exécutions longues ou nocturnes. L\u2019écran peut encore s\u2019assombrir.'
+        'Empêcher cette machine de se mettre en veille pendant les longues exécutions. L\u2019écran peut encore s\u2019assombrir.'
     },
     credentials: {
       pasteKey: 'Coller la clé',
@@ -760,8 +804,6 @@ export const fr = defineLocale({
       enterValueFirst: 'Entrez d\'abord une valeur.',
       couldNotSave: 'Impossible d\'enregistrer le secret.',
       remove: 'Retirer',
-      or: 'ou',
-      escToCancel: 'esc pour annuler',
       getKey: 'Obtenir une clé',
       saving: 'Enregistrement'
     },
@@ -777,6 +819,8 @@ export const fr = defineLocale({
     },
     gateway: {
       loading: 'Chargement des paramètres de la passerelle...',
+      modeTitle: 'Mode de connexion',
+      remoteAuthHint: 'Les passerelles hébergées utilisent OAuth ou un mot de passe ; les passerelles auto-hébergées peuvent utiliser un jeton de session.',
       unavailableTitle: 'Paramètres de passerelle indisponibles',
       unavailableDesc: 'Le pont IPC du bureau n\'expose pas les paramètres de la passerelle.',
       title: 'Connexion à la passerelle',
@@ -840,6 +884,37 @@ export const fr = defineLocale({
       signOutFailed: 'Échec de la déconnexion',
       testFailed: 'Échec du test de passerelle distante',
       applyFailed: 'Impossible d\'appliquer les paramètres de passerelle',
+      cloudTitle: 'Hermes Cloud',
+      cloudDesc: 'Connectez-vous une fois à Hermes Cloud et choisissez parmi les agents de votre compte — pas d\'URL à coller.',
+      cloudAgentProvisioning: 'Approvisionnement…',
+      cloudAgentsTitle: 'Vos agents',
+      cloudConnect: 'Connecter',
+      cloudConnectFailed: 'Impossible de se connecter à cet agent',
+      cloudConnectedPill: 'Connecté',
+      cloudConnectedTitle: 'Connecté',
+      cloudConnectedTo: name => `Connecté à ${name}.`,
+      cloudConnecting: 'Connexion…',
+      cloudDiscoverFailed: 'Impossible de charger vos agents Hermes Cloud',
+      cloudLoadingAgents: 'Chargement de vos agents…',
+      cloudNeedsSignIn: 'Connectez-vous à Hermes Cloud pour découvrir les agents de votre compte.',
+      cloudNoAgents: {
+        before: 'Aucun agent trouvé sur ce compte. Créez-en un dans le ',
+        linkText: 'portail Nous',
+        after: ', puis actualisez.'
+      },
+      cloudOrgChange: 'Changer d\'organisation',
+      cloudOrgPickerTitle: 'Choisir une organisation',
+      cloudOrgRole: role => `Rôle : ${role}`,
+      cloudOrgSelect: 'Sélectionner',
+      cloudRefresh: 'Actualiser',
+      cloudSignIn: 'Se connecter à Hermes Cloud',
+      cloudSignInFailed: 'Échec de la connexion à Hermes Cloud',
+      cloudSignInTitle: 'Hermes Cloud',
+      cloudSignedIn: 'Connecté à Hermes Cloud',
+      cloudSignedInDesc: 'Vous êtes connecté. Choisissez un agent ci-dessous ; la session se rafraîchit automatiquement.',
+      cloudSignedOutMessage: 'Session Hermes Cloud effacée.',
+      cloudSignedOutTitle: 'Déconnecté de Hermes Cloud',
+      cloudStatusLabel: status => `Statut : ${status}`,
       saveFailed: 'Impossible d\'enregistrer les paramètres de passerelle'
     },
     keys: {
@@ -873,8 +948,46 @@ export const fr = defineLocale({
       name: 'Nom',
       serverJson: 'JSON du serveur',
       remove: 'Retirer',
-      saveServer: 'Enregistrer le serveur'
-    },
+      saveServer: 'Enregistrer le serveur',
+        test: 'Tester la connexion',
+        testing: 'Test en cours...',
+        testOk: (count: number) => `Connecté — ${count} outil${count === 1 ? '' : 's'} disponible${count === 1 ? '' : 's'}`,
+        testFailed: 'Échec de la connexion',
+        enableServer: (name: string) => `Activer ${name}`,
+        disableServer: (name: string) => `Désactiver ${name}`,
+        serverEnabled: (name: string) => `${name} activé — s'applique aux nouvelles sessions.`,
+        serverDisabled: (name: string) => `${name} désactivé — s'applique aux nouvelles sessions.`,
+        toggleFailed: (name: string) => `Impossible de basculer ${name}`,
+        tabServers: 'Serveurs',
+        tabCatalog: 'Catalogue',
+        catalogLoading: 'Chargement du catalogue MCP...',
+        catalogLoadFailed: 'Échec du chargement du catalogue MCP',
+        catalogEmpty: 'Aucune entrée de catalogue disponible.',
+        catalogInstalled: 'Installé',
+        catalogEnabled: 'Activé',
+        catalogNeedsInstall: 'Compilation requise',
+        catalogInstall: 'Installer',
+        catalogInstalling: 'Installation...',
+        catalogInstallStarted: (name: string) => `Installation de ${name}... s'applique aux nouvelles sessions une fois terminé.`,
+        catalogInstallFailed: (name: string) => `Échec de l\'installation de ${name}`,
+        catalogEnvPrompt: (name: string) => `${name} nécessite des identifiants`,
+        catalogEnvRequired: 'Remplissez les valeurs requises avant l\'installation.',
+        capabilitySummary: (tools: number, prompts: number, resources: number) =>
+          `${[`${tools} outils`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} ressources`] : [])].join(', ')} activés`,
+        statusConnecting: 'Connexion…',
+        statusNeedsAuth: 'Authentification requise',
+        statusError: 'Erreur',
+        statusOff: 'Inactif',
+        allServers: 'Tous les serveurs',
+        authenticatedTitle: 'Authentifié',
+        authenticatedMessage: (server: string, count: number) => `${server} : ${count} outils`,
+        waitingForBrowser: 'En attente du navigateur…',
+        authenticate: 'Authentifier',
+        unsavedConnect: 'Non enregistré — enregistrez mcp.json pour vous connecter.',
+        enableTool: (tool: string) => `Activer ${tool}`,
+        disableTool: (tool: string) => `Désactiver ${tool}`,
+        noOutput: 'Pas encore de sortie.'
+      },
     model: {
       loading: 'Chargement de la configuration du modèle...',
       appliesDesc: 'S\'applique aux nouvelles sessions. Utilisez le sélecteur de modèle dans le compositeur pour changer celui de la conversation active.',
@@ -887,11 +1000,15 @@ export const fr = defineLocale({
       defaultsFailed: 'Échec de l\'enregistrement des défauts du modèle',
       auxiliaryTitle: 'Modèles auxiliaires',
       resetAllToMain: 'Tout réinitialiser au principal',
+      staleAuxWarning: (count, names, provider) => `${count} tâche${count === 1 ? '' : 's'} auxiliaire${count === 1 ? '' : 's'} (${names}) utilise${count === 1 ? '' : 'nt'} ${provider}, pas votre modèle principal.`,
       auxiliaryDesc: 'Les tâches auxiliaires utilisent le modèle principal par défaut. Attribuez un modèle dédié à une tâche pour le remplacer.',
       setToMain: 'Définir sur principal',
       change: 'Modifier',
       autoUseMain: 'auto · utiliser le modèle principal',
       providerDefault: '(défaut du fournisseur)',
+      fallbackAdd: 'Ajouter un modèle de secours',
+      fallbackEmpty: 'Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d\'échec.',
+      notInCatalog: 'ne figure pas dans la liste du fournisseur — les appels pourraient basculer sur un modèle de secours.',
       tasks: {
         vision: { label: 'Vision', hint: 'Analyse d\'image' },
         web_extract: { label: 'Extraction web', hint: 'Résumé de page' },
@@ -912,6 +1029,10 @@ export const fr = defineLocale({
       collapse: 'Réduire',
       connectAnother: 'Connecter un autre fournisseur',
       otherProviders: 'Autres fournisseurs',
+      localEndpoint: {
+        title: 'Endpoint local',
+        description: 'Adresse du serveur de passerelle local'
+      },
       disconnect: 'Déconnecter',
       disconnectInTerminal: 'Déconnecter (exécute la commande de suppression dans le terminal)',
       removeConfirm: provider => `Retirer ${provider} ?`,
@@ -985,7 +1106,16 @@ export const fr = defineLocale({
       postSetupCompleteMessage: step => `${step} installé.`,
       postSetupErrorTitle: 'Installation terminée avec des erreurs',
       postSetupErrorMessage: step => `Consultez le journal de ${step}.`,
-      postSetupFailed: step => `Échec de l'installation de ${step}`
+      postSetupFailed: (step: string) => `Échec de l\'installation de ${step}`,
+      loadingModels: 'Chargement du catalogue de modèles...',
+      modelSectionTitle: 'Modèle',
+      modelCount: (count: number) => `${count} modèle${count === 1 ? '' : 's'}`,
+      modelInUse: 'En cours d\'utilisation',
+      modelDefault: 'par défaut',
+      modelInactiveHint: 'Sélectionnez d\'abord ce backend pour changer son modèle.',
+      modelSelectedTitle: 'Modèle sélectionné',
+      modelSelectedMessage: (model: string) => `${model} s\'applique aux nouvelles sessions.`,
+      failedSelectModel: (model: string) => `Impossible de sélectionner ${model}`
     }
   },
 
@@ -1015,7 +1145,81 @@ export const fr = defineLocale({
     toolsetEnabled: 'Outil activé',
     toolsetDisabled: 'Outil désactivé',
     appliesToNewSessions: name => `${name} s\'applique aux nouvelles sessions.`,
-    failedToUpdate: name => `Échec de la mise à jour de ${name}`
+    failedToUpdate: (name: string) => `Échec de la mise à jour de ${name}`,
+    tabMcp: 'MCP',
+    tabHub: 'Parcourir le hub',
+    sortMostUsed: 'Plus utilisés',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ Plus utilisés',
+    sortLeastUsedAsc: '↑ Moins utilisés',
+    enableAll: 'Tout activer',
+    disableAll: 'Tout désactiver',
+    disableUnused: 'Désactiver les inutilisés',
+    bulkUpdated: (count: number) => `${count} ${count === 1 ? 'élément mis à jour' : 'éléments mis à jour'} pour les nouvelles sessions.`,
+    bulkNoChange: 'Rien à changer.',
+    usageCount: (count: number | string) => `utilisé ${count}×`,
+    provenance: {
+      agent: 'Appris',
+      bundled: 'Intégré',
+      hub: 'Hub'
+    },
+    emptyNoneFound: (noun: string) => `Aucun ${noun} trouvé`,
+    emptyNothingMatches: (query: string) => `Rien ne correspond à « ${query} ».`,
+    emptyNoneAvailable: (noun: string) => `Aucun ${noun} disponible pour l\'instant.`,
+    changesApplyNewSessions: 'Les changements s\'appliquent aux nouvelles sessions.',
+    skillUpdated: 'Skill mis à jour',
+    edit: 'Modifier',
+    archive: 'Archiver',
+    skillArchivedTitle: 'Skill archivé',
+    skillArchivedMessage: 'Restaurable via hermes curator restore.',
+    hub: {
+      searchPlaceholder: 'Rechercher dans le hub de skills',
+      search: 'Rechercher',
+      searching: 'Recherche...',
+      connectingHubs: 'Connexion aux hubs de skills...',
+      connectedHubs: 'Hubs connectés :',
+      featured: 'Skills en vedette',
+      landingHint:
+        'Recherchez dans le hub pour parcourir les skills installables depuis l\'index officiel, GitHub et les sources communautaires.',
+      noResults: 'Aucun skill correspondant trouvé dans le hub.',
+      resultCount: (count: number, ms: number | null) => `${count} résultat${count === 1 ? '' : 's'}${ms !== null ? ` en ${ms}ms` : ''}`,
+      timedOut: (sources: string) => `Délai dépassé : ${sources}`,
+      installed: 'Installé',
+      install: 'Installer',
+      installing: 'Installation...',
+      uninstall: 'Désinstaller',
+      uninstalling: 'Désinstallation...',
+      updateAll: 'Mettre à jour les installés',
+      updating: 'Mise à jour...',
+      preview: 'Aperçu',
+      scan: 'Scanner',
+      scanning: 'Analyse...',
+      close: 'Fermer',
+      files: 'Fichiers',
+      noReadme: 'Ce skill n\'a pas de SKILL.md à prévisualiser.',
+      trust: {
+        builtin: 'intégré',
+        trusted: 'de confiance',
+        community: 'communautaire'
+      },
+      verdictSafe: 'Sûr',
+      verdictCaution: 'Attention',
+      verdictDangerous: 'Dangereux',
+      policyAllow: 'Installation autorisée',
+      policyAsk: 'Vérifier avant l\'installation',
+      policyBlock: 'Installation bloquée par la politique',
+      findings: (count: number) => `${count} résultat${count === 1 ? '' : 's'}`,
+      noFindings: 'Aucun problème de sécurité.',
+      installStarted: (name: string) => `Installation de ${name}...`,
+      uninstallStarted: (name: string) => `Désinstallation de ${name}...`,
+      updateStarted: 'Mise à jour des skills installés...',
+      actionFailed: 'Échec de l\'action du skill',
+      actionLog: 'Journal d\'actions',
+      loadFailed: 'Échec du chargement du hub de skills',
+      previewFailed: 'Échec de l\'aperçu du skill',
+      scanFailed: 'Échec de l\'analyse de sécurité',
+      searchFailed: 'Échec de la recherche dans le hub'
+    }
   },
 
   starmap: {
@@ -1073,8 +1277,7 @@ export const fr = defineLocale({
     ageHours: hours => `il y a ${hours}h`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}min ${seconds}s`,
-    tokensK: k => `${k}k tok`,
-    tokens: value => `${value} tok`
+    tokens: (value: number | string) => `${value} tok`
   },
 
   commandCenter: {
@@ -1082,6 +1285,7 @@ export const fr = defineLocale({
     paletteTitle: 'Palette de commandes',
     back: 'Retour',
     searchPlaceholder: 'Rechercher sessions, vues et actions',
+    commands: 'Commandes',
     goTo: 'Aller à',
     goToSession: 'Aller à la session',
     branches: 'Branches',
@@ -1137,6 +1341,7 @@ export const fr = defineLocale({
     },
     installTheme: {
       title: 'Installer un thème...',
+      pageTitle: 'Installer un thème',
       placeholder: 'Rechercher dans le Marketplace VS Code...',
       loading: 'Recherche dans le Marketplace...',
       error: 'Impossible de contacter le Marketplace.',
@@ -1149,8 +1354,9 @@ export const fr = defineLocale({
     settingsFields: 'Champs des paramètres',
     mcpServers: 'Serveurs MCP',
     archivedChats: 'Conversations archivées',
-    sections: { sessions: 'Sessions', system: 'Système', usage: 'Utilisation' },
+    sections: { maintenance: 'Maintenance', sessions: 'Sessions', system: 'Système', usage: 'Utilisation' },
     sectionDescriptions: {
+      maintenance: 'Diagnostics, sauvegardes, gestionnaire des skills et données de mémoire',
       sessions: 'Rechercher et gérer les sessions',
       system: 'Statut, logs et actions système',
       usage: 'Tokens, coûts et activité des skills'
@@ -1207,7 +1413,54 @@ export const fr = defineLocale({
     noModelUsage: 'Aucune utilisation de modèle pour l\'instant.',
     topSkills: 'Meilleurs skills',
     noSkillActivity: 'Aucune activité de skill pour l\'instant.',
-    actions: count => `${count} actions`
+    actions: (count: string) => `${count} actions`,
+    logFile: 'Fichier de log',
+    logLevel: 'Niveau',
+    logSearchPlaceholder: 'Filtrer les lignes de log...',
+    maintenance: {
+      runOps: 'Diagnostics',
+      doctor: 'Lancer doctor',
+      doctorDesc: 'Vérifier l\'installation, la config et les providers',
+      securityAudit: 'Audit de sécurité',
+      securityAuditDesc: 'Scanner la config et les skills pour des paramètres risqués',
+      backup: 'Créer une sauvegarde',
+      backupDesc: 'Zipper config, mémoires, skills et sessions',
+      debugShare: 'Partage de débogage',
+      debugShareDesc: 'Envoyer un rapport expurgé + logs, obtenir des liens partageables (auto-supprimés en 6h)',
+      debugShareRunning: 'Envoi du rapport de débogage...',
+      debugShareLinks: 'Liens de partage',
+      debugShareFailed: 'Échec du partage de débogage',
+      copyLink: 'Copier le lien',
+      linkCopied: 'Lien copié',
+      curator: 'Gestionnaire de skills',
+      curatorDesc: 'Revue en arrière-plan qui archive les skills obsolètes créés par l\'agent',
+      curatorPaused: 'En pause',
+      curatorActive: 'Actif',
+      curatorDisabled: 'Désactivé',
+      curatorLastRun: (when: string) => `Dernière exécution ${when}`,
+      curatorNeverRan: 'Jamais exécuté',
+      pause: 'Pause',
+      resume: 'Reprendre',
+      runNow: 'Exécuter maintenant',
+      memoryData: 'Données de mémoire',
+      memoryDataDesc: 'Fichiers de mémoire intégrés injectés à chaque session',
+      memoryProvider: (name: string) => `Provider actif : ${name}`,
+      builtinMemory: 'intégré',
+      memoryFile: 'Mémoire de l\'agent (MEMORY.md)',
+      userFile: 'Profil utilisateur (USER.md)',
+      bytes: (size: string) => size,
+      empty: 'vide',
+      resetMemory: 'Réinitialiser la mémoire',
+      resetUser: 'Réinitialiser le profil',
+      resetAll: 'Réinitialiser les deux',
+      resetConfirm: (target: string) => `Supprimer ${target} ? Action irréversible.`,
+      resetDone: (files: string) => `${files} supprimés.`,
+      resetFailed: 'Échec de la réinitialisation de la mémoire',
+      actionStarted: (name: string) => `${name} démarré — suivi du log...`,
+      actionFailed: (name: string) => `Échec du démarrage de ${name}`,
+      running: 'En cours...',
+      viewLog: 'Journal d\'actions'
+    }
   },
 
   messaging: {
@@ -1369,6 +1622,8 @@ export const fr = defineLocale({
     env: 'env',
     defaultBadge: 'Défaut',
     rename: 'Renommer',
+    renameMenu: 'Renommer…',
+    editSoul: 'Modifier SOUL.md…',
     copySetup: 'Copier la configuration',
     copying: 'Copie...',
     modelLabel: 'Modèle',
@@ -1528,6 +1783,9 @@ export const fr = defineLocale({
     optional: 'Optionnel',
     promptScheduleRequired: 'Le prompt et la planification sont requis.',
     saveChanges: 'Enregistrer les modifications',
+    promptRequired: 'Le prompt est requis.',
+    scheduleRequired: 'La planification est requise.',
+    scriptOnlyEditHint: 'Tâche script seul (pas de prompt IA). ID :',
     createAction: 'Créer la tâche'
   },
 
@@ -1649,6 +1907,9 @@ export const fr = defineLocale({
       enter: label => `Ouvrir ${label}`,
       reorder: label => `Réorganiser ${label}`,
       toggle: label => `Basculer les sessions ${label}`,
+      branchOff: () => ({ before: 'brancher depuis ', after: '' }),
+      baseBranchPlaceholder: 'Rechercher des branches…',
+      baseBranchNone: 'Aucune branche trouvée',
       back: 'Tous les projets'
     },
     newSessionIn: label => `Nouvelle session dans ${label}`,
@@ -1680,7 +1941,14 @@ export const fr = defineLocale({
       ageNow: 'maintenant',
       ageDay: 'j',
       ageHour: 'h',
-      ageMin: 'min'
+      ageMin: 'min',
+      backgroundRunning: 'Tâche en arrière-plan en cours',
+      hideTabBar: 'Masquer la barre d\'onglets',
+      openInNewTab: 'Ouvrir dans un nouvel onglet',
+      openInSplit: 'Ouvrir en partage',
+      finishedUnread: 'Terminé — non lu',
+      ownedByProfile: profile => `Profil : ${profile}`,
+      untitledChat: id => `Chat ${id}`
     }
   },
 
@@ -1878,6 +2146,10 @@ export const fr = defineLocale({
       pull: 'Presque terminé…',
       pydeps: 'Finalisation…',
       restart: 'Redémarrage de Hermes…',
+      done: 'Mise à jour terminée',
+      guiSkew: 'Mettre à jour l\'application de bureau',
+      rebuild: 'Reconstruction de l\'application de bureau…',
+      update: 'Mise à jour de Hermes…',
       manual: 'Mettre à jour depuis le terminal',
       error: 'Mise à jour en pause'
     },
@@ -1988,6 +2260,10 @@ export const fr = defineLocale({
       local: {
         short: 'auto-hébergé',
         description: 'Pointez Hermes vers un point d\'accès local ou auto-hébergé compatible OpenAI (vLLM, llama.cpp, Ollama, etc.).'
+      },
+      fireworks: {
+        short: 'API modèle directe',
+        description: 'Accès direct aux modèles hébergés par Fireworks AI.'
       }
     },
     backToSignIn: 'Retour à la connexion',
@@ -2033,6 +2309,7 @@ export const fr = defineLocale({
     price: (input, output) => `${input} entrée / ${output} sortie par Mtok`,
     change: 'Modifier',
     startChatting: 'Démarrer',
+    fireworksPitch: 'API directe — modèles hébergés par Fireworks',
     docs: provider => `Documentation ${provider}`
   },
 
@@ -2081,7 +2358,9 @@ export const fr = defineLocale({
       low: 'Faible',
       medium: 'Moyen',
       high: 'Élevé',
+      xhigh: 'Très élevé',
       max: 'Max',
+      ultra: 'Ultra',
       updateFailed: 'Échec de la mise à jour de l\'option du modèle',
       fastFailed: 'Échec de l\'activation du mode rapide'
     },
@@ -2100,11 +2379,22 @@ export const fr = defineLocale({
       viewAllLogs: 'Voir tous les logs →',
       messagingPlatforms: 'Plateformes de messagerie'
     },
+    approvalMode: {
+      title: 'Mode d\'approbation',
+      ariaLabel: mode => `Mode d'approbation : ${mode}`,
+      manual: 'Manuel',
+      manualDescription: 'Demander avant les actions nécessitant une approbation',
+      smart: 'Intelligent',
+      smartDescription: 'Évaluer automatiquement et demander si nécessaire',
+      off: 'Désactivé',
+      offDescription: 'Exécuter sans demander d\'approbation'
+    },
     statusbar: {
       unknown: 'inconnu',
       restart: 'redémarrer',
       update: 'mettre à jour',
       updateInProgress: 'Mise à jour en cours',
+      modelPinned: 'épinglé par vous ; les nouveaux chats utilisent ce modèle au lieu du paramètre par défaut',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} de retard sur ${branch}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
@@ -2542,39 +2832,79 @@ export const fr = defineLocale({
 
   uninstall: {
     dangerZone: 'Zone dangereuse',
-    checkingInstall: 'Vérification de ce qui est installé…',
-    confirmUninstall: 'Confirmer la désinstallation',
-    removesThis: (consequence: string) => `Cela supprimera ${consequence}. Cette action est irréversible.`,
-    undoWarning: 'Cette action est irréversible.',
-    yesUninstall: 'Oui, désinstaller',
+    checking: 'Vérification de ce qui est installé…',
+    confirmTitle: 'Confirmer la désinstallation',
+    confirmBody: consequence => `Cela supprimera ${consequence}. Cette action est irréversible.`,
     uninstalling: 'Désinstallation…',
+    yesUninstall: 'Oui, désinstaller',
     cancel: 'Annuler',
     uninstallHermes: 'Désinstaller Hermes',
-    chooseDescription:
-      'Choisissez ce que vous voulez supprimer. L\u2019application se fermera pour terminer ; rouvrez l\u2019installateur à tout moment pour revenir.',
-    couldNotStart: 'La désinstallation n\u2019a pas pu démarrer.',
-    appLabel: 'App\u00a0:',
+    uninstallDescription:
+      'Choisissez ce que vous voulez supprimer. L\'application se fermera pour terminer ; rouvrez l\'installateur à tout moment pour revenir.',
     options: {
       gui: {
-        title: 'Désinstaller l\u2019interface seulement',
-        description:
-          'Supprime cette application de bureau. L\u2019agent Hermes, votre configuration et vos conversations sont conservés.',
-        consequence: 'l\u2019interface de chat (cette application et ses données)'
+        title: 'Désinstaller l\'interface seulement',
+        description: 'Supprime cette application de bureau. L\'agent Hermes, votre configuration et vos conversations sont conservés.',
+        consequence: 'l\'interface de chat (cette application et ses données)'
       },
       lite: {
-        title: 'Désinstaller l\u2019interface + l\u2019agent, garder mes données',
+        title: 'Désinstaller l\'interface + l\'agent, garder mes données',
         description:
-          'Supprime l\u2019application et l\u2019agent Hermes, mais conserve la configuration, les conversations et les secrets pour une réinstallation future.',
-        consequence:
-          'l\u2019interface de chat et l\u2019agent Hermes (la config, les conversations et les secrets sont conservés)'
+          'Supprime l\'application et l\'agent Hermes, mais conserve la configuration, les conversations et les secrets pour une réinstallation future.',
+        consequence: 'l\'interface de chat et l\'agent Hermes (la config, les conversations et les secrets sont conservés)'
       },
       full: {
         title: 'Tout désinstaller',
         description:
-          'Supprime l\u2019application, l\u2019agent et toutes les données utilisateur — config, conversations, tâches planifiées, secrets, logs.',
+          'Supprime l\'application, l\'agent et toutes les données utilisateur — config, conversations, tâches planifiées, secrets, logs.',
         consequence:
-          'TOUT — l\u2019interface de chat, l\u2019agent Hermes, et toute votre configuration, conversations, secrets et logs'
+          'TOUT — l\'interface de chat, l\'agent Hermes, et toute votre configuration, conversations, secrets et logs'
       }
     }
+  },
+
+  zones: {
+    showHeader: 'Afficher l\'en-tête',
+    hideHeader: 'Masquer l\'en-tête',
+    minimize: 'Réduire',
+    restore: 'Restaurer',
+    closeRunningTitle: 'Fermer l\'onglet actif ?',
+    closeRunningBody: 'Ce chat est encore en cours (ou attend votre saisie). Fermer l\'onglet le masque — la session conserve sa progression et peut être rouverte depuis la barre latérale.',
+    closeRunningConfirm: 'Fermer l\'onglet',
+    closeOthers: 'Fermer les autres',
+    closeToRight: 'Fermer à droite',
+    closeAll: 'Tout fermer',
+    split: dir => `Diviser ${dir}`,
+    move: dir => `Déplacer ${dir}`,
+    dirUp: 'haut',
+    dirDown: 'bas',
+    dirLeft: 'gauche',
+    dirRight: 'droite',
+    pluginDisabled: pluginId => `Extension « ${pluginId} » désactivée`,
+    pluginDisabledBody: 'Réactivez-la dans Paramètres → Extensions pour restaurer le panneau.',
+    missingPane: paneId => `panneau manquant : ${paneId}`,
+    editTitle: 'Dispositions',
+    editHint: 'Choisissez une disposition, ou faites glisser les panneaux entre les zones. Clic droit sur une zone pour diviser.',
+    reset: 'Réinitialiser',
+    templates: 'Modèles',
+    custom: 'Personnalisé',
+    newGridLayout: 'Nouvelle disposition en grille',
+    saveCurrentAs: 'Enregistrer l\'arrangement actuel comme modèle',
+    nameLayoutPlaceholder: 'Nommer cette disposition…',
+    deletePreset: name => `Supprimer ${name}`,
+    zoneEditorTitle: 'Éditeur de zone',
+    editorHintPre: 'clic pour diviser · ',
+    editorHintPost: ' inverse la ligne · glisser entre les zones pour fusionner · glisser les bords partagés pour redimensionner',
+    templateColumns: 'Colonnes',
+    templateRows: 'Lignes',
+    templateGrid: 'Grille',
+    templatePriority: 'Priorité',
+    zoneTag: index => `zone ${index}`,
+    mergeZones: count => `Fusionner ${count} zones`,
+    customZoneName: count => `Personnalisé ${count} zones`,
+    layoutNamePlaceholder: fallback => `Nom de la disposition (${fallback})`,
+    saveApply: 'Enregistrer et appliquer',
+    notExpressible: 'cet arrangement est imbriqué (moulinet) — pas encore exprimable en divisions imbriquées',
+    zoneCount: count => `${count} zones`
   }
 })

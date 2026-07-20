@@ -2288,36 +2288,23 @@ export interface Translations {
       description: string
       toggle: string
     }
-    uninstall: {
-      dangerZone: string
-      checkingInstall: string
-      confirmUninstall: string
-      removesThis: (consequence: string) => string
-      undoWarning: string
-      yesUninstall: string
-      uninstalling: string
-      cancel: string
-      uninstallHermes: string
-      chooseDescription: string
-      couldNotStart: string
-      appLabel: string
-      options: {
-        gui: {
-          title: string
-          description: string
-          consequence: string
-        }
-        lite: {
-          title: string
-          description: string
-          consequence: string
-        }
-        full: {
-          title: string
-          description: string
-          consequence: string
-        }
-      }
+  }
+
+  uninstall: {
+    dangerZone: string
+    checking: string
+    confirmTitle: string
+    confirmBody: (consequence: string) => string
+    uninstalling: string
+    yesUninstall: string
+    couldNotStart: string
+    cancel: string
+    uninstallHermes: string
+    uninstallDescription: string
+    options: {
+      gui: { title: string; description: string; consequence: string }
+      lite: { title: string; description: string; consequence: string }
+      full: { title: string; description: string; consequence: string }
     }
   }
 }

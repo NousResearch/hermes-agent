@@ -485,6 +485,101 @@ async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconnect_stale_catchup_cannot_release_new_generation_barrier(monkeypatch):
+    """A completed older catch-up cannot admit traffic during a new reconnect."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(
+        discord_platform.Intents,
+        "default",
+        lambda: SimpleNamespace(
+            message_content=False,
+            dm_messages=False,
+            guild_messages=False,
+            members=False,
+            voice_states=False,
+        ),
+    )
+
+    created = {}
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: created.setdefault("bot", FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        )),
+    )
+
+    resolution_started = asyncio.Event()
+    release_resolution = asyncio.Event()
+    resolution_calls = 0
+
+    async def resolve_allowed_usernames():
+        nonlocal resolution_calls
+        resolution_calls += 1
+        if resolution_calls == 2:
+            resolution_started.set()
+            await release_resolution.wait()
+
+    first_catchup_started = asyncio.Event()
+    second_catchup_started = asyncio.Event()
+    release_first_catchup = asyncio.Event()
+    release_second_catchup = asyncio.Event()
+    catchup_calls = 0
+
+    async def catch_up_missed_mentions():
+        nonlocal catchup_calls
+        catchup_calls += 1
+        if catchup_calls == 1:
+            first_catchup_started.set()
+            await release_first_catchup.wait()
+        else:
+            second_catchup_started.set()
+            await release_second_catchup.wait()
+
+    dispatched = AsyncMock()
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", resolve_allowed_usernames)
+    monkeypatch.setattr(adapter, "_catch_up_missed_mentions", catch_up_missed_mentions)
+    monkeypatch.setattr(adapter, "_get_discord_command_sync_policy", lambda: "off")
+    monkeypatch.setattr(adapter, "_dispatch_discord_message", dispatched)
+
+    assert await adapter.connect() is True
+    await asyncio.wait_for(first_catchup_started.wait(), timeout=1.0)
+    assert adapter._ready_event.is_set()
+
+    bot = created["bot"]
+    reconnect_ready = asyncio.create_task(bot._events["on_ready"]())
+    await asyncio.wait_for(resolution_started.wait(), timeout=1.0)
+
+    # The first task completes naturally while the second on_ready is still
+    # resolving usernames. It must not set the newer generation's barrier.
+    release_first_catchup.set()
+    await asyncio.wait_for(adapter._post_connect_task, timeout=1.0)
+
+    live_message = SimpleNamespace(id=123)
+    live_dispatch = asyncio.create_task(bot._events["on_message"](live_message))
+    await asyncio.sleep(0)
+    assert not live_dispatch.done()
+    dispatched.assert_not_awaited()
+
+    release_resolution.set()
+    await reconnect_ready
+    await asyncio.wait_for(second_catchup_started.wait(), timeout=1.0)
+    assert not live_dispatch.done()
+    dispatched.assert_not_awaited()
+
+    release_second_catchup.set()
+    await asyncio.wait_for(live_dispatch, timeout=1.0)
+    dispatched.assert_awaited_once_with(live_message)
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_connect_respects_slash_commands_opt_out(monkeypatch):
     adapter = DiscordAdapter(
         PlatformConfig(enabled=True, token="test-token", extra={"slash_commands": False})

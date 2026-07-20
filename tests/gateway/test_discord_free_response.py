@@ -1508,6 +1508,28 @@ async def test_discord_thread_context_includes_parent_starter_message(adapter, m
 
 
 @pytest.mark.asyncio
+async def test_discord_forum_thread_context_fetches_starter_from_thread(adapter, monkeypatch):
+    """Forum posts hydrate their starter through the thread, not the parent forum."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    author = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    forum = FakeForumChannel(channel_id=100, name="support-forum")
+    thread = FakeThread(channel_id=200, parent=forum)
+    thread.history = FakeHistoryChannel([], channel_id=200).history
+    thread.fetch_message = AsyncMock(
+        return_value=make_history_message(author=author, content="Forum post request", msg_id=200)
+    )
+    trigger = make_message(channel=thread, content="<@999>", mentions=[adapter._client.user])
+    trigger.id = 201
+
+    result = await adapter._fetch_channel_context(thread, before=trigger)
+
+    thread.fetch_message.assert_awaited_once_with(200)
+    assert "[Thread starter message]" in result
+    assert "Forum post request" in result
+
+
+@pytest.mark.asyncio
 async def test_discord_bare_thread_mention_dispatches_when_parent_starter_is_context(adapter, monkeypatch):
     """The empty-turn guard permits a bare mention only when starter context exists."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -1528,15 +1550,16 @@ async def test_discord_bare_thread_mention_dispatches_when_parent_starter_is_con
 
 
 @pytest.mark.asyncio
-async def test_discord_startup_catchup_primes_then_dispatches_missed_mention_once(adapter, tmp_path, monkeypatch):
-    """A restart processes one unseen trigger but never replays it again."""
+async def test_discord_startup_catchup_persists_checkpoint_before_restart(adapter, tmp_path, monkeypatch):
+    """A fresh adapter loads the checkpoint and cannot replay an already-dispatched event."""
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     adapter.config.extra["startup_catchup"] = True
     adapter.config.extra["startup_catchup_limit"] = 10
     bot_user = adapter._client.user
     channel = FakeHistoryChannel([], channel_id=321)
     adapter._client.guilds = [SimpleNamespace(text_channels=[channel], threads=[])]
-    adapter._dispatch_discord_message = AsyncMock()
 
     await adapter._catch_up_missed_mentions()
     missed = make_message(channel=channel, content=f"<@{bot_user.id}> offline request", mentions=[bot_user])
@@ -1544,6 +1567,150 @@ async def test_discord_startup_catchup_primes_then_dispatches_missed_mention_onc
     channel._history_messages.append(missed)
 
     await adapter._catch_up_missed_mentions()
+    adapter.handle_message.assert_awaited_once()
+
+    restarted = DiscordAdapter(adapter.config)
+    restarted._client = SimpleNamespace(user=bot_user, guilds=[SimpleNamespace(text_channels=[channel], threads=[])])
+    restarted._handle_message = AsyncMock()
+
+    await restarted._catch_up_missed_mentions()
+
+    restarted._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_startup_catchup_does_not_dispatch_when_checkpoint_write_fails(adapter, tmp_path, monkeypatch):
+    """An event is never dispatched until its checkpoint is durably written."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["startup_catchup"] = True
+    bot_user = adapter._client.user
+    channel = FakeHistoryChannel([], channel_id=321)
+    adapter._client.guilds = [SimpleNamespace(text_channels=[channel], threads=[])]
     await adapter._catch_up_missed_mentions()
 
-    adapter._dispatch_discord_message.assert_awaited_once_with(missed)
+    missed = make_message(channel=channel, content=f"<@{bot_user.id}> offline request", mentions=[bot_user])
+    missed.id = 456
+    channel._history_messages.append(missed)
+    original_write = discord_platform.atomic_json_write
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(discord_platform, "atomic_json_write", fail_write)
+    await adapter._catch_up_missed_mentions()
+    adapter.handle_message.assert_not_awaited()
+
+    monkeypatch.setattr(discord_platform, "atomic_json_write", original_write)
+    restarted = DiscordAdapter(adapter.config)
+    restarted._client = SimpleNamespace(user=bot_user, guilds=[SimpleNamespace(text_channels=[channel], threads=[])])
+    restarted._handle_message = AsyncMock()
+    await restarted._catch_up_missed_mentions()
+
+    restarted._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_catchup_reuses_multi_agent_mention_gate(adapter, monkeypatch):
+    """Free-response catch-up ignores other-bot-only mentions but accepts human mentions."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "321")
+    adapter._allowed_user_ids = {"*"}
+    adapter._handle_message = AsyncMock()
+    channel = FakeTextChannel(channel_id=321)
+    other_bot = SimpleNamespace(id=1000, bot=True)
+
+    other_bot_only = make_message(channel=channel, content="<@1000> can you help?", mentions=[other_bot])
+    await adapter._dispatch_discord_message(other_bot_only)
+    adapter._handle_message.assert_not_awaited()
+
+    human = SimpleNamespace(id=2000, bot=False)
+    human_only = make_message(channel=channel, content="<@2000> can you help?", mentions=[human])
+    human_only.id = 124
+    await adapter._dispatch_discord_message(human_only)
+    adapter._handle_message.assert_awaited_once_with(human_only, role_authorized=False)
+
+
+@pytest.mark.asyncio
+async def test_discord_startup_catchup_skips_message_already_dispatched_live(adapter, tmp_path, monkeypatch):
+    """A fresh adapter cannot replay a live event after startup catch-up."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["startup_catchup"] = True
+    bot_user = adapter._client.user
+    channel = FakeHistoryChannel([], channel_id=321)
+    adapter._client.guilds = [SimpleNamespace(text_channels=[channel], threads=[])]
+
+    await adapter._catch_up_missed_mentions()
+    message = make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> reconnect request",
+        mentions=[bot_user],
+    )
+    message.id = 456
+    channel._history_messages.append(message)
+
+    await adapter._dispatch_discord_message(message)
+    adapter.handle_message.assert_awaited_once()
+
+    restarted = DiscordAdapter(adapter.config)
+    restarted._client = SimpleNamespace(
+        user=bot_user,
+        guilds=[SimpleNamespace(text_channels=[channel], threads=[])],
+    )
+    restarted._handle_message = AsyncMock()
+    await restarted._catch_up_missed_mentions()
+
+    restarted._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_live_dispatch_does_not_run_when_checkpoint_write_fails(adapter, tmp_path, monkeypatch):
+    """Live traffic is suppressed until its per-channel checkpoint is durable."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    channel = FakeHistoryChannel([], channel_id=321)
+    message = make_message(
+        channel=channel,
+        content=f"<@{adapter._client.user.id}> live request",
+        mentions=[adapter._client.user],
+    )
+    message.id = 456
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(discord_platform, "atomic_json_write", fail_write)
+
+    dispatched = await adapter._dispatch_discord_message(message)
+
+    assert not dispatched
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_startup_catchup_permission_failure_leaves_channel_uninitialized(adapter, tmp_path, monkeypatch):
+    """A denied history scan does not mark a channel caught up or dispatch an event."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    forbidden = type("Forbidden", (Exception,), {})
+    monkeypatch.setattr(discord_platform.discord, "Forbidden", forbidden, raising=False)
+    adapter.config.extra["startup_catchup"] = True
+    channel = FakeTextChannel(channel_id=321)
+
+    def denied_history(**kwargs):
+        async def _iter():
+            raise forbidden()
+            yield
+
+        return _iter()
+
+    channel.history = denied_history
+    adapter._client.guilds = [SimpleNamespace(text_channels=[channel], threads=[])]
+    adapter._dispatch_discord_message = AsyncMock()
+
+    await adapter._catch_up_missed_mentions()
+
+    assert not adapter._startup_catchup.initialized("321")
+    adapter._dispatch_discord_message.assert_not_awaited()

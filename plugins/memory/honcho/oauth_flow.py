@@ -465,7 +465,8 @@ def request_device_code(
                 f"{verification_uri}?user_code={body['user_code']}",
             ),
             expires_in=int(body["expires_in"]),
-            interval=int(body["interval"]),
+            # RFC 8628 §3.2: interval is optional; clients default to 5s.
+            interval=int(body.get("interval", 5)),
         )
     except (KeyError, TypeError, ValueError) as e:
         raise DeviceFlowError(

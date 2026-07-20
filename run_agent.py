@@ -4484,25 +4484,25 @@ class AIAgent:
         worker performs the SDK-level close from its own context — the same
         ownership contract the OpenAI-wire path already uses.
 
-        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh client instead of swapping the shared
-        one.
+        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock +
+        Vertex, 1M-beta drop) but returns a fresh client instead of swapping
+        the shared one. Provider-aware via the same chokepoint: building the
+        plain client for a Vertex Claude session sends the request to
+        ``{aiplatform_host}/v1/messages`` — Google's HTML 404 — on the very
+        first streamed call of a session.
         """
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            client = build_anthropic_bedrock_client(region)
-        else:
-            from agent.anthropic_adapter import build_anthropic_client
-            client = build_anthropic_client(
-                self._anthropic_api_key,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=_drop_1m,
-            )
+        from agent.anthropic_adapter import build_anthropic_client_for_provider
+
+        client = build_anthropic_client_for_provider(
+            getattr(self, "provider", None),
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(self.provider, self.model),
+            drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            agent=self,
+        )
         logger.debug(
             "Anthropic request client created (%s, shared=False) provider=%s model=%s",
             reason,
@@ -4795,10 +4795,15 @@ class AIAgent:
             pass
 
         try:
-            self._anthropic_client = build_anthropic_client(
+            # Provider-aware: vertex/bedrock primaries rebuild their SDK
+            # client (the refreshed bearer is irrelevant to SDK auth).
+            from agent.anthropic_adapter import build_anthropic_client_for_provider
+            self._anthropic_client = build_anthropic_client_for_provider(
+                getattr(self, "provider", None),
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                agent=self,
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -4919,7 +4924,10 @@ class AIAgent:
         )
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+            from agent.anthropic_adapter import (
+                build_anthropic_client_for_provider,
+                _is_oauth_token,
+            )
 
             try:
                 self._anthropic_client.close()
@@ -4928,9 +4936,14 @@ class AIAgent:
 
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-            self._anthropic_client = build_anthropic_client(
+            # Provider-aware: vertex/bedrock never reach here (no credential
+            # pool), but if they ever do the SDK client is the only valid
+            # rebuild — the plain client 404s on {host}/v1/messages.
+            self._anthropic_client = build_anthropic_client_for_provider(
+                getattr(self, "provider", None),
                 runtime_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                agent=self,
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key

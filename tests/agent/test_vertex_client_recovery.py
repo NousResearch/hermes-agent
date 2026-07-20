@@ -332,3 +332,35 @@ def test_switch_model_vertex_claude_autodetects_anthropic_mode(monkeypatch):
     assert agent_stub.api_mode == "anthropic_messages"
     assert agent_stub._anthropic_client == "CLIENT_FOR:vertex"
     assert calls and calls[0]["provider"] == "vertex"
+
+
+def test_request_anthropic_client_routes_vertex(monkeypatch):
+    """The per-request streaming client (stale/interrupt watchdog ownership
+    contract) must be provider-aware: this was the live 404 — every streamed
+    request on a vertex Claude session built a plain Anthropic client and
+    POSTed {aiplatform_host}/v1/messages (Google HTML 404), including the
+    very first call of a fresh session."""
+    import run_agent as ra
+
+    calls = _patch_chokepoint(monkeypatch)
+
+    stub = _StubAgent(provider="vertex")
+    stub._try_refresh_anthropic_client_credentials = lambda: False
+    client = ra.AIAgent._create_request_anthropic_client(
+        stub, reason="chat_completion_stream_request"
+    )
+    assert client == "CLIENT_FOR:vertex"
+    assert calls and calls[0]["provider"] == "vertex"
+
+
+def test_request_anthropic_client_keeps_plain_for_anthropic(monkeypatch):
+    import run_agent as ra
+
+    calls = _patch_chokepoint(monkeypatch)
+
+    stub = _StubAgent(provider="anthropic")
+    stub._anthropic_api_key = "sk-ant-z"
+    stub._try_refresh_anthropic_client_credentials = lambda: False
+    client = ra.AIAgent._create_request_anthropic_client(stub, reason="x")
+    assert client == "CLIENT_FOR:anthropic"
+    assert calls[0]["api_key"] == "sk-ant-z"

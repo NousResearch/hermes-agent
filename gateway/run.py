@@ -2174,6 +2174,50 @@ def _credential_pool_for_provider(provider: Optional[str]):
         return None
 
 
+_VERTEX_PROVIDER_ALIASES = frozenset(
+    {"vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"}
+)
+
+
+def _sanitize_vertex_claude_runtime(model: Optional[str], runtime: dict) -> None:
+    """Repair a Claude-on-Vertex runtime dict poisoned by stale stored fields.
+
+    Claude-on-Vertex runtime fields are DERIVED, not stored: the wire
+    protocol is always anthropic_messages (AnthropicVertex SDK, rawPredict)
+    and auth is a self-refreshing OAuth Credentials object resolved at
+    client-build time. Session model overrides persisted by older builds —
+    or echoed back by desktop clients from cached UI state — carry
+    ``api_mode: "chat_completions"`` and sometimes a bearer ``api_key``
+    minted for the OpenAI-compat endpoint. Honoring those builds an OpenAI
+    client against the Anthropic base URL and every request 404s (HTML
+    "Error 404 (Not Found)!!1"). Mutates ``runtime`` in place; no-op for
+    everything that isn't Claude-on-Vertex.
+    """
+    provider = str(runtime.get("provider") or "").strip().lower()
+    if provider not in _VERTEX_PROVIDER_ALIASES:
+        return
+    try:
+        from agent.vertex_adapter import is_anthropic_vertex_model
+    except Exception:
+        return
+    if not is_anthropic_vertex_model(str(model or "")):
+        return
+    if runtime.get("api_mode") != "anthropic_messages" or (
+        runtime.get("api_key") not in (None, "", "vertex-oauth")
+    ):
+        logger.info(
+            "Sanitized stale Claude-on-Vertex override: model=%s "
+            "api_mode=%s->anthropic_messages",
+            model,
+            runtime.get("api_mode"),
+        )
+    runtime["api_mode"] = "anthropic_messages"
+    # Placeholder key, matching agent_init — a stored bearer token here was
+    # minted for the OpenAI-compat endpoint and must not gate the fast path
+    # into building a chat_completions client with it.
+    runtime["api_key"] = "vertex-oauth"
+
+
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -4190,6 +4234,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
             }
+            # Stored Claude-on-Vertex overrides may carry a stale
+            # chat_completions api_mode / bearer key (see helper docstring).
+            _sanitize_vertex_claude_runtime(override_model, override_runtime)
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(
@@ -17976,6 +18023,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        # Stored Claude-on-Vertex overrides may carry a stale chat_completions
+        # api_mode / bearer key (see _sanitize_vertex_claude_runtime).
+        _sanitize_vertex_claude_runtime(model, runtime_kwargs)
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None

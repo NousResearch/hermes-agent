@@ -1761,14 +1761,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
 
         if fb_api_mode == "anthropic_messages":
-            # Build native Anthropic client instead of using OpenAI client
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+            # Build native Anthropic client instead of using OpenAI client.
+            # Provider-aware: a vertex/bedrock fallback target needs its SDK
+            # client (AnthropicVertex / AnthropicBedrock) — the plain client
+            # would POST {host}/v1/messages and 404, so the fallback dies the
+            # same way the primary just did.
+            from agent.anthropic_adapter import (
+                build_anthropic_client_for_provider,
+                resolve_anthropic_token,
+                _is_oauth_token,
+            )
             effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            if fb_provider in ("bedrock", "vertex"):
+                # SDK-auth placeholder keys, matching agent_init.
+                effective_key = {"bedrock": "aws-sdk", "vertex": "vertex-oauth"}[fb_provider]
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
-            agent._anthropic_client = build_anthropic_client(
+            agent._anthropic_client = build_anthropic_client_for_provider(
+                fb_provider,
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                agent=agent,
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
             agent.client = None

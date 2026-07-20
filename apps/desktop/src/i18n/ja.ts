@@ -2102,8 +2102,6 @@ export const ja = defineLocale({
       openCommandCenter: 'コマンドセンターを開く',
       showTerminal: 'ターミナルを表示',
       hideTerminal: 'ターミナルを非表示',
-      keepAwakeOn: 'スリープ抑止中 — クリックで解除',
-      keepAwakeOff: 'コンピューターをスリープさせない',
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',

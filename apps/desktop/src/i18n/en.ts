@@ -2176,8 +2176,6 @@ export const en: Translations = {
       openCommandCenter: 'Open Command Center',
       showTerminal: 'Show terminal',
       hideTerminal: 'Hide terminal',
-      keepAwakeOn: 'Keeping awake — click to allow sleep',
-      keepAwakeOff: 'Keep computer awake',
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',

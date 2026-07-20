@@ -9,12 +9,11 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Sun, Terminal } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { copyFilePath, revealFile } from '@/store/file-actions'
-import { $keepAwake, toggleKeepAwake } from '@/store/keep-awake'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
@@ -91,7 +90,6 @@ export function useStatusbarItems({
   const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const terminalTakeover = useStore($terminalTakeover)
-  const keepAwake = useStore($keepAwake)
   const primaryBusy = useStore($busy)
   const currentCwd = useStore($currentCwd)
   // Derive the workspace's project name from the already-cached project tree
@@ -453,14 +451,6 @@ export function useStatusbarItems({
         title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
         variant: 'action'
       },
-      {
-        className: `w-7 justify-center px-0${keepAwake ? ' bg-accent/55 text-foreground' : ''}`,
-        icon: <Sun className="size-3.5" />,
-        id: 'keep-awake',
-        onSelect: () => toggleKeepAwake(),
-        title: keepAwake ? copy.keepAwakeOn : copy.keepAwakeOff,
-        variant: 'action'
-      },
       clientVersionItem,
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
@@ -475,7 +465,6 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage,
-      keepAwake,
       requestGateway,
       sessionStartedAt,
       gatewayState,

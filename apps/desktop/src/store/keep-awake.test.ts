@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { storedBoolean } from '@/lib/storage'
 
-import { $keepAwake, setKeepAwake, toggleKeepAwake } from './keep-awake'
+import { $keepAwake, setKeepAwake } from './keep-awake'
 
 const KEY = 'hermes.desktop.keepAwake.v1'
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -29,12 +29,5 @@ describe('keep-awake store', () => {
     setKeepAwake(false)
     expect(storedBoolean(KEY, true)).toBe(false)
     expect(setKeepAwakeBridge).toHaveBeenLastCalledWith(false)
-  })
-
-  it('toggles the current value', () => {
-    toggleKeepAwake()
-    expect($keepAwake.get()).toBe(true)
-    toggleKeepAwake()
-    expect($keepAwake.get()).toBe(false)
   })
 })

@@ -2035,8 +2035,6 @@ export const zhHant = defineLocale({
       openCommandCenter: '開啟命令中心',
       showTerminal: '顯示終端機',
       hideTerminal: '隱藏終端機',
-      keepAwakeOn: '保持喚醒中 — 點擊以允許睡眠',
-      keepAwakeOff: '保持電腦喚醒',
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',

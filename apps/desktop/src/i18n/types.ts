@@ -1804,8 +1804,6 @@ export interface Translations {
       openCommandCenter: string
       showTerminal: string
       hideTerminal: string
-      keepAwakeOn: string
-      keepAwakeOff: string
       gateway: string
       gatewayReady: string
       gatewayNeedsSetup: string

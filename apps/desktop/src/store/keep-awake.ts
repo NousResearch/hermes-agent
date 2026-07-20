@@ -1,11 +1,12 @@
 /**
  * Keep-awake — stop the machine sleeping during long, unattended runs.
  *
- * A device-local preference (each computer keeps its own), off by default. The
- * renderer owns the value and persists it; the main process holds the actual
- * power-save blocker (see electron/power-save.ts) and re-reads this on every
- * window load via the subscribe below. Linux/web builds without the bridge just
- * no-op.
+ * A device-local preference (each computer keeps its own), off by default. This
+ * atom backs the Settings → Advanced toggle and mirrors changes to the main
+ * process, which owns the real power-save blocker AND its own persisted copy —
+ * so a cold launch restores the blocker without the renderer visiting Settings
+ * (see electron/main.ts + electron/power-save.ts). Linux/web without the bridge
+ * just no-op.
  */
 
 import { atom } from 'nanostores'
@@ -18,10 +19,6 @@ export const $keepAwake = atom<boolean>(typeof window === 'undefined' ? false : 
 
 export function setKeepAwake(on: boolean): void {
   $keepAwake.set(on)
-}
-
-export function toggleKeepAwake(): void {
-  $keepAwake.set(!$keepAwake.get())
 }
 
 if (typeof window !== 'undefined') {

@@ -2346,8 +2346,6 @@ export const zh: Translations = {
       openCommandCenter: '打开命令中心',
       showTerminal: '显示终端',
       hideTerminal: '隐藏终端',
-      keepAwakeOn: '保持唤醒中 — 点击以允许休眠',
-      keepAwakeOff: '保持电脑唤醒',
       gateway: '网关',
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',

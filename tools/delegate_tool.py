@@ -45,6 +45,7 @@ from utils import base_url_hostname, is_truthy_value
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
+        "delegation_control",  # no global lifecycle control from children
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
@@ -119,7 +120,9 @@ def _get_subagent_approval_callback():
 # toolset to request explicitly — the correct mechanism for nested
 # delegation is role='orchestrator', which re-adds "delegation" in
 # _build_child_agent regardless of this exclusion.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
+_EXCLUDED_TOOLSET_NAMES = frozenset(
+    {"debugging", "safe", "delegation", "delegation_control", "moa", "rl"}
+)
 _SUBAGENT_TOOLSETS = sorted(
     name
     for name, defn in TOOLSETS.items()
@@ -826,6 +829,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
         "delegation",
+        "delegation_control",
         "clarify",
         "memory",
         "code_execution",

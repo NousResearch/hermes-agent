@@ -10,8 +10,8 @@ import {
   buildPosixPinArgs,
   cachedScriptPath,
   hasExistingGitCheckout,
-  installRefForStamp,
   installedAgentInstallScript,
+  installRefForStamp,
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
@@ -160,6 +160,7 @@ test('resolveInstallScript downloads fallback stamps by branch instead of zero c
   try {
     const logs = []
     const refs = []
+
     const result = await resolveInstallScript({
       installStamp: { commit: ZERO_COMMIT, branch: 'main' },
       sourceRepoRoot: null,

@@ -2059,7 +2059,50 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
-    
+
+    # ── Rehydrate session accumulators from persisted state ──
+    # When the gateway restarts mid-session, the session row already exists
+    # in SQLite with the correct accumulated totals.  Read them back so the
+    # live cost/token counters don't reset to zero on every restart.
+    if agent._session_db and agent.session_id:
+        try:
+            _existing = agent._session_db.get_session(agent.session_id)
+            if _existing:
+                agent.session_estimated_cost_usd = float(
+                    _existing.get("estimated_cost_usd") or 0.0
+                )
+                agent.session_cost_status = str(
+                    _existing.get("cost_status") or "unknown"
+                )
+                agent.session_cost_source = str(
+                    _existing.get("cost_source") or "none"
+                )
+                agent.session_prompt_tokens = int(
+                    _existing.get("input_tokens") or 0
+                )
+                agent.session_completion_tokens = int(
+                    _existing.get("output_tokens") or 0
+                )
+                agent.session_total_tokens = (
+                    agent.session_prompt_tokens + agent.session_completion_tokens
+                )
+                agent.session_input_tokens = agent.session_prompt_tokens
+                agent.session_output_tokens = agent.session_completion_tokens
+                agent.session_cache_read_tokens = int(
+                    _existing.get("cache_read_tokens") or 0
+                )
+                agent.session_cache_write_tokens = int(
+                    _existing.get("cache_write_tokens") or 0
+                )
+                agent.session_reasoning_tokens = int(
+                    _existing.get("reasoning_tokens") or 0
+                )
+                agent.session_api_calls = int(
+                    _existing.get("api_call_count") or 0
+                )
+        except Exception:
+            pass  # fail-open: fresh counters are better than crashing
+
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.
     # When running against an Ollama server, detect the model's max context

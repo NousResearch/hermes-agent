@@ -191,6 +191,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
+    # WhatsApp adapter — lazy-install aiohttp (no defusedxml used)
+    "platform.whatsapp": (
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+    ),
     # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
     # defusedxml only; aiohttp/httpx are core dependencies of every messaging
     # adapter and ship via `platform.discord` / `platform.slack` / etc.

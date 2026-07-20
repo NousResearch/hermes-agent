@@ -363,6 +363,30 @@ class TestRefreshActiveFeatures:
         with pytest.raises(ld.FeatureUnavailable, match="unsupported on Windows"):
             ld.ensure("platform.matrix", prompt=False)
 
+    def test_whatsapp_ensure_before_import_lazy_installs_aiohttp(self, monkeypatch):
+        """Regression test for #55297: ensure('platform.whatsapp') must install
+        aiohttp before the WhatsApp adapter imports it lazily. The adapter has
+        no defusedxml dependency — only aiohttp.
+        """
+        # First call: not satisfied; second call (post-install): satisfied
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        install_args = []
+
+        def fake_install(specs, **kw):
+            install_args.extend(specs)
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        # This is the entrypoint the adapter calls at connect() time
+        ld.ensure("platform.whatsapp", prompt=False)
+
+        # Verify aiohttp was pinned to be installed (not defusedxml)
+        assert any("aiohttp==" in s for s in install_args)
+        assert not any("defusedxml" in s for s in install_args)
+
     def test_windows_matrix_already_satisfied_still_works(self, monkeypatch):
         # Do not break users who already have a working Matrix dependency set;
         # only the impossible Windows install/refresh path should be blocked.

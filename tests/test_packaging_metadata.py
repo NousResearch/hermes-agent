@@ -424,14 +424,16 @@ def _lazy_deps_by_feature():
 _REQUIRED_SECURITY_PINS = {
     # Every lazy messaging feature whose SDK pulls aiohttp transitively must
     # carry the patched floor directly: discord.py (aiohttp<4), slack-bolt,
-    # mautrix/aiohttp-socks (aiohttp<4 / >=3.10), and microsoft-teams-apps —
-    # none of those upper/lower bounds excludes a vulnerable already-installed
-    # aiohttp, so the lazy path would not upgrade it without an explicit pin.
+    # mautrix/aiohttp-socks (aiohttp<4 / >=3.10), microsoft-teams-apps, and
+    # whatsapp-web.js bridge (aiohttp direct import) — none of those upper/lower
+    # bounds excludes a vulnerable already-installed aiohttp, so the lazy path
+    # would not upgrade it without an explicit pin.
     "aiohttp": {
         "platform.discord",
         "platform.slack",
         "platform.matrix",
         "platform.teams",
+        "platform.whatsapp",
     },
 }
 

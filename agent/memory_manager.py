@@ -161,8 +161,24 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
-def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+def sanitize_context(text) -> str:
+    """Strip fence tags, injected context blocks, and system notes from provider output.
+
+    Accepts string OR list (multimodal message content) - lists are flattened
+    via _summarize_user_message_for_log before regex sanitization. Without
+    this guard, multimodal messages reach the regex as a list and crash with
+    ``expected string or bytes-like object, got 'list'``.
+    """
+    if not isinstance(text, str):
+        # Lazy import to avoid circular: memory_manager is imported widely.
+        try:
+            from agent.codex_responses_adapter import _summarize_user_message_for_log
+            text = _summarize_user_message_for_log(text, sep="\n")
+        except Exception:
+            try:
+                text = str(text)
+            except Exception:
+                return ""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)

@@ -2820,6 +2820,21 @@ class TestDelegationLifecycleIntegration:
         finally:
             clear_task_env_overrides("session:a")
 
+    def test_workspace_hint_does_not_fallback_to_process_cwd(self, tmp_path):
+        from pathlib import Path
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "unknown-task"
+        with patch.dict(os.environ, {"TERMINAL_CWD": "."}), patch(
+            "tools.file_tools._get_live_tracking_cwd", return_value=None
+        ), patch(
+            "tools.file_tools._registered_task_cwd_override", return_value=None
+        ), patch(
+            "tools.file_tools._configured_terminal_cwd", return_value=None
+        ), patch.object(Path, "cwd", return_value=tmp_path):
+            assert dt._resolve_workspace_hint(parent) is None
+
     def test_workspace_hint_uses_current_session_when_task_id_missing(self, tmp_path):
         import tools.delegate_tool as dt
         from tools.approval import reset_current_session_key, set_current_session_key
@@ -3037,6 +3052,50 @@ class TestDelegationLifecycleIntegration:
         with pytest.raises(RuntimeError, match="Failed to interrupt 1/1"):
             captured["interrupt_fn"]()
 
+    def test_capacity_fallback_restores_parent_interrupt_ownership(self, tmp_path):
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        fake_child = MagicMock()
+        fake_child._subagent_id = "sa-capacity"
+        fake_child._delegate_role = "leaf"
+        parent._active_children = [fake_child]
+        parent._active_children_lock = threading.Lock()
+        creds = {
+            "model": "m", "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "command": None, "args": None,
+        }
+        rejected = {
+            "status": "rejected", "reason_code": "capacity",
+            "error": "capacity reached",
+        }
+        ownership_seen = []
+
+        def run_sync(*args, **kwargs):
+            ownership_seen.append(fake_child in parent._active_children)
+            return {"task_index": 0, "status": "completed", "summary": "ok"}
+
+        try:
+            with (
+                patch.object(dt, "_resolve_workspace_hint", return_value=str(tmp_path)),
+                patch.object(dt, "_build_child_agent", return_value=fake_child),
+                patch.object(dt, "_resolve_delegation_credentials", return_value=creds),
+                patch.object(dt, "_run_single_child", side_effect=run_sync),
+                patch(
+                    "tools.async_delegation.dispatch_async_delegation_batch",
+                    return_value=rejected,
+                ),
+            ):
+                result = json.loads(dt.delegate_task(
+                    goal="edit", toolsets=["file"], background=True,
+                    parent_agent=parent,
+                ))
+        finally:
+            dt._clear_child_workspace_override(fake_child)
+
+        assert result["results"][0]["status"] == "completed"
+        assert ownership_seen == [True]
+
     def test_workspace_lock_rejection_does_not_fallback_to_sync(self, tmp_path):
         import tools.delegate_tool as dt
 
@@ -3049,9 +3108,9 @@ class TestDelegationLifecycleIntegration:
         }
         rejected = {
             "status": "rejected",
-            "reason_code": "workspace_locked",
+            "reason_code": "workspace_unavailable",
             "holder_delegation_id": "deleg_holder",
-            "error": "workspace locked",
+            "error": "workspace unavailable",
         }
 
         with patch.dict(os.environ, {"TERMINAL_CWD": str(tmp_path)}), \
@@ -3063,7 +3122,8 @@ class TestDelegationLifecycleIntegration:
                 goal="edit code", toolsets=["file"], background=True, parent_agent=parent
             ))
 
-        assert "workspace locked" in result["error"]
+        assert "workspace unavailable" in result["error"]
+        assert result["reason_code"] == "workspace_unavailable"
         assert result["holder_delegation_id"] == "deleg_holder"
         run_child.assert_not_called()
 
@@ -3108,6 +3168,23 @@ class TestDelegationLifecycleIntegration:
         invoke_hook.assert_called_once()
         assert invoke_hook.call_args.args[0] == "subagent_stop"
         assert invoke_hook.call_args.kwargs["child_status"] == "rejected"
+
+    def test_rejection_teardown_continues_when_override_cleanup_fails(self):
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        first = MagicMock()
+        second = MagicMock()
+        with patch.object(
+            dt, "_clear_child_workspace_override",
+            side_effect=[RuntimeError("cleanup failed"), None],
+        ):
+            dt._teardown_rejected_children(
+                [first, second], parent, reason="rejected"
+            )
+
+        first.close.assert_called_once_with()
+        second.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

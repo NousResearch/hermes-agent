@@ -81,6 +81,67 @@ class _StubChild:
         self._hang.set()
 
 
+class _IgnoringInterruptChild(_StubChild):
+    def __init__(self):
+        super().__init__(api_call_count=1, hang_seconds=30.0)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.interrupt_called = threading.Event()
+
+    def run_conversation(self, user_message, task_id=None, stream_callback=None):
+        self.started.set()
+        self.release.wait(timeout=10)
+        return {"final_response": "", "completed": False, "api_calls": 1}
+
+    def interrupt(self):
+        self.interrupt_called.set()
+
+
+def test_timeout_keeps_workspace_override_until_worker_exits(
+    tmp_path, monkeypatch
+):
+    from tools import delegate_tool
+    from tools.terminal_tool import resolve_task_overrides
+
+    child = _IgnoringInterruptChild()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    delegate_tool._register_child_workspace_override(child, str(workspace))
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.05)
+    monkeypatch.setattr(
+        delegate_tool, "_dump_subagent_timeout_diagnostic", lambda **kwargs: None
+    )
+    parent = MagicMock()
+    parent._touch_activity = MagicMock()
+    parent._current_task_id = None
+    result_holder = {}
+
+    worker = threading.Thread(
+        target=lambda: result_holder.setdefault(
+            "result",
+            delegate_tool._run_single_child(
+                task_index=0,
+                goal="ignore interrupt",
+                child=child,
+                parent_agent=parent,
+            ),
+        )
+    )
+    worker.start()
+    assert child.started.wait(timeout=2)
+    assert child.interrupt_called.wait(timeout=2)
+    time.sleep(0.3)
+
+    assert worker.is_alive()
+    assert resolve_task_overrides(child._subagent_id).get("cwd") == str(workspace)
+
+    child.release.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert result_holder["result"]["status"] == "timeout"
+    assert "cwd" not in resolve_task_overrides(child._subagent_id)
+
+
 # ── _dump_subagent_timeout_diagnostic ──────────────────────────────────
 
 class TestDumpSubagentTimeoutDiagnostic:

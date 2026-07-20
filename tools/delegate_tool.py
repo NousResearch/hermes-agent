@@ -751,8 +751,9 @@ def _build_child_system_prompt(
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Resolve the same task-aware workspace root used by file tools."""
     try:
+        from pathlib import Path
         from tools.approval import get_current_session_key
-        from tools.file_tools import _resolve_base_dir
+        from tools.file_tools import _authoritative_workspace_root
 
         raw_task_id = getattr(parent_agent, "_current_task_id", None)
         task_id = (
@@ -760,7 +761,10 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
             if isinstance(raw_task_id, str) and raw_task_id
             else get_current_session_key(default="") or "default"
         )
-        workspace = _resolve_base_dir(task_id)
+        raw_workspace = _authoritative_workspace_root(task_id)
+        if not raw_workspace:
+            return None
+        workspace = Path(raw_workspace).expanduser().resolve()
     except Exception:
         logger.warning("Failed to resolve authoritative delegation workspace", exc_info=True)
         return None
@@ -896,7 +900,13 @@ def _teardown_rejected_children(
             except Exception:
                 logger.warning("Rejected subagent_stop hook failed", exc_info=True)
 
-        _clear_child_workspace_override(child)
+        try:
+            _clear_child_workspace_override(child)
+        except Exception:
+            logger.warning(
+                "Failed to clear rejected child workspace override",
+                exc_info=True,
+            )
         close = getattr(child, "close", None)
         if not callable(close):
             logger.warning(
@@ -1894,6 +1904,15 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
+            # A timed-out child may ignore cooperative interrupt and keep using
+            # file/terminal tools. Do not return (and therefore do not release
+            # its workspace lease/override) until the actual worker exits.
+            if is_timeout and not _child_future.done():
+                try:
+                    _child_future.result()
+                except Exception:
+                    pass
+
             return {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
@@ -1906,9 +1925,9 @@ def _run_single_child(
                 "diagnostic_path": diagnostic_path,
             }
         finally:
-            # Shut down executor without waiting — if the child thread
-            # is stuck on blocking I/O, wait=True would hang forever.
-            _timeout_executor.shutdown(wait=False)
+            # Worker completion is a hard lifecycle boundary: workspace leases,
+            # cwd overrides and child resources cannot be released beforehand.
+            _timeout_executor.shutdown(wait=True)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
@@ -2707,21 +2726,6 @@ def delegate_task(
         _child_agents = [c for (_, _, c) in children]
         _activity_fn = _build_delegation_activity_fn(_child_agents)
 
-        # Detach every child from the parent's interrupt-propagation list — the
-        # batch's lifecycle is owned by the async registry now, not the parent
-        # turn. _build_child_agent attached them (correct for sync runs).
-        if hasattr(parent_agent, "_active_children"):
-            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
-            for _c in _child_agents:
-                try:
-                    if _ac_lock:
-                        with _ac_lock:
-                            parent_agent._active_children.remove(_c)
-                    else:
-                        parent_agent._active_children.remove(_c)
-                except ValueError:
-                    pass
-
         def _batch_runner():
             return _execute_and_aggregate()
 
@@ -2766,6 +2770,20 @@ def delegate_task(
         )
 
         if dispatch.get("status") == "dispatched":
+            # Ownership transfers only after admission succeeds. Until this
+            # point a capacity/scheduling rejection may fall back to sync and
+            # parent interrupts must still reach every child.
+            if hasattr(parent_agent, "_active_children"):
+                _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+                for _c in _child_agents:
+                    try:
+                        if _ac_lock:
+                            with _ac_lock:
+                                parent_agent._active_children.remove(_c)
+                        else:
+                            parent_agent._active_children.remove(_c)
+                    except ValueError:
+                        pass
             n = len(_goals)
             note = (
                 "Subagent is running in the background. You and the user can "
@@ -2801,7 +2819,7 @@ def delegate_task(
             return json.dumps(
                 {
                     "error": dispatch.get("error", "Workspace is locked."),
-                    "reason_code": "workspace_locked",
+                    "reason_code": dispatch.get("reason_code"),
                     "holder_delegation_id": dispatch.get("holder_delegation_id"),
                     "workspace_path": dispatch.get("workspace_path"),
                 },

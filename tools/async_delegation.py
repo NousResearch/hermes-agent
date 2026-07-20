@@ -36,6 +36,7 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import threading
@@ -162,7 +163,7 @@ def _snapshot_record(
     """Return a serialisable record with live activity and derived status."""
     current_time = time.time() if now is None else float(now)
     snapshot = {
-        key: value
+        key: copy.deepcopy(value)
         for key, value in record.items()
         if key not in {"interrupt_fn", "activity_fn", "session_key"}
     }
@@ -336,6 +337,81 @@ def _prune_completed_locked() -> None:
         _records.pop(rid, None)
 
 
+def _normalize_single_result(raw: Any) -> tuple[Dict[str, Any], str]:
+    """Validate and normalize a single child terminal result."""
+    if not isinstance(raw, dict) or not raw:
+        return {
+            "status": "error",
+            "summary": None,
+            "error": "Invalid empty or non-object delegation result.",
+        }, "error"
+
+    result = dict(raw)
+    raw_status = str(result.get("status") or "").lower()
+    status_map = {
+        "completed": "completed",
+        "success": "completed",
+        "interrupted": "interrupted",
+        "cancelled": "interrupted",
+        "canceled": "interrupted",
+        "error": "error",
+        "failed": "error",
+        "failure": "error",
+        "timeout": "timeout",
+    }
+    status = status_map.get(raw_status)
+    if status is None:
+        return {
+            "status": "error",
+            "summary": None,
+            "error": "Invalid delegation result status.",
+        }, "error"
+    result["status"] = status
+    return result, status
+
+
+def _normalize_batch_result(
+    raw: Any, expected_count: int
+) -> tuple[Dict[str, Any], str]:
+    """Validate batch shape/completeness and derive a truthful terminal status."""
+    if not isinstance(raw, dict):
+        return {
+            "results": [],
+            "error": "Invalid non-object batch result.",
+        }, "error"
+
+    combined = dict(raw)
+    raw_results = combined.get("results")
+    safe_results = (
+        [dict(item) for item in raw_results if isinstance(item, dict)]
+        if isinstance(raw_results, list)
+        else []
+    )
+    combined["results"] = safe_results
+    valid_statuses = {
+        "completed", "success", "interrupted", "cancelled", "canceled",
+        "error", "failed", "failure", "timeout",
+    }
+    indices = [item.get("task_index") for item in safe_results]
+    statuses = [str(item.get("status") or "").lower() for item in safe_results]
+    complete_shape = (
+        isinstance(raw_results, list)
+        and len(raw_results) == expected_count
+        and len(safe_results) == expected_count
+        and set(indices) == set(range(expected_count))
+        and len(indices) == len(set(indices))
+        and all(status in valid_statuses for status in statuses)
+    )
+    if not complete_shape:
+        combined["error"] = "Invalid, incomplete, or duplicate batch results."
+        return combined, "error"
+    if any(status in {"error", "failed", "failure", "timeout"} for status in statuses):
+        return combined, "error"
+    if any(status in {"interrupted", "cancelled", "canceled"} for status in statuses):
+        return combined, "interrupted"
+    return combined, "completed"
+
+
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -406,8 +482,7 @@ def dispatch_async_delegation(
         result: Dict[str, Any] = {}
         status = "error"
         try:
-            result = runner() or {}
-            status = result.get("status") or "completed"
+            result, status = _normalize_single_result(runner())
         except Exception as exc:  # noqa: BLE001 — must never crash the worker
             logger.exception("Async delegation %s crashed", delegation_id)
             result = {
@@ -442,11 +517,11 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
     """Mark a record complete and push the completion event onto the queue."""
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is None:
+        if record is None or not _is_active(record):
             return
         status = _complete_record_locked(record, status)
         # Snapshot fields needed for the event while holding the lock.
-        event_record = dict(record)
+        event_record = copy.deepcopy(record)
         _prune_completed_locked()
 
     _push_completion_event(event_record, result, status)
@@ -574,21 +649,7 @@ def dispatch_async_delegation_batch(
         combined: Dict[str, Any] = {}
         status = "error"
         try:
-            combined = runner() or {}
-            child_results = combined.get("results") or []
-            child_statuses = {
-                str(result.get("status") or "").lower()
-                for result in child_results
-                if isinstance(result, dict)
-            }
-            if child_statuses & {"error", "failed", "failure"}:
-                status = "error"
-            elif child_statuses & {"interrupted", "cancelled", "canceled"}:
-                status = "interrupted"
-            elif child_results and not child_statuses <= {"completed", "success"}:
-                status = "error"
-            else:
-                status = "completed"
+            combined, status = _normalize_batch_result(runner(), n)
         except Exception as exc:  # noqa: BLE001 — must never crash the worker
             logger.exception("Async delegation batch %s crashed", delegation_id)
             combined = {
@@ -623,10 +684,10 @@ def _finalize_batch(
     """Mark a batch record complete and push ONE combined completion event."""
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is None:
+        if record is None or not _is_active(record):
             return
         status = _complete_record_locked(record, status)
-        event_record = dict(record)
+        event_record = copy.deepcopy(record)
         _prune_completed_locked()
 
     try:
@@ -655,7 +716,7 @@ def _finalize_batch(
         "is_batch": True,
         # The full per-task results list — the formatter renders a
         # consolidated multi-task block from this.
-        "results": combined.get("results") or [],
+        "results": copy.deepcopy(combined.get("results") or []),
         "error": combined.get("error"),
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,

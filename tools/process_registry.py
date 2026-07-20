@@ -1819,9 +1819,10 @@ def _format_async_delegation(evt: dict) -> str:
     # summary in one block so the model gets the consolidated outcome at once.
     batch_results = evt.get("results")
     if evt.get("is_batch") or isinstance(batch_results, list):
-        results = batch_results or []
+        raw_results = batch_results if isinstance(batch_results, list) else []
+        results = [item for item in raw_results if isinstance(item, dict)]
         goals = evt.get("goals") or []
-        n = len(results) if results else len(goals)
+        n = len(goals) if goals else len(results)
         total_dur = evt.get("total_duration_seconds", duration)
         lines = [
             f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",

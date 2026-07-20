@@ -293,6 +293,105 @@ def test_cancel_request_does_not_force_false_interrupted_status():
     assert snapshot["status"] == "completed"
 
 
+def test_snapshot_nested_values_cannot_mutate_registry():
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"status": "completed"}
+
+    handle = ad.dispatch_async_delegation(
+        goal="immutable", context=None, toolsets=["web"], role="leaf",
+        model="m", session_key="s", runner=runner, max_async_children=1,
+    )
+    snap = ad.get_async_delegation(handle["delegation_id"])
+    assert snap is not None
+    snap["toolsets"].append("MUTATED")
+    fresh = ad.get_async_delegation(handle["delegation_id"])
+    assert fresh is not None
+    assert fresh["toolsets"] == ["web"]
+    gate.set()
+    assert _drain_one() is not None
+
+
+def test_finalize_is_compare_and_set_and_emits_once():
+    handle = ad.dispatch_async_delegation(
+        goal="once", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s", runner=lambda: {"status": "completed"},
+        max_async_children=1,
+    )
+    first = _drain_one()
+    assert first is not None and first["status"] == "completed"
+    original = ad.get_async_delegation(handle["delegation_id"])
+    assert original is not None
+
+    ad._finalize(handle["delegation_id"], {"status": "error"}, "error")
+
+    assert _drain_one(timeout=0.05) is None
+    fresh = ad.get_async_delegation(handle["delegation_id"])
+    assert fresh is not None
+    assert fresh["status"] == "completed"
+    assert fresh["completed_at"] == original["completed_at"]
+
+
+def test_single_empty_or_unknown_result_fails_closed():
+    for result in ({}, {"status": "surprise"}):
+        handle = ad.dispatch_async_delegation(
+            goal="invalid", context=None, toolsets=None, role="leaf", model="m",
+            session_key="s", runner=lambda value=result: value,
+            max_async_children=1,
+        )
+        event = _drain_one()
+        assert event is not None
+        assert event["delegation_id"] == handle["delegation_id"]
+        assert event["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        [],
+        [None, {"task_index": 1, "status": "completed"}],
+        [{"task_index": 0, "status": "completed"}],
+        [
+            {"task_index": 0, "status": "completed"},
+            {"task_index": 0, "status": "completed"},
+        ],
+        [
+            {"task_index": 0, "status": "completed"},
+            {"task_index": 1, "status": "surprise"},
+        ],
+    ],
+)
+def test_batch_malformed_or_incomplete_results_fail_closed(results):
+    handle = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="s", runner=lambda: {"results": results},
+        max_async_children=1,
+    )
+    event = _drain_one()
+    assert event is not None
+    assert event["delegation_id"] == handle["delegation_id"]
+    assert event["status"] == "error"
+    assert all(isinstance(item, dict) for item in event["results"])
+
+
+def test_formatter_tolerates_malformed_batch_items():
+    from tools.process_registry import _format_async_delegation
+
+    text = _format_async_delegation({
+        "type": "async_delegation",
+        "delegation_id": "deleg_bad",
+        "is_batch": True,
+        "goals": ["a", "b"],
+        "results": [None, {"task_index": 1, "status": "completed", "summary": "ok"}],
+        "status": "error",
+    })
+    assert "deleg_bad" in text
+    assert "TASK 2/2" in text
+    assert "ok" in text
+
+
 def test_interrupt_by_id_reports_unknown_and_completed():
     assert ad.interrupt_async_delegation("deleg_missing")["status"] == "not_found"
 
@@ -702,7 +801,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
-def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
+def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch, tmp_path):
     """A multi-item batch with background=True dispatches the WHOLE fan-out as
     ONE background unit (one handle, one async slot). The children run in
     parallel and join; the consolidated results come back as a single
@@ -739,6 +838,7 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     # Use monkeypatch (not a `with` block) so the patches stay active while the
     # background worker thread runs _execute_and_aggregate AFTER delegate_task
     # has already returned.
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
@@ -835,7 +935,7 @@ def test_run_agent_dispatch_forces_background():
         assert captured["background"] is False
 
 
-def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
+def test_delegate_task_background_detaches_child_from_parent(monkeypatch, tmp_path):
     """A background child must NOT remain in parent._active_children —
     otherwise parent-turn interrupts / cache evicts / session close would
     kill the detached subagent mid-run."""
@@ -867,6 +967,7 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
         "model": "m", "provider": None, "base_url": None, "api_key": None,
         "api_mode": None, "command": None, "args": None,
     }
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     with patch.object(dt, "_build_child_agent", side_effect=build_and_register), \
          patch.object(dt, "_run_single_child", side_effect=slow_child), \
          patch.object(dt, "_resolve_delegation_credentials", return_value=creds):

@@ -31,6 +31,9 @@ class _UsageProfile(ProviderProfile):
         return self.snapshot
 
 
+_OMIT_DECIMAL_PLACES = object()
+
+
 class _Response:
     def __init__(self, payload, status_code=200):
         self._payload = payload
@@ -157,6 +160,69 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
 
     assert fetch_account_usage("openrouter") is builtin
     assert profile.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("decimal_places", "expected"),
+    (
+        pytest.param(
+            _OMIT_DECIMAL_PLACES,
+            "Extra usage: 12.34 / 50.00 USD",
+            id="missing-falls-back-to-two",
+        ),
+        pytest.param(
+            True, "Extra usage: 12.34 / 50.00 USD", id="true-falls-back-to-two"
+        ),
+        pytest.param(
+            False, "Extra usage: 12.34 / 50.00 USD", id="false-falls-back-to-two"
+        ),
+        pytest.param(
+            "2", "Extra usage: 12.34 / 50.00 USD", id="string-falls-back-to-two"
+        ),
+        pytest.param(
+            -1, "Extra usage: 12.34 / 50.00 USD", id="negative-falls-back-to-two"
+        ),
+        pytest.param(
+            7, "Extra usage: 12.34 / 50.00 USD", id="too-large-falls-back-to-two"
+        ),
+        pytest.param(None, "Extra usage: 12.34 / 50.00 USD", id="null-falls-back-to-two"),
+        pytest.param(2.5, "Extra usage: 12.34 / 50.00 USD", id="float-falls-back-to-two"),
+        pytest.param(10**9, "Extra usage: 12.34 / 50.00 USD", id="huge-falls-back-to-two"),
+        pytest.param(6, "Extra usage: 0.001234 / 0.005000 USD", id="six-decimal-units"),
+        pytest.param(0, "Extra usage: 1234 / 5000 USD", id="zero-decimal-units"),
+        pytest.param(2, "Extra usage: 12.34 / 50.00 USD", id="two-decimal-units"),
+        pytest.param(4, "Extra usage: 0.1234 / 0.5000 USD", id="four-decimal-units"),
+    ),
+)
+def test_fetch_account_usage_anthropic_normalizes_extra_usage_minor_units(
+    monkeypatch,
+    decimal_places,
+    expected,
+):
+    extra_usage = {
+        "is_enabled": True,
+        "monthly_limit": 5_000,
+        "used_credits": 1_234.0,
+        "utilization": 24.68,
+        "currency": "USD",
+    }
+    if decimal_places is not _OMIT_DECIMAL_PLACES:
+        extra_usage["decimal_places"] = decimal_places
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "sk-ant-oat-test",
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client({"extra_usage": extra_usage}),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert snapshot.details == (expected,)
+    assert expected in render_account_usage_lines(snapshot)
+    assert expected in render_account_usage_lines(snapshot, markdown=True)
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

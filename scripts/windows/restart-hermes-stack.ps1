@@ -83,8 +83,9 @@ function Stop-DesktopWatchdogStack {
     }
     Remove-Item (Join-Path $HermesHome "logs\desktop-backend-watchdog.lock") -Force -ErrorAction SilentlyContinue
     Get-Process -Name Hermes -ErrorAction SilentlyContinue | ForEach-Object {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        & taskkill.exe /PID $_.Id /T /F 2>$null | Out-Null
     }
+    & taskkill.exe /IM Hermes.exe /T /F 2>$null | Out-Null
     Start-Sleep -Seconds 2
 }
 

@@ -277,11 +277,19 @@ function Start-PackagedDesktop {
     return $true
 }
 
+function Stop-DesktopProcessTrees {
+    # Tree-kill so Electron helpers and desktop-spawned hermes serve children die
+    # with the main process (plain Stop-Process skips before-quit cleanup).
+    foreach ($proc in @(Get-DesktopProcesses)) {
+        Write-WdLog "tree-killing Hermes.exe pid=$($proc.Id)"
+        & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+    }
+    & taskkill.exe /IM Hermes.exe /T /F 2>$null | Out-Null
+}
+
 function Restart-PackagedDesktop {
     Write-WdLog "restarting Desktop (force backend respawn)"
-    Get-DesktopProcesses | ForEach-Object {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-    }
+    Stop-DesktopProcessTrees
     Start-Sleep -Seconds 2
     Stop-OrphanDesktopBackends | Out-Null
     Start-Sleep -Seconds 1

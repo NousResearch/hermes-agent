@@ -165,7 +165,27 @@ func findHealthyDesktopBackend() *backendInfo {
 }
 
 func stopProcessPID(pid uint32) {
-	_ = exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/F").Run()
+	// /T reaps the process tree. Plain /F leaves Electron grandchildren and
+	// desktop-spawned hermes serve orphans (before-quit never runs on force kill).
+	_ = exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/T", "/F").Run()
+}
+
+func stopAllDesktopProcessTrees(logger *Logger) {
+	desktop, err := getDesktopProcesses()
+	if err != nil {
+		logger.Infof("enumerate Hermes.exe for tree-kill: %v", err)
+	}
+	seen := make(map[uint32]struct{}, len(desktop))
+	for _, p := range desktop {
+		if _, ok := seen[p.ProcessID]; ok {
+			continue
+		}
+		seen[p.ProcessID] = struct{}{}
+		logger.Infof("tree-killing Hermes.exe pid=%d", p.ProcessID)
+		stopProcessPID(p.ProcessID)
+	}
+	// Catch any helper that WMI missed under the packaged image name.
+	_ = exec.Command("taskkill", "/IM", "Hermes.exe", "/T", "/F").Run()
 }
 
 func stopOrphanDesktopBackends(logger *Logger, cfg Config, skipPIDs ...uint32) int {
@@ -263,10 +283,7 @@ func startPackagedDesktop(cfg Config, logger *Logger, bm *BackendManager) bool {
 
 func restartPackagedDesktop(cfg Config, logger *Logger, bm *BackendManager) bool {
 	logger.Infof("restarting Desktop (force backend respawn)")
-	desktop, _ := getDesktopProcesses()
-	for _, p := range desktop {
-		stopProcessPID(p.ProcessID)
-	}
+	stopAllDesktopProcessTrees(logger)
 	time.Sleep(2 * time.Second)
 	var skipPID uint32
 	if bm != nil {
@@ -274,6 +291,7 @@ func restartPackagedDesktop(cfg Config, logger *Logger, bm *BackendManager) bool
 			skipPID = managed.PID
 		}
 	}
+	// Desktop is gone — reap leftover ephemeral serves (managed :9118 is skipped).
 	stopOrphanDesktopBackends(logger, cfg, skipPID)
 	time.Sleep(1 * time.Second)
 	if bm != nil {

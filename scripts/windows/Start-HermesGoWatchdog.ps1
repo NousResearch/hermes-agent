@@ -56,6 +56,28 @@ function Stop-GoWatchdog {
     Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
 }
 
+function Stop-PsDesktopBackendWatchdog {
+    # PS and Go watchdogs use different lock files — running both causes dual
+    # Hermes.exe relaunch loops. Prefer Go; stop the legacy PS mutual watchdog.
+    $psLock = Join-Path $HermesHome "logs\desktop-backend-watchdog.lock"
+    if (Test-Path -LiteralPath $psLock) {
+        try {
+            $obj = Get-Content -LiteralPath $psLock -Raw | ConvertFrom-Json
+            if ($obj.pid) {
+                Stop-Process -Id ([int]$obj.pid) -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+        Remove-Item -LiteralPath $psLock -Force -ErrorAction SilentlyContinue
+    }
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and $_.CommandLine -match 'Start-HermesDesktopBackendWatchdog\.ps1'
+    } | ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Stop-PsDesktopBackendWatchdog
+
 if ($ForceRestart -or $Once) {
     Stop-GoWatchdog
 } elseif (Test-GoWatchdogAlive) {

@@ -219,6 +219,53 @@ def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
 
     return metadata
 
+def _matrix_transcode_voice_to_ogg(path: str) -> Optional[str]:
+    """Best-effort transcode of an audio file to Ogg/Opus for MSC3245 delivery.
+
+    Returns the path of a NEW temporary ``.ogg`` file (caller owns cleanup), or
+    ``None`` when ffmpeg is unavailable or fails — callers then send the
+    original file, matching the adapter's previous behaviour. Runs blocking
+    subprocess work; call via ``asyncio.to_thread`` from async code.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    import tempfile
+
+    fd, ogg_path = tempfile.mkstemp(prefix="matrix_voice_", suffix=".ogg")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(path),
+                "-acodec",
+                "libopus",
+                "-ac",
+                "1",
+                "-b:a",
+                "64k",
+                ogg_path,
+            ],
+            capture_output=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
+            return ogg_path
+    except Exception:
+        logger.debug("Matrix: voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
+    return None
+
+
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
     re.DOTALL,
@@ -2078,16 +2125,47 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file as a voice message (MSC3245 native voice)."""
-        return await self._send_local_file(
-            chat_id,
-            audio_path,
-            "m.audio",
-            caption,
-            reply_to,
-            metadata=metadata,
-            is_voice=True,
-        )
+        """Upload an audio file as a voice message (MSC3245 native voice).
+
+        Matrix voice bubbles require Opus in an Ogg container (MSC3245), but
+        callers can reach this with any audio format — e.g. a model-invoked
+        ``text_to_speech`` result routed through gateway media delivery, not
+        just ``_send_voice_reply``. Enforce the codec at this boundary:
+        transcode non-Ogg input to Ogg/Opus (best-effort — if ffmpeg is
+        unavailable the original file is sent unchanged, preserving the
+        previous behaviour).
+        """
+        converted_path: Optional[str] = None
+        send_path = audio_path
+        if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
+            converted_path = await asyncio.to_thread(
+                _matrix_transcode_voice_to_ogg, audio_path
+            )
+            if converted_path:
+                send_path = converted_path
+        try:
+            return await self._send_local_file(
+                chat_id,
+                send_path,
+                "m.audio",
+                caption,
+                reply_to,
+                # keep the caller's basename (the temp transcode file has a
+                # generated name) so the event body stays meaningful
+                file_name=(
+                    Path(audio_path).with_suffix(".ogg").name
+                    if converted_path
+                    else None
+                ),
+                metadata=metadata,
+                is_voice=True,
+            )
+        finally:
+            if converted_path:
+                try:
+                    os.unlink(converted_path)
+                except OSError:
+                    pass
 
     async def send_video(
         self,
@@ -2442,7 +2520,13 @@ class MatrixAdapter(BasePlatformAdapter):
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         data = p.read_bytes()
-        voice_metadata = _matrix_voice_metadata_for_file(p) if is_voice else None
+        # ffprobe/ffmpeg probing is blocking (subprocess timeouts up to 15s) —
+        # run it off the event loop so voice uploads never stall the adapter.
+        voice_metadata = (
+            await asyncio.to_thread(_matrix_voice_metadata_for_file, p)
+            if is_voice
+            else None
+        )
 
         return await self._upload_and_send(
             room_id,

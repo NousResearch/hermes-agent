@@ -2325,12 +2325,14 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Telegram and Matrix voice bubbles require Opus (.ogg) — Matrix per
+    # MSC3245 (issue #14841); OpenAI and ElevenLabs can produce Opus natively
+    # (no ffmpeg needed).  Edge TTS always outputs MP3 and needs ffmpeg for
+    # conversion (handled below at the provider-specific conversion step, so
+    # extending want_opus here is safe for MP3-native providers too).
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in ("telegram", "matrix")
 
     # Determine output path
     if output_path:

@@ -258,16 +258,3 @@ class TestPersistBootFingerprint:
         monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
         code_skew._persist_boot_fingerprint(None)
         assert not fp_file.exists()
-
-    def test_direct_module_execution_has_documented_cli_migration(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "gateway.run"],
-            capture_output=True,
-            cwd=Path(__file__).parents[1],
-            text=True,
-            timeout=30,
-        )
-
-        assert result.returncode == 1
-        assert "Direct module execution is unsupported" in result.stderr
-        assert "hermes gateway run" in result.stderr

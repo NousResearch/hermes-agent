@@ -6,12 +6,12 @@ This module provides:
 - GatewayRunner: Main class managing the gateway lifecycle
 
 Usage:
-    # Start the gateway through its pre-import bootstrap.
+    # Recommended: start through the pre-import bootstrap.
     hermes gateway run
 
-``python -m gateway.run`` is intentionally unsupported: Python loads the
-target module before it can run a bootstrap, so it cannot guarantee cleanup of
-stale target bytecode after a checkout update.
+    # Compatibility entry point. It does not provide the pre-import
+    # stale-bytecode cleanup guarantee of the supported launchers above.
+    python -m gateway.run
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
@@ -22357,7 +22357,4 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(
-        "Direct module execution is unsupported; use `hermes gateway run` so "
-        "the pre-import bootstrap can validate the checkout."
-    )
+    main()

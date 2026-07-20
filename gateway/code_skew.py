@@ -14,10 +14,10 @@ gateway" message instead of crashing on a cryptic import error.
 If the revision can't be read (non-git install, IO error), the boot snapshot
 stays ``None`` and skew detection no-ops — it never produces a false positive.
 
-We also persist the boot fingerprint to ``HERMES_HOME`` so the next gateway
-boot can detect that the checkout advanced while the previous gateway was
-running, and purge stale ``__pycache__`` before any import picks up bytecode
-compiled against the old source (see ``purge_stale_pycache``).
+We also persist the boot fingerprint to ``HERMES_HOME``. On the next boot,
+supported pre-import gateway launchers can detect that the checkout advanced and
+purge stale ``__pycache__`` before importing ``gateway.run``. The compatible
+``python -m gateway.run`` path does not provide that pre-import guarantee.
 """
 
 from __future__ import annotations
@@ -60,9 +60,8 @@ def _fingerprint() -> str | None:
 def record_boot_fingerprint() -> None:
     """Snapshot the checkout revision at gateway startup (idempotent).
 
-    Also persists the fingerprint to ``HERMES_HOME`` so the next boot can
-    detect drift and purge stale ``__pycache__`` before imports pick up
-    bytecode compiled against the old source.
+    Also persists the fingerprint to ``HERMES_HOME`` for supported launchers to
+    compare before importing ``gateway.run`` on a later boot.
     """
     global _boot_fingerprint
     if _boot_fingerprint is None:

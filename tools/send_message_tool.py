@@ -1342,7 +1342,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             )
                         else:
                             last_msg = await bot.send_document(
-                                chat_id=int_chat_id, document=f, filename=os.path.basename(media_path), **media_kwargs
+                                chat_id=int_chat_id, document=f, **media_kwargs
                             )
                     except Exception as media_err:
                         if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
@@ -1373,7 +1373,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 )
                             else:
                                 last_msg = await bot.send_document(
-                                    chat_id=int_chat_id, document=f, filename=os.path.basename(media_path), **media_kwargs
+                                    chat_id=int_chat_id, document=f, **media_kwargs
                                 )
                         elif media_kwargs.get("parse_mode") and (
                             "parse" in str(media_err).lower()
@@ -1404,7 +1404,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 )
                             else:
                                 last_msg = await bot.send_document(
-                                    chat_id=int_chat_id, document=f, filename=os.path.basename(media_path), **media_kwargs
+                                    chat_id=int_chat_id, document=f, **media_kwargs
                                 )
                         else:
                             raise

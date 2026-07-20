@@ -19978,6 +19978,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             on_before_finalize=_pause_typing_before_finalize,
                             initial_reply_to_id=event_message_id,
                             run_still_current=_run_still_current,
+                            # Lazily report the agent's model-API failure so
+                            # the stream consumer can suppress a partial /
+                            # oversized streamed buffer (e.g. echoed system
+                            # prompt) and deliver a single clean error instead
+                            # of flooding Telegram with split messages.
+                            api_error_fn=(
+                                lambda: getattr(
+                                    agent_holder[0], "api_failed_summary", None
+                                )
+                                if agent_holder and agent_holder[0] is not None
+                                else None
+                            ),
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:

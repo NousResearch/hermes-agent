@@ -674,6 +674,13 @@ def init_agent(
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
+    # Short summary of the model-API failure, set when the conversation loop
+    # exhausts retries on a terminal error (rate-limit / 429 / connection
+    # drop).  The gateway's stream consumer reads this via ``api_failed_summary``
+    # to suppress a partial / oversized streamed buffer and deliver a single
+    # clean error instead of flooding Telegram with split messages.  ``None``
+    # when the last turn succeeded (or hasn't failed yet).
+    agent.api_failed_summary: Optional[str] = None
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
     # byte-identical to a parent for provider cache parity.

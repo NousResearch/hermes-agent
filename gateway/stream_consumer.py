@@ -99,6 +99,16 @@ class GatewayStreamConsumer:
     # progressive edits for the remainder of the stream.
     _MAX_FLOOD_STRIKES = 3
 
+    # Hard ceiling on how many separate platform messages a fallback/overflow
+    # send may produce.  When a response would split into more chunks than
+    # this, the consumer aborts the bulk send and instead delivers ONE short
+    # safe message.  Without this cap a large accumulated buffer (e.g. the
+    # full system prompt echoed back, or an oversized model reply) becomes a
+    # flood of ~100 separate Telegram messages.  10 is well above any
+    # legitimate single reply that needs split delivery yet far below the
+    # flood territory.
+    _MAX_FALLBACK_CHUNKS = 10
+
     # Reasoning/thinking tags that models emit inline in content.
     # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
     # run_agent.py _strip_think_blocks() tag variants.
@@ -126,6 +136,7 @@ class GatewayStreamConsumer:
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
+        api_error_fn: Optional[Callable[[], Optional[str]]] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -202,6 +213,17 @@ class GatewayStreamConsumer:
         # /stop), the run() loop will abandon the stream early instead of
         # continuing to edit and deliver stale deltas.
         self._run_still_current = run_still_current or (lambda: True)
+
+        # API-failure detector.  When the agent's model call fails
+        # (rate-limit / 429 / connection drop), this callable returns the
+        # short error summary (or a non-empty truthy string).  The consumer
+        # then suppresses the accumulated streamed content at final flush and
+        # delivers just the clean error instead of blasting the partial
+        # buffer (which may contain the full system prompt / skill context)
+        # to the user — that buffer is exactly what produced the Telegram
+        # flood-of-messages symptom when the model API was down.  Optional;
+        # consumers that don't wire it keep the legacy (dangerous) behaviour.
+        self._api_error_fn = api_error_fn
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -660,12 +682,35 @@ class GatewayStreamConsumer:
                 ):
                     should_edit = False
                 if should_edit and self._accumulated:
+                    # API-failure guard (see _send_api_error_final): if the
+                    # model call failed, never flush the accumulated buffer to
+                    # the user — deliver only the clean error.  Intercepted
+                    # here so it covers both mid-stream overflow splits and
+                    # the final flush at got_done.
+                    _api_err = (
+                        self._api_error_fn() if self._api_error_fn else None
+                    )
+                    if _api_err:
+                        await self._send_api_error_final(_api_err)
+                        return
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
+                        # Flood guard for fallback mode: when edits are broken
+                        # (flood-control strikes exhausted / fallback promoted)
+                        # a huge buffer would otherwise be chunked into dozens
+                        # of separate messages.  Refuse and deliver ONE safe
+                        # message instead.
+                        if self._fallback_final_send:
+                            _cap_chunks = self.adapter.truncate_message(
+                                self._accumulated, _safe_limit, len_fn=_len_fn,
+                            )
+                            if len(_cap_chunks) > self._MAX_FALLBACK_CHUNKS:
+                                await self._send_fallback_too_large()
+                                return
                         # No existing message to edit (first message or after a
                         # segment break).  Use truncate_message — the same
                         # helper the non-streaming path uses — to split with
@@ -762,6 +807,22 @@ class GatewayStreamConsumer:
                 if got_done:
                     if self._accumulated or self._message_id is not None or self._already_sent:
                         await self._notify_before_finalize()
+
+                    # API-failure guard: if the model call failed (rate-limit /
+                    # 429 / connection drop), the accumulated buffer is partial,
+                    # possibly huge (echoed system prompt / skill context), and
+                    # must NOT be flushed to the user.  Deliver only a single
+                    # clean error message and mark the response as sent so the
+                    # gateway's own final-send path skips re-delivering the raw
+                    # buffer.  This is the primary fix for the Telegram flood
+                    # symptom when the model API is down.
+                    _api_err = (
+                        self._api_error_fn() if self._api_error_fn else None
+                    )
+                    if _api_err:
+                        await self._send_api_error_final(_api_err)
+                        return
+
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -984,6 +1045,66 @@ class GatewayStreamConsumer:
             chunks.append(remaining)
         return chunks
 
+    async def _send_api_error_final(self, error_summary: str) -> None:
+        """Deliver a single clean error message when the model API failed.
+
+        Called from the final-flush path when ``api_error_fn`` reports the
+        agent's model call failed.  The accumulated streamed buffer is
+        discarded (it may be partial and huge — echoed system prompt / skill
+        context) so we never flush it to the user.  We mark the response as
+        delivered so the gateway's own final-send path skips re-delivering the
+        raw buffer (which would otherwise be chunked into another flood).
+        """
+        # Keep it short and user-friendly.  The long error detail stays in the
+        # gateway/agent logs; the user only needs to know to retry.
+        _safe = f"⚠️ Model API error — no response was generated. {error_summary}".strip()
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=_safe,
+                metadata=self._metadata_for_send(final=True),
+            )
+        except Exception:
+            result = None
+        # Mark delivered regardless of send success: if the send itself failed
+        # (e.g. Telegram also unreachable), the gateway's fallback send will
+        # still try the agent's short error message.  We never want the large
+        # accumulated buffer to be re-delivered.
+        self._already_sent = True
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        if result and result.success and result.message_id:
+            self._message_id = str(result.message_id)
+            self._last_sent_text = _safe
+
+    async def _send_fallback_too_large(self) -> None:
+        """Deliver a single safe message when a response is too large to send.
+
+        Used by the fallback-send flood guard (``_MAX_FALLBACK_CHUNKS``).  The
+        oversized accumulated buffer is discarded and replaced with one short
+        message so the user is never flooded with dozens of split messages.
+        Marked delivered so the gateway's normal final-send path does not
+        re-deliver the raw (equally oversized) buffer.
+        """
+        _safe = (
+            "⚠️ The response was too large to deliver safely. "
+            "Please try again — the full answer will be regenerated."
+        )
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=_safe,
+                metadata=self._metadata_for_send(final=True),
+            )
+        except Exception:
+            result = None
+        self._already_sent = True
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        if result and result.success and result.message_id:
+            self._message_id = str(result.message_id)
+            self._last_sent_text = _safe
+
     async def _send_fallback_final(self, text: str) -> None:
         """Send the final continuation after streaming edits stop working.
 
@@ -1068,6 +1189,16 @@ class GatewayStreamConsumer:
         )
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
+
+        # Flood guard: refuse to blast an oversized buffer as dozens of
+        # separate messages.  When the response would split into more chunks
+        # than the cap, deliver ONE short safe message instead.  This catches
+        # the non-API-error case (e.g. the model returns a huge reply and
+        # Telegram network flapping promotes us to fallback mode) so the user
+        # never gets a 100-message dump.
+        if len(chunks) > self._MAX_FALLBACK_CHUNKS:
+            await self._send_fallback_too_large()
+            return
 
         stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None

@@ -685,6 +685,10 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    # Reset the model-API failure summary at the start of every turn so a
+    # stale error from a previous failed turn can never suppress a valid
+    # response in the gateway's stream consumer.
+    agent.api_failed_summary = None
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
@@ -4128,6 +4132,11 @@ def run_conversation(
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)
+                    # Surface the failure to the gateway's stream consumer so
+                    # it can suppress a partial / oversized streamed buffer
+                    # (e.g. echoed system prompt) and deliver one clean error
+                    # instead of flooding the user with split messages.
+                    agent.api_failed_summary = _final_summary
                     _billing_guidance = ""
                     if classified.reason == FailoverReason.billing:
                         agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
@@ -4432,6 +4441,13 @@ def run_conversation(
         if response is None:
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            # Surface the failure to the gateway's stream consumer so it can
+            # suppress a partial / oversized streamed buffer and deliver one
+            # clean error instead of flooding the user with split messages.
+            agent.api_failed_summary = (
+                getattr(agent, "api_failed_summary", None)
+                or "All API retries exhausted with no successful response."
+            )
             agent._persist_session(messages, conversation_history)
             break
 

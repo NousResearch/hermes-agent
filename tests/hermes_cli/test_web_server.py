@@ -4408,6 +4408,62 @@ class TestWebServerEndpoints:
         assert cfg["model"]["default"] == "gpt-5.4"
         assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
 
+    def _seed_custom_provider_with_key(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/m1",
+                "api_key": "sk-stored-old",
+                "models": {"acme/m1": {}},
+            }
+        }
+        save_config(cfg)
+
+    def test_set_model_main_honors_an_explicitly_supplied_api_key(self):
+        """A key in the request must win over the provider entry's stored one.
+
+        The entry-key fallback exists so switching to a configured provider
+        picks up its credential. Applying it unconditionally discards a key the
+        caller is rotating in — and ``model.api_key`` outranks the environment
+        at client construction (#62269), so the stale key keeps authenticating
+        while the UI reports the change saved.
+        """
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "acme",
+                "model": "acme/m1",
+                "api_key": "sk-new-rotated",
+            },
+        )
+        assert resp.status_code == 200
+        assert load_config()["model"]["api_key"] == "sk-new-rotated"
+
+    def test_set_model_main_falls_back_to_the_provider_entry_key(self):
+        """With no key in the request the stored one is still adopted."""
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "acme", "model": "acme/m1"},
+        )
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["api_key"] == "sk-stored-old"
+        # The sibling base_url fill is unaffected.
+        assert model_cfg["base_url"] == "https://llm.acme.corp/v1"
+
     def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
         """Selecting a named custom endpoint from the Desktop model picker
         should keep its endpoint URL attached to model config.
@@ -5874,6 +5930,26 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         by_name = {p["name"]: p for p in resp.json()["providers"]}
         assert by_name["ElevenLabs"]["status"] == "ready"
+
+    def test_get_toolset_config_tts_rows_carry_provider_key(self):
+        """TTS provider rows surface their tts_provider config key.
+
+        The desktop Capabilities panel renders the provider's voice/model
+        config fields (tts.<key>.*) inline; without the key it can only show
+        API keys. Every built-in TTS row declares one.
+        """
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        providers = resp.json()["providers"]
+        assert providers
+        for prov in providers:
+            assert prov.get("tts_provider"), f"row {prov['name']!r} missing tts_provider"
+        by_name = {p["name"]: p for p in providers}
+        assert by_name["OpenAI TTS"]["tts_provider"] == "openai"
+        assert by_name["Microsoft Edge TTS"]["tts_provider"] == "edge"
+        # Non-TTS toolsets must not grow the field.
+        web = self.client.get("/api/tools/toolsets/web/config").json()
+        assert all("tts_provider" not in p for p in web["providers"])
 
     def test_get_toolset_config_reflects_selected_provider(self):
         """Selecting a provider is reflected in the next /config read.

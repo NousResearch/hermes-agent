@@ -760,6 +760,11 @@ export interface ToolProvider {
   /** Web toolset only: the backend key written to web.*backend config
    *  (e.g. 'searxng'). Absent on other toolsets and older backends. */
   web_backend?: string
+  /** TTS toolset only: the provider key written to tts.provider when this row
+   *  is selected (e.g. 'openai'). Doubles as the config section that holds the
+   *  provider's voice/model settings (tts.<key>.*). Absent on other toolsets
+   *  and older backends. */
+  tts_provider?: string
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]

@@ -342,6 +342,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
         "claude-sonnet-4.6",
+        "claude-sonnet-5",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
@@ -428,6 +429,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -464,6 +466,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
@@ -488,6 +491,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5-codex",
         "gpt-5-nano",
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -554,6 +558,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "kimi-k2.5",
         "qwen3.5-plus",
@@ -567,9 +572,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
+        "qwen3-max-2026-01-23",
         "qwen3-coder-plus",
         "qwen3-coder-next",
         "kimi-k2.5",
@@ -594,6 +600,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
+        "us.anthropic.claude-sonnet-5",
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -3611,6 +3618,7 @@ _COPILOT_MODEL_ALIASES = {
     "openai/o3-mini": "gpt-5-mini",
     "openai/o4-mini": "gpt-5-mini",
     "anthropic/claude-opus-4.6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4": "claude-sonnet-4",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
@@ -3620,12 +3628,14 @@ _COPILOT_MODEL_ALIASES = {
     # dot-notation.  Accept both so users who configure copilot + a
     # default hyphenated Claude model don't hit HTTP 400
     # "model_not_supported".  See issue #6879.
+    "claude-sonnet-5": "claude-sonnet-5",
     "claude-opus-4-6": "claude-opus-4.6",
     "claude-sonnet-4-6": "claude-sonnet-4.6",
     "claude-sonnet-4-0": "claude-sonnet-4",
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",

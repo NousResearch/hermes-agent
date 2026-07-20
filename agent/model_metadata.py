@@ -213,6 +213,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-fable-5": 1000000,
     "claude-fable": 1000000,
+    "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,
@@ -275,8 +276,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
+    "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
+    "qwen3-max": 262144,          # 256K context (qwen3-max-2026-01-23 snapshot, Coding Plan)
     "qwen": 131072,
     # MiniMax — M3 is 1M context (max output 512K); M2.x series is 204,800.
     # Keys use substring matching (longest-first), so "minimax-m3" wins over
@@ -2172,6 +2175,12 @@ def get_model_context_length(
     if endpoint_context is not None:
         return endpoint_context
 
+    is_bedrock_context = provider == "bedrock" or (
+        base_url
+        and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    )
+
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
@@ -2240,6 +2249,30 @@ def get_model_context_length(
                     model, base_url,
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
+            # Invalidate stale Bedrock entries seeded before the Claude 4.6+
+            # long-context table was corrected to 1M. The static table is a
+            # FLOOR, not an override: probe-derived cache entries (step 1b)
+            # may legitimately exceed the table (real window read from
+            # Bedrock's length-validation error), so only under-reporting
+            # entries are dropped — never a cached value above the table.
+            elif is_bedrock_context:
+                try:
+                    from agent.bedrock_adapter import get_bedrock_context_length
+                    bedrock_ctx = get_bedrock_context_length(model)
+                    if cached < bedrock_ctx:
+                        logger.info(
+                            "Dropping stale Bedrock cache entry %s@%s -> %s; "
+                            "using static Bedrock table value %s",
+                            model,
+                            base_url,
+                            f"{cached:,}",
+                            f"{bedrock_ctx:,}",
+                        )
+                        _invalidate_cached_context_length(model, base_url)
+                        return bedrock_ctx
+                except ImportError:
+                    pass
+                return cached
             else:
                 if is_local_endpoint(base_url):
                     return _reconcile_local_cached_context_length(
@@ -2250,22 +2283,50 @@ def get_model_context_length(
     # 1b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels API doesn't expose context window sizes,
     # so we maintain a curated table in bedrock_adapter.py that reflects
-    # AWS-imposed limits (e.g. 200K for Claude models vs 1M on the native
-    # Anthropic API).  This must run BEFORE the custom-endpoint probe at
+    # Bedrock-hosted model limits (e.g. older Claude 4 at 200K; Claude
+    # Opus/Sonnet 4.6+ at 1M).  This must run BEFORE the custom-endpoint probe at
     # step 2 — bedrock-runtime.<region>.amazonaws.com is not in
     # _URL_TO_PROVIDER, so it would otherwise be treated as a custom endpoint,
     # fail the /models probe (Bedrock doesn't expose that shape), and fall
     # back to the 128K default before reaching the original step 4b branch.
-    if provider == "bedrock" or (
-        base_url
-        and base_url_hostname(base_url).startswith("bedrock-runtime.")
-        and base_url_host_matches(base_url, "amazonaws.com")
-    ):
+    if is_bedrock_context:
         try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            return get_bedrock_context_length(model)
+            from agent.bedrock_adapter import (
+                get_bedrock_context_length,
+                resolve_bedrock_region,
+            )
         except ImportError:
             pass  # boto3 not installed — fall through to generic resolution
+        else:
+            # Bedrock does not expose the context window via any metadata API,
+            # so get_bedrock_context_length() probes the live endpoint (one
+            # fast, pre-inference length rejection) to read the real window.
+            # Cache the probe result per model so we pay that cost once, not
+            # every turn — keyed by base_url when present, else a synthetic
+            # bedrock:// key so display/offline paths share the entry.
+            cache_key_url = base_url or "bedrock://"
+            cached = get_cached_context_length(model, cache_key_url)
+            if cached is not None:
+                return cached
+            # Resolve region from the base_url host first, then the standard
+            # AWS region chain.  An empty region disables probing (table only).
+            region = ""
+            if base_url:
+                _m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url)
+                if _m:
+                    region = _m.group(1)
+            if not region:
+                try:
+                    region = resolve_bedrock_region()
+                except Exception:
+                    region = ""
+            ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
+            if ctx and region:
+                # Only persist probe-derived values (region present); a pure
+                # table fallback shouldn't poison the cache against a later
+                # successful probe.
+                save_context_length(model, cache_key_url, ctx)
+            return ctx
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)

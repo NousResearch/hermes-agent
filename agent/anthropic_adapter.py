@@ -130,6 +130,8 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
     "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8": 128_000,
     # Claude 4.7
@@ -1621,7 +1623,10 @@ def _is_bedrock_model_id(model: str) -> bool:
     """
     lower = model.lower()
     # Regional inference-profile prefixes
-    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+    if any(lower.startswith(p) for p in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    )):
         return True
     # Bare Bedrock model IDs: provider.model-family
     if lower.startswith("anthropic."):

@@ -15,7 +15,7 @@ Three concerns live here:
 * :func:`compress_context` — the actual compression call.  Runs the
   configured compressor, splits the SQLite session, rotates the
   session_id, notifies plugin context engines / memory providers, and
-  returns the compressed message list and freshly-built system prompt.
+  returns the compressed message list and active system prompt.
 
 * :func:`try_shrink_image_parts_in_messages` — image-too-large recovery
   helper that re-encodes ``data:image/...;base64,...`` parts at a smaller
@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 import os
@@ -38,6 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from agent.context_engine import sanitize_memory_context
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,71 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+
+def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
+    """Return the built-in memory text that can affect a system prompt.
+
+    ``MemoryStore`` freezes this text until ``load_from_disk()``.  Rendering
+    the frozen blocks after that reload lets compression retain the exact
+    cached system prompt when it already embeds the current memory (see
+    :func:`_cached_prompt_reflects_builtin_memory`).  An unreadable snapshot
+    returns ``None`` so callers take the conservative rebuild path.
+    """
+    store = getattr(agent, "_memory_store", None)
+    if store is None:
+        return "", ""
+    try:
+        memory = (
+            store.format_for_system_prompt("memory") or ""
+            if getattr(agent, "_memory_enabled", False)
+            else ""
+        )
+        user = (
+            store.format_for_system_prompt("user") or ""
+            if getattr(agent, "_user_profile_enabled", False)
+            else ""
+        )
+    except Exception:
+        return None
+    return memory, user
+
+
+def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bool:
+    """Whether the cached system prompt already embeds current built-in memory.
+
+    The retention fast path must NOT compare the memory snapshot before vs
+    after the disk reload: on fresh-agent surfaces (gateway, TUI) the cached
+    prompt is restored from the session DB and can predate mid-session memory
+    writes that the fresh ``MemoryStore`` already picked up at init — the
+    snapshot is then identical on both sides of the reload while the prompt
+    itself is stale, and retaining it would latch old memory for the life of
+    the session (and re-persist it via ``update_system_prompt``).
+
+    Instead, verify the CURRENT (post-reload) rendered blocks appear verbatim
+    in the cached prompt, and that no leftover block header remains for a
+    target whose entries have since been emptied or disabled.
+    """
+    snapshot = _builtin_memory_prompt_snapshot(agent)
+    if snapshot is None:
+        return False
+    try:
+        from tools.memory_tool import MEMORY_BLOCK_HEADERS
+    except Exception:
+        return False
+    for target, block in zip(("memory", "user"), snapshot):
+        block = block.strip()
+        if block:
+            # build_system_prompt_parts embeds the stripped block verbatim;
+            # the rendered text includes the usage header, so any entry
+            # change (or char-count change) breaks containment → rebuild.
+            if block not in cached_prompt:
+                return False
+        elif MEMORY_BLOCK_HEADERS[target] in cached_prompt:
+            # The prompt still carries a block for a target that is now
+            # empty/disabled — stale; rebuild.
+            return False
+    return True
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -123,6 +190,45 @@ def _compression_lock_holder(agent: Any) -> str:
         f":agent={id(agent):x}"
         f":nonce={uuid.uuid4().hex[:8]}"
     )
+
+
+def _supported_compression_kwargs(
+    compress_fn: Any,
+    *,
+    current_tokens: Optional[int],
+    focus_topic: Optional[str],
+    force: bool,
+    memory_context: str,
+) -> dict:
+    """Return only compression kwargs accepted by an engine callable.
+
+    Context-engine plugins can outlive additions to the optional host contract.
+    Inspecting the callable before invoking it keeps those older signatures
+    compatible without catching an internal ``TypeError`` and executing a
+    stateful compressor twice.
+    """
+    candidates = {
+        "current_tokens": current_tokens,
+        "focus_topic": focus_topic,
+        "force": force,
+    }
+    if memory_context:
+        candidates["memory_context"] = memory_context
+    try:
+        parameters = inspect.signature(compress_fn).parameters
+    except (TypeError, ValueError):
+        # ``current_tokens`` has been part of the ContextEngine ABC since its
+        # introduction. Keep the oldest documented call shape when a C-backed
+        # or otherwise opaque callable has no inspectable signature.
+        return {"current_tokens": current_tokens}
+
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_kwargs:
+        return candidates
+    return {name: value for name, value in candidates.items() if name in parameters}
 
 
 class _CompressionLockLeaseRefresher:
@@ -604,7 +710,8 @@ def compress_context(
     Args:
         agent: The owning :class:`AIAgent`.
         messages: Current message history (will be summarised).
-        system_message: Current system prompt; rebuilt after compression.
+        system_message: Current system prompt; used when compression needs a
+            rebuilt cached prompt.
         approx_tokens: Pre-compression token estimate, logged for ops.
         task_id: Tool task scope (used for clearing file-read dedup state).
         focus_topic: Optional focus string for guided compression — the
@@ -627,6 +734,9 @@ def compress_context(
     # the actual thread (#36801). Route compaction to the app server's own
     # thread/compact mechanism. Behavior is controlled by
     # ``compression.codex_app_server_auto`` (native|hermes|off).
+    # The memory-provider context handoff below is intentionally Hermes-only:
+    # the app server does not expose its native summary prompt, so there is no
+    # truthful injection point for ``on_pre_compress()`` return text here.
     if getattr(agent, "api_mode", None) == "codex_app_server":
         return _compress_context_via_codex_app_server(
             agent,
@@ -671,8 +781,9 @@ def compress_context(
 
     _pre_msg_count = len(messages)
     # In-place compaction (config: compression.in_place, see #38763). When True,
-    # this compaction rewrites the message list + rebuilds the system prompt but
-    # keeps the SAME session_id — no end_session, no parent_session_id child, no
+    # this compaction rewrites the message list and refreshes the system prompt
+    # when necessary, but keeps the SAME session_id — no end_session, no
+    # parent_session_id child, no
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
     # eliminating the session-rotation bug cluster. Default False during rollout.
@@ -825,19 +936,19 @@ def compress_context(
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
-        if _lock_holder is not None:
-            _lock_refresher = _CompressionLockLeaseRefresher(
-                _lock_db,
-                _lock_sid,
-                _lock_holder,
-                _lock_ttl,
-                _lock_refresh_interval,
-            ).start()
+    _lock_released = False
 
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
+        nonlocal _lock_released
+        if _lock_released:
+            return
+        _lock_released = True
         if _lock_refresher is not None:
-            _lock_refresher.stop()
+            try:
+                _lock_refresher.stop()
+            except Exception as _stop_err:
+                logger.debug("compression lock refresher stop failed: %s", _stop_err)
         if _lock_db is not None and _lock_sid and _lock_holder:
             try:
                 _lock_db.release_compression_lock(_lock_sid, _lock_holder)
@@ -896,96 +1007,134 @@ def compress_context(
                 existing_prompt = agent._build_system_prompt(system_message)
             return messages, existing_prompt
 
-    # Notify external memory provider before compression discards context
-    if agent._memory_manager:
-        try:
-            agent._memory_manager.on_pre_compress(messages)
-        except Exception:
-            pass
-
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
-        try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
+        if _lock_holder is not None:
+            _lock_refresher = _CompressionLockLeaseRefresher(
+                _lock_db,
+                _lock_sid,
+                _lock_holder,
+                _lock_ttl,
+                _lock_refresh_interval,
+            )
+            _lock_refresher.start()
+
+        # Notify external memory provider before compression discards context.
+        # The provider's on_pre_compress() may return a string of insights it
+        # wants surfaced inside the compression summary; capture and forward it
+        # instead of silently discarding the provider's return value.
+        memory_context = ""
+        if agent._memory_manager:
+            try:
+                _maybe_ctx = agent._memory_manager.on_pre_compress(messages)
+                if isinstance(_maybe_ctx, str):
+                    memory_context = sanitize_memory_context(_maybe_ctx)
+            except Exception:
+                pass
+
+        compress_fn = agent.context_compressor.compress
+        compress_kwargs = _supported_compression_kwargs(
+            compress_fn,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            memory_context=memory_context,
+        )
+        if memory_context.strip() and "memory_context" not in compress_kwargs:
+            engine_name = getattr(
+                agent.context_compressor,
+                "name",
+                type(agent.context_compressor).__name__,
+            )
+            if (
+                getattr(agent, "_last_memory_context_unsupported_engine", None)
+                != engine_name
+            ):
+                agent._last_memory_context_unsupported_engine = engine_name
+                logger.warning(
+                    "context engine %s does not accept memory_context; continuing "
+                    "without provider-supplied summary context",
+                    engine_name,
+                )
+
+        messages_before_compression = copy.deepcopy(messages)
+        compressed = compress_fn(messages, **compress_kwargs)
     except BaseException:
-        # ANY exception during compress() must release the lock so the
-        # session isn't permanently blocked from future compression.
+        # ANY exception after lock acquisition — memory hook, capability
+        # inspection, engine lookup, or compress() — must release the lock so
+        # the session isn't permanently blocked from future compression.
         _release_lock()
         raise
 
-    # Capture boundary quality before session-rotation callbacks run. Built-in
-    # and plugin lifecycle hooks may reset per-session compressor fields while
-    # rebinding to the child id; the completed attempt's verdict must survive
-    # that rebind and be recorded only after the full boundary commits.
-    _compression_made_progress = bool(
-        getattr(agent.context_compressor, "_last_compression_made_progress", False)
-    )
-    _compression_used_fallback = bool(
-        getattr(agent.context_compressor, "_last_summary_fallback_used", False)
-    )
+    try:
+        # Capture boundary quality before session-rotation callbacks run. Built-in
+        # and plugin lifecycle hooks may reset per-session compressor fields while
+        # rebinding to the child id; the completed attempt's verdict must survive
+        # that rebind and be recorded only after the full boundary commits.
+        _compression_made_progress = bool(
+            getattr(agent.context_compressor, "_last_compression_made_progress", False)
+        )
+        _compression_used_fallback = bool(
+            getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+        )
 
-    # If compression aborted (aux LLM failed to produce a usable summary)
-    # the compressor returns the input messages unchanged.  Surface the
-    # error to the user, skip the session-rotation work entirely (no
-    # session has logically ended), and let auto-compress callers detect
-    # the no-op via len(returned) == len(input).
-    if getattr(agent.context_compressor, "_last_compress_aborted", False):
-        try:
-            _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
-            if getattr(agent, "_last_compression_summary_warning", None) != _err:
-                agent._last_compression_summary_warning = _err
-                agent._emit_warning(
-                    f"⚠ Compression aborted: {_err}. "
-                    "No messages were dropped — conversation continues unchanged. "
-                    "Run /compress to retry, or /new to start a fresh session."
-                )
+        # If compression aborted (aux LLM failed to produce a usable summary)
+        # the compressor returns the input messages unchanged.  Surface the
+        # error to the user, skip the session-rotation work entirely (no
+        # session has logically ended), and let auto-compress callers detect
+        # the no-op via len(returned) == len(input).
+        if getattr(agent.context_compressor, "_last_compress_aborted", False):
+            try:
+                _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+                if getattr(agent, "_last_compression_summary_warning", None) != _err:
+                    agent._last_compression_summary_warning = _err
+                    agent._emit_warning(
+                        f"⚠ Compression aborted: {_err}. "
+                        "No messages were dropped — conversation continues unchanged. "
+                        "Run /compress to retry, or /new to start a fresh session."
+                    )
+                _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                if not _existing_sp:
+                    _existing_sp = agent._build_system_prompt(system_message)
+                return messages, _existing_sp
+            finally:
+                _release_lock()
+
+        # Compare against the pre-dispatch semantic state, not object identity:
+        # legacy/plugin engines may return an equal copy for a no-op, or mutate
+        # the live list while returning an unchanged snapshot. Neither case may
+        # rotate or rewrite the session.
+        if compressed == messages_before_compression:
+            if messages != messages_before_compression:
+                messages[:] = copy.deepcopy(messages_before_compression)
+            logger.info(
+                "Compression made no progress (session=%s) — skipping boundary rewrite.",
+                agent.session_id or "none",
+            )
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
-            return messages, _existing_sp
-        finally:
             _release_lock()
+            return messages, _existing_sp
 
-    # A compressor that returns the exact input object made no structural
-    # progress. Do not rotate/rewrite the session or arm post-compression
-    # deferral in that case; its own anti-thrash counter records the no-op.
-    if compressed is messages:
-        logger.info(
-            "Compression made no progress (session=%s) — skipping boundary rewrite.",
-            agent.session_id or "none",
-        )
-        _existing_sp = getattr(agent, "_cached_system_prompt", None)
-        if not _existing_sp:
-            _existing_sp = agent._build_system_prompt(system_message)
-        _release_lock()
-        return messages, _existing_sp
-
-    if not compressed:
-        logger.error(
-            "context compression returned an empty transcript; refusing to "
-            "rotate session=%s so the parent remains resumable",
-            agent.session_id or "none",
-        )
-        try:
-            agent._emit_warning(
-                "⚠ Compression returned an empty transcript. "
-                "No session split was performed; conversation continues unchanged."
+        if not compressed:
+            logger.error(
+                "context compression returned an empty transcript; refusing to "
+                "rotate session=%s so the parent remains resumable",
+                agent.session_id or "none",
             )
-        except Exception:
-            pass
-        _existing_sp = getattr(agent, "_cached_system_prompt", None)
-        if not _existing_sp:
-            _existing_sp = agent._build_system_prompt(system_message)
-        _release_lock()
-        return messages, _existing_sp
+            try:
+                agent._emit_warning(
+                    "⚠ Compression returned an empty transcript. "
+                    "No session split was performed; conversation continues unchanged."
+                )
+            except Exception:
+                pass
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _release_lock()
+            return messages, _existing_sp
 
-    try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
             if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
@@ -1021,9 +1170,28 @@ def compress_context(
             })
         _ensure_compressed_has_user_turn(messages, compressed)
 
+        cached_system_prompt = agent._cached_system_prompt
         agent._invalidate_system_prompt()
-        new_system_prompt = agent._build_system_prompt(system_message)
-        agent._cached_system_prompt = new_system_prompt
+
+        # Built-in memory is the only system-prompt input that a normal
+        # compaction reloads. When the cached prompt already embeds the
+        # freshly-reloaded memory blocks verbatim, keep the exact cached
+        # prompt so local backends retain their KV-cache prefix. Containment
+        # (not before/after snapshot equality) is required: fresh-agent
+        # surfaces restore the cached prompt from the session DB, where it
+        # can predate mid-session memory writes the in-memory snapshot has
+        # already absorbed. External providers can change their own prompt
+        # block during on_pre_compress(), so they retain the rebuild path.
+        if (
+            cached_system_prompt is not None
+            and getattr(agent, "_memory_manager", None) is None
+            and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
+        ):
+            new_system_prompt = cached_system_prompt
+            agent._cached_system_prompt = cached_system_prompt
+        else:
+            new_system_prompt = agent._build_system_prompt(system_message)
+            agent._cached_system_prompt = new_system_prompt
 
         if agent._session_db:
             try:

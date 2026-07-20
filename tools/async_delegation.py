@@ -412,6 +412,22 @@ def _normalize_batch_result(
     return combined, "completed"
 
 
+def _rollback_admitted_record(
+    record: Dict[str, Any], *, label: str, exc: Exception
+) -> Dict[str, Any]:
+    """Rollback one admitted-but-unscheduled record by object identity."""
+    delegation_id = str(record.get("delegation_id") or "")
+    with _records_lock:
+        current = _records.get(delegation_id)
+        if current is record and _is_active(record):
+            _records.pop(delegation_id, None)
+    return {
+        "status": "rejected",
+        "reason_code": "schedule_failed",
+        "error": f"Failed to schedule {label}: {type(exc).__name__}",
+    }
+
+
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -476,7 +492,12 @@ def dispatch_async_delegation(
     if rejection is not None:
         return rejection
 
-    executor = _get_executor(max_async_children)
+    try:
+        executor = _get_executor(max_async_children)
+    except Exception as exc:
+        return _rollback_admitted_record(
+            record, label="async delegation", exc=exc
+        )
 
     def _worker() -> None:
         result: Dict[str, Any] = {}
@@ -499,12 +520,9 @@ def dispatch_async_delegation(
     try:
         executor.submit(_worker)
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        return {
-            "status": "rejected",
-            "error": f"Failed to schedule async delegation: {exc}",
-        }
+        return _rollback_admitted_record(
+            record, label="async delegation", exc=exc
+        )
 
     logger.info(
         "Dispatched async delegation %s (session_key=%s): %s",
@@ -643,7 +661,12 @@ def dispatch_async_delegation_batch(
     if rejection is not None:
         return rejection
 
-    executor = _get_executor(max_async_children)
+    try:
+        executor = _get_executor(max_async_children)
+    except Exception as exc:
+        return _rollback_admitted_record(
+            record, label="async delegation batch", exc=exc
+        )
 
     def _worker() -> None:
         combined: Dict[str, Any] = {}
@@ -664,12 +687,9 @@ def dispatch_async_delegation_batch(
     try:
         executor.submit(_worker)
     except Exception as exc:  # pragma: no cover
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        return {
-            "status": "rejected",
-            "error": f"Failed to schedule async delegation batch: {exc}",
-        }
+        return _rollback_admitted_record(
+            record, label="async delegation batch", exc=exc
+        )
 
     logger.info(
         "Dispatched async delegation batch %s (%d task(s), session_key=%s)",

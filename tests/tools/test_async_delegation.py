@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import queue
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -393,6 +394,40 @@ def test_formatter_tolerates_malformed_batch_items():
     assert "deleg_bad" in text
     assert "TASK 2/2" in text
     assert "ok" in text
+
+
+def test_executor_initialization_failure_rolls_back_single_and_batch(tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    with patch.object(ad, "_get_executor", side_effect=RuntimeError("executor init failed")):
+        single = ad.dispatch_async_delegation(
+            goal="one", context=None, toolsets=None, role="leaf", model="m",
+            session_key="s", runner=lambda: {"status": "completed"},
+            workspace_path=str(workspace), workspace_mode="write",
+        )
+        batch = ad.dispatch_async_delegation_batch(
+            goals=["a"], context=None, toolsets=None, role="leaf",
+            model="m", session_key="s",
+            runner=lambda: {
+                "results": [{"task_index": 0, "status": "completed"}]
+            },
+            workspace_path=str(workspace), workspace_mode="write",
+        )
+
+    assert single["status"] == "rejected"
+    assert single["reason_code"] == "schedule_failed"
+    assert batch["status"] == "rejected"
+    assert batch["reason_code"] == "schedule_failed"
+    assert ad.active_count() == 0
+
+    admitted = ad.dispatch_async_delegation(
+        goal="retry", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s", runner=lambda: {"status": "completed"},
+        workspace_path=str(workspace), workspace_mode="write",
+    )
+    assert admitted["status"] == "dispatched"
+    assert _drain_one() is not None
 
 
 def test_interrupt_by_id_reports_unknown_and_completed():

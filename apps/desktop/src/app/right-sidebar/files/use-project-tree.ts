@@ -233,11 +233,9 @@ async function revalidateTree(cwd: string): Promise<void> {
   }
 
   const rootPath = state.resolvedCwd || cwd
-  // Don't wipe the gitroot/gitignore caches here. Listings are read fresh
-  // (readProjectDir never caches them), so new/deleted files surface anyway;
-  // wiping forced a full re-read of every ancestor .gitignore on every edit
-  // tick (~500ms), which made the tree sticky mid-burst. A .gitignore edit is
-  // picked up on the next full refresh (cwd/connection change / manual refresh).
+  // No cache wipe per tick: listings are always read fresh (readProjectDir
+  // doesn't cache them), so wiping only re-read every ancestor .gitignore each
+  // ~500ms edit tick — sticky mid-burst. A .gitignore edit lands on next refresh.
 
   const reconcile = async (dirPath: string, existing: TreeNode[]): Promise<TreeNode[]> => {
     const { entries, error } = await readProjectDir(dirPath, rootPath)
@@ -248,9 +246,8 @@ async function revalidateTree(cwd: string): Promise<void> {
 
     const byId = new Map(existing.filter(node => !node.placeholder).map(node => [node.id, node]))
 
-    // Reconcile siblings concurrently (Promise.all preserves order); loaded
-    // subfolders recurse so deep edits surface without a re-expand. Awaiting
-    // each child serially crawled a wide/deep tree one dir at a time per tick.
+    // Reconcile siblings concurrently (Promise.all keeps order); loaded
+    // subfolders recurse. Serial awaits crawled a wide/deep tree one dir per tick.
     return Promise.all(
       entries.map(async entry => {
         const prev = byId.get(entry.path)

@@ -18,6 +18,7 @@ and ``os.path.isdir`` so the MSYS path tests as "missing" exactly like
 on the real OS.
 """
 
+import os
 from unittest.mock import patch
 
 from tools.environments.base import BaseEnvironment
@@ -25,8 +26,10 @@ from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
     _bash_safe_path,
+    _git_bash_bin_dirs,
     _make_run_env,
     _msys_to_windows_path,
+    _prepend_git_bash_dirs,
     _quote_bash_path,
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
@@ -177,15 +180,15 @@ class TestResolveSafeCwdWindows:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: _update_cwd via marker file (Windows simulation)
+# End-to-end: _update_cwd via stdout marker (Windows simulation)
 # ---------------------------------------------------------------------------
 
 class TestUpdateCwdWindowsMsys:
-    def test_marker_file_msys_path_stored_in_native_form(
+    def test_marker_output_msys_path_stored_in_native_form(
         self, monkeypatch, tmp_path,
     ):
-        """When Git Bash writes ``/c/Users/x`` to the cwd marker file on
-        Windows, ``_update_cwd`` must translate to native form before
+        """When Git Bash emits ``/c/Users/x`` in the cwd marker on Windows,
+        ``_update_cwd`` must translate to native form before
         validating and storing — otherwise ``os.path.isdir`` rejects a
         perfectly real directory."""
         original = tmp_path / "starting"
@@ -202,18 +205,21 @@ class TestUpdateCwdWindowsMsys:
         # Pretend Git Bash wrote an MSYS path that maps to tmp_path/"next"
         new_dir = tmp_path / "next"
         new_dir.mkdir()
+        marker = env._cwd_marker
 
-        with open(env._cwd_file, "w") as f:
-            f.write("/c/whatever/from/bash")
-
-        # Translate the synthetic MSYS string to the real native dir.
+        # Translate the synthetic MSYS marker path to the real native dir.
         def fake_translate(p):
             if p == "/c/whatever/from/bash":
                 return str(new_dir)
             return p
 
         with patch.object(local_mod, "_msys_to_windows_path", side_effect=fake_translate):
-            env._update_cwd({"output": "", "returncode": 0})
+            env._update_cwd(
+                {
+                    "output": f"x\n{marker}/c/whatever/from/bash{marker}\n",
+                    "returncode": 0,
+                }
+            )
 
         assert env.cwd == str(new_dir)
 
@@ -326,6 +332,88 @@ class TestWindowsMsysPathconvDefaults:
 
 
 # ---------------------------------------------------------------------------
+# Git Bash coreutils on PATH — non-login ``bash -c`` fallback (empty
+# write_file error / terminal exit 127 when login bash is broken)
+# ---------------------------------------------------------------------------
+
+class TestGitBashCoreutilsOnPath:
+    def _fake_isdir(self, existing):
+        existing = {e.replace("\\", "/") for e in existing}
+        return lambda p: p.replace("\\", "/") in existing
+
+    def test_derives_dirs_from_portablegit_layout(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/bin/bash.exe")
+        existing = {"/pg/mingw64/bin", "/pg/usr/bin", "/pg/bin"}
+        monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
+
+        dirs = _git_bash_bin_dirs()
+
+        # usr/bin is the load-bearing coreutils dir; mingw64 precedes it.
+        assert "/pg/usr/bin" in dirs
+        assert dirs.index("/pg/mingw64/bin") < dirs.index("/pg/usr/bin")
+        # Non-existent dirs (mingw32, usr/local/bin) are excluded.
+        assert "/pg/mingw32/bin" not in dirs
+
+    def test_derives_dirs_from_mingit_usr_bin_layout(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "/mg/usr/bin/bash.exe")
+        existing = {"/mg/usr/bin", "/mg/mingw64/bin"}
+        monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
+
+        dirs = _git_bash_bin_dirs()
+
+        # MinGit ships bash under usr\bin; root must still resolve to /mg.
+        assert "/mg/usr/bin" in dirs
+        assert "/mg/mingw64/bin" in dirs
+
+    def test_empty_off_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        assert _git_bash_bin_dirs() == []
+
+    def test_empty_when_bash_unresolvable(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+
+        def boom():
+            raise RuntimeError("Git Bash not found")
+
+        monkeypatch.setattr(local_mod, "_find_bash", boom)
+        assert _git_bash_bin_dirs() == []
+
+    def test_prepend_is_idempotent(self, monkeypatch):
+        # Simulate Windows' ``;`` separator so drive-letter colons in fake
+        # paths don't collide with the POSIX ``:`` pathsep on the test host.
+        monkeypatch.setattr(os, "pathsep", ";")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", ["/pg/usr/bin", "/pg/bin"])
+        already = r"/pg/usr/bin;C:\Windows\System32;/pg/bin"
+        assert _prepend_git_bash_dirs(already) == already
+
+    def test_make_run_env_prepends_coreutils_on_windows(self, monkeypatch):
+        monkeypatch.setattr(os, "pathsep", ";")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", ["/pg/mingw64/bin", "/pg/usr/bin"])
+        run_env = _make_run_env({"PATH": r"C:\Windows\System32"})
+        path = run_env.get("PATH") or run_env.get("Path")
+        entries = path.split(";")
+        # Coreutils dirs land before System32 so bash resolves cat/find/sort
+        # to the GNU tools, not the same-named Windows executables.
+        assert "/pg/usr/bin" in entries
+        assert entries.index("/pg/usr/bin") < entries.index(r"C:\Windows\System32")
+
+    def test_make_run_env_noop_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        run_env = _make_run_env({"PATH": "/usr/bin:/bin"})
+        # No Windows git dirs injected on POSIX.
+        assert "mingw64" not in run_env["PATH"]
+
+
+# ---------------------------------------------------------------------------
 # Command wrapping — native Windows cwd must be Git Bash-friendly for cd
 # ---------------------------------------------------------------------------
 
@@ -353,7 +441,7 @@ class TestWrapCommandWindowsNativeCwd:
         captured = {}
 
         def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["script"] = cmd_string
+            captured.setdefault("script", cmd_string)  # bootstrap only; ignore the failure-path probe
             raise RuntimeError("stop after capturing bootstrap")
 
         monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
@@ -373,7 +461,7 @@ class TestWrapCommandWindowsNativeCwd:
         captured = {}
 
         def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["script"] = cmd_string
+            captured.setdefault("script", cmd_string)  # bootstrap only; ignore the failure-path probe
             raise RuntimeError("stop after capturing bootstrap")
 
         monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
@@ -402,7 +490,7 @@ class TestWrapCommandWindowsNativeCwd:
         captured = {}
 
         def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["script"] = cmd_string
+            captured.setdefault("script", cmd_string)  # bootstrap only; ignore the failure-path probe
             raise RuntimeError("stop after capturing bootstrap")
 
         monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)

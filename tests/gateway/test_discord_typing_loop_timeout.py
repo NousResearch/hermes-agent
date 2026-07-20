@@ -3,103 +3,142 @@
 When the Discord HTTP request to the typing endpoint hangs (network blip,
 API stall, WS reconnect), the _typing_loop task must not get stuck
 permanently.  The fix wraps the request with asyncio.wait_for(timeout=10)
-and bounds stop_typing's await with a 5s timeout.
+and bounds stop_typing's await with asyncio.wait_for(shield(task), 5).
 """
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
+# Production timeout used in _typing_loop's wait_for call.
+_TYPING_REQUEST_TIMEOUT = 10.0
+# Production timeout used in stop_typing's wait_for call.
+_STOP_TYPING_TIMEOUT = 5.0
 
-@pytest.mark.asyncio
-async def test_typing_loop_recovers_from_hanging_request(monkeypatch):
-    """A hanging HTTP request in _typing_loop should time out and retry."""
-    # Lazily import to avoid hard discord.py dependency in CI
+
+def _make_adapter(monkeypatch, request_fn):
+    """Build a minimal DiscordAdapter with a fake HTTP client."""
     discord_adapter = pytest.importorskip("plugins.platforms.discord.adapter")
 
+    adapter = object.__new__(discord_adapter.DiscordAdapter)
+    adapter._typing_tasks = {}
+
+    class FakeHTTP:
+        request = staticmethod(request_fn)
+
+    class FakeClient:
+        http = FakeHTTP()
+
+    adapter._client = FakeClient()
+
+    class FakeRoute:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr("discord.http.Route", FakeRoute)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_retries_after_timeout(monkeypatch):
+    """A hanging HTTP request should time out and be retried on the next cycle."""
     call_count = 0
-    hang_until = 2  # first N calls hang, then succeed
+    hang_calls = 2  # first N calls hang, then succeed
 
     async def _fake_request(route):
         nonlocal call_count
         call_count += 1
-        if call_count <= hang_until:
-            # Simulate a hanging request (longer than the 10s timeout)
+        if call_count <= hang_calls:
             await asyncio.sleep(999)
-        # Subsequent calls succeed immediately
         return None
 
-    # Build a minimal adapter instance without full Discord init
-    adapter = object.__new__(discord_adapter.DiscordAdapter)
-    adapter._typing_tasks = {}
+    adapter = _make_adapter(monkeypatch, _fake_request)
 
-    # Mock _client.http.request
-    class FakeHTTP:
-        request = _fake_request
+    # Patch asyncio.wait_for to use a tiny timeout for the typing request,
+    # so the test doesn't need to wait the full 10 seconds.
+    real_wait_for = asyncio.wait_for
 
-    class FakeClient:
-        http = FakeHTTP()
+    async def _fast_wait_for(fut, *, timeout=None):
+        if timeout == _TYPING_REQUEST_TIMEOUT:
+            timeout = 0.05
+        return await real_wait_for(fut, timeout=timeout)
 
-    adapter._client = FakeClient()
+    monkeypatch.setattr(asyncio, "wait_for", _fast_wait_for)
 
-    # Patch discord.http.Route to return a dummy
-    class FakeRoute:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    monkeypatch.setattr("discord.http.Route", FakeRoute)
-
-    # Start typing — this spawns the _typing_loop task
     await adapter.send_typing("test-channel")
-
     assert "test-channel" in adapter._typing_tasks
-    task = adapter._typing_tasks["test-channel"]
 
-    # Give enough time for the first call to timeout (10s) and one retry
-    # We use a shorter timeout in the test by patching wait_for behavior
-    # Instead, let's just let it run briefly and verify stop_typing works
-    await asyncio.sleep(0.05)
+    # Wait for 2 fast timeouts (0.05s each) + the successful 3rd call + margin
+    await asyncio.sleep(0.4)
 
-    # stop_typing should complete quickly even if the task is mid-request
-    await asyncio.wait_for(adapter.stop_typing("test-channel"), timeout=6.0)
+    # Verify retries: 2 timed-out calls + at least 1 success
+    assert call_count >= 3, f"Expected >=3 calls (2 timeout + 1 success), got {call_count}"
 
-    assert "test-channel" not in adapter._typing_tasks
-    assert task.cancelled() or task.done()
+    # Clean up
+    task = adapter._typing_tasks.get("test-channel")
+    if task:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    adapter._typing_tasks.pop("test-channel", None)
 
 
 @pytest.mark.asyncio
-async def test_stop_typing_does_not_hang_on_stuck_task(monkeypatch):
-    """stop_typing must return within its 5s timeout even if the task is stuck."""
-    discord_adapter = pytest.importorskip("plugins.platforms.discord.adapter")
+async def test_stop_typing_bounded_when_task_ignores_cancel(monkeypatch):
+    """stop_typing must return within its timeout even if the task ignores cancellation."""
 
-    async def _forever_request(route):
-        await asyncio.sleep(999)
+    async def _stubborn_request(route):
+        """Simulate a coroutine that catches CancelledError and keeps blocking."""
+        try:
+            await asyncio.sleep(999)
+        except asyncio.CancelledError:
+            # Ignore cancellation — keep blocking
+            await asyncio.sleep(999)
 
-    adapter = object.__new__(discord_adapter.DiscordAdapter)
-    adapter._typing_tasks = {}
+    adapter = _make_adapter(monkeypatch, _stubborn_request)
 
-    class FakeHTTP:
-        request = _forever_request
+    # Patch the 5s stop_typing timeout to 0.2s for speed.
+    real_wait_for = asyncio.wait_for
 
-    class FakeClient:
-        http = FakeHTTP()
+    async def _fast_wait_for(fut, *, timeout=None):
+        if timeout == _STOP_TYPING_TIMEOUT:
+            timeout = 0.2
+        return await real_wait_for(fut, timeout=timeout)
 
-    adapter._client = FakeClient()
+    monkeypatch.setattr(asyncio, "wait_for", _fast_wait_for)
 
-    class FakeRoute:
-        def __init__(self, *args, **kwargs):
-            pass
+    await adapter.send_typing("chan-stuck")
+    assert "chan-stuck" in adapter._typing_tasks
 
-    monkeypatch.setattr("discord.http.Route", FakeRoute)
-
-    await adapter.send_typing("chan-123")
-    assert "chan-123" in adapter._typing_tasks
-
-    # Allow the loop to start its first (hanging) request
+    # Let the loop start its hanging request
     await asyncio.sleep(0.05)
 
-    # stop_typing should return within 5s (its internal timeout) + margin
-    await asyncio.wait_for(adapter.stop_typing("chan-123"), timeout=7.0)
+    # stop_typing must complete within the bounded timeout, not hang forever
+    await asyncio.wait_for(adapter.stop_typing("chan-stuck"), timeout=1.0)
+    assert "chan-stuck" not in adapter._typing_tasks
 
-    # Task should be cleaned up
-    assert "chan-123" not in adapter._typing_tasks
+
+@pytest.mark.asyncio
+async def test_stop_typing_clean_cancel(monkeypatch):
+    """stop_typing completes quickly when the task responds to cancellation promptly."""
+    call_count = 0
+
+    async def _normal_request(route):
+        nonlocal call_count
+        call_count += 1
+        return None
+
+    adapter = _make_adapter(monkeypatch, _normal_request)
+
+    await adapter.send_typing("chan-clean")
+
+    # Let the loop issue at least one successful request + enter its sleep(12)
+    await asyncio.sleep(0.05)
+
+    # Should complete nearly instantly since the task handles CancelledError
+    await asyncio.wait_for(adapter.stop_typing("chan-clean"), timeout=1.0)
+    assert "chan-clean" not in adapter._typing_tasks
+    assert call_count >= 1

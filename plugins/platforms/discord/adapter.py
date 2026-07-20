@@ -4743,11 +4743,11 @@ class DiscordAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the persistent typing indicator for a channel."""
         task = self._typing_tasks.pop(chat_id, None)
-        if task:
+        if task and not task.done():
             task.cancel()
             try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

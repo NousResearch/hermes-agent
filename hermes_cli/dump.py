@@ -19,6 +19,38 @@ from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 
 
+def _dotenv_key_names() -> set[str]:
+    """Return the set of env-var names assigned a non-empty value in ~/.hermes/.env.
+
+    The managed backends (launchd / systemd / the desktop-spawned ``serve``
+    process) load credentials from this file — NOT from an interactive shell's
+    exports. ``hermes debug share`` runs in a terminal, so ``os.getenv`` reflects
+    the shell's environment, which can include exported keys the managed backend
+    never sees. Comparing against this set lets the dump flag that mismatch (the
+    exact trap behind #48504-style "no web_search" reports: key exported in the
+    shell, absent from .env, invisible to the launchd backend).
+    """
+    try:
+        env_path = get_env_path()
+        text = env_path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, UnicodeError):
+        return set()
+
+    names: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.lower().startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, _, value = line.partition("=")
+        name = name.strip()
+        # A bare `KEY=` (empty value) is effectively unset for the backend.
+        if name and value.strip().strip("'\""):
+            names.add(name)
+    return names
+
+
 def _get_git_commit(project_root: Path) -> str:
     """Return short git commit hash, or '(unknown)'.
 
@@ -135,7 +167,9 @@ def _cron_summary(hermes_home: Path) -> str:
     if not jobs_file.exists():
         return "0"
     try:
-        with open(jobs_file, encoding="utf-8") as f:
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+        # may leave a UTF-8 BOM that plain utf-8 json.load rejects.
+        with open(jobs_file, encoding="utf-8-sig") as f:
             data = json.load(f)
         jobs = data.get("jobs", [])
         active = sum(1 for j in jobs if j.get("enabled", True))
@@ -355,12 +389,21 @@ def run_dump(args):
         ("GITHUB_TOKEN", "github"),
     ]
 
+    dotenv_keys = _dotenv_key_names()
+
     for env_var, label in api_keys:
         val = os.getenv(env_var, "")
         if show_keys and val:
             display = _redact(val)
         else:
             display = "set" if val else "not set"
+        # Set in this (shell) process but absent from ~/.hermes/.env: a managed
+        # backend (launchd/systemd/desktop `serve`) loads .env, not the login
+        # shell, so it likely can't see this key — even though the dump reads
+        # "set". Flag it so support doesn't chase a phantom "key is configured"
+        # (the actual cause of gated tools like web_search going missing).
+        if val and env_var not in dotenv_keys:
+            display += " (shell only — not in .env; managed/desktop backend may not see it)"
         # A credential added via `hermes auth add openrouter` lives in the
         # credential pool, not as an env var — surface it so the dump doesn't
         # misleadingly read "not set" while `hermes auth list` shows it (#42130).

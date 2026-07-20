@@ -8,6 +8,7 @@ import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { getCronJobRuns, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
@@ -32,30 +33,6 @@ const PEEK_POLL_INTERVAL_MS = 8000
 const INITIAL_VISIBLE_JOBS = 3
 const LOAD_MORE_STEP = 10
 
-const relativeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
-
-// Localized "in 5 min" / "2 hr ago" without hand-rolled strings — picks the
-// coarsest sensible unit so a daily job reads "in 14 hr", not "in 840 min".
-function relativeTime(targetMs: number, nowMs: number): string {
-  const diff = targetMs - nowMs
-  const abs = Math.abs(diff)
-  const sign = diff < 0 ? -1 : 1
-
-  if (abs < 60_000) {
-    return relativeFmt.format(sign * Math.round(abs / 1000), 'second')
-  }
-
-  if (abs < 3_600_000) {
-    return relativeFmt.format(sign * Math.round(abs / 60_000), 'minute')
-  }
-
-  if (abs < 86_400_000) {
-    return relativeFmt.format(sign * Math.round(abs / 3_600_000), 'hour')
-  }
-
-  return relativeFmt.format(sign * Math.round(abs / 86_400_000), 'day')
-}
-
 function nextRunMs(job: CronJob): null | number {
   if (!job.next_run_at) {
     return null
@@ -76,9 +53,7 @@ function formatRunTime(seconds?: null | number): string {
 
   const date = new Date(seconds * 1000)
 
-  return Number.isNaN(date.valueOf())
-    ? '—'
-    : date.toLocaleString(undefined, { day: 'numeric', hour: 'numeric', minute: '2-digit', month: 'short' })
+  return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
 }
 
 interface SidebarCronJobsSectionProps {
@@ -226,35 +201,36 @@ function CronJobSidebarRow({
             so the cron dots line up with the sessions above; the caret sits next
             to the label (matching the other sidebar disclosures) and the whole
             label area toggles the run peek. */}
-        <button
-          aria-expanded={expanded}
-          aria-label={expanded ? c.hideRuns : c.showRuns}
-          className="flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-          onClick={onTogglePeek}
-          title={label}
-          type="button"
-        >
-          <span className="grid w-3.5 shrink-0 place-items-center">
-            <span
-              aria-hidden="true"
+        <Tip label={label}>
+          <button
+            aria-expanded={expanded}
+            aria-label={expanded ? c.hideRuns : c.showRuns}
+            className="flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            onClick={onTogglePeek}
+            type="button"
+          >
+            <span className="grid w-3.5 shrink-0 place-items-center">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'size-1 rounded-full',
+                  STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
+                  state === 'running' && 'size-1.5 animate-pulse'
+                )}
+              />
+            </span>
+            <span className="min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary) group-hover/cron:text-foreground">
+              {label}
+            </span>
+            <DisclosureCaret
               className={cn(
-                'size-1 rounded-full',
-                STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
-                state === 'running' && 'size-1.5 animate-pulse'
+                'shrink-0 text-(--ui-text-tertiary) transition',
+                expanded ? 'opacity-100' : 'opacity-0 group-hover/cron:opacity-100'
               )}
+              open={expanded}
             />
-          </span>
-          <span className="min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary) group-hover/cron:text-foreground">
-            {label}
-          </span>
-          <DisclosureCaret
-            className={cn(
-              'shrink-0 text-(--ui-text-tertiary) transition',
-              expanded ? 'opacity-100' : 'opacity-0 group-hover/cron:opacity-100'
-            )}
-            open={expanded}
-          />
-        </button>
+          </button>
+        </Tip>
         {/* Trailing cluster: countdown by default, quick actions on hover. */}
         <div className="flex items-center gap-0.5 justify-self-end pr-1">
           <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">

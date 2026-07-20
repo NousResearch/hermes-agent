@@ -18,9 +18,13 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from agent.context_compressor import ContextCompressor
 from hermes_state import SessionDB
 
 
@@ -62,6 +66,31 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
 
 def _msgs(n=20):
     return [{"role": "user", "content": f"m{i}"} for i in range(n)]
+
+
+def _bound_context_compressor(db: SessionDB, session_id: str) -> ContextCompressor:
+    with patch(
+        "agent.context_compressor.get_model_context_length",
+        return_value=100_000,
+    ):
+        compressor = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=2,
+            protect_last_n=2,
+            quiet_mode=True,
+        )
+    compressor.bind_session_state(db, session_id)
+    return compressor
+
+
+@pytest.fixture
+def refresh_state_db(tmp_path: Path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class TestGoalMigratesOnRotation:
@@ -130,3 +159,440 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestFallbackStreakFollowsRotation:
+    def test_fallback_boundary_persists_on_child_session(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_FALLBACK_ROT"
+        db.create_session(parent, source="telegram")
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            compressor = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        compressor.bind_session_state(db, parent)
+
+        # A fallback streak must survive the session-id rotation itself. The
+        # boundary then records the just-completed fallback on the child row.
+        compressor.record_completed_compaction(used_fallback=True)
+        assert db.get_compression_fallback_streak(parent) == 1
+        db.create_session(
+            "CHILD_FALLBACK_ROT",
+            source="telegram",
+            parent_session_id=parent,
+        )
+        compressor.on_session_start(
+            "CHILD_FALLBACK_ROT",
+            session_db=db,
+            boundary_reason="compression",
+            old_session_id=parent,
+        )
+        assert compressor._fallback_compression_streak == 1
+
+        compressor.record_completed_compaction(used_fallback=True)
+        assert compressor._fallback_compression_streak == 2
+        assert db.get_compression_fallback_streak("CHILD_FALLBACK_ROT") == 2
+
+        resumed = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=2,
+            protect_last_n=2,
+            quiet_mode=True,
+        )
+        resumed.bind_session_state(db, "CHILD_FALLBACK_ROT")
+        assert resumed._fallback_compression_streak == 2
+
+    def test_real_rotation_records_fallback_after_lifecycle_rebind(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_REAL_FALLBACK_ROT"
+        db.create_session(parent, source="telegram")
+        agent = _build_agent_with_db(db, parent, platform="telegram")
+
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            compressor = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        compressor.bind_session_state(db, parent)
+        compressed = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] fallback"},
+            {"role": "assistant", "content": "tail"},
+        ]
+
+        def _fallback_compress(*_args, **_kwargs):
+            compressor._last_summary_error = "empty summary"
+            compressor._last_summary_fallback_used = True
+            compressor._last_compression_made_progress = True
+            return compressed
+
+        with patch.object(
+            compressor,
+            "compress",
+            side_effect=_fallback_compress,
+        ):
+            compressor.compression_count = 1
+            setattr(agent, "context_compressor", compressor)
+            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = getattr(agent, "session_id")
+
+        assert child != parent
+        assert compressor._fallback_compression_streak == 1
+        assert db.get_compression_fallback_streak(child) == 1
+
+
+class TestAutomaticCompressionStateRefreshAfterLock:
+    def test_prebound_agent_rejects_parent_rotated_before_lock_acquisition(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        parent_id = "STALE_ROTATED_PARENT"
+        child_id = "CANONICAL_COMPRESSION_CHILD"
+        db.create_session(parent_id, source="telegram")
+        agent = _build_agent_with_db(db, parent_id, platform="telegram")
+        compressor = _bound_context_compressor(db, parent_id)
+
+        # A competing path completes rotation after this call's initial checks
+        # but before it acquires the parent lock.
+        real_acquire = db.try_acquire_compression_lock
+
+        def _acquire_after_rotation(*args, **kwargs):
+            db.end_session(parent_id, "compression")
+            db.create_session(
+                child_id,
+                source="telegram",
+                parent_session_id=parent_id,
+            )
+            return real_acquire(*args, **kwargs)
+
+        db.try_acquire_compression_lock = _acquire_after_rotation
+        agent.context_compressor = compressor
+        agent.compression_in_place = False
+        agent._compression_feasibility_checked = True
+        messages = _msgs()
+
+        with patch.object(
+            compressor,
+            "compress",
+            side_effect=AssertionError("stale parent was compressed again"),
+        ) as compress:
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                force=True,
+            )
+
+        children = db._conn.execute(
+            "SELECT id FROM sessions WHERE parent_session_id = ?",
+            (parent_id,),
+        ).fetchall()
+        assert returned is messages
+        assert agent.session_id == parent_id
+        assert [row["id"] for row in children] == [child_id]
+        compress.assert_not_called()
+        assert db.get_compression_lock_holder(parent_id) is None
+
+    def test_prebound_agent_reloads_persisted_streak_before_compressing(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "STALE_FALLBACK_BREAKER"
+        db.create_session(session_id, source="telegram")
+        db.set_compression_fallback_streak(session_id, 1)
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        assert compressor._fallback_compression_streak == 1
+
+        # A second agent finishes an in-place fallback boundary after this
+        # call's initial gate but while it is acquiring the session lock.
+        real_acquire = db.try_acquire_compression_lock
+
+        def _acquire_after_fallback(*args, **kwargs):
+            db.set_compression_fallback_streak(session_id, 2)
+            return real_acquire(*args, **kwargs)
+
+        db.try_acquire_compression_lock = _acquire_after_fallback
+        agent.context_compressor = compressor
+        agent.compression_in_place = True
+        agent._compression_feasibility_checked = True
+        messages = _msgs()
+
+        with patch.object(
+            compressor,
+            "compress",
+            side_effect=AssertionError("stale agent bypassed fallback breaker"),
+        ) as compress:
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+            )
+
+        assert returned is messages
+        assert compressor._fallback_compression_streak == 2
+        compress.assert_not_called()
+        assert db.get_compression_lock_holder(session_id) is None
+
+    def test_prebound_agent_reloads_persisted_cooldown_before_compressing(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "STALE_COMPRESSION_COOLDOWN"
+        db.create_session(session_id, source="telegram")
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        assert compressor.get_active_compression_failure_cooldown() is None
+
+        # Another agent records a provider cooldown after this call's initial
+        # gate but while it is acquiring the session lock.
+        real_acquire = db.try_acquire_compression_lock
+
+        def _acquire_after_cooldown(*args, **kwargs):
+            db.record_compression_failure_cooldown(
+                session_id,
+                time.time() + 60,
+                "rate limited",
+            )
+            return real_acquire(*args, **kwargs)
+
+        db.try_acquire_compression_lock = _acquire_after_cooldown
+        agent.context_compressor = compressor
+        agent.compression_in_place = True
+        agent._compression_feasibility_checked = True
+        messages = _msgs()
+
+        with patch.object(
+            compressor,
+            "compress",
+            side_effect=AssertionError("stale agent bypassed compression cooldown"),
+        ) as compress:
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+            )
+
+        assert returned is messages
+        assert compressor.get_active_compression_failure_cooldown() is not None
+        compress.assert_not_called()
+        assert db.get_compression_lock_holder(session_id) is None
+
+    def test_prebound_agent_drops_stale_blocker_before_initial_gate(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "CLEARED_FALLBACK_BREAKER"
+        db.create_session(session_id, source="telegram")
+        db.set_compression_fallback_streak(session_id, 2)
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        assert compressor._fallback_compression_streak == 2
+
+        # A healthy boundary on another agent clears the durable breaker after
+        # this compressor was bound. The initial gate must not remain stuck on
+        # its stale in-memory snapshot.
+        db.set_compression_fallback_streak(session_id, 0)
+        agent.context_compressor = compressor
+        agent.compression_in_place = True
+        agent._compression_feasibility_checked = True
+        messages = _msgs()
+
+        with patch.object(compressor, "compress", return_value=messages) as compress:
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+            )
+
+        assert returned is messages
+        assert compressor._fallback_compression_streak == 0
+        compress.assert_called_once()
+        assert db.get_compression_lock_holder(session_id) is None
+
+    def test_prebound_agent_drops_stale_cooldown_before_initial_gate(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "CLEARED_COMPRESSION_COOLDOWN"
+        db.create_session(session_id, source="telegram")
+        db.record_compression_failure_cooldown(
+            session_id,
+            time.time() + 60,
+            "rate limited",
+        )
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        assert compressor.get_active_compression_failure_cooldown() is not None
+
+        # A successful forced retry on another agent clears the durable row.
+        # This prebound compressor must not keep honoring its stale local timer.
+        db.clear_compression_failure_cooldown(session_id)
+        agent.context_compressor = compressor
+        agent.compression_in_place = True
+        agent._compression_feasibility_checked = True
+        messages = _msgs()
+
+        with patch.object(compressor, "compress", return_value=messages) as compress:
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+            )
+
+        assert returned is messages
+        assert compressor.get_active_compression_failure_cooldown() is None
+        compress.assert_called_once()
+        assert db.get_compression_lock_holder(session_id) is None
+
+    def test_force_still_bypasses_refreshed_persisted_breaker(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "FORCED_FALLBACK_RETRY"
+        db.create_session(session_id, source="telegram")
+        db.set_compression_fallback_streak(session_id, 2)
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        agent.context_compressor = compressor
+        agent.compression_in_place = True
+        agent._compression_feasibility_checked = True
+        messages = _msgs()
+
+        with patch.object(compressor, "compress", return_value=messages) as compress:
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                force=True,
+            )
+
+        assert returned is messages
+        compress.assert_called_once_with(
+            messages,
+            current_tokens=120_000,
+            focus_topic=None,
+            force=True,
+        )
+        assert db.get_compression_lock_holder(session_id) is None
+
+
+class TestGateLevelGuardRefresh:
+    """The unblock direction must work from the should_compress() pre-gates.
+
+    compress_context refreshes durable guards internally, but the automatic
+    paths (preflight/turn gates) consult should_compress() first — if a stale
+    in-memory fallback streak (which has no expiry timer) blocks there, the
+    refresh inside compress_context is never reached and the agent stays
+    blocked forever.
+    """
+
+    def test_should_compress_unblocks_after_another_agent_clears_streak(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "GATE_LEVEL_STREAK_CLEAR"
+        db.create_session(session_id, source="telegram")
+        db.set_compression_fallback_streak(session_id, 2)
+        compressor = _bound_context_compressor(db, session_id)
+        assert compressor._fallback_compression_streak == 2
+
+        # Another agent's healthy boundary clears the durable breaker.
+        db.set_compression_fallback_streak(session_id, 0)
+
+        assert compressor.should_compress(10**9) is True
+        assert compressor._fallback_compression_streak == 0
+
+    def test_unblocked_gate_does_not_touch_the_db(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "GATE_LEVEL_HOT_PATH"
+        db.create_session(session_id, source="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+
+        with patch.object(
+            compressor,
+            "_refresh_durable_guards",
+            side_effect=AssertionError("hot path must not refresh"),
+        ):
+            assert compressor._automatic_compression_blocked() is False
+
+
+class TestCooldownPersistFailureIsNotAClearedRow:
+    def test_refresh_keeps_local_cooldown_when_persist_failed(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """An empty durable row is not evidence of a clear when OUR write failed.
+
+        _record_compression_failure_cooldown sets the local timer first and
+        persists best-effort. If that persist failed, a later refresh=True
+        finding no DB row must keep the local cooldown (otherwise the #11529
+        thrash guard silently re-opens), until it expires or a successful
+        DB round-trip supersedes it.
+        """
+        db = refresh_state_db
+        session_id = "PERSIST_FAILED_COOLDOWN"
+        db.create_session(session_id, source="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+
+        with patch.object(
+            db,
+            "record_compression_failure_cooldown",
+            side_effect=Exception("disk full"),
+        ):
+            compressor._record_compression_failure_cooldown(60, "rate limited")
+        assert compressor._cooldown_persist_failed is True
+
+        state = compressor.get_active_compression_failure_cooldown(refresh=True)
+        assert state is not None
+        assert compressor._summary_failure_cooldown_until > 0
+        assert compressor._automatic_compression_blocked() is True
+
+        # Once a durable round-trip succeeds, the DB is authoritative again.
+        compressor._record_compression_failure_cooldown(30, "retry later")
+        assert compressor._cooldown_persist_failed is False
+        db.clear_compression_failure_cooldown(session_id)
+        assert compressor.get_active_compression_failure_cooldown(refresh=True) is None
+        assert compressor._summary_failure_cooldown_until == 0.0
+
+    def test_ineffective_count_only_block_skips_durable_refresh(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """A block owed solely to the in-memory ineffective counter (which is
+        not durable) must not re-read the DB on every gate check."""
+        db = refresh_state_db
+        session_id = "INEFFECTIVE_ONLY_BLOCK"
+        db.create_session(session_id, source="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        compressor._ineffective_compression_count = 2
+
+        with patch.object(
+            compressor,
+            "_refresh_durable_guards",
+            side_effect=AssertionError("nothing durable to refresh"),
+        ):
+            assert compressor._automatic_compression_blocked() is True

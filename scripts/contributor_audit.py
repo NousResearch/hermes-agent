@@ -41,6 +41,8 @@ IGNORED_PATTERNS = [
     re.compile(r"^Copilot$", re.IGNORECASE),
     re.compile(r"^Cursor(\s+Agent)?$", re.IGNORECASE),
     re.compile(r"^Codex$", re.IGNORECASE),
+    re.compile(r"^OpenAI Codex$", re.IGNORECASE),
+    re.compile(r"^CommandCode", re.IGNORECASE),
     re.compile(r"^github-advanced-security(\[bot\])?$", re.IGNORECASE),
     re.compile(r"^GitHub\s*Actions?$", re.IGNORECASE),
     re.compile(r"^github-actions(\[bot\])?$", re.IGNORECASE),
@@ -59,6 +61,8 @@ IGNORED_EMAILS = {
     "hermes-audit@example.com",
     "hermes@habibilabs.dev",
     "omx@oh-my-codex.dev",
+    "codex@openai.com",
+    "noreply@commandcode.ai",
 }
 
 
@@ -407,10 +411,10 @@ def main():
     if all_unknowns:
         print()
         print(f"=== Unknown Emails ({len(all_unknowns)}) ===")
-        print("These emails are not in AUTHOR_MAP and should be added:")
+        print("These emails have no mapping and should be added via:")
         print()
         for email, name in sorted(all_unknowns.items()):
-            print(f'  "{email}": "{name}",')
+            print(f"  python3 scripts/add_contributor.py {email} <github-username>  # {name}")
 
     # ---- Strict mode: fail CI if new unmapped emails are introduced ----
     if args.strict and all_unknowns:
@@ -435,10 +439,10 @@ def main():
         if new_unknowns:
             print()
             print(f"=== STRICT MODE FAILURE: {len(new_unknowns)} new unmapped email(s) ===")
-            print("Add these to AUTHOR_MAP in scripts/release.py before merging:")
+            print("Add mapping files before merging (do NOT edit AUTHOR_MAP):")
             print()
             for email, name in sorted(new_unknowns.items()):
-                print(f'    "{email}": "<github-username>",')
+                print(f"    python3 scripts/add_contributor.py {email} <github-username>  # {name}")
             print()
             print("To find the GitHub username:")
             print("  gh api 'search/users?q=EMAIL+in:email' --jq '.items[0].login'")

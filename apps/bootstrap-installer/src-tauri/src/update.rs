@@ -31,10 +31,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
+use crate::powershell::read_decoded_line;
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -230,6 +231,14 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // us, and wait_for_install_locks_free below force-kills any straggler — so by the
     // time `hermes update` runs there is no legitimate hermes.exe to protect,
     // and the guard would only produce a false "Hermes is still running" stop.
+    //
+    // NOTE: --force does NOT bypass the venv-python holder guard (that needs
+    // an explicit `--force-venv`, which we deliberately do not pass). Our lock
+    // probe only checks the hermes.exe shim and app.asar, so an external venv
+    // python holding a native .pyd (a user terminal, an unmanaged gateway)
+    // could still be alive here — mutating the venv under it would strand the
+    // install half-updated. If that guard fires, it exits 2 and the match arm
+    // below surfaces the correct "close all Hermes windows" message.
     update_args.push("--force".into());
     update_args.push("--branch".into());
     update_args.push(update_branch);
@@ -654,28 +663,31 @@ async fn run_streamed(
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let mut out = BufReader::new(stdout).lines();
-    let mut err = BufReader::new(stderr).lines();
+    // Same non-UTF-8-safe decode path as powershell::run_script (#67193).
+    let mut out = BufReader::new(stdout);
+    let mut err = BufReader::new(stderr);
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
 
     let stage_owned = stage.map(|s| s.to_string());
     loop {
         tokio::select! {
-            line = out.next_line() => match line {
+            line = read_decoded_line(&mut out, &mut out_buf) => match line {
                 Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
                 Ok(None) => break,
                 Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
             },
-            line = err.next_line() => match line {
+            line = read_decoded_line(&mut err, &mut err_buf) => match line {
                 Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
                 Ok(None) => {}
                 Err(e) => { tracing::warn!("stderr read error: {e}"); }
             },
         }
     }
-    while let Ok(Some(l)) = out.next_line().await {
+    while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
         emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
     }
-    while let Ok(Some(l)) = err.next_line().await {
+    while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
         emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
     }
 
@@ -725,6 +737,13 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
         "HERMES_HOME".to_string(),
         hermes_home.as_os_str().to_os_string(),
     )];
+    // `hermes update` is a Python CLI writing to a pipe here, so CPython
+    // block-buffers its stdout: nothing reaches run_streamed (and the live
+    // log UI) until 8 KB accumulate or the process exits. Long quiet steps —
+    // the pre-update backup can zip multi-GB archives for minutes — render as
+    // a frozen stage, and users cancel a healthy update. Force line-by-line
+    // output instead.
+    envs.push(("PYTHONUNBUFFERED".to_string(), OsString::from("1")));
     if let Some(path) = path_with_prepended_entries(&[
         hermes_home.join("node").join("bin"),
         venv_bin_dir(install_root),
@@ -1039,6 +1058,16 @@ mod tests {
     }
 
     #[test]
+    fn update_child_env_forces_unbuffered_python() {
+        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "PYTHONUNBUFFERED" && v.to_str() == Some("1")),
+            "update children must run unbuffered so long steps stream to the live log"
+        );
+    }
+
+    #[test]
     fn lock_probe_paths_include_desktop_app_payload() {
         let root = Path::new("/x/hermes-agent");
         let probes = install_lock_probe_paths(root);
@@ -1048,7 +1077,12 @@ mod tests {
             "venv shim remains part of the update lock probe"
         );
         assert!(
-            probes.iter().any(|p| p.ends_with(Path::new("resources/app.asar"))),
+            // Windows/Linux payloads live under `resources/`, the macOS bundle
+            // under `Contents/Resources/` — Path::ends_with is case-sensitive.
+            probes.iter().any(|p| {
+                p.ends_with(Path::new("resources/app.asar"))
+                    || p.ends_with(Path::new("Resources/app.asar"))
+            }),
             "packaged app.asar must be probed so repair/re-clone waits for the old desktop to exit"
         );
     }

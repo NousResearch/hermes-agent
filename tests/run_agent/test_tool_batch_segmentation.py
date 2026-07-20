@@ -475,6 +475,33 @@ class TestSegmentedDispatchIntegration:
         assert steer_messages == [messages[-1]]
         assert "preserve this steer after budget enforcement" in steer_messages[0]["content"]
 
+    def test_steer_survives_turn_budget_after_malformed_arguments(self, agent):
+        """Malformed arguments still reach the shared post-budget finalizer.
+
+        The parser error itself can exceed a constrained turn budget.  A steer
+        queued before that malformed sequential call must therefore remain
+        pending until after the error result is replaced by the budget preview.
+        """
+        calls = [_tc("terminal", "{not json", call_id="malformed")]
+        messages = []
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        budget = BudgetConfig(
+            default_result_size=10_000,
+            turn_budget=48,
+            preview_size=16,
+        )
+
+        assert _kinds(_plan_tool_batch_segments(calls)) == ["sequential"]
+        assert agent.steer("preserve malformed-call steer after budget enforcement")
+
+        with patch("agent.tool_executor._budget_for_agent", return_value=budget):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        assert len(messages) == 1
+        assert "Truncated:" in messages[0]["content"]
+        assert messages[0]["content"].count(STEER_MARKER_OPEN) == 1
+        assert "preserve malformed-call steer after budget enforcement" in messages[0]["content"]
+
 
 class TestPathCanonicalization:
     """Regression tests for _canonical_path / _extract_parallel_scope_path fixes.

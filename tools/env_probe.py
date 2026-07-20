@@ -34,6 +34,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Optional
 
@@ -57,21 +58,41 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     """Run a short subprocess.  Returns (returncode, stdout, stderr).
 
     Failures (binary missing, timeout, OSError) return (-1, "", "<reason>").
+
+    Output is captured through temporary files rather than ``capture_output``
+    pipes so ``timeout`` bounds the *whole* call — even on native Windows.  A
+    console-script launcher (e.g. ``pip.exe``) can spawn a descendant that
+    inherits the captured stdout/stderr handles and outlives its parent.  With
+    OS pipes, the reader threads inside ``subprocess.communicate()`` then block
+    until that descendant closes the write end — which the timeout does *not*
+    cover, because killing the direct child leaves the grandchild holding the
+    pipe.  A whole warm probe could hang for ~28 min this way while holding
+    ``_CACHE_LOCK``, wedging every new session's system-prompt build.
+
+    Temp files have no reader threads, so ``wait()`` only ever waits on the
+    direct child; a lingering grandchild holding the handle can't block us, and
+    the probe genuinely fails open on timeout.
     """
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-        return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
+        with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=out_f,
+                    stderr=err_f,
+                    timeout=timeout,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                )
+            except subprocess.TimeoutExpired:
+                return -1, "", "timeout"
+            out_f.seek(0)
+            err_f.seek(0)
+            out = out_f.read().decode("utf-8", "replace").strip()
+            err = err_f.read().decode("utf-8", "replace").strip()
+            return result.returncode, out, err
     except FileNotFoundError:
         return -1, "", "not found"
-    except subprocess.TimeoutExpired:
-        return -1, "", "timeout"
     except OSError as exc:
         return -1, "", f"oserror: {exc}"
 

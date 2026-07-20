@@ -43,7 +43,24 @@
     new Hydra({ canvas, detectAudio: true, makeGlobal: true, enableStreamCapture: false });
     // --- strudel: makes note()/sound()/evaluate()/hush() global
     await initStrudel();
+    try { window.__an = tapAudio(getAudioContext()); } catch (_) {}
     hud(LIVE ? 'ready — click to start' : 'exported set — click to start');
+  }
+
+  // Tap everything Strudel routes to the speakers with an analyser, so audio
+  // telemetry reflects the actual output (works muted/headless, no mic needed) —
+  // unlike Hydra's mic-fed a.fft, which drives visual reactivity.
+  function tapAudio(ctx) {
+    const an = ctx.createAnalyser();
+    an.fftSize = 64;
+    an.smoothingTimeConstant = 0.6;
+    const dest = ctx.destination;
+    const orig = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function (target, ...rest) {
+      try { if (target === dest) orig.call(this, an); } catch (_) {}
+      return orig.call(this, target, ...rest);
+    };
+    return an;
   }
 
   async function begin() {
@@ -72,9 +89,22 @@
     try { if (typeof a !== 'undefined' && a.setBins) a.setBins(8); } catch (_) {}
 
     setInterval(async () => {
-      // --- audio features from the analyser bins
+      // --- audio features: prefer the Strudel-output tap; fall back to a.fft
       let bands = [];
-      try { if (typeof a !== 'undefined' && a.fft) bands = Array.from(a.fft).map((x) => +x.toFixed(4)); } catch (_) {}
+      try {
+        if (window.__an) {
+          const bins = new Uint8Array(window.__an.frequencyBinCount);
+          window.__an.getByteFrequencyData(bins);
+          const B = 8, step = Math.floor(bins.length / B) || 1;
+          for (let b = 0; b < B; b++) {
+            let s = 0;
+            for (let i = 0; i < step; i++) s += bins[b * step + i];
+            bands.push(+(s / step / 255).toFixed(4));
+          }
+        } else if (typeof a !== 'undefined' && a.fft) {
+          bands = Array.from(a.fft).map((x) => +x.toFixed(4));
+        }
+      } catch (_) {}
       const level = bands.length ? +(bands.reduce((s, x) => s + x, 0) / bands.length).toFixed(4) : 0;
       let centroid = 0;
       if (bands.length > 1) {

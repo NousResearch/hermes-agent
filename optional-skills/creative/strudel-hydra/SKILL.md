@@ -129,9 +129,9 @@ agent uses as a fitness signal. Reported each ~0.75 s:
 
 | Field | Meaning | Source |
 |-------|---------|--------|
-| `level` | overall audio energy (mean of bins) | analyser |
-| `bands` | per-band FFT magnitudes | analyser |
-| `centroid` | spectral brightness, 0–1 | analyser |
+| `level` | overall audio energy (mean of bins) | Strudel output tap |
+| `bands` | per-band FFT magnitudes (8) | Strudel output tap |
+| `centroid` | spectral brightness, 0–1 | Strudel output tap |
 | `brightness` | mean screen luminance, 0–1 | canvas grab |
 | `rgb` | mean R/G/B, 0–1 each | canvas grab |
 | `motion` | per-frame visual change, 0–1 | canvas grab |
@@ -176,25 +176,32 @@ Two failure modes need active care — both have a one-command escape via
 - **Audio needs the start click.** Strudel's AudioContext stays suspended until
   the user gesture; a set pushed before clicking "start" is retained and applies
   on click. If nothing sounds, confirm the overlay was clicked.
-- **`a.fft` needs `detectAudio` + mic permission.** The page inits Hydra with
-  `detectAudio:true`; audio-reactivity reads the analyser, which the browser
-  gates behind the same start gesture (and a mic prompt on some setups). Without
-  it, `a.fft[...]` reads zeros and visuals still run, just unreactive.
+- **Visual `a.fft` reactivity needs `detectAudio` + mic.** The page inits Hydra
+  with `detectAudio:true` so `a.fft[...]` (used in the *visual* code) reacts to
+  sound; the browser gates it behind the start gesture and a mic prompt, and it
+  hears the room, not a clean tap. Telemetry does **not** depend on this — audio
+  features come from the output tap below. Without the mic, `a.fft[...]` reads
+  zeros and visuals still run, just unreactive.
 - **A bad set shows in the HUD, not the terminal.** Evaluation happens in the
   browser; a syntax error prints `visual error:` / `audio error: …` on the page
   HUD. Watch it, or keep sets small and incremental.
 - **Function names track the pinned versions.** The gallery uses common Strudel
   (`note`, `s`, `lpf`, `room`, `sine.range`) and Hydra (`osc`, `voronoi`,
-  `kaleid`, `modulateScale`) names for the versions pinned in `page.html`; adapt
+  `kaleid`, `color`, `rotate`, `modulateRotate`, `modulateScale`,
+  `modulatePixelate`) names verified against the bundles pinned in `page.html`.
+  Not every documented Hydra op exists in that build — `scale`, `repeat`,
+  `colorama` and the `noise`/`shape` sources threw `… is not a function` — so
+  the HUD names any bad op; prefer the ops the gallery already uses, and adapt
   if you repin.
 - **One set = one screen.** Pushing a new set replaces the whole liveset on
   every connected browser; there is no per-client targeting.
-- **Telemetry is only as good as its sources.** Audio features come from the
-  same mic-fed analyser that drives `a.fft`, so they need the mic permission and
-  reflect the room, not a clean output tap. The visual grab composites the WebGL
-  canvas best-effort; some browser/driver combos read it as blank (`brightness`
-  ≈ 0). Treat scores as a relative signal for ranking, not absolute truth, and
-  give each candidate enough `--wait` to settle before observing.
+- **Telemetry is only as good as its sources.** Audio features tap Strudel's
+  output directly (an analyser inserted before the speakers), so they work muted
+  and need no mic — but they read low while a pattern sits between hits, so give
+  each candidate enough `--wait` to settle. The visual grab composites the WebGL
+  canvas best-effort; some setups (notably **headless SwiftShader**) read it as
+  blank (`brightness` ≈ 0), so visual telemetry wants a real-GPU desktop browser.
+  Treat scores as a relative ranking signal, not absolute truth.
 
 ## Verification
 

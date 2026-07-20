@@ -48,14 +48,14 @@ SETS = {
         ),
     },
     "drone": {
-        "label": "sawtooth drone + drifting noise",
+        "label": "sawtooth drone + slow kaleidoscope drift",
         "audio": (
             'note("c2").add(note("0,7,12")).s("sawtooth")'
             '.lpf(sine.range(200, 900).slow(8)).gain(.4)'
         ),
         "visual": (
-            "noise(2, 0.1).colorama(() => 0.1 + a.fft[0] * 0.5)"
-            ".modulateRotate(osc(1), 0.2).out()"
+            "osc(4, 0.1, 0.6).kaleid(3).color(0.4, 0.3, 0.9)"
+            ".modulateRotate(osc(1), () => 0.2 + a.fft[0]).out()"
         ),
     },
     "acid": {
@@ -66,8 +66,9 @@ SETS = {
             '.decay(.1).sustain(.2).gain(.5)'
         ),
         "visual": (
-            "shape(200, 0.5, 0.01).scale(() => 1 + a.fft[0])"
-            ".repeat(20, 10).modulateRotate(osc(4), 0.5).out()"
+            "osc(40, 0.15, 0.4).kaleid(6).color(1, 0.3, 0.6)"
+            ".modulateRotate(osc(2), () => 0.3 + a.fft[0])"
+            ".modulateScale(noise(2), 0.2).out()"
         ),
     },
 }

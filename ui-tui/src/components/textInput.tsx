@@ -43,6 +43,21 @@ type MinimalEnv = Record<string, string | undefined>
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
 
+/** Truecolor foreground wrap; falls back to SGR dim when no hex is given so
+ *  the placeholder can follow the THEME's muted color instead of whatever the
+ *  terminal's default-foreground dim happens to look like. */
+const colorizeHint = (s: string, hex?: string) => {
+  const m = hex ? /^#([0-9a-f]{6})$/i.exec(hex) : null
+
+  if (!m) {
+    return dim(s)
+  }
+
+  const n = parseInt(m[1]!, 16)
+
+  return `${ESC}[38;2;${(n >> 16) & 0xff};${(n >> 8) & 0xff};${n & 0xff}m${s}${ESC}[39m`
+}
+
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
 const STOP_CACHE_MAX = 32
@@ -540,6 +555,7 @@ export function TextInput({
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
+  placeholderColor,
   focus = true
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
@@ -620,17 +636,20 @@ export function TextInput({
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
-  // Placeholder text is just a hint, not a selection — render it dim
-  // without inverse styling. In a TTY the hardware cursor parks at column
-  // 0 and visually marks the input start. Non-TTY surfaces still need the
-  // synthetic inverse first-char to draw a cursor at all.
+  // Placeholder text is just a hint, not a selection — render it in the
+  // theme's muted color (SGR dim as fallback) without inverse styling. In a
+  // TTY the hardware cursor parks at column 0 and visually marks the input
+  // start. Non-TTY surfaces still need the synthetic inverse first-char to
+  // draw a cursor at all.
   const rendered = useMemo(() => {
     if (!focus) {
-      return display || dim(placeholder)
+      return display || colorizeHint(placeholder, placeholderColor)
     }
 
     if (!display && placeholder) {
-      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return nativeCursor
+        ? colorizeHint(placeholder, placeholderColor)
+        : invert(placeholder[0] ?? ' ') + colorizeHint(placeholder.slice(1), placeholderColor)
     }
 
     if (selected) {
@@ -638,7 +657,7 @@ export function TextInput({
     }
 
     return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, selected])
+  }, [cur, display, focus, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
     if (self.current) {
@@ -1387,6 +1406,8 @@ interface TextInputProps {
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
   placeholder?: string
+  /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
+  placeholderColor?: string
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

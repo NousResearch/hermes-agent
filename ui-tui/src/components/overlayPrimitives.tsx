@@ -51,11 +51,28 @@ export function useMenu(rows: MenuRowSpec[], onEscape: () => void, onKey?: (ch: 
   return Math.min(sel, Math.max(0, rows.length - 1))
 }
 
-/** A numbered menu row with the ▸ cursor (mirrors ClarifyPrompt). */
+/**
+ * THE selected-row treatment for every list surface (completions popover,
+ * session switcher, pickers): a `selection` chip on the active row, nothing
+ * painted otherwise. Panels never paint their own full background — floating
+ * surfaces are `opaque` (terminal-native canvas) and only the active row
+ * carries color, so list surfaces cannot disagree about "selected" and stay
+ * correct on any terminal background. Callers own layout; this owns color.
+ */
+export function listRowStyle(t: Theme, active: boolean): { backgroundColor?: string; color?: string } {
+  return active ? { backgroundColor: t.color.completionCurrentBg, color: t.color.text } : {}
+}
+
+/** A numbered menu row with the ▸ cursor (mirrors ClarifyPrompt). Active rows
+ *  carry the shared list-row selection chip — same treatment as completions
+ *  and the session switcher — instead of `inverse`, whose contrast depends on
+ *  the terminal's unknowable default colors. */
 export function MenuRow({ active, index, label, t }: { active: boolean; index: number; label: string; t: Theme }) {
+  const row = listRowStyle(t, active)
+
   return (
     <Text>
-      <Text bold={active} color={active ? t.color.label : t.color.muted} inverse={active}>
+      <Text backgroundColor={row.backgroundColor} bold={active} color={active ? (row.color ?? t.color.label) : t.color.muted}>
         {active ? '▸ ' : '  '}
         {index}. {label}
       </Text>

@@ -158,6 +158,12 @@ function circularDistance(a: number, b: number): number {
   return Math.min(distance, 1 - distance)
 }
 
+function hexLuminance(color: string): null | number {
+  const rgb = parseHex(color)
+
+  return rgb ? relativeLuminance(rgb[0], rgb[1], rgb[2]) : null
+}
+
 // Mirrors @hermes/ink's colorize.ts. Keep local: app code compiles from
 // ui-tui/src, while @hermes/ink is bundled separately from packages/.
 function richEightBitColorNumber(red: number, green: number, blue: number): number {
@@ -346,6 +352,147 @@ export const LIGHT_THEME: Theme = {
   bannerHero: ''
 }
 
+// ── Background-aware readability adaptation ─────────────────────────
+//
+// Mirrors the desktop app's theme contract (apps/desktop/src/themes): skins
+// contribute accent IDENTITY; readability against the actual background is
+// the theme engine's job, enforced in one place. Two guards, in the desktop's
+// vocabulary:
+//
+//   * `ensureContrast` — foreground-role colors are step-mixed toward the
+//     readable pole (black on light, white on dark) until they clear a
+//     minimum WCAG contrast ratio against the real (or assumed) background.
+//     Hue survives; washout doesn't.
+//   * Fill polarity — background-role colors (completion menu, status bar,
+//     selection) must match the terminal's polarity. Unlike the desktop, the
+//     TUI does not own its canvas — panels sit directly on the terminal's
+//     background — so a wrong-polarity fill (navy menu on a white terminal)
+//     falls back to the base palette even when the skin authored it.
+
+/** WCAG contrast ratio between two hex colors (1–21). Null if unparseable. */
+export function contrastRatio(a: string, b: string): null | number {
+  const la = hexLuminance(a)
+  const lb = hexLuminance(b)
+
+  if (la === null || lb === null) {
+    return null
+  }
+
+  const [hi, lo] = la >= lb ? [la, lb] : [lb, la]
+
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * Step-mix `color` toward the readable pole of `bg` until the contrast
+ * ratio clears `min` (desktop `color.ts::ensureContrast`). Returns the
+ * original when it already passes or isn't hex.
+ */
+export function ensureContrast(color: string, bg: string, min: number): string {
+  const bgLuminance = hexLuminance(bg)
+
+  if (bgLuminance === null || parseHex(color) === null) {
+    return color
+  }
+
+  const pole = bgLuminance > 0.5 ? '#000000' : '#ffffff'
+  let current = color
+
+  for (let step = 0; step <= 20; step++) {
+    const ratio = contrastRatio(current, bg)
+
+    if (ratio === null || ratio >= min) {
+      return current
+    }
+
+    current = mix(color, pole, Math.min(1, (step + 1) * 0.05))
+  }
+
+  return current
+}
+
+// Contrast tiers, tuned so both base palettes are fixed points: primary
+// text/labels/status readable at ≥ 3.9; muted/secondary/ambers at ≥ 2.8.
+const STRONG_MIN_CONTRAST = 3.9
+const SOFT_MIN_CONTRAST = 2.8
+
+const STRONG_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
+  'primary',
+  'accent',
+  'text',
+  'label',
+  'ok',
+  'error',
+  'prompt',
+  'statusFg',
+  'statusGood',
+  'statusBad',
+  'statusCritical',
+  'shellDollar'
+]
+
+const SOFT_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
+  'border',
+  'muted',
+  'warn',
+  'sessionLabel',
+  'sessionBorder',
+  'statusWarn'
+]
+
+const ADAPTIVE_BACKGROUNDS: readonly (keyof ThemeColors)[] = [
+  'completionBg',
+  'completionCurrentBg',
+  'completionMetaBg',
+  'completionMetaCurrentBg',
+  'statusBg',
+  'selectionBg'
+]
+
+// Fill polarity limits: on light terminals a fill must stay light, and vice
+// versa — there is no readable middle for a panel fill on the wrong pole.
+const LIGHT_BG_MIN_LUMINANCE = 0.4
+const DARK_BG_MAX_LUMINANCE = 0.35
+
+function adaptColorsToBackground(colors: ThemeColors, isLight: boolean, base: ThemeColors, bg: string): ThemeColors {
+  const out = { ...colors }
+
+  for (const key of STRONG_FOREGROUNDS) {
+    out[key] = ensureContrast(out[key], bg, STRONG_MIN_CONTRAST)
+  }
+
+  for (const key of SOFT_FOREGROUNDS) {
+    out[key] = ensureContrast(out[key], bg, SOFT_MIN_CONTRAST)
+  }
+
+  for (const key of ADAPTIVE_BACKGROUNDS) {
+    const luminance = hexLuminance(out[key])
+
+    if (luminance === null) {
+      continue
+    }
+
+    if (isLight ? luminance < LIGHT_BG_MIN_LUMINANCE : luminance > DARK_BG_MAX_LUMINANCE) {
+      out[key] = base[key]
+    }
+  }
+
+  return out
+}
+
+/** The background hex adaptation measures contrast against: the OSC-11
+ *  answer when known (cached in HERMES_TUI_BACKGROUND), else the mode's
+ *  assumed pole. */
+function referenceBackground(isLight: boolean, env: NodeJS.ProcessEnv = process.env): string {
+  const cached = (env.HERMES_TUI_BACKGROUND ?? '').trim()
+
+  if (cached && backgroundLuminance(cached) !== null) {
+    return cached.startsWith('#') ? cached : `#${cached}`
+  }
+
+  return isLight ? '#ffffff' : '#101014'
+}
+
 const TRUE_RE = /^(?:1|true|yes|on)$/
 const FALSE_RE = /^(?:0|false|no|off)$/
 
@@ -508,6 +655,19 @@ export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
   DEFAULT_LIGHT_MODE
 )
 
+/**
+ * The skinless theme for the CURRENT light-mode signals. Unlike the frozen
+ * module-load DEFAULT_THEME, this re-reads the environment — so it picks up
+ * the OSC-11 background answer cached into HERMES_TUI_BACKGROUND after
+ * startup. Used when the terminal background arrives before (or without) a
+ * gateway skin.
+ */
+export function defaultThemeForCurrentBackground(env: NodeJS.ProcessEnv = process.env): Theme {
+  const isLight = detectLightMode(env)
+
+  return normalizeThemeForAnsiLightTerminal(isLight ? LIGHT_THEME : DARK_THEME, env, isLight)
+}
+
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
 export function fromSkin(
@@ -518,7 +678,13 @@ export function fromSkin(
   toolPrefix = '',
   helpHeader = ''
 ): Theme {
-  const d = DEFAULT_THEME
+  // Live detection (not the module-load snapshot): by the time the gateway
+  // skin arrives, the OSC-11 background probe has usually answered and cached
+  // itself into HERMES_TUI_BACKGROUND, so the fallback base — every color key
+  // the skin does NOT define — matches the actual terminal background instead
+  // of assuming dark. See #applySkin / syncThemeToTerminalBackground.
+  const isLight = detectLightMode()
+  const d = isLight ? LIGHT_THEME : DARK_THEME
   const c = (k: string) => colors[k]
   const hasSkinColors = Object.keys(colors).length > 0
 
@@ -534,45 +700,54 @@ export function fromSkin(
   const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
   const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
 
+  const assembled: ThemeColors = {
+    primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
+    accent,
+    border: c('ui_border') ?? c('banner_border') ?? d.color.border,
+    text: c('ui_text') ?? c('banner_text') ?? d.color.text,
+    muted,
+    completionBg,
+    completionCurrentBg,
+    completionMetaBg,
+    completionMetaCurrentBg,
+
+    label: c('ui_label') ?? d.color.label,
+    ok: c('ui_ok') ?? d.color.ok,
+    error: c('ui_error') ?? d.color.error,
+    warn: c('ui_warn') ?? d.color.warn,
+
+    prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
+    sessionLabel: c('session_label') ?? muted,
+    sessionBorder: c('session_border') ?? muted,
+
+    statusBg: c('status_bar_bg') ?? d.color.statusBg,
+    statusFg: c('status_bar_text') ?? d.color.statusFg,
+    statusGood: c('status_bar_good') ?? c('ui_ok') ?? d.color.statusGood,
+    statusWarn: c('status_bar_warn') ?? c('ui_warn') ?? d.color.statusWarn,
+    statusBad: c('status_bar_bad') ?? d.color.statusBad,
+    statusCritical: c('status_bar_critical') ?? d.color.statusCritical,
+    selectionBg:
+      c('selection_bg') ??
+      c('completion_menu_current_bg') ??
+      (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
+
+    diffAdded: d.color.diffAdded,
+    diffRemoved: d.color.diffRemoved,
+    diffAddedWord: d.color.diffAddedWord,
+    diffRemovedWord: d.color.diffRemovedWord,
+    shellDollar: c('shell_dollar') ?? d.color.shellDollar
+  }
+
+  // Two exclusive readability strategies: ANSI-limited light Apple Terminal
+  // keeps its bespoke ansi256 normalization (below) byte-for-byte; every
+  // truecolor terminal gets contrast enforcement against the real background.
+  const adapted = shouldNormalizeAnsiLightTheme(process.env, isLight)
+    ? assembled
+    : adaptColorsToBackground(assembled, isLight, d.color, referenceBackground(isLight))
+
   return normalizeThemeForAnsiLightTerminal(
     {
-      color: {
-        primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
-        accent,
-        border: c('ui_border') ?? c('banner_border') ?? d.color.border,
-        text: c('ui_text') ?? c('banner_text') ?? d.color.text,
-        muted,
-        completionBg,
-        completionCurrentBg,
-        completionMetaBg,
-        completionMetaCurrentBg,
-
-        label: c('ui_label') ?? d.color.label,
-        ok: c('ui_ok') ?? d.color.ok,
-        error: c('ui_error') ?? d.color.error,
-        warn: c('ui_warn') ?? d.color.warn,
-
-        prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
-        sessionLabel: c('session_label') ?? muted,
-        sessionBorder: c('session_border') ?? muted,
-
-        statusBg: d.color.statusBg,
-        statusFg: d.color.statusFg,
-        statusGood: c('ui_ok') ?? d.color.statusGood,
-        statusWarn: c('ui_warn') ?? d.color.statusWarn,
-        statusBad: d.color.statusBad,
-        statusCritical: d.color.statusCritical,
-        selectionBg:
-          c('selection_bg') ??
-          c('completion_menu_current_bg') ??
-          (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
-
-        diffAdded: d.color.diffAdded,
-        diffRemoved: d.color.diffRemoved,
-        diffAddedWord: d.color.diffAddedWord,
-        diffRemovedWord: d.color.diffRemovedWord,
-        shellDollar: c('shell_dollar') ?? d.color.shellDollar
-      },
+      color: adapted,
 
       brand: {
         name: branding.agent_name ?? d.brand.name,
@@ -588,6 +763,6 @@ export function fromSkin(
       bannerHero
     },
     process.env,
-    DEFAULT_LIGHT_MODE
+    isLight
   )
 }

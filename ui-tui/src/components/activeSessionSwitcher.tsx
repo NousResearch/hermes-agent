@@ -16,6 +16,7 @@ import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
 import { windowOffset } from './overlayControls.js'
+import { listRowStyle } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const VISIBLE = 12
@@ -153,9 +154,12 @@ export const orchestratorHintSegmentColor = (t: Theme, role: OrchestratorHintRol
   return t.color.muted
 }
 
+// Delegates to the shared list-row primitive so the session switcher and the
+// completions popover cannot disagree about what "selected" looks like.
+// (`selectionBg` remains the TEXT-selection highlight — a different semantic.)
 export const selectedSessionRowStyle = (t: Theme) => ({
-  backgroundColor: t.color.selectionBg,
-  color: t.color.text
+  backgroundColor: listRowStyle(t, true).backgroundColor,
+  color: listRowStyle(t, true).color
 })
 
 export const newSessionMarkerColor = (t: Theme, selected: boolean) =>

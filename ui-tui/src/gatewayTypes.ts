@@ -7,7 +7,11 @@ export interface GatewaySkin {
   banner_logo?: string
   branding?: Record<string, string>
   colors?: Record<string, string>
+  /** Hand-tuned palette for dark terminals (light-authored skins). */
+  dark_colors?: Record<string, string>
   help_header?: string
+  /** Hand-tuned palette for light terminals (dark-authored skins). */
+  light_colors?: Record<string, string>
   tool_prefix?: string
 }
 
@@ -103,6 +107,9 @@ export interface ConfigDisplayConfig {
   // validation anyway.
   tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
+   *  (default) trusts the OSC-11 probe + env signals. */
+  tui_theme?: string
 }
 
 export interface ConfigVoiceConfig {

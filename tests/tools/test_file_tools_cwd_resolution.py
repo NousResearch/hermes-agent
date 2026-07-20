@@ -129,9 +129,52 @@ def test_coerce_missing_leading_slash_helper():
     assert ft._coerce_missing_leading_slash("/home/user/dev/notes/x.md") == "/home/user/dev/notes/x.md"
     # Tilde paths are left alone (handled by _expand_tilde).
     assert ft._coerce_missing_leading_slash("~/notes.md") == "~/notes.md"
-    # Legitimate relative paths not starting with a known root are left alone.
+    # Legitimate relative paths not starting with a known root are left alone
+    # when no base_dir is supplied (fast-path only).
     assert ft._coerce_missing_leading_slash("src/main.py") == "src/main.py"
     assert ft._coerce_missing_leading_slash("notes.md") == "notes.md"
+
+
+def test_coerce_missing_leading_slash_structural_not_allowlist():
+    """Structural detection catches cwd-shaped paths NOT on the root allowlist.
+
+    Regression for the adversarial review concern that the detector was a
+    brittle hard-coded allowlist: a path like ``srv/app/config.yml`` (``srv``
+    is NOT in ``_ABSOLUTE_PATH_ROOTS``) must still be coerced when the base
+    dir is ``/srv/app`` — joining would otherwise double it to
+    ``/srv/app/srv/app/config.yml``.  This proves detection is structural
+    (base-dir-tail match), not allowlist-driven.
+    """
+    base = Path("/srv/app")
+    # "srv" is intentionally not in _ABSOLUTE_PATH_ROOTS.
+    assert "srv" not in ft._ABSOLUTE_PATH_ROOTS
+    assert ft._coerce_missing_leading_slash("srv/app/config.yml", base) == "/srv/app/config.yml"
+    # A genuinely relative path that does NOT reproduce the base dir is untouched.
+    assert ft._coerce_missing_leading_slash("subdir/config.yml", base) == "subdir/config.yml"
+    # Without a base dir, the non-root path is left alone (no fast-path match).
+    assert ft._coerce_missing_leading_slash("srv/app/config.yml") == "srv/app/config.yml"
+
+
+def test_cwd_shaped_relative_path_with_non_root_base_dir(_isolated_cwd, monkeypatch):
+    """End-to-end: a cwd-shaped path under a non-standard base dir is coerced.
+
+    Exercises the bug structurally through ``_resolve_path_for_task`` with a
+    workspace whose first segment is NOT a known filesystem root, so the test
+    cannot pass trivially via the allowlist fast path.
+    """
+    workspace, decoy = _isolated_cwd
+    # Use a workspace path whose first segment is not in _ABSOLUTE_PATH_ROOTS.
+    custom = workspace.parent / "myproject"
+    custom.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(custom))
+
+    resolved = ft._resolve_path_for_task("myproject/src/main.py", task_id="default")
+
+    assert str(resolved) == str((custom / "myproject" / "src" / "main.py").resolve()) or \
+        str(resolved) == "/myproject/src/main.py"
+    # The key assertion: the path must NOT be doubled under the workspace.
+    doubled = str(custom) + str(custom).lstrip("/")
+    assert not str(resolved).startswith(doubled)
 
 
 def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):

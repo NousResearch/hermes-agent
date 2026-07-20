@@ -4464,7 +4464,10 @@ def _wire_callbacks(sid: str):
         pl = {"prompt": prompt, "env_var": env_var}
         if metadata:
             pl["metadata"] = metadata
-        val = _block("secret.request", sid, pl)
+        from gateway.session_context import get_session_env
+
+        target_sid = get_session_env("HERMES_UI_SESSION_ID") or sid
+        val = _block("secret.request", target_sid, pl)
         if not val:
             return {
                 "success": True,

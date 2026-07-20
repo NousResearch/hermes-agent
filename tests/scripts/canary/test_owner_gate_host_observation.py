@@ -144,6 +144,99 @@ def test_embedded_foundation_identity_is_bound_to_final_release_package(
     assert decode_revisions == [None, FOUNDATION_REVISION]
 
 
+def test_sqlite_facts_accepts_real_database_preflight_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority_root = tmp_path / "authority"
+    executor_root = tmp_path / "executor"
+    authority_root.mkdir(mode=0o700)
+    executor_root.mkdir(mode=0o700)
+    authority_root.chmod(0o700)
+    executor_root.chmod(0o700)
+    authority_db = authority_root / "passkey-v2.sqlite3"
+    executor_db = executor_root / "passkey-v2.sqlite3"
+    uid = os.getuid()
+    gid = os.getgid()
+    producer.sqlite_backend.bootstrap_authority_database(
+        authority_db,
+        authority_uid=uid,
+        authority_gid=gid,
+        now_unix=NOW - 200,
+        require_root=False,
+    )
+    producer.sqlite_backend.bootstrap_executor_database(
+        executor_db,
+        executor_uid=uid,
+        executor_gid=gid,
+        now_unix=NOW - 200,
+        require_root=False,
+    )
+    authority = producer.sqlite_backend.PasskeyV2AuthorityDatabase(
+        authority_db,
+        authority_uid=uid,
+        authority_gid=gid,
+    )
+    envelope = producer._selftest_envelope(request_id="R" * 32)
+    challenge = producer._selftest_challenge(envelope)
+    credential, _assertion = producer._selftest_credential_assertion(
+        envelope, challenge
+    )
+    authority.import_migrated_credential(credential)
+
+    receipt_key = Ed25519PrivateKey.generate().public_key()
+    receipt_key_id = hashlib.sha256(
+        receipt_key.public_bytes_raw()
+    ).hexdigest()
+    executor = producer.sqlite_backend.PasskeyV2ExecutorDatabase(
+        executor_db,
+        executor_uid=uid,
+        executor_gid=gid,
+        pinned_authority_receipt_public_key=receipt_key,
+        pinned_authority_receipt_key_id=receipt_key_id,
+    )
+    authority_preflight = authority.preflight()
+    executor_preflight = executor.preflight()
+    assert authority_preflight["ok"] is True
+    assert executor_preflight["ok"] is True
+    assert "runtime_eligible" not in authority_preflight
+    assert "runtime_eligible" not in executor_preflight
+
+    monkeypatch.setattr(producer, "AUTHORITY_DB", authority_db)
+    monkeypatch.setattr(producer, "EXECUTOR_DB", executor_db)
+    monkeypatch.setattr(
+        producer.sqlite_backend,
+        "PasskeyV2AuthorityDatabase",
+        lambda *_args, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        producer.sqlite_backend,
+        "PasskeyV2ExecutorDatabase",
+        lambda *_args, **_kwargs: executor,
+    )
+    monkeypatch.setattr(
+        producer,
+        "_database_file",
+        lambda path, **_kwargs: (
+            path.lstat(),
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        ),
+    )
+    monkeypatch.setattr(
+        producer,
+        "_load_authority_receipt_key",
+        lambda: (receipt_key, b"test-public-key"),
+    )
+
+    sqlite_facts, migration = producer._sqlite_facts()
+
+    assert sqlite_facts["runtime_eligible"] is True
+    assert migration["credential_count"] == 1
+    assert migration["active_request_count"] == 0
+    assert migration["active_challenge_count"] == 0
+    assert migration["active_grant_count"] == 0
+
+
 @pytest.mark.parametrize(
     "corruption",
     ("same-release", "foundation-revision", "digest", "lineage"),

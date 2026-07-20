@@ -86,7 +86,37 @@
     off.width = W; off.height = H;
     const octx = off.getContext('2d', { willReadFrequently: true });
     let prev = null;
+    let vis = { brightness: 0, rgb: [0, 0, 0], motion: 0 };
     try { if (typeof a !== 'undefined' && a.setBins) a.setBins(8); } catch (_) {}
+
+    // Grab pixels INSIDE Hydra's frame via its `update` hook: mid-frame the
+    // drawing buffer is still intact, so compositing reads real pixels — a
+    // setInterval grab runs between frames and reads black (buffer cleared).
+    let acc = 0;
+    try {
+      // eslint-disable-next-line no-global-assign
+      window.update = (dt) => {
+        acc += dt || 16;
+        if (acc < 700) return;
+        acc = 0;
+        try {
+          octx.drawImage(hydraCanvas, 0, 0, W, H);
+          const d = octx.getImageData(0, 0, W, H).data;
+          let r = 0, g = 0, b = 0, diff = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            r += d[i]; g += d[i + 1]; b += d[i + 2];
+            if (prev) diff += Math.abs(d[i] - prev[i]) + Math.abs(d[i + 1] - prev[i + 1]) + Math.abs(d[i + 2] - prev[i + 2]);
+          }
+          const rgb = [+(r / N / 255).toFixed(4), +(g / N / 255).toFixed(4), +(b / N / 255).toFixed(4)];
+          vis = {
+            brightness: +((rgb[0] + rgb[1] + rgb[2]) / 3).toFixed(4),
+            rgb,
+            motion: prev ? +(diff / (N * 3 * 255)).toFixed(4) : 0,
+          };
+          prev = d;
+        } catch (_) {}
+      };
+    } catch (_) {}
 
     setInterval(async () => {
       // --- audio features: prefer the Strudel-output tap; fall back to a.fft
@@ -112,22 +142,7 @@
         bands.forEach((v, i) => { num += v * i; den += v; });
         centroid = den ? +(num / den / (bands.length - 1)).toFixed(4) : 0;
       }
-      // --- visual features: composite hydra into a tiny buffer (best-effort)
-      let brightness = 0, rgb = [0, 0, 0], motion = 0;
-      try {
-        octx.drawImage(hydraCanvas, 0, 0, W, H);
-        const d = octx.getImageData(0, 0, W, H).data;
-        let r = 0, g = 0, b = 0, diff = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          r += d[i]; g += d[i + 1]; b += d[i + 2];
-          if (prev) diff += Math.abs(d[i] - prev[i]) + Math.abs(d[i + 1] - prev[i + 1]) + Math.abs(d[i + 2] - prev[i + 2]);
-        }
-        rgb = [+(r / N / 255).toFixed(4), +(g / N / 255).toFixed(4), +(b / N / 255).toFixed(4)];
-        brightness = +((rgb[0] + rgb[1] + rgb[2]) / 3).toFixed(4);
-        motion = prev ? +(diff / (N * 3 * 255)).toFixed(4) : 0;
-        prev = d;
-      } catch (_) {}
-      const body = JSON.stringify({ level, bands, centroid, brightness, rgb, motion });
+      const body = JSON.stringify({ level, bands, centroid, ...vis });
       try { await fetch('/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); } catch (_) {}
     }, 750);
   }

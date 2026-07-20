@@ -132,17 +132,26 @@ agent uses as a fitness signal. Reported each ~0.75 s:
 | `level` | overall audio energy (mean of bins) | Strudel output tap |
 | `bands` | per-band FFT magnitudes (8) | Strudel output tap |
 | `centroid` | spectral brightness, 0–1 | Strudel output tap |
-| `brightness` | mean screen luminance, 0–1 | canvas grab |
-| `rgb` | mean R/G/B, 0–1 each | canvas grab |
-| `motion` | per-frame visual change, 0–1 | canvas grab |
+| `brightness` | mean screen luminance, 0–1 | canvas grab † |
+| `rgb` | mean R/G/B, 0–1 each | canvas grab † |
+| `motion` | per-frame visual change, 0–1 | canvas grab † |
+
+**Audio is the dependable fitness signal** — the output tap works headless,
+muted, and mic-free (verified in a live browser). † **Visual features need a
+real, focused, GPU-backed window**: headless SwiftShader can't composite the
+WebGL canvas, and a backgrounded/occluded window throttles Hydra's frame loop —
+both read `brightness`/`motion` ≈ 0. So for an **unattended** evolving loop, run
+the browser headless and target the audio features; visual features are a bonus
+when a person has the window up front.
 
 The agent runs the loop (it is the mutation operator; the scripts measure,
 score, and select):
 
-1. **Set a fitness target** — a feature vector for the mood, e.g.
-   `{"brightness":0.5,"motion":0.35,"level":0.6}`. `score()` is
-   `1/(1+distance)` over the shared scalar keys (`level`, `centroid`,
-   `brightness`, `motion`); higher is closer.
+1. **Set a fitness target** — a feature vector for the mood. Lead with audio
+   (always reliable), e.g. `{"level":0.6,"centroid":0.4}`; add `brightness`/
+   `motion` only when a focused GPU window is up. `score()` is `1/(1+distance)`
+   over the shared scalar keys (`level`, `centroid`, `brightness`, `motion`);
+   higher is closer.
 2. **Read the current set:** `python3 sh_client.py --observe --target '{…}'`.
 3. **Mutate:** write 2–4 variations of the best set (nudge patterns, filters,
    Hydra ops) into a candidates JSON list.
@@ -198,10 +207,11 @@ Two failure modes need active care — both have a one-command escape via
 - **Telemetry is only as good as its sources.** Audio features tap Strudel's
   output directly (an analyser inserted before the speakers), so they work muted
   and need no mic — but they read low while a pattern sits between hits, so give
-  each candidate enough `--wait` to settle. The visual grab composites the WebGL
-  canvas best-effort; some setups (notably **headless SwiftShader**) read it as
-  blank (`brightness` ≈ 0), so visual telemetry wants a real-GPU desktop browser.
-  Treat scores as a relative ranking signal, not absolute truth.
+  each candidate enough `--wait` to settle. The visual grab reads Hydra inside
+  its own frame, but only a real, **focused, GPU-backed** window renders for it:
+  headless SwiftShader and backgrounded/occluded windows (Hydra's frame loop
+  throttled) read blank (`brightness` ≈ 0). Make audio the fitness signal, treat
+  visual as opportunistic, and read all scores as a relative ranking, not truth.
 
 ## Verification
 

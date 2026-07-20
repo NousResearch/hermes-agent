@@ -97,6 +97,17 @@ def get_safe_write_roots() -> set[str]:
 
 def _classify_write_denial(path: str) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+
+    # Config-level escape hatch: when security.allow_unsafe_file_operations
+    # is true, skip ALL write denials.
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config() or {}
+        if _cfg.get("security", {}).get("allow_unsafe_file_operations", False):
+            return None
+    except Exception:
+        pass  # config unavailable — fall through to normal enforcement
+
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
@@ -233,6 +244,17 @@ def get_read_block_error(path: str) -> Optional[str]:
     ``"auth.json"`` would otherwise miss the denylist when the task's
     terminal cwd differs from the process cwd.
     """
+
+    # Config-level escape hatch: when security.allow_unsafe_file_operations
+    # is true, skip read blocks too (same as _classify_write_denial).
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config() or {}
+        if _cfg.get("security", {}).get("allow_unsafe_file_operations", False):
+            return None
+    except Exception:
+        pass
+
     resolved = Path(path).expanduser().resolve()
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global

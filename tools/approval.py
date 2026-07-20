@@ -3170,6 +3170,21 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
+def _hardline_is_bypassed() -> bool:
+    """Return True when the hardline command floor should be skipped.
+
+    Checks security.allow_unsafe_file_operations in config.yaml — the
+    explicit user opt-in that overrides the unconditional hardline floor.
+    Gracefully returns False if config can't be loaded.
+    """
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config() or {}
+        return bool(_cfg.get("security", {}).get("allow_unsafe_file_operations", False))
+    except Exception:
+        return False
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -3192,11 +3207,18 @@ def check_all_command_guards(command: str, env_type: str,
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
     # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
-    # no session-level setting can bypass it.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+    # no session-level setting can bypass it — EXCEPT when the user
+    # has explicitly opted in via security.allow_unsafe_file_operations.
+    if _hardline_is_bypassed():
+        logger.info(
+            "Hardline bypassed: security.allow_unsafe_file_operations=true "
+            "— skipping hardline check for: %s", command[:200],
+        )
+    else:
+        is_hardline, hardline_desc = detect_hardline_command(command)
+        if is_hardline:
+            logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+            return _hardline_block_result(hardline_desc)
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a

@@ -2723,6 +2723,21 @@ DEFAULT_CONFIG = {
 
     # Pre-exec security scanning via tirith
     "security": {
+        # Allow the agent to write to and read from paths normally blocked by the
+        # file safety denylist (SSH keys, .env files, auth.json, etc.) and bypass
+        # the hardline command floor (rm -rf /, mkfs, shutdown/reboot, fork bomb).
+        #
+        # false (default): hard blocks are enforced — the agent cannot write to
+        #     ~/.hermes/.env, ~/.ssh/id_rsa, etc., and catastrophic shell commands
+        #     are unconditionally denied regardless of --yolo / approvals.mode=off.
+        # true: file safety and hardline checks are bypassed — the agent can write
+        #     anywhere a shell open to the same user can write, and destructive
+        #     system commands are permitted. Use with extreme caution.
+        #
+        # This is distinct from --yolo / /yolo / approvals.mode=off which skip
+        # approval prompts but still enforce file-level safety rules. This toggle
+        # removes the safety floor itself for users who explicitly opt in.
+        "allow_unsafe_file_operations": False,
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
         "tirith_enabled": True,

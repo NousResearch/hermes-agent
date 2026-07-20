@@ -150,15 +150,15 @@ exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
 # Image generation backends
-fal = ["fal-client==0.13.1"]
+fal = ["fal-client==0.13.1", "msgpack==1.2.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.2.7"]
-modal = ["modal==1.3.4"]
+modal = ["modal==1.3.4", "cbor2==5.9.0", "click==8.3.3"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # mcp/starlette: HIGH advisories; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+messaging = ["python-telegram-bot[webhooks]==22.6", "tornado==6.5.7", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # tornado/aiohttp security floors
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
@@ -255,6 +255,7 @@ google = [
   "google-api-python-client==2.194.0",
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
+  "httplib2==0.32.0",
 ]
 youtube = [
   # Required by skills/media/youtube-content and
@@ -308,15 +309,6 @@ hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
-
-[tool.uv]
-constraint-dependencies = [
-  "cbor2>=5.9.0,<6",
-  "click>=8.3.3,<8.4",
-  "httplib2>=0.32.0,<1",
-  "msgpack>=1.2.1",
-  "tornado>=6.5.7",
-]
 
 [tool.setuptools.data-files]
 # i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is

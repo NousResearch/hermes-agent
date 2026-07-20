@@ -262,7 +262,6 @@ _HIGH_ADVISORY_FLOORS = {
 def test_high_advisory_dependency_pins_meet_patched_floors():
     """Security-critical pins and uv.lock must cover all known HIGH fixes."""
     pyproject_pins = _pins_from_specs(_pyproject_pinned_specs())
-    constraint_pins = _constraint_floor_pins(_uv_constraint_specs())
     lazy_pins = _pins_from_specs(_lazy_deps_pinned_specs())
     lock_data = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     locked: dict[str, set[str]] = {}
@@ -273,9 +272,9 @@ def test_high_advisory_dependency_pins_meet_patched_floors():
 
     for package, floor in _HIGH_ADVISORY_FLOORS.items():
         canonical = _canonical(package)
-        assert canonical in pyproject_pins or canonical in constraint_pins, (
-            f"{package} must be pinned directly or constrained in pyproject.toml "
-            "so the patched version cannot drift between installs"
+        assert canonical in pyproject_pins, (
+            f"{package} must be pinned in published project metadata so the "
+            "patched version cannot drift between installs"
         )
         assert canonical in locked, f"{package} not found in uv.lock"
 
@@ -284,8 +283,7 @@ def test_high_advisory_dependency_pins_meet_patched_floors():
             versions_by_source["pyproject.toml"] = pyproject_pins[canonical]
         if canonical in lazy_pins:
             versions_by_source["tools/lazy_deps.py"] = lazy_pins[canonical]
-        if canonical in constraint_pins:
-            versions_by_source["pyproject.toml [tool.uv]"] = constraint_pins[canonical]
+
 
         for source, versions in versions_by_source.items():
             for version in versions:
@@ -293,6 +291,16 @@ def test_high_advisory_dependency_pins_meet_patched_floors():
                     f"{source} pins {package}=={version}, below the complete "
                     f"HIGH-advisory fix floor {'.'.join(map(str, floor))}"
                 )
+
+
+def test_transitive_security_floors_ship_in_project_metadata():
+    """Published extras must enforce every transitive-only security floor."""
+    pyproject_pins = _pins_from_specs(_pyproject_pinned_specs())
+    for package in ("cbor2", "click", "httplib2", "msgpack", "tornado"):
+        assert package in pyproject_pins, (
+            f"{package} is only constrained through [tool.uv]; pip/wheel installs "
+            "would not receive its security floor"
+        )
 
 
 def test_locale_catalogs_ship_in_both_wheel_and_sdist():
@@ -368,22 +376,6 @@ def _pyproject_pinned_specs():
     for extra in data["project"].get("optional-dependencies", {}).values():
         specs.extend(extra)
     return specs
-
-
-def _uv_constraint_specs():
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return data["tool"]["uv"]["constraint-dependencies"]
-
-
-def _constraint_floor_pins(specs):
-    """Map constrained packages to their explicit inclusive lower floors."""
-    pins: dict[str, set[str]] = {}
-    for spec in specs:
-        name = re.split(r"[=<>!~]", spec, maxsplit=1)[0].strip()
-        match = re.search(r">=\s*([^\s,;]+)", spec)
-        if match:
-            pins.setdefault(_canonical(name), set()).add(match.group(1))
-    return pins
 
 
 def _lazy_deps_pinned_specs():

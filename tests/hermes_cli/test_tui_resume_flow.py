@@ -1701,12 +1701,14 @@ def test_launch_tui_worktree_validates_relative_python_against_final_cwd(
     monkeypatch.setattr(
         main_mod.subprocess,
         "call",
-        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+        lambda argv, cwd=None, env=None: captured.update({"cwd": cwd, "env": env})
+        or 1,
     )
 
     with pytest.raises(SystemExit):
         main_mod._launch_tui(worktree=True)
 
+    assert captured["cwd"] == str(worktree)
     assert captured["env"]["HERMES_CWD"] == str(worktree)
     assert captured["env"]["HERMES_PYTHON"] == str(relative_python)
 

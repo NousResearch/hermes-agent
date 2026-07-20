@@ -1,6 +1,7 @@
 name: Dashboard Design System
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:

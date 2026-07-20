@@ -190,6 +190,42 @@ def _extract_compaction_summary_snippet(
     return None
 
 
+def _resolve_announce_reasoning(agent: Any) -> "str | None":
+    """Resolve the reasoning-effort label for the compaction announce.
+
+    Session-truthful source first: the live agent's ``reasoning_config`` is set
+    per-message by the gateway from ``_resolve_session_reasoning_config`` (which
+    honors ``/reasoning`` session overrides and per-model overrides), so it is
+    what the turn actually ran at. The old behavior — re-reading the *global*
+    ``agent.reasoning_effort`` from config.yaml — showed the config default
+    (e.g. ``r:medium``) while the session genuinely ran at an override
+    (``r:xhigh``): the same bug class the runtime footer fixed in
+    ``_reasoning_effort_for_footer``. Fall back to the global config value only
+    when the agent carries no reasoning_config (CLI/standalone paths).
+
+    Returns the bare effort string (``"xhigh"``), ``"none"`` for an explicit
+    disabled config, or ``None`` when nothing is resolvable (announce omits
+    the ``r:`` segment; ``_format_compaction_announce`` also drops
+    ``default``/``none`` labels).
+    """
+    try:
+        cfg = getattr(agent, "reasoning_config", None)
+        if isinstance(cfg, dict) and cfg:
+            if not cfg.get("enabled", True):
+                return "none"
+            effort = str(cfg.get("effort", "") or "").strip()
+            if effort:
+                return effort
+    except Exception:
+        pass
+    try:
+        from gateway.run import _load_gateway_config as _lgc
+        _ac = (_lgc().get("agent") or {})
+        return str(_ac.get("reasoning_effort", "") or "").strip() or None
+    except Exception:
+        return None
+
+
 def _emit_compaction_announce(agent: Any, *, dedupe_key, **fmt_kwargs) -> None:
     """Emit the compaction announce once per real compaction boundary.
 
@@ -1492,13 +1528,7 @@ def compress_context(
                     _warn_compaction_stats_once(
                         agent, "COMPACTION_STATS_BUILD_FAILED in-turn", exc_info=True
                     )
-            _reasoning_inturn = None
-            try:
-                from gateway.run import _load_gateway_config as _lgc
-                _ac = (_lgc().get("agent") or {})
-                _reasoning_inturn = str(_ac.get("reasoning_effort", "") or "").strip() or None
-            except Exception:
-                _reasoning_inturn = None
+            _reasoning_inturn = _resolve_announce_reasoning(agent)
             _emit_compaction_announce(
                 agent,
                 dedupe_key=_dedupe_key,

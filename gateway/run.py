@@ -17930,11 +17930,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _status = getattr(_comp, "_last_compression_status", None)
             _provider = runtime.get("provider") if isinstance(runtime, dict) else None
 
-            # Reasoning level for the model line (same source as the runtime footer).
+            # Reasoning level for the model line — session-truthful (same
+            # override-aware resolver as the runtime footer), not the global
+            # config default (which lied as r:<global> under a /reasoning
+            # session override).
             _reasoning = None
             try:
-                _agent_cfg = (_cfg.get("agent") or {}) if isinstance(_cfg, dict) else {}
-                _reasoning = str(_agent_cfg.get("reasoning_effort", "") or "").strip() or None
+                _rcfg = self._resolve_session_reasoning_config(
+                    source=source, model=model or "",
+                )
+                if isinstance(_rcfg, dict) and _rcfg:
+                    if not _rcfg.get("enabled", True):
+                        _reasoning = "none"
+                    else:
+                        _reasoning = (
+                            str(_rcfg.get("effort", "") or "").strip() or None
+                        )
+                if _reasoning is None:
+                    _agent_cfg = (_cfg.get("agent") or {}) if isinstance(_cfg, dict) else {}
+                    _reasoning = str(_agent_cfg.get("reasoning_effort", "") or "").strip() or None
             except Exception:
                 _reasoning = None
 

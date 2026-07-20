@@ -1218,3 +1218,61 @@ class TestTokenGuardStillBites:
 
 
 
+
+
+# ──────────── _resolve_announce_reasoning: session-truthful source ────────────
+
+from types import SimpleNamespace
+
+from agent.conversation_compression import _resolve_announce_reasoning
+
+
+class TestResolveAnnounceReasoning:
+    """The announce must show what the session actually ran at, not the global
+    config default (the r:medium-banner-vs-r:xhigh-footer bug, 2026-07-19)."""
+
+    def test_agent_reasoning_config_wins_over_global(self, monkeypatch):
+        # Simulate a /reasoning session override: gateway sets
+        # agent.reasoning_config per-message.
+        agent = SimpleNamespace(reasoning_config={"enabled": True, "effort": "xhigh"})
+        # Global config says medium — must NOT be used.
+        import agent.conversation_compression as cc  # noqa: PLR0402
+        out = _resolve_announce_reasoning(agent)
+        assert out == "xhigh"
+
+    def test_disabled_config_renders_none(self):
+        agent = SimpleNamespace(reasoning_config={"enabled": False})
+        assert _resolve_announce_reasoning(agent) == "none"
+
+    def test_falls_back_to_global_when_agent_has_no_config(self, monkeypatch):
+        agent = SimpleNamespace(reasoning_config=None)
+        import gateway.run as gr
+        monkeypatch.setattr(
+            gr, "_load_gateway_config",
+            lambda: {"agent": {"reasoning_effort": "medium"}},
+        )
+        assert _resolve_announce_reasoning(agent) == "medium"
+
+    def test_empty_dict_falls_back_to_global(self, monkeypatch):
+        agent = SimpleNamespace(reasoning_config={})
+        import gateway.run as gr
+        monkeypatch.setattr(
+            gr, "_load_gateway_config",
+            lambda: {"agent": {"reasoning_effort": "high"}},
+        )
+        assert _resolve_announce_reasoning(agent) == "high"
+
+    def test_nothing_resolvable_returns_none(self, monkeypatch):
+        agent = SimpleNamespace()  # no reasoning_config attr at all
+        import gateway.run as gr
+        monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"agent": {}})
+        assert _resolve_announce_reasoning(agent) is None
+
+    def test_blank_effort_falls_back_to_global(self, monkeypatch):
+        agent = SimpleNamespace(reasoning_config={"enabled": True, "effort": "  "})
+        import gateway.run as gr
+        monkeypatch.setattr(
+            gr, "_load_gateway_config",
+            lambda: {"agent": {"reasoning_effort": "low"}},
+        )
+        assert _resolve_announce_reasoning(agent) == "low"

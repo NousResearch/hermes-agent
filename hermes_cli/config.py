@@ -2409,6 +2409,13 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # Pause when repeated turns produce no new concrete evidence. 0 disables.
+        "max_no_progress_turns": 3,
+        # Wall-clock budget for one goal. 0 disables.
+        "max_elapsed_minutes": 0,
+        # Bounded redacted evidence package limits.
+        "evidence_max_items": 8,
+        "evidence_item_chars": 240,
     },
 
     # Mixture of Agents — named presets used by /moa. A preset is an execution

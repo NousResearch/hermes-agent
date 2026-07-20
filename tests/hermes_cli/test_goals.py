@@ -1524,3 +1524,353 @@ class TestContractAndBackgroundCompose:
             )
         assert verdict == "done"
         assert wait_directive is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Loop Engineering evidence package + deterministic reviewer gate
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestEvidencePackage:
+    def test_roundtrip_inside_goal_state(self):
+        from hermes_cli.goals import EvidencePackage, GoalState
+
+        package = EvidencePackage.from_response(
+            "tests/hermes_cli/test_goals.py::test_x PASSED\n3 passed in 0.12s",
+            captured_at=123.0,
+        )
+        restored = GoalState.from_json(
+            GoalState(goal="ship it", evidence_package=package).to_json()
+        )
+
+        assert restored.evidence_package.items == package.items
+        assert restored.evidence_package.fingerprint == package.fingerprint
+        assert restored.evidence_package.captured_at == 123.0
+
+    def test_old_row_loads_with_empty_evidence_package(self):
+        from hermes_cli.goals import GoalState
+
+        state = GoalState.from_json(
+            '{"goal": "old goal", "status": "active", "turns_used": 2}'
+        )
+
+        assert state.evidence_package.items == []
+        assert state.evidence_package.fingerprint == ""
+        assert state.evidence_package.captured_at == 0.0
+
+    def test_merge_deduplicates_and_reports_only_new_evidence(self):
+        from hermes_cli.goals import EvidencePackage
+
+        accumulated = EvidencePackage.from_response(
+            "3 passed in 0.12s", captured_at=10.0
+        )
+        duplicate = EvidencePackage.from_response(
+            "3 passed in 0.12s", captured_at=20.0
+        )
+        additional = EvidencePackage.from_response(
+            "HTTP/1.1 200 OK", captured_at=30.0
+        )
+
+        assert accumulated.merge(duplicate, max_items=8) is False
+        assert accumulated.merge(additional, max_items=8) is True
+        assert accumulated.items == ["3 passed in 0.12s", "HTTP/1.1 200 OK"]
+        assert accumulated.captured_at == 30.0
+
+    def test_extraction_bounds_item_count_and_length(self):
+        from hermes_cli.goals import EvidencePackage
+
+        package = EvidencePackage.from_response(
+            "\n".join(
+                [
+                    "Evidence: pytest tests/hermes_cli/test_goals.py -q",
+                    "tests/hermes_cli/test_goals.py::test_one PASSED",
+                    "tests/hermes_cli/test_goals.py::test_two PASSED",
+                ]
+            ),
+            max_items=2,
+            item_chars=24,
+            captured_at=1.0,
+        )
+
+        assert len(package.items) == 2
+        assert all(len(item) <= 24 for item in package.items)
+
+    def test_generic_completion_claims_fail_reviewer_gate(self):
+        from hermes_cli.goals import EvidencePackage, review_evidence
+
+        package = EvidencePackage.from_response(
+            "Done. All tests pass. The implementation is complete."
+        )
+        review = review_evidence(package)
+
+        assert package.items == []
+        assert review["status"] == "failed"
+        assert review["passed"] is False
+        assert "concrete evidence" in review["reason"].lower()
+
+    def test_concrete_output_passes_and_secrets_are_redacted(self):
+        from hermes_cli.goals import EvidencePackage, review_evidence
+
+        package = EvidencePackage.from_response(
+            "HTTP/1.1 200 OK\nAuthorization: Bearer super-secret-token\n3 passed in 0.12s"
+        )
+        review = review_evidence(package)
+
+        assert review["status"] == "passed"
+        assert review["passed"] is True
+        serialized = json.dumps(package.to_dict())
+        assert "super-secret-token" not in serialized
+
+
+class TestGoalManagerEvidenceGate:
+    @pytest.mark.parametrize("response", ["", "All tests pass."])
+    def test_structured_done_without_concrete_evidence_continues(
+        self, hermes_home, response
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(session_id=f"evidence-missing-{bool(response)}")
+        mgr.set(
+            "ship it",
+            contract=GoalContract(verification="pytest reports passing tests"),
+        )
+
+        with patch.object(
+            goals, "judge_goal", return_value=("done", "looks complete", False, None)
+        ):
+            decision = mgr.evaluate_after_turn(response)
+
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert decision["status"] == "active"
+        assert decision["reviewer_gate"]["passed"] is False
+        assert mgr.state.status == "active"
+        assert mgr.state.evidence_package.items == []
+
+    def test_structured_done_with_concrete_evidence_completes(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(session_id="evidence-concrete")
+        mgr.set(
+            "ship it",
+            contract=GoalContract(verification="pytest reports passing tests"),
+        )
+
+        with patch.object(
+            goals, "judge_goal", return_value=("done", "verified", False, None)
+        ):
+            decision = mgr.evaluate_after_turn("3 passed in 0.12s")
+
+        assert decision["verdict"] == "done"
+        assert decision["status"] == "done"
+        assert decision["reviewer_gate"]["passed"] is True
+        assert decision["evidence_package"]["count"] == 1
+        assert mgr.state.status == "done"
+
+    def test_accumulated_evidence_satisfies_later_done_verdict(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(session_id="evidence-accumulated")
+        mgr.set(
+            "ship it",
+            contract=GoalContract(verification="pytest reports passing tests"),
+        )
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "more work", False, None)
+        ):
+            first = mgr.evaluate_after_turn("3 passed in 0.12s")
+        fingerprint = first["evidence_package"]["fingerprint"]
+
+        with patch.object(
+            goals, "judge_goal", return_value=("done", "now complete", False, None)
+        ):
+            second = mgr.evaluate_after_turn("Done.")
+
+        assert first["status"] == "active"
+        assert second["status"] == "done"
+        assert second["reviewer_gate"]["passed"] is True
+        assert second["evidence_package"]["count"] == 1
+        assert second["evidence_package"]["fingerprint"] == fingerprint
+
+    def test_every_decision_includes_evidence_and_reviewer_fields(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        inactive = GoalManager(session_id="evidence-decision-inactive").evaluate_after_turn(
+            "anything"
+        )
+        mgr = GoalManager(session_id="evidence-decision-active")
+        mgr.set("keep working")
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "not yet", False, None)
+        ):
+            active = mgr.evaluate_after_turn("made progress")
+
+        for decision in (inactive, active):
+            assert set(decision["evidence_package"]) == {
+                "count",
+                "fingerprint",
+                "captured_at",
+            }
+            assert {
+                "status",
+                "passed",
+                "reason",
+                "evidence_count",
+                "required",
+            } <= set(decision["reviewer_gate"])
+
+    def test_free_form_done_preserves_completion_without_evidence(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="evidence-free-form")
+        mgr.set("ship it")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("done", "shipped", False, None)
+        ):
+            decision = mgr.evaluate_after_turn("Done.")
+
+        assert decision["verdict"] == "done"
+        assert decision["status"] == "done"
+        assert decision["reviewer_gate"]["required"] is False
+        assert mgr.state.status == "done"
+
+
+class TestGoalStoppingConditions:
+    def test_no_new_evidence_pauses_at_limit(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(
+            session_id="stop-no-progress", default_max_turns=20,
+            default_max_no_progress_turns=2,
+        )
+        mgr.set("ship it", contract=GoalContract(verification="pytest passes"))
+        with patch.object(goals, "judge_goal", return_value=("continue", "not yet", False, None)):
+            first = mgr.evaluate_after_turn("still working")
+            second = mgr.evaluate_after_turn("still working differently")
+
+        assert first["status"] == "active"
+        assert second["status"] == "paused"
+        assert second["stop_condition"] == "no_new_evidence"
+        assert mgr.state.consecutive_no_progress_turns == 2
+
+    def test_new_evidence_resets_no_progress_counter(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(
+            session_id="stop-progress-reset", default_max_turns=20,
+            default_max_no_progress_turns=3,
+        )
+        mgr.set("ship it", contract=GoalContract(verification="pytest passes"))
+        with patch.object(goals, "judge_goal", return_value=("continue", "not yet", False, None)):
+            mgr.evaluate_after_turn("no evidence")
+            assert mgr.state.consecutive_no_progress_turns == 1
+            mgr.evaluate_after_turn("3 passed in 0.12s")
+        assert mgr.state.consecutive_no_progress_turns == 0
+
+    def test_elapsed_budget_pauses_before_continuation(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(
+            session_id="stop-elapsed", default_max_turns=20,
+            default_max_elapsed_minutes=1,
+        )
+        mgr.set("long goal")
+        mgr.state.created_at = time.time() - 61
+        with patch.object(goals, "judge_goal", return_value=("continue", "not yet", False, None)):
+            decision = mgr.evaluate_after_turn("working")
+        assert decision["status"] == "paused"
+        assert decision["stop_condition"] == "elapsed_budget"
+
+    def test_resume_preserves_budget_and_evidence_by_default(self, hermes_home):
+        from hermes_cli.goals import EvidencePackage, GoalManager
+
+        mgr = GoalManager(session_id="resume-preserve")
+        mgr.set("goal")
+        mgr.state.turns_used = 4
+        mgr.state.consecutive_no_progress_turns = 2
+        mgr.state.evidence_package = EvidencePackage.from_response("3 passed in 0.12s")
+        mgr.pause("test")
+        mgr.resume()
+        assert mgr.state.turns_used == 4
+        assert mgr.state.consecutive_no_progress_turns == 2
+        assert mgr.state.evidence_package.items == ["3 passed in 0.12s"]
+
+    @pytest.mark.parametrize(
+        "judge_result",
+        [
+            ("continue", "judge returned empty response", True, None),
+            ("continue", "judge error: RuntimeError", False, None),
+            ("continue", "auxiliary client unavailable", False, None),
+        ],
+    )
+    def test_judge_failures_do_not_burn_no_progress_budget(
+        self, hermes_home, judge_result
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(
+            session_id=f"judge-no-progress-{judge_result[1]}",
+            default_max_no_progress_turns=1,
+        )
+        mgr.set("ship it", contract=GoalContract(verification="pytest passes"))
+        with patch.object(goals, "judge_goal", return_value=judge_result):
+            decision = mgr.evaluate_after_turn("no evidence yet")
+
+        assert decision["status"] == "active"
+        assert decision["should_continue"] is True
+        assert mgr.state.consecutive_no_progress_turns == 0
+
+    def test_failed_test_output_does_not_pass_reviewer_gate(self):
+        from hermes_cli.goals import EvidencePackage, review_evidence
+
+        package = EvidencePackage.from_response("2 failed in 0.12s")
+        review = review_evidence(package)
+        assert package.items == ["2 failed in 0.12s"]
+        assert review["passed"] is False
+        assert review["status"] == "failed"
+
+    def test_manager_honors_evidence_package_limits(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(
+            session_id="evidence-limits",
+            default_evidence_max_items=1,
+            default_evidence_item_chars=18,
+        )
+        mgr.set("ship it", contract=GoalContract(verification="tests pass"))
+        with patch.object(goals, "judge_goal", return_value=("continue", "more", False, None)):
+            decision = mgr.evaluate_after_turn(
+                "tests/a.py::test_one PASSED\nHTTP/1.1 200 OK"
+            )
+        assert decision["evidence_package"]["count"] == 1
+        assert len(mgr.state.evidence_package.items[0]) <= 18
+
+    def test_status_exposes_loop_control_state(self, hermes_home):
+        from hermes_cli.goals import EvidencePackage, GoalContract, GoalManager
+
+        mgr = GoalManager(
+            session_id="status-loop-state",
+            default_max_no_progress_turns=3,
+            default_max_elapsed_minutes=10,
+        )
+        mgr.set("ship it", contract=GoalContract(verification="tests pass"))
+        mgr.state.consecutive_no_progress_turns = 2
+        mgr.state.evidence_package = EvidencePackage.from_response("3 passed in 0.12s")
+
+        status = mgr.status_line()
+        assert "1 evidence" in status
+        assert "reviewer=passed" in status
+        assert "no-progress=2/3" in status
+        assert "elapsed=" in status and "/10m" in status

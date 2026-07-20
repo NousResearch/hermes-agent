@@ -9392,10 +9392,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
             max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_no_progress = int(goals_cfg.get("max_no_progress_turns", 3) or 0)
+            max_elapsed = float(goals_cfg.get("max_elapsed_minutes", 0) or 0)
+            evidence_max_items = int(goals_cfg.get("evidence_max_items", 8) or 0)
+            evidence_item_chars = int(goals_cfg.get("evidence_item_chars", 240) or 240)
         except Exception:
-            max_turns = 20
+            max_turns, max_no_progress, max_elapsed = 20, 3, 0
+            evidence_max_items, evidence_item_chars = 8, 240
 
-        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        mgr = GoalManager(
+            session_id=sid,
+            default_max_turns=max_turns,
+            default_max_no_progress_turns=max_no_progress,
+            default_max_elapsed_minutes=max_elapsed,
+            default_evidence_max_items=evidence_max_items,
+            default_evidence_item_chars=evidence_item_chars,
+        )
         self._goal_manager = mgr
         return mgr
 

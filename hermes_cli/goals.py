@@ -29,6 +29,7 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -68,9 +69,11 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # Transport failures (API auth errors 401, timeouts, DNS, etc.) are also
 # tracked and auto-pause the loop after this many consecutive failures.
-# A broken/invalid API key returns 401 every call — the loop must not
-# run until the turn budget, wasting every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+DEFAULT_EVIDENCE_MAX_ITEMS = 8
+DEFAULT_EVIDENCE_ITEM_CHARS = 240
+DEFAULT_MAX_NO_PROGRESS_TURNS = 3
+DEFAULT_MAX_ELAPSED_MINUTES = 0.0
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -386,7 +389,148 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Dataclass
+# Evidence package + deterministic reviewer gate
+# ──────────────────────────────────────────────────────────────────────
+
+
+_EVIDENCE_LINE_PATTERNS = (
+    re.compile(r"^(?:evidence|proof|verification)\s*:\s*\S+", re.IGNORECASE),
+    re.compile(r"^HTTP/\d(?:\.\d)?\s+\d{3}\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s+(?:passed|failed|skipped|errors?|warnings?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:PASSED|FAILED|ERROR|SKIPPED)\b"),
+    re.compile(r"\b(?:BUILD|COMPILE|COMPILATION)\s+(?:SUCCESS(?:FUL)?|FAILED)\b", re.IGNORECASE),
+    re.compile(r"\b(?:exit(?:ed)?|status)\s+code\s*[:=]?\s*\d+\b", re.IGNORECASE),
+    re.compile(r"(?:^|\s)[\w./\\-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|kt|rb|php|cs):\d+\b"),
+)
+_GENERIC_EVIDENCE_CLAIM_RE = re.compile(
+    r"^(?:(?:evidence|proof|verification)\s*:\s*)?"
+    r"(?:done|complete(?:d)?|all tests pass(?:ed)?|implementation (?:is )?complete)\.?$",
+    re.IGNORECASE,
+)
+_BEARER_SECRET_RE = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)\S+")
+_NAMED_SECRET_RE = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret)"
+    r"(\s*[:=]\s*|\s+)([^\s,;]+)"
+)
+_KNOWN_SECRET_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b")
+
+
+def _redact_evidence_text(text: str) -> str:
+    text = _BEARER_SECRET_RE.sub(r"\1[REDACTED]", text)
+    text = _NAMED_SECRET_RE.sub(r"\1\2[REDACTED]", text)
+    return _KNOWN_SECRET_RE.sub("[REDACTED]", text)
+
+
+def _evidence_fingerprint(items: List[str]) -> str:
+    if not items:
+        return ""
+    return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+
+
+@dataclass
+class EvidencePackage:
+    """Bounded, redacted concrete evidence extracted from assistant output."""
+
+    items: List[str] = field(default_factory=list)
+    fingerprint: str = ""
+    captured_at: float = 0.0
+
+    @classmethod
+    def from_response(
+        cls,
+        response: str,
+        *,
+        max_items: int = DEFAULT_EVIDENCE_MAX_ITEMS,
+        item_chars: int = DEFAULT_EVIDENCE_ITEM_CHARS,
+        captured_at: Optional[float] = None,
+    ) -> "EvidencePackage":
+        max_items = max(0, int(max_items))
+        item_chars = max(1, int(item_chars))
+        items: List[str] = []
+        for raw_line in (response or "").splitlines():
+            line = " ".join(raw_line.strip().split())
+            if not line or _GENERIC_EVIDENCE_CLAIM_RE.fullmatch(line):
+                continue
+            if not any(pattern.search(line) for pattern in _EVIDENCE_LINE_PATTERNS):
+                continue
+            line = _redact_evidence_text(line)[:item_chars]
+            if line and line not in items:
+                items.append(line)
+            if len(items) >= max_items:
+                break
+        return cls(
+            items=items,
+            fingerprint=_evidence_fingerprint(items),
+            captured_at=float(captured_at if captured_at is not None else time.time()),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "EvidencePackage":
+        if not isinstance(data, dict):
+            return cls()
+        items: List[str] = []
+        raw_items = data.get("items") or []
+        if isinstance(raw_items, list):
+            for raw_item in raw_items[:DEFAULT_EVIDENCE_MAX_ITEMS]:
+                item = _redact_evidence_text(" ".join(str(raw_item).strip().split()))
+                item = item[:DEFAULT_EVIDENCE_ITEM_CHARS]
+                if item and item not in items:
+                    items.append(item)
+        return cls(
+            items=items,
+            fingerprint=_evidence_fingerprint(items),
+            captured_at=float(data.get("captured_at", 0.0) or 0.0),
+        )
+
+    def merge(self, other: "EvidencePackage", *, max_items: int = DEFAULT_EVIDENCE_MAX_ITEMS) -> bool:
+        max_items = max(0, int(max_items))
+        existing = set(self.items)
+        additions = [item for item in other.items if item not in existing]
+        if additions:
+            self.items = (self.items + additions)[-max_items:] if max_items else []
+            self.fingerprint = _evidence_fingerprint(self.items)
+        self.captured_at = max(self.captured_at, other.captured_at)
+        return bool(additions)
+
+
+def review_evidence(package: EvidencePackage) -> Dict[str, Any]:
+    """Deterministically gate completion on concrete success evidence."""
+    count = len(package.items)
+    success_patterns = (
+        re.compile(r"\b\d+\s+passed\b", re.IGNORECASE),
+        re.compile(r"^HTTP/\d(?:\.\d)?\s+2\d{2}\b", re.IGNORECASE),
+        re.compile(r"\b(?:BUILD|COMPILE|COMPILATION)\s+SUCCESS(?:FUL)?\b", re.IGNORECASE),
+        re.compile(r"\b(?:exit(?:ed)?|status)\s+code\s*[:=]?\s*0\b", re.IGNORECASE),
+        re.compile(r"\bPASSED\b"),
+    )
+    success_count = sum(
+        1 for item in package.items if any(pattern.search(item) for pattern in success_patterns)
+    )
+    if success_count:
+        return {
+            "status": "passed",
+            "passed": True,
+            "reason": f"Reviewer found {success_count} concrete success evidence item(s).",
+            "evidence_count": count,
+        }
+    reason = (
+        "Reviewer found evidence, but none proves successful verification."
+        if count
+        else "Reviewer found no concrete evidence in the assistant response."
+    )
+    return {
+        "status": "failed",
+        "passed": False,
+        "reason": reason,
+        "evidence_count": count,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Goal state dataclass
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -404,10 +548,12 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
-    # Transport failures are API/auth/network errors.  Broken API keys return
-    # 401 every call — track them separately so the loop auto-pauses instead
-    # of burning every turn budget slot on an unreachable judge.
-    consecutive_transport_failures: int = 0   # judge API/transport errors in a row
+    # Transport failures are API/auth/network errors. Broken API keys return
+    # 401 every call, so track them separately from parse and business progress.
+    consecutive_transport_failures: int = 0
+    consecutive_no_progress_turns: int = 0
+    max_no_progress_turns: int = DEFAULT_MAX_NO_PROGRESS_TURNS
+    max_elapsed_minutes: float = DEFAULT_MAX_ELAPSED_MINUTES
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -442,10 +588,11 @@ class GoalState:
     # constraints / boundaries / stop_when). Empty by default; a goal with
     # no contract behaves exactly like the original free-form goal.
     contract: GoalContract = field(default_factory=GoalContract)
+    evidence_package: EvidencePackage = field(default_factory=EvidencePackage)
 
     def to_json(self) -> str:
         data = asdict(self)
-        # asdict already recursed GoalContract into a plain dict.
+        # asdict already recursed nested dataclasses into plain dicts.
         return json.dumps(data, ensure_ascii=False)
 
     @classmethod
@@ -467,6 +614,9 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
             consecutive_transport_failures=int(data.get("consecutive_transport_failures", 0) or 0),
+            consecutive_no_progress_turns=int(data.get("consecutive_no_progress_turns", 0) or 0),
+            max_no_progress_turns=int(data.get("max_no_progress_turns", DEFAULT_MAX_NO_PROGRESS_TURNS) or 0),
+            max_elapsed_minutes=float(data.get("max_elapsed_minutes", DEFAULT_MAX_ELAPSED_MINUTES) or 0.0),
             subgoals=subgoals,
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -474,6 +624,7 @@ class GoalState:
             waiting_reason=data.get("waiting_reason"),
             waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
             contract=GoalContract.from_dict(data.get("contract")),
+            evidence_package=EvidencePackage.from_dict(data.get("evidence_package")),
         )
 
     # --- contract helpers -------------------------------------------------
@@ -1093,9 +1244,22 @@ class GoalManager:
       feed back into ``run_conversation``.
     """
 
-    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        default_max_turns: int = DEFAULT_MAX_TURNS,
+        default_max_no_progress_turns: int = DEFAULT_MAX_NO_PROGRESS_TURNS,
+        default_max_elapsed_minutes: float = DEFAULT_MAX_ELAPSED_MINUTES,
+        default_evidence_max_items: int = DEFAULT_EVIDENCE_MAX_ITEMS,
+        default_evidence_item_chars: int = DEFAULT_EVIDENCE_ITEM_CHARS,
+    ):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self.default_max_no_progress_turns = max(0, int(default_max_no_progress_turns or 0))
+        self.default_max_elapsed_minutes = max(0.0, float(default_max_elapsed_minutes or 0.0))
+        self.default_evidence_max_items = max(0, int(default_evidence_max_items or 0))
+        self.default_evidence_item_chars = max(1, int(default_evidence_item_chars or 1))
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -1120,7 +1284,20 @@ class GoalManager:
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
-        meta = f"{turns}{sub}{con}"
+        evidence_count = len(s.evidence_package.items)
+        evidence = f", {evidence_count} evidence item{'s' if evidence_count != 1 else ''}"
+        reviewer = review_evidence(s.evidence_package)
+        reviewer_status = reviewer["status"] if s.contract.verification.strip() else "not_required"
+        progress = (
+            f", no-progress={s.consecutive_no_progress_turns}/{s.max_no_progress_turns}"
+            if s.max_no_progress_turns > 0 and s.contract.verification.strip()
+            else ""
+        )
+        elapsed = ""
+        if s.max_elapsed_minutes > 0:
+            elapsed_minutes = max(0.0, time.time() - s.created_at) / 60
+            elapsed = f", elapsed={elapsed_minutes:.1f}/{s.max_elapsed_minutes:g}m"
+        meta = f"{turns}{sub}{con}{evidence}, reviewer={reviewer_status}{progress}{elapsed}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 wr = s.waiting_reason or f"session {s.waiting_on_session}"
@@ -1151,6 +1328,8 @@ class GoalManager:
             status="active",
             turns_used=0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_no_progress_turns=self.default_max_no_progress_turns,
+            max_elapsed_minutes=self.default_max_elapsed_minutes,
             created_at=time.time(),
             last_turn_at=0.0,
             contract=contract if contract is not None else GoalContract(),
@@ -1184,7 +1363,7 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return self._state
 
-    def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
+    def resume(self, *, reset_budget: bool = False) -> Optional[GoalState]:
         if not self._state:
             return None
         self._state.status = "active"
@@ -1197,6 +1376,8 @@ class GoalManager:
         self._state.waiting_since = 0.0
         if reset_budget:
             self._state.turns_used = 0
+            self._state.consecutive_no_progress_turns = 0
+            self._state.created_at = time.time()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1379,6 +1560,38 @@ class GoalManager:
             return False
         return False
 
+    def _loop_metadata(self, reviewer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Stable machine-readable evidence and reviewer-gate result."""
+        state = self._state
+        package = state.evidence_package if state else EvidencePackage()
+        required = bool(
+            state and state.has_contract() and state.contract.verification.strip()
+        )
+        if reviewer is None:
+            reviewer = review_evidence(package) if required else {
+                "status": "not_required",
+                "passed": True,
+                "reason": "goal has no structured verification criterion",
+                "evidence_count": len(package.items),
+            }
+        reviewer = dict(reviewer)
+        reviewer["required"] = required
+        reviewer.setdefault("evidence_count", len(package.items))
+        return {
+            "evidence_package": {
+                "count": len(package.items),
+                "fingerprint": package.fingerprint,
+                "captured_at": package.captured_at,
+            },
+            "reviewer_gate": reviewer,
+        }
+
+    def _with_loop_metadata(
+        self, decision: Dict[str, Any], reviewer: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        decision.update(self._loop_metadata(reviewer))
+        return decision
+
     # --- the main entry point called after every turn -----------------
 
     def evaluate_after_turn(
@@ -1409,14 +1622,14 @@ class GoalManager:
         """
         state = self._state
         if state is None or state.status != "active":
-            return {
+            return self._with_loop_metadata({
                 "status": state.status if state else None,
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "inactive",
                 "reason": "no active goal",
                 "message": "",
-            }
+            })
 
         # Wait barrier: if the loop is parked (on a live process OR a time
         # deadline that hasn't passed), quiesce — do NOT burn a turn or call
@@ -1430,28 +1643,79 @@ class GoalManager:
                 remaining = max(0, int(state.waiting_until - time.time()))
                 tgt = f"{remaining}s remaining"
             reason = state.waiting_reason or tgt
-            return {
+            return self._with_loop_metadata({
                 "status": "active",
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "waiting",
                 "reason": reason,
                 "message": f"⏳ Goal parked — waiting on {tgt}: {reason}",
-            }
+            })
 
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
+        current_evidence = EvidencePackage.from_response(
+            last_response,
+            max_items=self.default_evidence_max_items,
+            item_chars=self.default_evidence_item_chars,
+        )
+        has_new_evidence = state.evidence_package.merge(
+            current_evidence, max_items=self.default_evidence_max_items
+        )
+        reviewer_required = bool(
+            state.has_contract() and state.contract.verification.strip()
+        )
+        # No-progress is meaningful only when the goal defines a concrete
+        # verification surface. Preserve legacy free-form /goal behavior.
+        if reviewer_required:
+            state.consecutive_no_progress_turns = (
+                0 if has_new_evidence else state.consecutive_no_progress_turns + 1
+            )
+        else:
+            state.consecutive_no_progress_turns = 0
+        reviewer = review_evidence(state.evidence_package) if reviewer_required else {
+            "status": "not_required",
+            "passed": True,
+            "reason": "goal has no structured verification criterion",
+            "evidence_count": len(state.evidence_package.items),
+        }
+        reviewer["required"] = reviewer_required
+
+        judge_result = judge_goal(
             state.goal,
             last_response,
             subgoals=state.subgoals or None,
             background_processes=background_processes,
             contract=state.contract if state.has_contract() else None,
         )
+        # Backward-compatible with injected/test judges using the older
+        # four-field result shape; the live judge returns transport_failed.
+        if len(judge_result) == 4:
+            verdict, reason, parse_failed, wait_directive = judge_result
+            transport_failed = False
+        else:
+            verdict, reason, parse_failed, wait_directive, transport_failed = judge_result
         state.last_verdict = verdict
         state.last_reason = reason
+
+        judge_unavailable = bool(
+            parse_failed
+            or transport_failed
+            or reason.startswith("judge error:")
+            or reason in {"auxiliary client unavailable", "no auxiliary client configured"}
+        )
+        if judge_unavailable:
+            # Judge transport/parse availability says nothing about business
+            # progress. Do not consume the evidence-stagnation budget.
+            state.consecutive_no_progress_turns = 0
+
+        if verdict == "done" and reviewer_required and not reviewer["passed"]:
+            verdict = "continue"
+            reason = f"reviewer gate blocked completion: {reviewer['reason']}"
+            state.last_verdict = verdict
+            state.last_reason = reason
 
         # Track consecutive judge parse failures. Reset on any usable reply,
         # including API / transport errors (parse_failed=False) so a flaky
@@ -1487,26 +1751,26 @@ class GoalManager:
             else:
                 self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason)
                 tgt = f"{wait_directive['seconds']}s"
-            return {
+            return self._with_loop_metadata({
                 "status": "active",
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "wait",
                 "reason": reason,
                 "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
-            }
+            }, reviewer)
 
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
-            return {
+            return self._with_loop_metadata({
                 "status": "done",
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "done",
                 "reason": reason,
-                "message": f"✓ Goal achieved: {reason}",
-            }
+                "message": f"✓ Goal achieved ({len(state.evidence_package.items)} evidence item(s)): {reason}",
+            }, reviewer)
 
         # Auto-pause when the judge cannot reach the API at all N turns in a
         # row (401 auth, DNS failure, timeout).  Persistent transport failures
@@ -1520,7 +1784,7 @@ class GoalManager:
                 f"(check auxiliary.goal_judge provider/key in config.yaml)"
             )
             save_goal(self.session_id, state)
-            return {
+            return self._with_loop_metadata({
                 "status": "paused",
                 "should_continue": False,
                 "continuation_prompt": None,
@@ -1536,7 +1800,7 @@ class GoalManager:
                     "      model: deepseek-v4-flash\n"
                     "Then /goal resume to continue."
                 ),
-            }
+            }, reviewer)
 
         # Auto-pause when the judge model can't produce the expected JSON
         # verdict N turns in a row. Points the user at the goal_judge config
@@ -1550,7 +1814,7 @@ class GoalManager:
                 f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
             )
             save_goal(self.session_id, state)
-            return {
+            return self._with_loop_metadata({
                 "status": "paused",
                 "should_continue": False,
                 "continuation_prompt": None,
@@ -1566,13 +1830,13 @@ class GoalManager:
                     "      model: google/gemini-3-flash-preview\n"
                     "Then /goal resume to continue."
                 ),
-            }
+            }, reviewer)
 
         if state.turns_used >= state.max_turns:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
             save_goal(self.session_id, state)
-            return {
+            return self._with_loop_metadata({
                 "status": "paused",
                 "should_continue": False,
                 "continuation_prompt": None,
@@ -1582,19 +1846,55 @@ class GoalManager:
                     f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
                     "Use /goal resume to keep going, or /goal clear to stop."
                 ),
-            }
+            }, reviewer)
+
+        if (
+            state.max_elapsed_minutes > 0
+            and time.time() - state.created_at >= state.max_elapsed_minutes * 60
+        ):
+            state.status = "paused"
+            state.paused_reason = f"elapsed budget exhausted ({state.max_elapsed_minutes:g} minutes)"
+            save_goal(self.session_id, state)
+            return self._with_loop_metadata({
+                "status": "paused", "should_continue": False,
+                "continuation_prompt": None, "verdict": "continue",
+                "reason": reason, "stop_condition": "elapsed_budget",
+                "message": (
+                    f"⏸ Goal paused — elapsed-time budget reached after {state.turns_used} "
+                    f"turn(s), with {len(state.evidence_package.items)} evidence item(s)."
+                ),
+            }, reviewer)
+
+        if (
+            state.max_no_progress_turns > 0
+            and state.consecutive_no_progress_turns >= state.max_no_progress_turns
+        ):
+            state.status = "paused"
+            state.paused_reason = f"no new evidence for {state.consecutive_no_progress_turns} turns"
+            save_goal(self.session_id, state)
+            return self._with_loop_metadata({
+                "status": "paused", "should_continue": False,
+                "continuation_prompt": None, "verdict": "continue",
+                "reason": reason, "stop_condition": "no_new_evidence",
+                "message": (
+                    f"⏸ Goal paused — no new evidence for {state.consecutive_no_progress_turns} "
+                    f"turn(s). Turns used: {state.turns_used}/{state.max_turns}; "
+                    f"evidence items: {len(state.evidence_package.items)}."
+                ),
+            }, reviewer)
 
         save_goal(self.session_id, state)
-        return {
+        return self._with_loop_metadata({
             "status": "active",
             "should_continue": True,
             "continuation_prompt": self.next_continuation_prompt(),
             "verdict": "continue",
             "reason": reason,
             "message": (
-                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
+                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}, "
+                f"{len(state.evidence_package.items)} evidence item(s)): {reason}"
             ),
-        }
+        }, reviewer)
 
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
@@ -1785,6 +2085,8 @@ def run_kanban_goal_loop(
 __all__ = [
     "GoalState",
     "GoalContract",
+    "EvidencePackage",
+    "review_evidence",
     "GoalManager",
     "parse_contract",
     "draft_contract",

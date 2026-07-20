@@ -2946,6 +2946,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         sessions_dir=self.config.sessions_dir,
                     )
                 else:
+                    # Construction-time, before the loop serves traffic; sync DB is fine.
                     self._session_db._db.maybe_warn_auto_prune_disabled()
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)

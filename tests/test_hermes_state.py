@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import logging
 import sqlite3
 import time
 import pytest
@@ -4005,6 +4006,29 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
+
+    def test_warn_auto_prune_disabled_first_call_logs(self, db, caplog):
+        caplog.set_level(logging.WARNING, logger="hermes_state")
+        db.maybe_warn_auto_prune_disabled()
+        assert any(
+            "sessions.auto_prune is disabled" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_warn_auto_prune_disabled_second_call_silent(self, db, caplog):
+        caplog.set_level(logging.WARNING, logger="hermes_state")
+        db.maybe_warn_auto_prune_disabled()
+        caplog.clear()
+        db.maybe_warn_auto_prune_disabled()
+        assert not any(
+            "sessions.auto_prune is disabled" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_warn_auto_prune_disabled_marker_persists(self, db):
+        assert db.get_meta("auto_prune_disabled_warned") is None
+        db.maybe_warn_auto_prune_disabled()
+        assert db.get_meta("auto_prune_disabled_warned") == "1"
 
     def test_auto_prune_deletes_transcript_files(self, db, tmp_path):
         """Issue #3015: auto-prune must also delete on-disk transcript files."""

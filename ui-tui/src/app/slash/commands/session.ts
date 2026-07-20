@@ -23,6 +23,8 @@ import type { SlashCommand } from '../types.js'
 const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
+const REASONING_SESSION_FLAGS = new Set(['--session'])
+const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -36,6 +38,42 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   return trimmed
+}
+
+const reasoningConfigPayload = (arg: string, sid: string) => {
+  const parts = arg.trim().split(/\s+/).filter(Boolean)
+  let scope = ''
+  const valueParts: string[] = []
+
+  for (const part of parts) {
+    const flag = part.toLowerCase()
+
+    if (REASONING_GLOBAL_FLAGS.has(flag)) {
+      scope = 'global'
+
+      continue
+    }
+
+    if (REASONING_SESSION_FLAGS.has(flag)) {
+      // Session scope is the default; accept the flag for parity with /model.
+      if (!scope) {
+        scope = 'session'
+      }
+
+      continue
+    }
+
+    valueParts.push(part)
+  }
+
+  const value = valueParts.join(' ')
+
+  return {
+    key: 'reasoning',
+    session_id: sid,
+    value,
+    ...(scope ? { scope } : {})
+  }
 }
 
 export const sessionCommands: SlashCommand[] = [
@@ -445,7 +483,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning' })
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(
               r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
@@ -453,7 +491,7 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg }).then(
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (!r.value) {
             return

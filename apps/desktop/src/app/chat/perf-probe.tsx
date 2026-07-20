@@ -1,5 +1,6 @@
 import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from 'react'
 
+import { $gateway } from '@/store/gateway'
 import { $messages, setBusy, setMessages } from '@/store/session'
 
 type Sample = {
@@ -31,6 +32,12 @@ declare global {
        * proxy). Used by the `transcript` perf scenario. `reset()` restores.
        */
       loadTranscript: (turns?: number) => Promise<number>
+      /**
+       * Whether the active gateway socket is open. The perf harness waits on
+       * this before measuring so background reconnect churn (a booting/absent
+       * backend) doesn't contaminate frame-pacing numbers.
+       */
+      connected: () => boolean
       reset: () => void
       snapshotMsgs: () => number
     }
@@ -152,6 +159,13 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
 
   window.__PERF_DRIVE__ = {
     snapshotMsgs: () => $messages.get().length,
+    connected: () => {
+      try {
+        return $gateway.get()?.connectionState === 'open'
+      } catch {
+        return false
+      }
+    },
     loadTranscript: (turns = 200) => {
       if (!baseline) {
         baseline = $messages.get()

@@ -16,6 +16,8 @@ import signal
 import time
 import traceback
 
+from tui_gateway._stdin_recovery import handle_spurious_eof
+
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
@@ -290,6 +292,10 @@ def join_mcp_discovery(timeout: float | None = None) -> bool:
     return entry_done and startup_done
 
 
+# Spurious stdin-EOF recovery tracker (shared open-file-description O_NONBLOCK flip).
+_recovery_times: list[float] = []
+
+
 def main():
     _install_sidecar_publisher()
 
@@ -354,7 +360,15 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
-    for raw in sys.stdin:
+    while True:
+        raw = sys.stdin.readline()
+        if not raw:
+            # Stdin fell through — check if spurious (O_NONBLOCK flip by a
+            # child on the shared open file description) or genuine EOF.
+            if not handle_spurious_eof(_recovery_times, _log_exit):
+                break
+            continue
+
         line = raw.strip()
         if not line:
             continue
@@ -373,8 +387,6 @@ def main():
             if not write_json(resp):
                 _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")
                 sys.exit(0)
-
-    _log_exit("stdin EOF (TUI closed the command pipe)")
 
 
 if __name__ == "__main__":

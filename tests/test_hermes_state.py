@@ -1365,6 +1365,57 @@ class TestMessageStorage:
         assert model_history == model_expected
         assert display_history == display_expected
 
+    def test_get_ancestor_display_prefix_single_session_returns_empty(self, db):
+        """A session with no compression ancestors has an empty prefix."""
+        db.create_session("solo", "cli")
+        db.append_message("solo", role="user", content="hi")
+        db.append_message("solo", role="assistant", content="hello")
+
+        assert db.get_ancestor_display_prefix("solo") == []
+
+    def test_get_ancestor_display_prefix_returns_ancestor_only_messages(self, db):
+        """The prefix contains ONLY ancestor messages, not tip messages.
+
+        Previously the prefix was calculated as
+        display_history[:len(display) - len(raw)], which overcounts when
+        repair_message_sequence removes messages from the MIDDLE of the
+        tip history — the length difference includes both ancestor messages
+        AND repair-removed tip messages, but the slice captures the first N
+        display messages (tip messages when there are no ancestors),
+        causing duplication in _live_session_payload. (#65919)
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="ancestor prompt")
+        db.append_message("root", role="assistant", content="ancestor reply")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="tip prompt")
+        db.append_message("child", role="assistant", content="tip reply")
+        # A verification candidate that repair_message_sequence collapses
+        # (consecutive-assistant merge replaces it with the next assistant).
+        db.append_message(
+            "child",
+            role="assistant",
+            content="verification candidate",
+            finish_reason="verification_required",
+        )
+        db.append_message("child", role="assistant", content="post-verification reply")
+
+        prefix = db.get_ancestor_display_prefix("child")
+        # Only the ancestor messages, not any tip messages.
+        assert len(prefix) == 2
+        assert prefix[0]["role"] == "user"
+        assert prefix[0]["content"] == "ancestor prompt"
+        assert prefix[1]["role"] == "assistant"
+        assert prefix[1]["content"] == "ancestor reply"
+
+        # The old broken calculation would produce a non-empty prefix
+        # (because repair collapses the verification candidate, making
+        # len(display) > len(raw)), even though there are 2 ancestor
+        # messages — it would overcount.
+        raw, display = db.get_resume_conversations("child")
+        old_prefix_len = max(0, len(display) - len(raw))
+        assert len(prefix) <= old_prefix_len
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")

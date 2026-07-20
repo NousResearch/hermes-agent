@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
+  setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),

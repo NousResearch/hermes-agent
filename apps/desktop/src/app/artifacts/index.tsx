@@ -5,7 +5,6 @@ import { useNavigate } from 'react-router-dom'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Pagination,
@@ -17,18 +16,19 @@ import {
   PaginationPrevious
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
-import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
+import { normalize } from '@/lib/text'
+import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -41,15 +41,8 @@ import {
   collectArtifactsForSession
 } from './artifact-utils'
 
-const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-  month: 'short'
-})
-
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  return fmtDayTime.format(new Date(timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {
@@ -115,13 +108,14 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
+
+  const [refreshing, setRefreshing] = useState(false)
 
   const refreshArtifacts = useCallback(async () => {
     setRefreshing(true)
@@ -165,7 +159,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       return []
     }
 
-    const q = query.trim().toLowerCase()
+    const q = normalize(query)
 
     return artifacts.filter(artifact => {
       if (kindFilter !== 'all' && artifact.kind !== kindFilter) {
@@ -209,6 +203,27 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [currentFilePage, visibleFileArtifacts]
   )
 
+  // Rotating placeholder nudges from real data — search matches file paths and
+  // session titles, not just labels; show it.
+  const searchHints = useMemo(() => {
+    if (!artifacts?.length) {
+      return undefined
+    }
+
+    const extensions = [
+      ...new Set(artifacts.map(artifact => /\.(\w{2,4})$/.exec(artifact.value)?.[1]?.toLowerCase()).filter(Boolean))
+    ].slice(0, 3) as string[]
+
+    const titles = [...new Set(artifacts.map(artifact => artifact.sessionTitle).filter(Boolean))].slice(0, 2)
+
+    const hints = [
+      ...extensions.map(ext => t.common.tryHint(`.${ext}`)),
+      ...titles.map(title => t.common.tryHint(title))
+    ]
+
+    return hints.length > 0 ? hints : undefined
+  }, [artifacts, t])
+
   const counts = useMemo(() => {
     const all = artifacts || []
 
@@ -223,6 +238,16 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const openArtifact = useCallback(
     async (href: string) => {
       try {
+        // A gateway-local file resolves to file:// in remote mode (the file
+        // lives on the gateway, not this disk). Opening that locally fails —
+        // and an OAuth remote connection has no query token to build a download
+        // URL. Fetch the bytes over the authenticated fs bridge instead.
+        if (isRemoteGateway() && /^file:/i.test(href)) {
+          await downloadGatewayMediaFile(href)
+
+          return
+        }
+
         if (window.hermesDesktop?.openExternal) {
           await window.hermesDesktop.openExternal(href)
         } else {
@@ -253,40 +278,33 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      activeTab={kindFilter}
       onSearchChange={setQuery}
+      onTabChange={id => setKindFilter(id as typeof kindFilter)}
       searchHidden={counts.all === 0}
+      searchHints={searchHints}
       searchPlaceholder={a.search}
       searchTrailingAction={
-        <Button
-          aria-label={refreshing ? a.refreshing : a.refresh}
-          className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refreshArtifacts()}
-          size="icon-xs"
-          title={refreshing ? a.refreshing : a.refresh}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
+        <Tip label={refreshing ? a.refreshing : a.refresh}>
+          <Button
+            aria-label={refreshing ? a.refreshing : a.refresh}
+            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            disabled={refreshing}
+            onClick={() => void refreshArtifacts()}
+            size="icon-titlebar"
+            variant="ghost"
+          >
+            {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          </Button>
+        </Tip>
       }
       searchValue={query}
-      tabs={
-        <>
-          <TextTab active={kindFilter === 'all'} onClick={() => setKindFilter('all')}>
-            {a.tabAll} <TextTabMeta>({counts.all})</TextTabMeta>
-          </TextTab>
-          <TextTab active={kindFilter === 'image'} onClick={() => setKindFilter('image')}>
-            {a.tabImages} <TextTabMeta>({counts.image})</TextTabMeta>
-          </TextTab>
-          <TextTab active={kindFilter === 'file'} onClick={() => setKindFilter('file')}>
-            {a.tabFiles} <TextTabMeta>({counts.file})</TextTabMeta>
-          </TextTab>
-          <TextTab active={kindFilter === 'link'} onClick={() => setKindFilter('link')}>
-            {a.tabLinks} <TextTabMeta>({counts.link})</TextTabMeta>
-          </TextTab>
-        </>
-      }
+      tabs={[
+        { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
+        { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
+        { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
+        { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
+      ]}
     >
       {!artifacts ? (
         <PageLoader label={a.indexing} />
@@ -298,17 +316,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </div>
         </div>
       ) : (
-        <div className="h-full overflow-y-auto">
-          <div className={cn('flex flex-col gap-3 pb-2', PAGE_INSET_X)}>
+        <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
+          <div className="flex flex-col gap-3 px-3 pb-2">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div
-                  className={cn(
-                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
-                    PAGE_INSET_NEG_X,
-                    PAGE_INSET_X
-                  )}
-                >
+                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={a.itemsImage}
@@ -334,13 +346,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
             {visibleFileArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div
-                  className={cn(
-                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
-                    PAGE_INSET_NEG_X,
-                    PAGE_INSET_X
-                  )}
-                >
+                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter, a)}

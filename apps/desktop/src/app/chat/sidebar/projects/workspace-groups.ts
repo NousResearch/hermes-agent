@@ -1,5 +1,6 @@
 import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
+import { normalize } from '@/lib/text'
 
 // Session grouping is now computed authoritatively on the backend
 // (`tui_gateway/project_tree.py`, exposed via `projects.tree` /
@@ -71,6 +72,27 @@ const segments = (path: string): string[] =>
 
 /** A path with trailing separators stripped, for stable equality checks. */
 const normalizePath = (path: null | string | undefined): string => (path ?? '').replace(/[/\\]+$/, '')
+
+// Windows spellings: drive-letter (`C:\…`), UNC (`\\srv`, `//srv`), or any
+// backslash-rooted path (`\wsl.localhost\…`). A single leading `/` stays POSIX.
+// Mirrors the backend `_is_windows_path` so the live overlay places rows into
+// the same project the backend tree would.
+const isWindowsPath = (path: string): boolean =>
+  /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\') || path.startsWith('//')
+
+/**
+ * Segments for identity comparison: Windows paths fold case (and separators, via
+ * {@link segments}) so `C:\Work` and `c:/work` are one lane; POSIX stays
+ * case-sensitive. Comparison-only — emitted ids/labels keep their spelling.
+ */
+const comparisonSegments = (path: string): string[] => {
+  const segs = segments(path)
+
+  return isWindowsPath(path) ? segs.map(seg => seg.toLowerCase()) : segs
+}
+
+/** Canonical per-host comparison key (separator/case/trailing-slash agnostic). */
+const pathKey = (path: null | string | undefined): string => comparisonSegments(path ?? '').join('/')
 
 /** Last path segment. */
 export const baseName = (path: string): string | undefined => segments(path).pop()
@@ -191,7 +213,7 @@ export function mergeRepoWorktreeGroups(
       return branchForPath !== group.label ? { ...group, label: branchForPath } : group
     }
 
-    const livePath = livePathByBranch.get(group.label.trim().toLowerCase())
+    const livePath = livePathByBranch.get(normalize(group.label))
 
     if (livePath && normalizePath(livePath) !== normalizePath(group.path)) {
       return { ...group, id: livePath, path: livePath }
@@ -316,8 +338,8 @@ export function mergeRepoWorktreeGroups(
 
 /** True when `target` equals `folder` or is nested under it (segment-wise). */
 function isPathUnder(folder: string, target: string): boolean {
-  const f = segments(folder)
-  const t = segments(target)
+  const f = comparisonSegments(folder)
+  const t = comparisonSegments(target)
 
   if (!f.length || f.length > t.length) {
     return false
@@ -339,16 +361,21 @@ function isPathUnder(folder: string, target: string): boolean {
  */
 export function liveSessionProjectId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
   const cwd = (session.cwd || '').trim()
+  // A session may carry only a git_repo_root and no cwd — older/imported rows,
+  // or ones captured before cwd tracking. The backend still groups those by repo
+  // root, so anchor on it here too; otherwise the sidebar files the row under a
+  // project but the color derivation drops it (the "grouped but grey" bug).
+  const repoRoot = (session.git_repo_root || '').trim() || cwd
+  const anchor = cwd || repoRoot
 
-  if (!cwd || kanbanWorktreeDir(cwd)) {
+  if (!anchor || kanbanWorktreeDir(anchor)) {
     return null
   }
 
-  // No persisted repo root yet (brand-new session) → the cwd is the root.
-  const repoRoot = (session.git_repo_root || '').trim() || cwd
-  const underRepo = cwd === repoRoot || cwd.startsWith(`${repoRoot}/`) || cwd.startsWith(`${repoRoot}\\`)
-
-  if (!underRepo) {
+  // With a cwd present it must sit under the repo root (a sibling worktree
+  // outside the root can't be placed from the row alone); a root-only session
+  // skips this — the root IS the anchor.
+  if (cwd && !isPathUnder(repoRoot, cwd)) {
     return null
   }
 
@@ -373,6 +400,26 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   }
 
   return projectId || repoRoot
+}
+
+/**
+ * The color a session inherits from its owning project — the explicit project
+ * whose folder is the longest prefix of the session's cwd/repo-root, when that
+ * project carries a user-set color. Auto-promoted repo projects have no color
+ * unless the user set one, so a session only tints when it belongs to a colored
+ * project (inheritance is opt-in by coloring the project). Reuses
+ * {@link liveSessionProjectId} so the color follows the SAME membership the
+ * sidebar groups by; returns null for rootless / kanban / out-of-tree rows and
+ * for sessions under an uncolored (or auto) project.
+ */
+export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {
+  const projectId = liveSessionProjectId(session, projects)
+
+  if (!projectId) {
+    return null
+  }
+
+  return projects.find(project => project.id === projectId)?.color ?? null
 }
 
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
@@ -422,7 +469,7 @@ export function overlayRepoLanes(
   live: SessionInfo[],
   removed: ReadonlySet<string> = NO_REMOVED
 ): SidebarWorkspaceTree {
-  const repoRoot = normalizePath(repo.path)
+  const repoRootKey = pathKey(repo.path)
   let changed = false
 
   // Snapshot lanes minus anything the user just deleted/archived.
@@ -456,7 +503,7 @@ export function overlayRepoLanes(
     for (const g of lanes) {
       const lanePath = normalizePath(g.path)
 
-      if (!lanePath || lanePath === repoRoot || !isPathUnder(lanePath, cwd)) {
+      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, cwd)) {
         continue
       }
 
@@ -479,14 +526,14 @@ export function overlayRepoLanes(
         continue
       }
 
-      const placedPath = normalizePath(placed.path)
+      const placedKey = pathKey(placed.path)
 
       lane =
         lanes.find(g => g.id === placed.id) ??
         (placed.isMain
           ? lanes.find(g => g.isMain && g.label.toLowerCase() === placed.label.toLowerCase())
           : undefined) ??
-        (!placed.isMain && placedPath ? lanes.find(g => normalizePath(g.path) === placedPath) : undefined)
+        (!placed.isMain && placedKey ? lanes.find(g => pathKey(g.path) === placedKey) : undefined)
 
       if (!lane) {
         lane = { ...placed, sessions: [] }

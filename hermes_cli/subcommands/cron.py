@@ -156,6 +156,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
+    cron_runs = cron_subparsers.add_parser(
+        "runs", aliases=["history"], help="Show durable execution attempts"
+    )
+    cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
+    cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
+
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)

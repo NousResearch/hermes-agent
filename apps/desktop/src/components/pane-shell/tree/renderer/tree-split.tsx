@@ -10,6 +10,7 @@ import { useStore } from '@nanostores/react'
 import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
 import { useContributions } from '@/contrib/react/use-contributions'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
@@ -234,12 +235,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
 
-      // Coalesce store writes to one per frame: pointermove fires far faster than
-      // 60fps and each write relayouts the whole pane tree. Stash the latest
-      // clamped shift, apply it in a rAF (as drag-session / use-popout-drag do).
-      let raf: null | number = null
-      let pendingShift: null | number = null
-
+      // pointermove outpaces 60fps and each write relayouts the whole pane tree,
+      // so coalesce to one apply per frame (rafCoalesce commits on cleanup).
       const applyShift = (shiftPx: number) => {
         if (a.fixed) {
           a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
@@ -258,29 +255,14 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         }
       }
 
-      const flush = () => {
-        raf = null
-
-        if (pendingShift !== null) {
-          applyShift(pendingShift)
-        }
-      }
+      const resize = rafCoalesce(applyShift)
 
       const onMove = (ev: PointerEvent) => {
-        pendingShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
-        raf ??= requestAnimationFrame(flush)
+        resize.push(Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start)))
       }
 
       const cleanup = () => {
-        if (raf !== null) {
-          cancelAnimationFrame(raf)
-          raf = null
-        }
-
-        if (pendingShift !== null) {
-          applyShift(pendingShift) // commit the final position
-        }
-
+        resize.finish()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 

@@ -7,6 +7,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Bug } from '@/lib/icons'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
@@ -172,26 +173,16 @@ export function PreviewPane({
       document.body.style.cursor = 'row-resize'
       document.body.style.userSelect = 'none'
 
-      // Coalesce height writes to one per frame — pointermove outpaces 60fps and
-      // each setHeight reflows the webview + console split.
-      let raf: null | number = null
-      let pendingHeight: null | number = null
-
-      const flushHeight = () => {
-        raf = null
-
-        if (pendingHeight !== null) {
-          consoleState.setHeight(pendingHeight)
-        }
-      }
+      // pointermove outpaces 60fps and each setHeight reflows the webview +
+      // console split, so coalesce to one apply per frame (commits on cleanup).
+      const resize = rafCoalesce((height: number) => consoleState.setHeight(height))
 
       const handleMove = (moveEvent: PointerEvent) => {
         if (!active) {
           return
         }
 
-        pendingHeight = clampConsoleHeight(startHeight + startY - moveEvent.clientY)
-        raf ??= requestAnimationFrame(flushHeight)
+        resize.push(clampConsoleHeight(startHeight + startY - moveEvent.clientY))
       }
 
       const cleanup = () => {
@@ -200,16 +191,7 @@ export function PreviewPane({
         }
 
         active = false
-
-        if (raf !== null) {
-          cancelAnimationFrame(raf)
-          raf = null
-        }
-
-        if (pendingHeight !== null) {
-          consoleState.setHeight(pendingHeight) // commit the final height
-        }
-
+        resize.finish()
         document.body.style.cursor = previousCursor
         document.body.style.userSelect = previousUserSelect
         handle.releasePointerCapture?.(pointerId)

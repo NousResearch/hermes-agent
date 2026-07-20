@@ -56,11 +56,11 @@ COMPACTION_STATUS = (
 def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
     """Return the built-in memory text that can affect a system prompt.
 
-    ``MemoryStore`` freezes this text until ``load_from_disk()``.  Comparing
-    the frozen blocks before and after that reload lets compression retain the
-    exact cached system prompt when no built-in memory actually changed.  An
-    unreadable snapshot returns ``None`` so callers take the conservative
-    rebuild path.
+    ``MemoryStore`` freezes this text until ``load_from_disk()``.  Rendering
+    the frozen blocks after that reload lets compression retain the exact
+    cached system prompt when it already embeds the current memory (see
+    :func:`_cached_prompt_reflects_builtin_memory`).  An unreadable snapshot
+    returns ``None`` so callers take the conservative rebuild path.
     """
     store = getattr(agent, "_memory_store", None)
     if store is None:
@@ -79,6 +79,43 @@ def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
     except Exception:
         return None
     return memory, user
+
+
+def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bool:
+    """Whether the cached system prompt already embeds current built-in memory.
+
+    The retention fast path must NOT compare the memory snapshot before vs
+    after the disk reload: on fresh-agent surfaces (gateway, TUI) the cached
+    prompt is restored from the session DB and can predate mid-session memory
+    writes that the fresh ``MemoryStore`` already picked up at init — the
+    snapshot is then identical on both sides of the reload while the prompt
+    itself is stale, and retaining it would latch old memory for the life of
+    the session (and re-persist it via ``update_system_prompt``).
+
+    Instead, verify the CURRENT (post-reload) rendered blocks appear verbatim
+    in the cached prompt, and that no leftover block header remains for a
+    target whose entries have since been emptied or disabled.
+    """
+    snapshot = _builtin_memory_prompt_snapshot(agent)
+    if snapshot is None:
+        return False
+    try:
+        from tools.memory_tool import MEMORY_BLOCK_HEADERS
+    except Exception:
+        return False
+    for target, block in zip(("memory", "user"), snapshot):
+        block = block.strip()
+        if block:
+            # build_system_prompt_parts embeds the stripped block verbatim;
+            # the rendered text includes the usage header, so any entry
+            # change (or char-count change) breaks containment → rebuild.
+            if block not in cached_prompt:
+                return False
+        elif MEMORY_BLOCK_HEADERS[target] in cached_prompt:
+            # The prompt still carries a block for a target that is now
+            # empty/disabled — stale; rebuild.
+            return False
+    return True
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -1052,20 +1089,21 @@ def compress_context(
         _ensure_compressed_has_user_turn(messages, compressed)
 
         cached_system_prompt = agent._cached_system_prompt
-        old_memory_snapshot = _builtin_memory_prompt_snapshot(agent)
         agent._invalidate_system_prompt()
-        new_memory_snapshot = _builtin_memory_prompt_snapshot(agent)
 
-        # Built-in memory snapshots are the only system-prompt input that a
-        # normal compaction reloads. When their rendered text is unchanged,
-        # keep the exact cached prompt so local backends retain their KV-cache
-        # prefix. External providers can change their own prompt block during
-        # on_pre_compress(), so they deliberately retain the rebuild path.
+        # Built-in memory is the only system-prompt input that a normal
+        # compaction reloads. When the cached prompt already embeds the
+        # freshly-reloaded memory blocks verbatim, keep the exact cached
+        # prompt so local backends retain their KV-cache prefix. Containment
+        # (not before/after snapshot equality) is required: fresh-agent
+        # surfaces restore the cached prompt from the session DB, where it
+        # can predate mid-session memory writes the in-memory snapshot has
+        # already absorbed. External providers can change their own prompt
+        # block during on_pre_compress(), so they retain the rebuild path.
         if (
             cached_system_prompt is not None
             and getattr(agent, "_memory_manager", None) is None
-            and old_memory_snapshot is not None
-            and old_memory_snapshot == new_memory_snapshot
+            and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
         ):
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt

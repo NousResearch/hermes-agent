@@ -603,7 +603,9 @@ class TestPreflightCompression:
         agent._memory_enabled = True
         agent._user_profile_enabled = False
         agent._memory_manager = None
-        agent._cached_system_prompt = "cached system prompt"
+        agent._cached_system_prompt = (
+            "cached system prompt\n\n<memory>same facts</memory>"
+        )
         memory_store = MagicMock()
         memory_store.format_for_system_prompt.return_value = "<memory>same facts</memory>"
         agent._memory_store = memory_store
@@ -623,7 +625,7 @@ class TestPreflightCompression:
             )
 
         assert new_system_prompt is agent._cached_system_prompt
-        assert new_system_prompt == "cached system prompt"
+        assert new_system_prompt == "cached system prompt\n\n<memory>same facts</memory>"
         build_prompt.assert_not_called()
         memory_store.load_from_disk.assert_called_once()
 
@@ -633,12 +635,11 @@ class TestPreflightCompression:
         agent._memory_enabled = True
         agent._user_profile_enabled = False
         agent._memory_manager = None
-        agent._cached_system_prompt = "cached system prompt"
+        agent._cached_system_prompt = (
+            "cached system prompt\n\n<memory>old facts</memory>"
+        )
         memory_store = MagicMock()
-        memory_store.format_for_system_prompt.side_effect = [
-            "<memory>old facts</memory>",
-            "<memory>new facts</memory>",
-        ]
+        memory_store.format_for_system_prompt.return_value = "<memory>new facts</memory>"
         agent._memory_store = memory_store
 
         with (
@@ -658,6 +659,72 @@ class TestPreflightCompression:
         assert new_system_prompt == "rebuilt system prompt"
         build_prompt.assert_called_once_with("system prompt")
         memory_store.load_from_disk.assert_called_once()
+
+    def test_compression_rebuilds_when_restored_prompt_predates_memory_write(self, agent):
+        """Gateway fresh-agent path: a session-DB-restored prompt built with OLD
+        memory must be rebuilt even though the in-memory snapshot is identical
+        before and after the disk reload (the fresh MemoryStore already
+        absorbed the mid-session write at init). Guards the containment check
+        against regressing to before/after snapshot equality."""
+        agent.compression_enabled = False
+        agent._memory_enabled = True
+        agent._user_profile_enabled = False
+        agent._memory_manager = None
+        # Restored from SessionDB in an earlier process — built with fact A only.
+        agent._cached_system_prompt = "system prompt\n\n<memory>fact A</memory>"
+        memory_store = MagicMock()
+        # Fresh store loaded fact A + fact B at agent init; stable across reload.
+        memory_store.format_for_system_prompt.return_value = "<memory>fact A\nfact B</memory>"
+        agent._memory_store = memory_store
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "compress",
+                return_value=[{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
+            ),
+            patch.object(agent, "_build_system_prompt", return_value="rebuilt with fact B") as build_prompt,
+        ):
+            _, new_system_prompt = agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+            )
+
+        assert new_system_prompt == "rebuilt with fact B"
+        build_prompt.assert_called_once_with("system prompt")
+
+    def test_compression_rebuilds_when_prompt_has_leftover_block_for_emptied_memory(self, agent):
+        """A prompt still carrying a memory block after all entries were
+        removed must be rebuilt — empty current blocks are vacuously
+        'contained', so the leftover-header check has to catch this."""
+        agent.compression_enabled = False
+        agent._memory_enabled = True
+        agent._user_profile_enabled = False
+        agent._memory_manager = None
+        agent._cached_system_prompt = (
+            "system prompt\n\nMEMORY (your personal notes) [1% — 10/2,200 chars]\nold fact"
+        )
+        memory_store = MagicMock()
+        memory_store.format_for_system_prompt.return_value = None  # emptied
+        agent._memory_store = memory_store
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "compress",
+                return_value=[{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
+            ),
+            patch.object(agent, "_build_system_prompt", return_value="rebuilt without memory") as build_prompt,
+        ):
+            _, new_system_prompt = agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+            )
+
+        assert new_system_prompt == "rebuilt without memory"
+        build_prompt.assert_called_once_with("system prompt")
 
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""

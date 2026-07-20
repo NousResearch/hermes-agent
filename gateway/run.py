@@ -107,6 +107,50 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
+_NO_CONSUMER_DELIVERY_FACTS = (
+    "acc_len=? acc_digest=? last_sent_len=? sc_msg_id=? last_edit_overflowed=?"
+)
+
+_SUPPRESS_FINAL_SEND_LOG_FMT = (
+    "Suppressing normal final send for session %s: final delivery already "
+    "confirmed (streamed=%s previewed=%s content_delivered=%s). %s"
+)
+
+
+def _delivery_log_facts(final_text: Any, stream_consumer: Any) -> str:
+    """Compose the ``key=value`` facts appended to the final-send
+    suppression log line (#27942, #29200): lengths, short digests, and the
+    consumer's message id, never message text.  Field semantics are
+    documented on ``GatewayStreamConsumer.delivery_summary``.  Never
+    raises: a missing consumer or a failing summary degrades to ``?``
+    fields so log composition cannot affect the suppression decision.
+    """
+    try:
+        from gateway.stream_consumer import _short_digest
+
+        final = final_text if isinstance(final_text, str) else ""
+        parts = [f"final_len={len(final)}", f"final_digest={_short_digest(final)}"]
+    except Exception:
+        parts = ["final_len=? final_digest=?"]
+    try:
+        summary = (
+            stream_consumer.delivery_summary()
+            if stream_consumer is not None
+            else None
+        )
+        consumer_parts = summary and [
+            f"acc_len={summary['accumulated_len']}",
+            f"acc_digest={summary['accumulated_digest']}",
+            f"last_sent_len={summary['last_sent_len']}",
+            f"sc_msg_id={summary['message_id'] or '?'}",
+            f"last_edit_overflowed={summary['last_edit_overflowed']}",
+        ]
+    except Exception:
+        consumer_parts = None
+    parts.extend(consumer_parts or [_NO_CONSUMER_DELIVERY_FACTS])
+    return " ".join(parts)
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -21979,11 +22023,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
+                    _SUPPRESS_FINAL_SEND_LOG_FMT,
                     session_key or "?",
                     _streamed,
                     _previewed,
                     _content_delivered,
+                    _delivery_log_facts(_final, _sc),
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:

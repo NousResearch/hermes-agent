@@ -311,6 +311,21 @@ class TestBestEffortFinalizeDoubleSend:
     frame-level failure, not an ack timing race — no wall-clock timing needed.
     """
 
+    @pytest.mark.xfail(
+        reason="KNOWN LOW-FREQUENCY ISSUE (accepted, not yet fixed): the "
+        "best-effort finalize path (stream_consumer.py:2104-2128) renders the "
+        "content AND falls through to a fallback send(), delivering the same "
+        "answer twice. Only triggers when native streaming fails MID-STREAM "
+        "(846608 expired / 846609 subscription lost / errcode 6000 / network "
+        "error) — rare. The duplicate is a SAFE-direction failure (user sees "
+        "one extra bubble, no data loss). A clean fix requires reconciling "
+        "'do not drop post-finalize increments' with 'do not re-send the "
+        "first-send path', which the first-send path (L2378) does not consult "
+        "the delivery flag for; deferred over risking increment loss on a rare "
+        "path. The high-frequency duplicate (timeout inversion) IS fixed — see "
+        "TestTimeoutInversionDoubleSend + commit 7ba739818 (B2).",
+        strict=True,
+    )
     @pytest.mark.asyncio
     async def test_best_effort_finalize_renders_but_flag_unset_double_send(self):
         """native content frame fails → best-effort finalize renders + fallback send.

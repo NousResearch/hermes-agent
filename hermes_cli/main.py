@@ -587,9 +587,21 @@ def _apply_profile_override() -> None:
     # `hermes profile use` and the gateway should honour that choice.
     # See issue #22502.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
+    hermes_profile_env = os.environ.get("HERMES_PROFILE", "").strip()
     if profile_name is None and hermes_home_env:
         if Path(hermes_home_env).parent.name == "profiles":
             return
+
+    # 1.6 No explicit flag or profile-path HERMES_HOME — check HERMES_PROFILE
+    # env var (systemd override.conf, Docker Compose, etc.).  This gives
+    # sysadmins a clean way to pin the gateway to a profile without needing
+    # the active_profile file or --profile flag.  See the PR description for context
+    if profile_name is None and hermes_profile_env:
+        import re as _profile_re
+
+        if _profile_re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", hermes_profile_env):
+            profile_name = hermes_profile_env
+            consume = 0  # not in argv, nothing to strip
 
     # 2. If no flag, check active_profile in the hermes root.
     #
@@ -11649,6 +11661,33 @@ def _coalesce_session_name_args(argv: list) -> list:
     return result
 
 
+def _try_add_root_skills_external_dir(profile_dir: Path) -> None:
+    """Add the root skills directory to the profile's skills.external_dirs.
+
+    Profiles use distinct skills/ directories; without this, skills
+    installed at the root level (e.g. delegation, subagent-dispatch)
+    are invisible to the new profile.
+    """
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return
+    try:
+        import yaml
+        from hermes_constants import get_default_hermes_root
+
+        raw = config_path.read_text()
+        config = yaml.safe_load(raw) or {}
+        skills_cfg = config.setdefault("skills", {})
+        external = skills_cfg.setdefault("external_dirs", [])
+        root_skills = str(get_default_hermes_root() / "skills")
+
+        if root_skills not in external:
+            external.append(root_skills)
+            config_path.write_text(yaml.dump(config, default_flow_style=False))
+    except Exception:
+        pass  # best-effort — the profile still works without it
+
+
 def cmd_profile(args):
     """Profile management — create, delete, list, switch, alias."""
     from hermes_cli.profiles import (
@@ -11735,11 +11774,29 @@ def cmd_profile(args):
     elif action == "use":
         name = args.profile_name
         try:
+            old_name = get_active_profile_name()
             set_active_profile(name)
             if name == "default":
                 print("Switched to: default (~/.hermes)")
             else:
                 print(f"Switched to: {name}")
+            # Warn about per-profile data when switching away from default
+            # to a named profile.  Several data stores (webhook subscriptions,
+            # user-installed plugins, PR watch state) are scoped to
+            # HERMES_HOME and don't follow the profile switch.  See the PR description for context
+            if old_name != name and old_name != "custom":
+                print()
+                print(
+                    "  ⚠  Per-profile data does not follow the switch."
+                )
+                print(
+                    "     Webhook subscriptions, user plugins, and"
+                )
+                print(
+                    "     PR watch state live under the previous profile."
+                )
+                print(f"     Run:  hermes profile migrate {old_name} {name}")
+                print()
         except (ValueError, FileNotFoundError) as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -11809,6 +11866,29 @@ def cmd_profile(args):
                             name
                         )
                     )
+
+            # Auto-activate the profile if it's the first non-default profile.
+            # Without this, the user creates a profile but the gateway keeps
+            # running under the default profile — a silent no-op that looks
+            # like the profile wasn't created at all. See the PR description for context
+            if not (clone_config or clone_all):
+                current_active = get_active_profile_name()
+                profiles = list_profiles()
+                non_default = [p for p in profiles if not p.is_default]
+                if current_active == "default" and len(non_default) == 1:
+                    set_active_profile(name)
+                    print(
+                        f"✔ Profile '{name}' set as active "
+                        "(first non-default profile)"
+                    )
+
+            # Auto-populate skills.external_dirs so the new profile inherits
+            # skills installed at the root level (delegation, subagent-dispatch,
+            # my-prs-status, etc.). Without this, each profile has its own
+            # isolated skills/ directory and skills from the root are invisible.
+            # See the PR description for context
+            if not (clone_config or clone_all):
+                _try_add_root_skills_external_dir(profile_dir)
 
             # Create wrapper alias
             if not no_alias:

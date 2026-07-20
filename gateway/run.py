@@ -2001,6 +2001,19 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
     return None
 
 
+def _disable_open_policy_platform(config, platform_value: str) -> None:
+    """Disable a platform adapter that failed its open-policy check.
+
+    Sets ``enabled=False`` on the platform config so the gateway skips
+    its adapter initialisation below.  This is a runtime-only mutation
+    — the on-disk config is never written to.
+    """
+    for platform, platform_config in getattr(config, "platforms", {}).items():
+        if platform.value == platform_value:
+            platform_config.enabled = False
+            return
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -7496,19 +7509,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if platform.value == platform_value:
                     allow_all_env = open_env[2]
                     break
-            logger.error(
-                "Refusing to start: %s has dm_policy/group_policy set to 'open' "
-                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.",
+            logger.warning(
+                "✗ %s has dm_policy/group_policy set to 'open' "
+                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled. "
+                "Skipping this platform — it will be unavailable until "
+                "the allow-all flag is configured.",
                 platform_value,
                 allow_all_env or "a platform allow-all flag",
             )
-            try:
-                from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-            except Exception:
-                pass
-            self._request_clean_exit(reason)
-            return True
+            # Remove the offending platform config so we skip its adapter
+            # initialization below, rather than killing the entire gateway.
+            # One misconfigured platform should not take down all others.
+            # See the PR description for context
+            _disable_open_policy_platform(self.config, platform_value)
         
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path

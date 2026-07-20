@@ -48,7 +48,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
-    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
+    "opencode-zen", "opencode-go", "kilocode", "alibaba", "alibaba-cloud", "novita",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -61,6 +61,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
+    "qwen-dashscope", "qwen-cloud", "qwencloud",
     "mimo", "xiaomi-mimo",
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
@@ -274,7 +275,16 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
-    "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
+    # Qwen Cloud's current client guides publish 983,616 for the Token Plan
+    # Qwen3.8 preview and 1,000,000 for Qwen3.7/Qwen3.6. Keep these entries
+    # provider-neutral:
+    # the same IDs can be reached through DashScope, OpenRouter, or another
+    # compatible endpoint. Specific keys must precede the generic qwen key.
+    "qwen3.8-max-preview": 983_616,
+    "qwen3.7-max": 1_000_000,
+    "qwen3.7-plus": 1_000_000,
+    "qwen3.6-plus": 1_000_000,
+    "qwen3.6-flash": 1_000_000,
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,

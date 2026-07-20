@@ -1,5 +1,5 @@
 name: alibaba-provider
 kind: model-provider
-version: 1.0.0
-description: Alibaba DashScope (international)
+version: 1.1.0
+description: Qwen Cloud PAYG via Alibaba DashScope
 author: Nous Research

@@ -76,7 +76,7 @@ Each entry requires both `provider` and `model`. Entries missing either field ar
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
-| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (preferred; legacy `DASHSCOPE_API_KEY` fallback retained) |
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
 | StepFun | `stepfun` | `STEPFUN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |

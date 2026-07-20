@@ -48,7 +48,8 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - Copilot / Copilot ACP
 - Anthropic (native)
 - Google / Gemini (`gemini`)
-- Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
+- Qwen Cloud PAYG / Alibaba DashScope (`alibaba`)
+- Alibaba Cloud Coding Plan (`alibaba-coding-plan`)
 - DeepSeek
 - Z.AI
 - Kimi / Moonshot (`kimi-coding`, `kimi-coding-cn`)

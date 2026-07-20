@@ -486,25 +486,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
-    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
-    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
-    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
-    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
-    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
+    # Qwen Cloud PAYG / Alibaba DashScope (international) — default endpoint.
+    # Keep this offline catalog limited to current agentic Qwen models.  The
+    # qwen3.8-max-preview Token Plan model deliberately belongs to the
+    # standalone vendor plugin and must not be implied by this PAYG provider.
     "alibaba": [
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
-        "kimi-k2.5",
+        "qwen3.6-flash",
         "qwen3.5-plus",
+        "qwen3.5-flash",
         "qwen3-coder-plus",
+        "qwen3-coder-flash",
         "qwen3-coder-next",
-        # Third-party models available on coding-intl
-        "glm-5",
-        "glm-4.7",
-        "MiniMax-M2.5",
     ],
-    # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
-    # separate provider ID with its own base_url_env_var.
+    # Alibaba Coding Plan — dedicated subscription endpoint and provider ID;
+    # prefer its named key while preserving the legacy PAYG-key fallback.
     "alibaba-coding-plan": [
         "qwen3.7-max",
         "qwen3.6-plus",
@@ -1265,6 +1263,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "qwen-dashscope": "alibaba",
+    "qwen-cloud": "alibaba",
+    "qwencloud": "alibaba",
     "qwen-portal": "qwen-oauth",
     "hf": "huggingface",
     "hugging-face": "huggingface",

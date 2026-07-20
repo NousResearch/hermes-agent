@@ -73,10 +73,10 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_BASE_URL` | Override the Anthropic API base URL |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
-| `DASHSCOPE_API_KEY` | Qwen Cloud (Alibaba DashScope) API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
-| `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`; use `https://dashscope.aliyuncs.com/compatible-mode/v1` for mainland-China region) |
-| `ALIBABA_CODING_PLAN_API_KEY` | Qwen Coding Plan API key (`alibaba-coding-plan` provider) |
-| `ALIBABA_CODING_PLAN_BASE_URL` | Override the Qwen Coding Plan base URL |
+| `DASHSCOPE_API_KEY` | Qwen Cloud PAYG (Alibaba DashScope) API key for the Model Studio workspace ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)); use with `provider: alibaba` |
+| `DASHSCOPE_BASE_URL` | Qwen Cloud PAYG endpoint override (default international: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`; mainland-China region: `https://dashscope.aliyuncs.com/compatible-mode/v1`) |
+| `ALIBABA_CODING_PLAN_API_KEY` | Preferred dedicated Alibaba Coding Plan API key; legacy `DASHSCOPE_API_KEY` fallback remains supported |
+| `ALIBABA_CODING_PLAN_BASE_URL` | Dedicated Coding Plan endpoint override; do not use it with `provider: alibaba` |
 | `DEEPSEEK_API_KEY` | DeepSeek API key for direct DeepSeek access ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `NOVITA_API_KEY` | NovitaAI API key — AI-native cloud for Model API, Agent Sandbox, and GPU Cloud ([novita.ai/settings/key-management](https://novita.ai/settings/key-management)) |

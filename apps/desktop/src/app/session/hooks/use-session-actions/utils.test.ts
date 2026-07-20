@@ -290,6 +290,52 @@ describe('reconcileResumeMessages', () => {
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
   })
+
+  it('preserves attachment refs for a matching user turn', () => {
+    const next = [msg('stored-user', 'user', 'describe this image')]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/photo.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:/tmp/photo.png'])
+  })
+
+  it('does not overwrite attachment refs already present on the resumed message', () => {
+    const next = [
+      msg('stored-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/authoritative.png']
+      })
+    ]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/cached.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:/tmp/authoritative.png'])
+  })
+
+  it('does not preserve attachment refs when the user text differs', () => {
+    const next = [msg('stored-user', 'user', 'a different prompt')]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/photo.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toBeUndefined()
+  })
 })
 
 describe('preserveLocalPendingTurnMessages', () => {

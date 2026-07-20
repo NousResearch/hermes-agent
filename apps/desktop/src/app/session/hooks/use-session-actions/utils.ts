@@ -208,6 +208,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     if (nextText === previousVisibleText || nextText === previousText.trim()) {
       preserved = preserveReasoningParts(preserved, previous)
+
+      if (message.role === 'user' && preserved.attachmentRefs === undefined && previous.attachmentRefs?.length) {
+        preserved = { ...preserved, attachmentRefs: [...previous.attachmentRefs] }
+      }
     }
 
     const previousImages = embeddedImageUrls(previousText)

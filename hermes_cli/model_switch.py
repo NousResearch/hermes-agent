@@ -620,6 +620,7 @@ class ModelSwitchResult:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
+    request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
     provider_label: str = ""
@@ -2192,6 +2193,7 @@ def switch_model(
         api_key=api_key,
         base_url=base_url,
         api_mode=api_mode,
+        request_overrides=dict(request_overrides or {}),
         warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,

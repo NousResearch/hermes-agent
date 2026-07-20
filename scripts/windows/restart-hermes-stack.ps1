@@ -13,6 +13,13 @@ $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     $PythonExe = Join-Path $ProjectRoot "venv\Scripts\python.exe"
 }
+$SharedVenvPython = Join-Path $env:USERPROFILE ".hermes\hermes-agent\venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $PythonExe) -and (Test-Path -LiteralPath $SharedVenvPython)) {
+    $PythonExe = $SharedVenvPython
+}
+if (-not (Test-Path -LiteralPath $PythonExe)) {
+    throw "Python runtime not found. Checked: $ProjectRoot\\.venv, $ProjectRoot\\venv, $SharedVenvPython"
+}
 $HermesHome = Join-Path $env:USERPROFILE ".hermes"
 
 function Get-HermesDotEnvValue {
@@ -59,11 +66,34 @@ function Stop-PortListener {
     }
 }
 
+function Stop-DesktopWatchdogStack {
+    Write-Step "Stopping Desktop/watchdog processes (prevent Hermes.exe proliferation)"
+    $goLock = Join-Path $env:LOCALAPPDATA "HermesWatchdog\watchdog.lock"
+    if (Test-Path -LiteralPath $goLock) {
+        try {
+            $obj = Get-Content -LiteralPath $goLock -Raw | ConvertFrom-Json
+            if ($obj.pid) {
+                Stop-Process -Id ([int]$obj.pid) -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+        Remove-Item -LiteralPath $goLock -Force -ErrorAction SilentlyContinue
+    }
+    Get-Process -Name hermes-watchdog -ErrorAction SilentlyContinue | ForEach-Object {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item (Join-Path $HermesHome "logs\desktop-backend-watchdog.lock") -Force -ErrorAction SilentlyContinue
+    Get-Process -Name Hermes -ErrorAction SilentlyContinue | ForEach-Object {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 2
+}
+
 Set-Location -LiteralPath $ProjectRoot
 $env:HERMES_HOME = $HermesHome
 $env:HF_HUB_CACHE = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } else { "H:\elt_data\hf-cache" }
 
 Write-Step "Stopping Hermes services (gateway/harness/webui/dashboard)"
+Stop-DesktopWatchdogStack
 try { & $PythonExe -m hermes_cli.main gateway stop --all 2>$null } catch {}
 try { & $PythonExe -m hermes_cli.main harness stop 2>$null } catch {}
 Stop-PortListener -Port 8787 -NamePattern "server\.py|hermes"
@@ -150,7 +180,7 @@ if ($StartGoWatchdog) {
     $GoWd = Join-Path $PSScriptRoot "Start-HermesGoWatchdog.ps1"
     if (Test-Path -LiteralPath $GoWd) {
         Write-Step "Starting Go Desktop/backend watchdog (operator-only)"
-        & $GoWd -HermesRoot $ProjectRoot -HermesHome $HermesHome -BuildIfMissing
+        & $GoWd -HermesRoot $ProjectRoot -HermesHome $HermesHome -BuildIfMissing -ForceRestart
     } else {
         Write-Warning "Missing Go watchdog script: $GoWd"
     }

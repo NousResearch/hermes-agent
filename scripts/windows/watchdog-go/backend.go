@@ -84,6 +84,12 @@ func resolvePythonExe(hermesRoot string) string {
 			return candidate
 		}
 	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		shared := filepath.Join(home, ".hermes", "hermes-agent", "venv", "Scripts", "python.exe")
+		if fileExists(shared) {
+			return shared
+		}
+	}
 	return ""
 }
 

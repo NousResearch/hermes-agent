@@ -8,7 +8,8 @@ param(
     [string]$Listen = "127.0.0.1:9920",
     [string]$HermesRoot = "",
     [string]$HermesHome = "",
-    [switch]$BuildIfMissing
+    [switch]$BuildIfMissing,
+    [switch]$ForceRestart
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,20 +26,72 @@ if (-not (Test-Path -LiteralPath $Exe)) {
     }
 }
 
-$args = @(
+$DataDir = Join-Path $env:LOCALAPPDATA "HermesWatchdog"
+$LockPath = Join-Path $DataDir "watchdog.lock"
+
+function Test-GoWatchdogAlive {
+    if (-not (Test-Path -LiteralPath $LockPath)) { return $false }
+    try {
+        $obj = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json
+        $pidLock = [int]$obj.pid
+        if ($pidLock -le 0) { return $false }
+        $proc = Get-Process -Id $pidLock -ErrorAction SilentlyContinue
+        return [bool]$proc
+    } catch {
+        return $false
+    }
+}
+
+function Stop-GoWatchdog {
+    if (Test-GoWatchdogAlive) {
+        try {
+            $obj = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json
+            Stop-Process -Id ([int]$obj.pid) -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+        } catch {}
+    }
+    Get-Process -Name hermes-watchdog -ErrorAction SilentlyContinue | ForEach-Object {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
+}
+
+if ($ForceRestart -or $Once) {
+    Stop-GoWatchdog
+} elseif (Test-GoWatchdogAlive) {
+    Write-Host "Go watchdog already running (lock=$LockPath)"
+    exit 0
+}
+
+$argList = @(
     "-interval=$IntervalSec",
     "-fail-threshold=$FailThreshold",
     "-hermes-root=`"$RepoRoot`"",
     "-hermes-home=`"$HermesHome`"",
     "-listen=$Listen"
 )
-if ($Once) { $args += "-once" }
-if ($NoPrewarm) { $args += "-prewarm-backend=false" }
+if ($Once) { $argList += "-once" }
+if ($NoPrewarm) { $argList += "-prewarm-backend=false" }
 if (-not $NoTsnet -and ($env:HERMES_WATCHDOG_TS_AUTHKEY -or $env:TS_AUTHKEY)) {
-    $args += "-tsnet"
+    $argList += "-tsnet"
 }
 
 $env:HERMES_HOME = $HermesHome
-Write-Host "Starting Go watchdog: $Exe $($args -join ' ')"
-Start-Process -FilePath $Exe -ArgumentList $args -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $Exe) | Out-Null
-Write-Host "Go watchdog launched (logs: $(Join-Path $HermesHome 'logs\hermes-go-watchdog.log'))"
+$workDir = Split-Path -Parent $Exe
+Write-Host "Starting Go watchdog detached: $Exe $($argList -join ' ')"
+
+# UseShellExecute detaches from Cursor/agent job objects (see Start-HermesDesktopBackendWatchdog.ps1 header).
+$startInfo = New-Object System.Diagnostics.ProcessStartInfo
+$startInfo.FileName = $Exe
+$startInfo.WorkingDirectory = $workDir
+$startInfo.Arguments = ($argList -join ' ')
+$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+$startInfo.UseShellExecute = $true
+[void][System.Diagnostics.Process]::Start($startInfo)
+
+Start-Sleep -Seconds 2
+if (Test-GoWatchdogAlive) {
+    Write-Host "Go watchdog launched (logs: $(Join-Path $HermesHome 'logs\hermes-go-watchdog.log'))"
+} else {
+    Write-Warning "Go watchdog may still be starting — check $(Join-Path $HermesHome 'logs\hermes-go-watchdog.log')"
+}

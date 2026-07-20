@@ -1,6 +1,7 @@
 """Regression tests for loading feedback on slow slash commands."""
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
 
@@ -70,3 +71,17 @@ class TestCLILoadingIndicator:
         assert cli_obj._command_running is False
         assert cli_obj._command_status == ""
         assert invalidate_mock.call_count == 2
+
+    def test_reload_env_preserves_frozen_system_prompt(self, capsys):
+        cli_obj = self._make_cli()
+        cli_obj.agent = SimpleNamespace(_invalidate_system_prompt=MagicMock())
+        generations = [SimpleNamespace(short="old"), SimpleNamespace(short="new")]
+
+        with (
+            patch("hermes_cli.config.get_config_generation", side_effect=generations),
+            patch("hermes_cli.config.reload_env", return_value=2),
+        ):
+            assert cli_obj.process_command("/reload")
+
+        assert "Reloaded .env (2 var(s) updated" in capsys.readouterr().out
+        cli_obj.agent._invalidate_system_prompt.assert_not_called()

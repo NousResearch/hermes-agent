@@ -400,6 +400,161 @@ def _install_bitwarden_fetch_sequence(monkeypatch, outcomes):
     monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fetch)
 
 
+def _prime_bitwarden_refresh(tmp_path, monkeypatch, key, outcomes):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(monkeypatch, outcomes)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+
+def test_refresh_malformed_config_retains_known_good_value_and_provenance(
+    tmp_path, monkeypatch, capsys, caplog
+):
+    key = "HERMES_TEST_MALFORMED_CONFIG_SECRET"
+    known_good = "known-good-malformed-config-value"
+    config_sentinel = "MALFORMED-CONFIG-SENTINEL"
+    _prime_bitwarden_refresh(tmp_path, monkeypatch, key, [{key: known_good}])
+
+    env_loader.reset_secret_source_cache()
+    (tmp_path / "config.yaml").write_text(
+        f"secrets:\n  bitwarden: [{config_sentinel}\n",
+        encoding="utf-8",
+    )
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == known_good
+    assert env_loader.get_secret_source(key) == "bitwarden"
+    assert key in env_loader._PENDING_SECRET_OWNERSHIP
+    assert str(tmp_path.resolve()) not in env_loader._APPLIED_HOMES
+    captured = capsys.readouterr()
+    output = captured.out + captured.err + caplog.text
+    assert config_sentinel not in output
+    assert known_good not in output
+
+
+def test_refresh_unreadable_config_retains_known_good_value_and_provenance(
+    tmp_path, monkeypatch, capsys, caplog
+):
+    key = "HERMES_TEST_UNREADABLE_CONFIG_SECRET"
+    known_good = "known-good-unreadable-config-value"
+    error_sentinel = "UNREADABLE-CONFIG-SENTINEL"
+    config_path = tmp_path / "config.yaml"
+    _prime_bitwarden_refresh(tmp_path, monkeypatch, key, [{key: known_good}])
+
+    env_loader.reset_secret_source_cache()
+    real_open = open
+
+    def _deny_config_read(path, *args, **kwargs):
+        if path == config_path:
+            raise PermissionError(error_sentinel)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _deny_config_read)
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == known_good
+    assert env_loader.get_secret_source(key) == "bitwarden"
+    assert key in env_loader._PENDING_SECRET_OWNERSHIP
+    assert str(tmp_path.resolve()) not in env_loader._APPLIED_HOMES
+    captured = capsys.readouterr()
+    output = captured.out + captured.err + caplog.text
+    assert error_sentinel not in output
+    assert known_good not in output
+
+
+def test_refresh_non_mapping_secrets_retains_known_good_value_and_provenance(
+    tmp_path, monkeypatch
+):
+    key = "HERMES_TEST_NON_MAPPING_CONFIG_SECRET"
+    known_good = "known-good-non-mapping-config-value"
+    _prime_bitwarden_refresh(tmp_path, monkeypatch, key, [{key: known_good}])
+
+    env_loader.reset_secret_source_cache()
+    (tmp_path / "config.yaml").write_text(
+        "secrets: [not, a, mapping]\n",
+        encoding="utf-8",
+    )
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == known_good
+    assert env_loader.get_secret_source(key) == "bitwarden"
+    assert key in env_loader._PENDING_SECRET_OWNERSHIP
+    assert str(tmp_path.resolve()) not in env_loader._APPLIED_HOMES
+
+
+@pytest.mark.parametrize("config_text", ["false\n", "0\n", "[]\n", '""\n'])
+def test_refresh_falsy_non_mapping_config_retains_known_good_value(
+    tmp_path, monkeypatch, config_text
+):
+    key = "HERMES_TEST_FALSY_NON_MAPPING_CONFIG_SECRET"
+    known_good = "known-good-falsy-non-mapping-config-value"
+    _prime_bitwarden_refresh(tmp_path, monkeypatch, key, [{key: known_good}])
+
+    env_loader.reset_secret_source_cache()
+    (tmp_path / "config.yaml").write_text(config_text, encoding="utf-8")
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == known_good
+    assert env_loader.get_secret_source(key) == "bitwarden"
+    assert key in env_loader._PENDING_SECRET_OWNERSHIP
+    assert str(tmp_path.resolve()) not in env_loader._APPLIED_HOMES
+
+
+def test_refresh_recovers_after_malformed_config_becomes_valid(tmp_path, monkeypatch):
+    key = "HERMES_TEST_CONFIG_RECOVERY_SECRET"
+    _prime_bitwarden_refresh(
+        tmp_path,
+        monkeypatch,
+        key,
+        [{key: "known-good-value"}, {key: "recovered-value"}],
+    )
+
+    env_loader.reset_secret_source_cache()
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  bitwarden: [unterminated\n",
+        encoding="utf-8",
+    )
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    _configure_bitwarden_refresh(tmp_path)
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == "recovered-value"
+    assert env_loader.get_secret_source(key) == "bitwarden"
+    assert key in env_loader._SECRET_OWNERSHIP
+    assert key not in env_loader._PENDING_SECRET_OWNERSHIP
+
+
+def test_refresh_intentional_disable_removes_source_owned_value(
+    tmp_path, monkeypatch
+):
+    key = "HERMES_TEST_DISABLED_SOURCE_SECRET"
+    _prime_bitwarden_refresh(
+        tmp_path,
+        monkeypatch,
+        key,
+        [{key: "value-to-remove"}],
+    )
+
+    env_loader.reset_secret_source_cache()
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert key not in os.environ
+    assert env_loader.get_secret_source(key) is None
+    assert key not in env_loader._SECRET_OWNERSHIP
+    assert key not in env_loader._PENDING_SECRET_OWNERSHIP
+
+
 def test_refresh_rotates_source_owned_value(tmp_path, monkeypatch):
     key = "HERMES_TEST_ROTATING_SECRET"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -81,6 +81,29 @@ def reset_secret_source_cache() -> None:
     _SECRET_SOURCES.clear()
 
 
+def _restore_pending_secret_source_labels() -> None:
+    """Surface still-current pending provenance after a config-load failure."""
+    _SECRET_SOURCES.clear()
+    if not _PENDING_SECRET_OWNERSHIP:
+        return
+    try:
+        from agent.secret_sources.registry import _fingerprint_secret_value
+    except Exception:  # noqa: BLE001 — provenance recovery must not block startup
+        return
+
+    for name, applied in _PENDING_SECRET_OWNERSHIP.items():
+        current = os.environ.get(name)
+        fingerprint = getattr(applied, "value_fingerprint", "")
+        source = getattr(applied, "source", "")
+        if (
+            current is not None
+            and fingerprint
+            and source
+            and _fingerprint_secret_value(current) == fingerprint
+        ):
+            _SECRET_SOURCES[name] = source
+
+
 def format_secret_source_suffix(env_var: str) -> str:
     """Return a human-readable suffix like ``" (from Bitwarden)"`` or ``""``.
 
@@ -404,12 +427,17 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
         return
-    _APPLIED_HOMES.add(home_key)
 
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
+        _restore_pending_secret_source_labels()
         return
+    if cfg is None:
+        _restore_pending_secret_source_labels()
+        return
+
+    _APPLIED_HOMES.add(home_key)
     if not cfg and not _PENDING_SECRET_OWNERSHIP:
         return
 
@@ -463,11 +491,13 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         print(f"  Secret sources: {conflict}", file=sys.stderr)
 
 
-def _load_secrets_config(home_path: Path) -> dict:
+def _load_secrets_config(home_path: Path) -> dict | None:
     """Read just the ``secrets:`` section out of config.yaml.
 
     Imported lazily and isolated from the main config loader so a
-    malformed config can't take down dotenv loading entirely.
+    malformed config can't take down dotenv loading entirely. ``None``
+    distinguishes an unreadable/unparseable file from a valid config with
+    no enabled secret sources.
     """
     config_path = home_path / "config.yaml"
     if not config_path.exists():
@@ -475,10 +505,17 @@ def _load_secrets_config(home_path: Path) -> dict:
     try:
         import yaml  # type: ignore
     except ImportError:
-        return {}
+        return None
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+            data = fast_safe_load(f)
     except Exception:  # noqa: BLE001
+        return None
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None
+    secrets = data.get("secrets")
+    if secrets is None:
         return {}
-    return data.get("secrets") or {}
+    return secrets if isinstance(secrets, dict) else None

@@ -869,6 +869,54 @@ class TestLoadGatewayConfig:
         # gateway.stt.enabled=false must NOT win over the present top-level stt.
         assert config.stt_enabled is True
 
+    def test_present_empty_top_level_quick_commands_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for quick_commands: a present (even empty)
+        top-level quick_commands must NOT be replaced by gateway.quick_commands
+        — the fallback fires only when the top-level key is absent. Mirrors the
+        session_reset/stt precedence contract from #73543744b."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "quick_commands: null\n"
+            "gateway:\n"
+            "  quick_commands:\n"
+            "    limits:\n"
+            "      type: exec\n"
+            "      command: echo nested\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested gateway.quick_commands must NOT leak through the present
+        # (null) top-level key — quick_commands stays at its default (empty).
+        assert "limits" not in (config.quick_commands or {})
+
+    def test_absent_top_level_quick_commands_falls_back_to_nested(self, tmp_path, monkeypatch):
+        """Sanity: when quick_commands is genuinely absent at the top level,
+        the nested gateway.quick_commands fallback still applies (regression
+        guard so the precedence fix doesn't over-correct and break the
+        legitimate nested path)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  quick_commands:\n"
+            "    limits:\n"
+            "      type: exec\n"
+            "      command: echo nested\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # Absent top-level key → nested fallback fires normally.
+        assert config.quick_commands.get("limits", {}).get("command") == "echo nested"
+
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
         start_gateway()'s connect loop actually dials the connector. Registering

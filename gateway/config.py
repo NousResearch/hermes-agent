@@ -1199,7 +1199,7 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["default_reset_policy"] = sr
 
             qc = yaml_cfg.get("quick_commands")
-            if qc is None and isinstance(gateway_section, dict):
+            if "quick_commands" not in yaml_cfg and isinstance(gateway_section, dict):
                 qc = gateway_section.get("quick_commands")
             if qc is not None:
                 if isinstance(qc, dict):

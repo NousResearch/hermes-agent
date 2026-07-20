@@ -89,7 +89,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 )
         return {}
 
-    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, sticky_cost_status
 
     input_tokens = _coerce_usage_int(usage.get("inputTokens"))
     cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
@@ -147,7 +147,9 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     )
     if cost_result.amount_usd is not None:
         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
-    agent.session_cost_status = cost_result.status
+    agent.session_cost_status = sticky_cost_status(
+        agent.session_cost_status, cost_result.status
+    )
     agent.session_cost_source = cost_result.source
 
     if agent._session_db and agent.session_id:

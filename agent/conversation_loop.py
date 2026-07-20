@@ -68,7 +68,7 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import estimate_usage_cost, normalize_usage, sticky_cost_status
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -2318,7 +2318,9 @@ def run_conversation(
                             agent.session_estimated_cost_usd += float(_moa_ref_cost)
                         except (TypeError, ValueError):  # pragma: no cover - defensive
                             pass
-                    agent.session_cost_status = cost_result.status
+                    agent.session_cost_status = sticky_cost_status(
+                        agent.session_cost_status, cost_result.status
+                    )
                     agent.session_cost_source = cost_result.source
 
                     # Persist token counts to session DB for /insights.

@@ -1499,6 +1499,7 @@ describe('moveSessionToProfile', () => {
         creatingSessionRef: ref(false),
         ensureSessionState: () => ({}) as ClientSessionState,
         getRouteToken: () => 'token',
+        getRoutedStoredSessionId: () => null,
         navigate: vi.fn() as never,
         requestGateway,
         resetViewSync: vi.fn(),

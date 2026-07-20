@@ -144,6 +144,7 @@ export const api = {
   drug: (q) => getJSON("/api/drug", { q }),
   repos: (window) => getJSON("/api/repos", { window }),
   papers: (cat) => getJSON("/api/papers", { cat }),
+  aiNews: (topic) => getJSON("/api/ai-news", { topic }),
   runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
   cryptoCoin: (id) => getJSON("/api/crypto/coin", { id }),
   cryptoChart: (id, days) => getJSON("/api/crypto/chart", { id, days }),

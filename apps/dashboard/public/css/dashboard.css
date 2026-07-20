@@ -1170,6 +1170,17 @@ a { color: inherit; }
 .snip-f-body { font-family: ui-monospace, Menlo, monospace; resize: vertical; }
 .snip-form-actions { display: flex; gap: 6px; }
 
+/* ---------- AI daily brief ---------- */
+.aid-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.aid-card { display: block; text-decoration: none; border: 1px solid var(--hairline); border-radius: 7px; padding: 11px 12px; background: var(--surface-2); transition: border-color 120ms, background 120ms; }
+a.aid-card:hover { border-color: var(--accent); background: var(--surface); }
+.aid-label { font-size: 9px; letter-spacing: 0.12em; color: var(--accent); font-weight: 700; }
+.aid-title { font-weight: 650; line-height: 1.3; margin-top: 4px; }
+.aid-sub { margin-top: 3px; }
+.aid-prompt { background: var(--accent-dim); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.aid-prompt-text { margin-top: 5px; line-height: 1.5; font-size: 13px; }
+.aid-note { margin-top: 10px; }
+
 /* ---------- repo radar ---------- */
 .repo-list { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; margin-top: 8px; }
 .repo-item { display: block; text-decoration: none; padding: 8px 6px; border-bottom: 1px solid var(--hairline); border-left: 2px solid transparent; }

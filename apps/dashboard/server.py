@@ -1126,6 +1126,50 @@ def sample_team_news(team: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# AI Radar — AI / Claude news via Google News RSS (no key)
+# ---------------------------------------------------------------------------
+AI_NEWS_TTL = 30 * 60
+AI_NEWS_QUERIES = {
+    "claude": "Anthropic OR \"Claude AI\"",
+    "llm": "large language model OR LLM AI",
+    "agents": "AI agents OR agentic AI OR \"AI coding\"",
+    "oss": "open source AI model",
+}
+
+
+def live_ai_news(topic: str) -> dict:
+    query = AI_NEWS_QUERIES.get(topic, AI_NEWS_QUERIES["claude"])
+    url = ("https://news.google.com/rss/search?q="
+           f"{urllib.parse.quote(query)}&hl=en-US&gl=US&ceid=US:en")
+    items = merge_items(parse_feed(fetch_url(url), "Google News"), 15)
+    if not items:
+        raise RuntimeError("no ai news")
+    return {"source": "live", "topic": topic, "items": items}
+
+
+def sample_ai_news(topic: str) -> dict:
+    now = datetime.now(timezone.utc)
+    demo = {
+        "claude": ["Anthropic ships new Claude capabilities for developers",
+                   "Claude Code adds workflow features teams are adopting",
+                   "Enterprises expand Claude deployments across workflows"],
+        "llm": ["New open-weight LLM posts strong reasoning benchmarks",
+                "Study probes long-context retrieval in large models",
+                "Inference costs fall as model efficiency improves"],
+        "agents": ["Agentic coding tools reshape developer workflows",
+                   "Best practices emerge for reliable tool-using agents",
+                   "MCP connectors proliferate across the ecosystem"],
+        "oss": ["Popular open-source AI project crosses a star milestone",
+                "Community releases fine-tuned models for local use",
+                "New dataset released under a permissive licence"],
+    }.get(topic, [])
+    return {"source": "sample", "topic": topic, "items": [
+        {"title": t, "url": "https://news.google.com/", "source": "Sample Wire",
+         "summary": "", "published": (now - timedelta(hours=2 * i + 1)).isoformat()}
+        for i, t in enumerate(demo)]}
+
+
+# ---------------------------------------------------------------------------
 # Stocks / indices / FX — Stooq CSV (no key)
 # ---------------------------------------------------------------------------
 import csv as _csv
@@ -2330,6 +2374,7 @@ SOURCES: dict[str, dict] = {
     "drug": {"ttl": DRUG_TTL, "live": live_drug, "sample": sample_drug},
     "repos": {"ttl": REPOS_TTL, "live": live_repos, "sample": sample_repos},
     "papers": {"ttl": PAPERS_TTL, "live": live_papers, "sample": sample_papers},
+    "ainews": {"ttl": AI_NEWS_TTL, "live": live_ai_news, "sample": sample_ai_news},
 }
 
 
@@ -2773,6 +2818,12 @@ class Api:
         if cat not in ("cs.AI", "cs.CL", "cs.LG"):
             cat = "cs.AI"
         return self.fetch_source("papers", cat)
+
+    def ai_news(self, params: dict) -> dict:
+        topic = params.get("topic", ["claude"])[0].lower()
+        if topic not in AI_NEWS_QUERIES:
+            topic = "claude"
+        return self.fetch_source("ainews", topic)
 
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
@@ -3293,6 +3344,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/drug": "drug",
         "/api/repos": "repos",
         "/api/papers": "papers",
+        "/api/ai-news": "ai_news",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",

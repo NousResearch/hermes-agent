@@ -124,7 +124,7 @@ const WIDGET_PAGES = {
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
-  "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers"],
+  "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -752,6 +752,12 @@ check("arxiv papers list renders", (await page.locator(".widget-papers .paper-it
 await page.locator(".widget-papers .paper-head").first().click();
 await page.waitForTimeout(150);
 check("paper abstract expands", !(await page.locator(".widget-papers .paper-abstract").first().isHidden()));
+await gotoWidget("ainews");
+await page.waitForSelector(".widget-ainews .news-item", { timeout: 5000 });
+check("AI radar lists stories", (await page.locator(".widget-ainews .news-item").count()) >= 2);
+await gotoWidget("aidaily");
+await page.waitForSelector(".widget-aidaily .aid-card", { timeout: 5000 });
+check("AI daily brief shows category picks", (await page.locator(".widget-aidaily .aid-card").count()) >= 4);
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

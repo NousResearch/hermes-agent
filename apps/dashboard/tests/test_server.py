@@ -898,6 +898,14 @@ class MarketsWatchlistTests(unittest.TestCase):
         d = self.api.papers({"cat": ["cs.ZZ"]})
         self.assertEqual(d["category"], "cs.AI")
 
+    def test_ai_news_sample_and_validation(self):
+        d = self.api.ai_news({"topic": ["agents"]})
+        self.assertEqual(d["topic"], "agents")
+        self.assertTrue(d["items"])
+        for it in d["items"]:
+            self.assertTrue(it["title"] and it["url"])
+        self.assertEqual(self.api.ai_news({"topic": ["bogus"]})["topic"], "claude")
+
     def test_pubmed_grounding_normalizer(self):
         import unittest.mock as mock
         esearch = json.dumps({"esearchresult": {"idlist": ["111"]}}).encode()

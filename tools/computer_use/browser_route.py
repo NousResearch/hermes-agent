@@ -13,9 +13,9 @@ The adapter is deliberately stricter than the transport:
 * every mutation invalidates refs and requires a fresh state read; and
 * changing from trusted input to ``dom_event`` is always explicit.
 
-Browser preparation remains a separate approved action.  Existing-profile
-attachment is not performed here because it needs cua-driver's documented
-interactive grant, not ordinary tool approval.
+Browser preparation remains a separate approved action. Existing-profile
+attachment is delegated to cua-driver's daemon authorization coordinator;
+ordinary Hermes tool approval never substitutes for protected consent.
 """
 
 from __future__ import annotations
@@ -344,7 +344,7 @@ class CuaTypedBrowserRoute:
         profile_name: Optional[str] = None,
         allow_launch: bool = False,
     ) -> Dict[str, Any]:
-        """Run explicit isolated setup; refuse existing-profile attachment."""
+        """Run explicit setup through the driver's authoritative mode gate."""
         missing = self._require_tool("browser_prepare")
         if missing is not None:
             return missing
@@ -354,10 +354,23 @@ class CuaTypedBrowserRoute:
                 "browser_pid_required", "browser_prepare requires a positive pid."
             )
         if profile_mode == "existing_profile":
-            return _refusal(
-                "browser_consent_required",
-                "Existing-profile attachment requires cua-driver's interactive browser-approve grant bound to the exact pid, window, and session; ordinary tool approval is insufficient.",
-                interactive_grant_required=True,
+            exact_window = _positive_int(window_id)
+            if exact_window is None:
+                return _refusal(
+                    "browser_exact_target_required",
+                    "Existing-profile attachment requires an exact positive pid and window_id pair.",
+                )
+            # The driver owns the immutable standard/bounded/unrestricted
+            # decision. Standard fails closed without a certified host;
+            # explicit Hermes YOLO owns a private unrestricted daemon.
+            self.state.clear()
+            return self._call(
+                "browser_prepare",
+                {
+                    "pid": exact_pid,
+                    "window_id": exact_window,
+                    "strategy": {"kind": "existing_profile"},
+                },
             )
         if profile_mode not in {"isolated_new", "isolated_named"}:
             return _refusal(

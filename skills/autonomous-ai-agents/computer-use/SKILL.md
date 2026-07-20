@@ -182,9 +182,12 @@ browser tools. The contract is capability-based:
 
 `cua_browser_prepare` is a separate approved setup action. Driver-owned
 `isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
-An `existing_profile` requires cua-driver's own exact, interactive grant;
-ordinary Hermes approval is not a substitute and no grant token may be
-invented, stored, logged, or reused.
+An `existing_profile` is decided by cua-driver's immutable permission mode.
+Normal Hermes sessions use `standard`, which requires a certified protected
+host and fails closed when Hermes has none. Explicit Hermes YOLO (`--yolo`,
+`/yolo`, or `approvals.mode: off`) launches a private embedded cua-driver in
+`unrestricted` after that risk acceptance, so there are no runtime Cua
+approval prompts. Never invent, store, log, or reuse a grant token.
 
 Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
 permission UI, OS prompts, native dialogs, extension surfaces, unsupported

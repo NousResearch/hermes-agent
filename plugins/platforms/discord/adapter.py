@@ -1316,6 +1316,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 free_channels = self._discord_free_response_channels()
                 channel_keys = self._discord_channel_keys(message, parent_id)
                 if "*" not in free_channels and not (channel_keys & free_channels):
+                    logger.debug(
+                        "[%s] Ignoring non-mention message in non-free-response channel (keys=%s, free_channels=%s)",
+                        self.name, channel_keys, free_channels,
+                    )
                     return False, False
 
         return True, role_authorized

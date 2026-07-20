@@ -770,3 +770,33 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+def test_sanitize_dedup_across_assistants_drops_empty_tool_calls():
+    """When every tool_call in an assistant turn is a duplicate of an earlier
+    id, the deduplication step must drop the ``tool_calls`` key entirely
+    instead of leaving ``tool_calls: []``. Strict OpenAI-compatible providers
+    such as Alibaba Qwen reject the empty array with:
+    "Empty tool_calls is not supported in message."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "foo", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "r1"},
+        # A later assistant turn re-uses the same call_id (e.g. retry or
+        # crash-resume). Deduplication removes both tool_calls; the key must
+        # be dropped rather than left as an empty array.
+        {"role": "assistant", "content": "retry", "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "foo", "arguments": "{}"}},
+        ]},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert [tc["id"] for tc in assistants[0]["tool_calls"]] == ["call_1"]
+    assert "tool_calls" not in assistants[1]
+    assert assistants[1]["content"] == "retry"

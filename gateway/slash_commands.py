@@ -3108,43 +3108,64 @@ class GatewaySlashCommandsMixin:
         return out
 
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
+        """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats.
+
+        Session-scoped by default; ``--global`` persists agent.service_tier
+        to config.yaml (parity with /model and /reasoning).
+        """
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from hermes_cli.models import model_supports_fast_mode
 
-        args = event.get_command_args().strip().lower()
-        self._service_tier = self._load_service_tier()
+        raw_args = event.get_command_args().strip().lower()
+        # Reuse the /reasoning arg parser: strips --global (any position),
+        # normalizes unicode dashes.
+        args, persist_global = self._parse_reasoning_command_args(raw_args)
+        session_key = self._session_key_for_source(event.source)
+        self._service_tier = self._resolve_session_service_tier(
+            session_key=session_key
+        )
 
         user_config = _load_gateway_config()
         model = _resolve_gateway_model(user_config)
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
 
-        def _apply_fast_selection(value: str) -> str:
+        def _apply_fast_selection(value: str, persist: bool = False) -> str:
             """Apply a /fast argument (typed or picked) and return the reply."""
             if value in {"fast", "on"}:
-                self._service_tier = "priority"
+                tier = "priority"
                 saved_value = "fast"
                 label = t("gateway.fast.label_fast")
             elif value in {"normal", "off"}:
-                self._service_tier = None
+                tier = None
                 saved_value = "normal"
                 label = t("gateway.fast.label_normal")
             else:
                 return t("gateway.fast.unknown_arg", arg=value)
-            if self._save_gateway_config_key("agent.service_tier", saved_value):
-                return t("gateway.fast.saved", label=label)
+            self._service_tier = tier
+            if persist:
+                if self._save_gateway_config_key("agent.service_tier", saved_value):
+                    # Global write supersedes any session override.
+                    self._set_session_service_tier_override(
+                        session_key, None, clear=True
+                    )
+                    self._evict_cached_agent(session_key)
+                    return t("gateway.fast.saved", label=label)
+                # Config write failed — fall back to a session override so the
+                # user's choice still applies (mirrors /reasoning --global).
+                self._set_session_service_tier_override(session_key, tier)
+                self._evict_cached_agent(session_key)
+                return t("gateway.fast.session_only", label=label)
+            self._set_session_service_tier_override(session_key, tier)
+            self._evict_cached_agent(session_key)
             return t("gateway.fast.session_only", label=label)
 
         if not args or args == "status":
             is_fast = self._service_tier == "priority"
             status = t("gateway.fast.status_fast") if is_fast else t("gateway.fast.status_normal")
 
-            # Interactive picker on platforms that support it.
-            session_key = self._session_key_for_source(event.source)
-
             async def _on_fast_choice(_chat_id: str, value: str) -> str:
-                return _apply_fast_selection(value)
+                return _apply_fast_selection(value, persist=persist_global)
 
             picker_sent = await self._try_send_choice_picker(
                 event,
@@ -3169,7 +3190,7 @@ class GatewaySlashCommandsMixin:
 
             return t("gateway.fast.status", mode=status)
 
-        return _apply_fast_selection(args)
+        return _apply_fast_selection(args, persist=persist_global)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

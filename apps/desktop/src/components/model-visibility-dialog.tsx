@@ -2,20 +2,22 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
   modelVisibilityKey,
-  setVisibleModels
+  setVisibleModels,
+  toggleModelVisibility
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
@@ -43,7 +45,10 @@ export function ModelVisibilityDialog({
     queryKey: ['model-options', sessionId || 'global'],
     queryFn: (): Promise<ModelOptionsResponse> => {
       if (gw && sessionId) {
-        return gw.request<ModelOptionsResponse>('model.options', { session_id: sessionId })
+        return gw.request<ModelOptionsResponse>('model.options', {
+          session_id: sessionId,
+          explicit_only: true
+        })
       }
 
       return getGlobalModelOptions()
@@ -59,19 +64,10 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
-    const key = modelVisibilityKey(provider.slug, model)
-
-    if (next.has(key)) {
-      next.delete(key)
-    } else {
-      next.add(key)
-    }
-
-    setVisibleModels(next)
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)
@@ -97,7 +93,7 @@ export function ModelVisibilityDialog({
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? <BrailleSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+              {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
             </div>
           ) : (
             providers.map(provider => {

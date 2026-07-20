@@ -169,7 +169,16 @@ export default function ConfigPage() {
     api
       .getSchema()
       .then((resp) => {
-        setSchema(resp.fields as Record<string, Record<string, unknown>>);
+        // memory.provider has a dedicated management UI on the Plugins page
+        // (provider cards + guided setup/switch flow). Hide it from the
+        // generic config form so the two surfaces don't fight; the schema
+        // keeps the field for other consumers (Desktop settings).
+        const fields = { ...resp.fields } as Record<
+          string,
+          Record<string, unknown>
+        >;
+        delete fields["memory.provider"];
+        setSchema(fields);
         setCategoryOrder(resp.category_order ?? []);
       })
       .catch(() => {});
@@ -177,9 +186,19 @@ export default function ConfigPage() {
       .getDefaults()
       .then(setDefaults)
       .catch(() => {});
+    // getConfigRaw is profile-scoped (fetchJSON appends ?profile=), so its
+    // `path` reflects the switched profile's config.yaml. /api/status's
+    // config_path is machine-global (the dashboard's own profile) — wrong
+    // header under the global profile switcher, so it's only a fallback.
+    api
+      .getConfigRaw()
+      .then((resp) => {
+        if (resp.path) setConfigPath(resp.path);
+      })
+      .catch(() => {});
     api
       .getStatus()
-      .then((resp) => setConfigPath(resp.config_path))
+      .then((resp) => setConfigPath((prev) => prev ?? resp.config_path))
       .catch(() => {});
   }, []);
 

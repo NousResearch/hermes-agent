@@ -5,7 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Bug } from '@/lib/icons'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
@@ -171,12 +173,16 @@ export function PreviewPane({
       document.body.style.cursor = 'row-resize'
       document.body.style.userSelect = 'none'
 
+      // pointermove outpaces 60fps and each setHeight reflows the webview +
+      // console split, so coalesce to one apply per frame (commits on cleanup).
+      const resize = rafCoalesce((height: number) => consoleState.setHeight(height))
+
       const handleMove = (moveEvent: PointerEvent) => {
         if (!active) {
           return
         }
 
-        consoleState.setHeight(clampConsoleHeight(startHeight + startY - moveEvent.clientY))
+        resize.push(clampConsoleHeight(startHeight + startY - moveEvent.clientY))
       }
 
       const cleanup = () => {
@@ -185,6 +191,7 @@ export function PreviewPane({
         }
 
         active = false
+        resize.finish()
         document.body.style.cursor = previousCursor
         document.body.style.userSelect = previousUserSelect
         handle.releasePointerCapture?.(pointerId)
@@ -406,6 +413,7 @@ export function PreviewPane({
   useEffect(() => {
     if (
       target.kind !== 'file' ||
+      isDesktopFsRemoteMode() ||
       !window.hermesDesktop?.watchPreviewFile ||
       !window.hermesDesktop?.onPreviewFileChanged
     ) {

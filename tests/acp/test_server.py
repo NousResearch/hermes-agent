@@ -1101,6 +1101,82 @@ class TestPrompt:
         assert any(update.session_update == "agent_message_chunk" for update in updates)
 
     @pytest.mark.asyncio
+    async def test_prompt_suppresses_cancel_interrupt_sentinel(self, agent):
+        """ACP cancel status text should not be emitted as assistant output."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        sentinel = "Operation interrupted: waiting for model response (3.3s elapsed)."
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": sentinel,
+                "messages": list(state.history),
+                "interrupted": True,
+                "completed": False,
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            prompt = [TextContentBlock(type="text", text="please do a long task")]
+            resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_texts = [
+            update.content.text
+            for update in updates
+            if update.session_update == "agent_message_chunk"
+        ]
+        assert resp.stop_reason == "cancelled"
+        assert sentinel not in agent_texts
+        assert not any(text.startswith("Operation interrupted:") for text in agent_texts)
+        mock_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prompt_keeps_real_final_response_on_cancelled_turn(self, agent):
+        """A cancel flag must not suppress actual assistant/model text."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        final_text = "The actual model answer arrived before cancellation settled."
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": final_text,
+                "messages": [],
+                "interrupted": True,
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="finish if you can")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_texts = [
+            update.content.text
+            for update in updates
+            if update.session_update == "agent_message_chunk"
+        ]
+        assert resp.stop_reason == "cancelled"
+        assert final_text in agent_texts
+
+    @pytest.mark.asyncio
     async def test_prompt_propagates_hermes_session_id_env(self, agent, monkeypatch):
         """ACP must propagate the originating session id to the agent loop
         via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects
@@ -1247,6 +1323,11 @@ class TestPrompt:
     async def test_prompt_auto_titles_session(self, agent):
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.model = "gpt-5.6-sol"
+        state.agent.provider = "openai-codex"
+        state.agent.base_url = "https://chatgpt.example.test/backend-api/codex"
+        state.agent.api_key = object()
+        state.agent.api_mode = "codex_responses"
         state.agent.run_conversation = MagicMock(return_value={
             "final_response": "Here is the fix.",
             "messages": [
@@ -1267,6 +1348,13 @@ class TestPrompt:
         assert mock_title.call_args.args[1] == new_resp.session_id
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
+        assert mock_title.call_args.kwargs["main_runtime"] == {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.example.test/backend-api/codex",
+            "api_key": state.agent.api_key,
+            "api_mode": "codex_responses",
+        }
         assert callable(mock_title.call_args.kwargs["title_callback"])
 
     @pytest.mark.asyncio
@@ -1464,6 +1552,37 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/reset", state)
         assert "cleared" in result.lower()
         assert len(state.history) == 0
+
+    def test_reset_resets_agent_session_state(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.reset_session_state = MagicMock()
+
+        with patch.object(agent.session_manager, "save_session") as mock_save:
+            result = agent._handle_slash_command("/reset", state)
+
+        assert "cleared" in result.lower()
+        assert state.history == []
+        state.agent.reset_session_state.assert_called_once_with()
+        mock_save.assert_called_once_with(state.session_id)
+
+    def test_reset_saves_session_when_agent_state_reset_fails(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.reset_session_state = MagicMock(side_effect=RuntimeError("boom"))
+
+        with (
+            patch.object(agent.session_manager, "save_session") as mock_save,
+            patch("acp_adapter.server.logger") as mock_logger,
+        ):
+            result = agent._handle_slash_command("/reset", state)
+
+        assert "cleared" in result.lower()
+        assert "state reset failed" in result.lower()
+        assert state.history == []
+        state.agent.reset_session_state.assert_called_once_with()
+        mock_save.assert_called_once_with(state.session_id)
+        mock_logger.warning.assert_called_once()
 
     def test_version(self, agent, mock_manager):
         state = self._make_state(mock_manager)
@@ -1721,6 +1840,11 @@ class TestRegisterSessionMcpServers:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
         state.agent._cached_system_prompt = "old prompt"
+        state.agent._memory_manager = SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {"name": "hindsight_recall", "description": "Recall", "parameters": {}}
+            ]
+        )
 
         server = McpServerStdio(
             name="srv",
@@ -1731,6 +1855,7 @@ class TestRegisterSessionMcpServers:
 
         fake_tools = [
             {"function": {"name": "mcp_srv_search"}},
+            {"function": {"name": "memory"}},
             {"function": {"name": "terminal"}},
         ]
 
@@ -1744,8 +1869,21 @@ class TestRegisterSessionMcpServers:
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools == fake_tools
-        assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
+        assert state.agent.tools is fake_tools
+        assert state.agent.tools[-1] == {
+            "type": "function",
+            "function": {
+                "name": "hindsight_recall",
+                "description": "Recall",
+                "parameters": {},
+            },
+        }
+        assert state.agent.valid_tool_names == {
+            "hindsight_recall",
+            "memory",
+            "mcp_srv_search",
+            "terminal",
+        }
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
 

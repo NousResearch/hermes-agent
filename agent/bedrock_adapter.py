@@ -58,17 +58,34 @@ _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
+_MIN_BOTO3_VERSION = (1, 34, 59)
+
+
 def _require_boto3():
-    """Import boto3, raising a clear error if not installed."""
+    """Import boto3, raising a clear error if not installed or too old."""
     try:
         import boto3
-        return boto3
     except ImportError:
         raise ImportError(
             "The 'boto3' package is required for the AWS Bedrock provider. "
             "Install it with: pip install boto3\n"
             "Or install Hermes with Bedrock support: pip install -e '.[bedrock]'"
         )
+    # converse() / converse_stream() were added in boto3 1.34.59.
+    # When Hermes is installed editable into system Python, the system boto3
+    # (e.g. Ubuntu 24.04 ships 1.34.46) may take precedence over the venv
+    # version pinned in pyproject.toml.
+    try:
+        version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
+    except (AttributeError, ValueError):
+        return boto3  # can't parse — don't block on version check
+    if version < _MIN_BOTO3_VERSION:
+        raise RuntimeError(
+            f"boto3 {boto3.__version__} does not support converse_stream "
+            f"(minimum 1.34.59 required). Upgrade with: "
+            f"pip install --upgrade boto3"
+        )
+    return boto3
 
 
 def _get_bedrock_runtime_client(region: str):
@@ -206,6 +223,41 @@ def is_stale_connection_error(exc: BaseException) -> bool:
                 return True
 
     return False
+
+
+def is_streaming_access_denied_error(exc: BaseException) -> bool:
+    """Return True when AWS denied the ``bedrock:InvokeModelWithResponseStream`` action.
+
+    IAM policies scoped to ``bedrock:InvokeModel`` only (a common least-privilege
+    setup) reject ``converse_stream()`` with an ``AccessDeniedException`` whose
+    message names the streaming action, e.g.::
+
+        User: arn:aws:iam::123456789012:user/x is not authorized to perform:
+        bedrock:InvokeModelWithResponseStream on resource: ...
+
+    This is permanent for the session — retrying the stream can never succeed —
+    so callers should flip to the non-streaming ``converse()`` path (which maps
+    to ``bedrock:InvokeModel``) instead of burning retries.
+
+    Detection is deliberately message-based: boto3 surfaces this as a
+    ``ClientError`` with ``Error.Code == "AccessDeniedException"``, and the
+    AnthropicBedrock SDK wraps the same AWS response in its own exception
+    types, but both preserve the action name in the message.
+    """
+    msg = str(exc).lower()
+    if "invokemodelwithresponsestream" not in msg:
+        return False
+    # ClientError with an explicit access-denied code is the canonical form.
+    try:
+        from botocore.exceptions import ClientError
+    except ImportError:  # pragma: no cover — botocore always present with boto3
+        ClientError = None  # type: ignore[assignment]
+    if ClientError is not None and isinstance(exc, ClientError):
+        code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code", "")
+        return code in ("AccessDeniedException", "UnauthorizedException")
+    # Wrapped forms (e.g. AnthropicBedrock SDK PermissionDeniedError) — match
+    # on the authorization-failure phrasing AWS uses.
+    return "not authorized" in msg or "accessdenied" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +490,26 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+# Bedrock's Converse API rejects any text content block whose text is empty
+# OR whitespace-only (ValidationException: "text content blocks must contain
+# non-whitespace text"). A lone space is whitespace and is rejected too — the
+# placeholder MUST itself be non-whitespace. Ref: issue #9486.
+_EMPTY_TEXT_PLACEHOLDER = "(empty)"
+
+
+def _safe_text(text) -> str:
+    """Return ``text`` if it's non-whitespace, else a non-whitespace placeholder.
+
+    Handles None, empty string, and whitespace-only string (spaces, tabs,
+    newlines) — all of which Bedrock's Converse API rejects as text content.
+    """
+    if text is None:
+        return _EMPTY_TEXT_PLACEHOLDER
+    if not isinstance(text, str):
+        text = str(text)
+    return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
@@ -445,26 +517,27 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    Replaces empty/whitespace-only text blocks with a non-whitespace
+    placeholder — Bedrock's Converse API rejects messages where a text
+    content block is empty or whitespace-only (ValidationException:
+    "text content blocks must contain non-whitespace text"). Ref: issue #9486.
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": _safe_text(content)}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": _safe_text(content)}]
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                blocks.append({"text": _safe_text(part)})
                 continue
             if not isinstance(part, dict):
                 continue
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": _safe_text(text)})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -476,18 +549,27 @@ def _convert_content_to_converse(content) -> List[Dict]:
                         mime_part = header[5:].split(";")[0]
                         if mime_part:
                             media_type = mime_part
+                    # Decode base64 to raw bytes — boto3 re-encodes at the
+                    # wire layer, so passing the base64 string directly
+                    # results in double-encoding and Bedrock rejects it with
+                    # "Failed to sanitize image".  Ref: #33317.
+                    import base64
+                    try:
+                        raw_bytes = base64.b64decode(data)
+                    except Exception:
+                        raw_bytes = data.encode("utf-8")
                     blocks.append({
                         "image": {
                             "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
-                            "source": {"bytes": data},
+                            "source": {"bytes": raw_bytes},
                         }
                     })
                 else:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
-    return [{"text": str(content)}]
+        return blocks if blocks else [{"text": _EMPTY_TEXT_PLACEHOLDER}]
+    return [{"text": _safe_text(content)}]
 
 
 def convert_messages_to_converse(
@@ -517,14 +599,18 @@ def convert_messages_to_converse(
         content = msg.get("content")
 
         if role == "system":
-            # System messages become the system prompt
+            # System messages become the system prompt. Blank/whitespace-only
+            # parts are dropped entirely (not placeholder-filled) since a
+            # system prompt made up of only placeholder text is meaningless.
             if isinstance(content, str) and content.strip():
                 system_blocks.append({"text": content})
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
-                        system_blocks.append({"text": part.get("text", "")})
-                    elif isinstance(part, str):
+                        text = part.get("text", "")
+                        if isinstance(text, str) and text.strip():
+                            system_blocks.append({"text": text})
+                    elif isinstance(part, str) and part.strip():
                         system_blocks.append({"text": part})
             continue
 
@@ -535,7 +621,7 @@ def convert_messages_to_converse(
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
-                    "content": [{"text": result_content}],
+                    "content": [{"text": _safe_text(result_content)}],
                 }
             }
             # In Converse, tool results go in a "user" role message
@@ -574,7 +660,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": _EMPTY_TEXT_PLACEHOLDER}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -600,11 +686,11 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": _EMPTY_TEXT_PLACEHOLDER}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": _EMPTY_TEXT_PLACEHOLDER}]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 
@@ -728,6 +814,7 @@ def stream_converse_with_callbacks(
     on_tool_start=None,
     on_reasoning_delta=None,
     on_interrupt_check=None,
+    on_event=None,
 ) -> SimpleNamespace:
     """Process a Bedrock ConverseStream event stream with real-time callbacks.
 
@@ -747,6 +834,12 @@ def stream_converse_with_callbacks(
             on supported models (Claude 4.6+).
         on_interrupt_check: Called on each event. Should return True if the
             agent has been interrupted and streaming should stop.
+        on_event: Called once at the top of the loop body for EVERY yielded
+            Bedrock event (text/tool-input/reasoning/metadata deltas alike),
+            before any branching. Provides a wire-level liveness signal so an
+            external watchdog can distinguish "still receiving events" from
+            "stream wedged with no data". Errors raised by the callback are
+            swallowed so a liveness hook can never abort the stream.
 
     Returns:
         An OpenAI-compatible SimpleNamespace response, identical in shape to
@@ -762,6 +855,15 @@ def stream_converse_with_callbacks(
     usage_data: Dict[str, int] = {}
 
     for event in event_stream.get("stream", []):
+        # Wire-level liveness signal: fire on EVERY yielded event (text, tool
+        # input, reasoning, metadata) before branching so an external watchdog
+        # can tell a still-flowing stream from a wedged one. Best-effort — a
+        # liveness callback must never be able to abort the stream.
+        if on_event is not None:
+            try:
+                on_event()
+            except Exception:
+                pass
         # Check for interrupt
         if on_interrupt_check and on_interrupt_check():
             break
@@ -900,11 +1002,14 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt
 
-    if temperature is not None:
-        kwargs["inferenceConfig"]["temperature"] = temperature
+    from agent.anthropic_adapter import _forbids_sampling_params
 
-    if top_p is not None:
-        kwargs["inferenceConfig"]["topP"] = top_p
+    if not _forbids_sampling_params(model):
+        if temperature is not None:
+            kwargs["inferenceConfig"]["temperature"] = temperature
+
+        if top_p is not None:
+            kwargs["inferenceConfig"]["topP"] = top_p
 
     if stop_sequences:
         kwargs["inferenceConfig"]["stopSequences"] = stop_sequences
@@ -1003,6 +1108,16 @@ def call_converse_stream(
     try:
         response = client.converse_stream(**kwargs)
     except Exception as exc:
+        if is_streaming_access_denied_error(exc):
+            # IAM allows bedrock:InvokeModel but not
+            # InvokeModelWithResponseStream — permanent for this session.
+            # Fall back to the non-streaming converse() path.
+            logger.info(
+                "bedrock: converse_stream denied by IAM on (region=%s, model=%s) — "
+                "falling back to non-streaming converse().",
+                region, model,
+            )
+            return normalize_converse_response(client.converse(**kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse_stream(region=%s, "
@@ -1231,9 +1346,20 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
+    # Anthropic Claude models on Bedrock.
+    # Context windows per Anthropic's official models comparison
+    # (https://platform.claude.com/docs/en/about-claude/models/overview).
+    # Sonnet 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M generally
+    # available (no beta header required as of April 2026). Sonnet 4.5 and
+    # Sonnet 4 had their `context-1m-2025-08-07` beta retired on
+    # April 30, 2026, so they are standard 200K; Haiku 4.5 is 200K.
+    # Keys are matched by longest-substring, so the versioned 4-6/4-7/4-8
+    # entries win over the generic "anthropic.claude-opus-4" fallback.
+    "anthropic.claude-sonnet-5":     1_000_000,
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-opus-4-6":     1_000_000,
+    "anthropic.claude-sonnet-4-6":   1_000_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,

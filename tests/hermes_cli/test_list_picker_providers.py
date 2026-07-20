@@ -19,6 +19,12 @@ import pytest
 from hermes_cli import model_switch
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_custom_provider_model_probe(monkeypatch):
+    """Keep custom-provider picker fixtures independent of local model servers."""
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+
+
 def _make_provider(slug, name=None, models=None, *, is_current=False,
                    is_user_defined=False, source="built-in", api_url=None):
     """Build a dict shaped like ``list_authenticated_providers`` output."""
@@ -107,6 +113,40 @@ def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     assert [p["slug"] for p in result] == ["anthropic", "gemini"]
     assert result[0]["models"] == ["claude-sonnet-4-6", "claude-opus-4-7"]
     assert result[1]["models"] == ["gemini-3-flash-preview"]
+
+
+def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):
+    """Gateway pickers opt into a virtual MoA provider so presets are tappable."""
+    base = [_make_provider("minimax", models=["MiniMax-M3"])]
+    moa_config = {
+        "moa": {
+            "default_preset": "battle",
+            "presets": {
+                "battle": {"enabled": True},
+                "smart": {"enabled": True},
+            },
+        }
+    }
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: moa_config)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = model_switch.list_picker_providers(
+        current_provider="moa",
+        max_models=50,
+        include_moa=True,
+    )
+
+    assert [p["slug"] for p in result] == ["moa", "minimax"]
+    moa = result[0]
+    assert moa["name"] == "Mixture of Agents"
+    assert moa["is_current"] is True
+    assert moa["source"] == "virtual"
+    assert moa["models"] == ["battle", "smart"]
+    assert moa["total_models"] == 2
 
 
 def test_empty_models_row_dropped(monkeypatch):

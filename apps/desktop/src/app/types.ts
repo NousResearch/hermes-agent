@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -27,9 +28,29 @@ export interface ImageDetachResponse {
   count?: number
 }
 
+export interface FileAttachResponse {
+  attached?: boolean
+  message?: string
+  // Gateway-side absolute path the file was staged to.
+  path?: string
+  // Workspace-relative path used to build ref_text.
+  ref_path?: string
+  // Rewritten @file: ref that resolves on the gateway (workspace-relative).
+  ref_text?: string
+  // True when bytes/host file were copied into the session workspace.
+  uploaded?: boolean
+  name?: string
+}
+
 export interface SlashExecResponse {
   output?: string
   warning?: string
+}
+
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+  messages?: string[]
 }
 
 export interface SessionSteerResponse {
@@ -45,6 +66,26 @@ export interface SessionTitleResponse {
   // to be applied on the first turn (see tui_gateway session.title handler).
   pending?: boolean
   session_key?: string
+}
+
+export interface HandoffRequestResponse {
+  queued?: boolean
+  session_key?: string
+  platform?: string
+  // Human-readable home channel name for the destination platform.
+  home_name?: string
+}
+
+export interface HandoffStateResponse {
+  // '' | 'pending' | 'running' | 'completed' | 'failed'
+  state?: string
+  platform?: string
+  error?: string
+}
+
+export interface HandoffFailResponse {
+  failed?: boolean
+  state?: string
 }
 
 export interface ExecCommandDispatchResponse {
@@ -66,6 +107,13 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
+  notice?: string
+}
+
+export interface PrefillCommandDispatchResponse {
+  type: 'prefill'
+  message: string
+  notice?: string
 }
 
 export type CommandDispatchResponse =
@@ -73,15 +121,19 @@ export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
+  | PrefillCommandDispatchResponse
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
-  id: SidebarNavId
+  /** Built-in view id, or a contributed row's namespaced contribution id. */
+  id: SidebarNavId | (string & {})
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
+  /** Keybind action id — when set, the tooltip shows the keybind hint. */
+  keybindActionId?: string
 }
 
 export interface ClientSessionState {
@@ -89,6 +141,13 @@ export interface ClientSessionState {
   messages: ChatMessage[]
   branch: string
   cwd: string
+  model: string
+  provider: string
+  reasoningEffort: string
+  serviceTier: string
+  fast: boolean
+  yolo: boolean
+  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null
@@ -103,4 +162,8 @@ export interface ClientSessionState {
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** Cumulative token usage, updated per completed turn. Per-session twin of
+   *  the primary-only $currentUsage — the statusbar reads it for a focused
+   *  tile's context count. Null until the first turn reports. */
+  usage: null | UsageStats
 }

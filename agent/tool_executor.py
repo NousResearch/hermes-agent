@@ -976,10 +976,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+        from tools.approval import get_current_session_key
         _fs_cwd = _resolve_command_cwd(
             workdir=args.get("workdir") if name == "terminal" else None,
-            env=get_active_env(effective_task_id),
             default_cwd=os.getcwd(),
+            session_key=get_current_session_key(default="") or (effective_task_id or ""),
         )
         _path_untrusted = agent._is_fs_tool_result_untrusted(name, args, _fs_cwd)
         tool_message = make_tool_result_message(
@@ -1672,10 +1673,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+        from tools.approval import get_current_session_key
         _fs_cwd = _resolve_command_cwd(
             workdir=function_args.get("workdir") if function_name == "terminal" else None,
-            env=get_active_env(effective_task_id),
             default_cwd=os.getcwd(),
+            session_key=get_current_session_key(default="") or (effective_task_id or ""),
         )
         _path_untrusted = agent._is_fs_tool_result_untrusted(function_name, function_args, _fs_cwd)
         tool_message = make_tool_result_message(

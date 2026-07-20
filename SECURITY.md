@@ -177,9 +177,10 @@ authorization model, but the rules below apply uniformly.
 
 **Surfaces in Hermes Agent:**
 
-- **Gateway platform adapters.** Messaging integrations in
-  `gateway/platforms/` (Telegram, Discord, Slack, email, SMS, etc.)
-  and analogous adapters shipped as plugins.
+- **Gateway platform adapters.** Bundled messaging integrations under
+  `plugins/platforms/` (Telegram, Discord, Slack, email, SMS, etc.),
+  plus shared base / legacy direct adapters in `gateway/platforms/`
+  (Signal, API server, webhooks, and similar).
 - **Network-exposed HTTP surfaces.** The API server adapter, the
   dashboard plugin, the kanban plugin's HTTP endpoints, and any
   other plugin that binds a listening socket.

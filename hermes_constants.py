@@ -948,6 +948,33 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
+def reasoning_label(reasoning_config: "dict | None") -> str:
+    """Render a reasoning config dict into the display label every surface uses.
+
+    THE single chokepoint for the ``r:<label>`` display mapping — the runtime
+    footer, the auto-compaction announce, the hygiene announce, the manual
+    ``/compress`` Model line, and the desktop footer all render the same dict
+    shape, and before this helper each re-implemented the mapping inline
+    (which is exactly how the r:-label lie family — fork PRs #402/#403/#404 —
+    kept respawning: every new surface hand-rolled the mapping and got a
+    fallback subtly wrong).
+
+    Mapping contract (matches ``parse_reasoning_effort``'s output shapes):
+    - ``{"enabled": False}``               → ``"none"``
+    - ``{"enabled": True, "effort": X}``   → ``X`` (stripped)
+    - ``None`` / ``{}`` / no effort        → ``""`` (caller applies its own
+      fallback chain — session resolver, config default, or omit the segment)
+
+    Display gating (whether ``""``/``"none"``/``"default"`` render at all) is
+    the CALLER's concern; this helper only normalizes dict → label.
+    """
+    if isinstance(reasoning_config, dict) and reasoning_config:
+        if not reasoning_config.get("enabled", True):
+            return "none"
+        return str(reasoning_config.get("effort", "") or "").strip()
+    return ""
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Resolve the effective reasoning config for *model* from a config dict.
 

@@ -1549,9 +1549,8 @@ def _effort_label(cfg_or_str) -> str:
     if cfg_or_str is None:
         return ""
     if isinstance(cfg_or_str, dict):
-        if cfg_or_str.get("enabled", True) is False:
-            return "none"
-        return str(cfg_or_str.get("effort", "") or "").strip()
+        from hermes_constants import reasoning_label
+        return reasoning_label(cfg_or_str)
     return str(cfg_or_str or "").strip()
 
 

@@ -209,13 +209,10 @@ def _resolve_announce_reasoning(agent: Any) -> "str | None":
     ``default``/``none`` labels).
     """
     try:
-        cfg = getattr(agent, "reasoning_config", None)
-        if isinstance(cfg, dict) and cfg:
-            if not cfg.get("enabled", True):
-                return "none"
-            effort = str(cfg.get("effort", "") or "").strip()
-            if effort:
-                return effort
+        from hermes_constants import reasoning_label
+        label = reasoning_label(getattr(agent, "reasoning_config", None))
+        if label:
+            return label
     except Exception:
         pass
     try:

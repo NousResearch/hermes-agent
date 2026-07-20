@@ -253,9 +253,9 @@ def _reasoning_from_config(
     try:
         cfg = resolve_reasoning_config(user_config, model or "")
         if isinstance(cfg, dict):
-            if not cfg.get("enabled", True):
-                return "none"
-            return str(cfg.get("effort", "") or "").strip()
+            from hermes_constants import reasoning_label
+
+            return reasoning_label(cfg)
     except Exception:
         # Resolution failure (malformed config) — the resolver already
         # tolerates bad shapes, so this is belt-and-suspenders; footer is

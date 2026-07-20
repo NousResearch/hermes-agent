@@ -5820,9 +5820,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if reasoning_cfg is None:
             return "medium (default)"
-        if not reasoning_cfg.get("enabled", True):
-            return "none"
-        return str(reasoning_cfg.get("effort", "medium"))
+        from hermes_constants import reasoning_label
+        return reasoning_label(reasoning_cfg) or "medium"
 
     @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
@@ -5914,9 +5913,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return ""
         if cfg is None:
             return ""
-        if not cfg.get("enabled", True):
-            return "none"
-        return str(cfg.get("effort", "") or "").strip()
+        from hermes_constants import reasoning_label
+        return reasoning_label(cfg)
 
     def _footer_reasoning_label(
         self,
@@ -5944,16 +5942,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``{"enabled": False}`` → ``"none"``; a set effort → the bare effort
         string; otherwise ``""`` (footer applies its config fallback).
         """
-        if isinstance(reasoning_config, dict) and reasoning_config:
-            if not reasoning_config.get("enabled", True):
-                return "none"
-            effort = str(reasoning_config.get("effort", "") or "").strip()
-            if effort:
-                return effort
-            # {"enabled": True} with no effort: a shape parse_reasoning_effort
-            # never produces (enabled always carries an effort) — an ambiguous
-            # live value from a nonstandard writer. Deliberately fall through to
-            # the session resolver rather than guess a level.
+        from hermes_constants import reasoning_label
+
+        label = reasoning_label(reasoning_config)
+        if label:
+            return label
+        # Empty label ({"enabled": True} with no effort — a shape
+        # parse_reasoning_effort never produces — or no live config at all):
+        # fall through to the session resolver rather than guess a level.
         return self._reasoning_effort_for_footer(
             source=source, session_key=session_key,
         )
@@ -5981,9 +5977,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cfg = self._load_reasoning_config()
         if cfg is None:
             return "medium"  # _load_reasoning_config None == medium default
-        if not cfg.get("enabled", True):
-            return "none"
-        return str(cfg.get("effort", "medium") or "medium").strip()
+        from hermes_constants import reasoning_label
+        return reasoning_label(cfg) or "medium"
 
     @staticmethod
     def _switch_announce_enabled(user_config: Optional[dict]) -> bool:
@@ -17975,19 +17970,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Reasoning level for the model line — session-truthful (same
             # override-aware resolver as the runtime footer), not the global
             # config default (which lied as r:<global> under a /reasoning
-            # session override).
+            # session override). Label mapping via the shared chokepoint.
             _reasoning = None
             try:
-                _rcfg = self._resolve_session_reasoning_config(
+                from hermes_constants import reasoning_label as _rlabel
+                _reasoning = _rlabel(self._resolve_session_reasoning_config(
                     source=source, model=model or "",
-                )
-                if isinstance(_rcfg, dict) and _rcfg:
-                    if not _rcfg.get("enabled", True):
-                        _reasoning = "none"
-                    else:
-                        _reasoning = (
-                            str(_rcfg.get("effort", "") or "").strip() or None
-                        )
+                )) or None
                 if _reasoning is None:
                     _agent_cfg = (_cfg.get("agent") or {}) if isinstance(_cfg, dict) else {}
                     _reasoning = str(_agent_cfg.get("reasoning_effort", "") or "").strip() or None

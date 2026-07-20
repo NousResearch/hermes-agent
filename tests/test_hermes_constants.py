@@ -1187,3 +1187,51 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
         # Already-POSIX paths pass through untouched.
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
+
+
+class TestReasoningLabel:
+    """The shared r:-label display chokepoint (reasoning_label) — the single
+    dict→label mapping every display surface (footer, auto/hygiene compaction
+    announces, /compress Model line, desktop footer, route-change announce)
+    renders. Contract: matches parse_reasoning_effort's output shapes."""
+
+    def test_enabled_with_effort(self):
+        from hermes_constants import reasoning_label
+        assert reasoning_label({"enabled": True, "effort": "xhigh"}) == "xhigh"
+
+    def test_disabled_maps_to_none(self):
+        from hermes_constants import reasoning_label
+        assert reasoning_label({"enabled": False}) == "none"
+
+    def test_none_and_empty_map_to_blank(self):
+        from hermes_constants import reasoning_label
+        assert reasoning_label(None) == ""
+        assert reasoning_label({}) == ""
+
+    def test_blank_effort_maps_to_blank(self):
+        from hermes_constants import reasoning_label
+        assert reasoning_label({"enabled": True, "effort": "  "}) == ""
+
+    def test_effort_stripped(self):
+        from hermes_constants import reasoning_label
+        assert reasoning_label({"enabled": True, "effort": " high "}) == "high"
+
+    def test_roundtrip_with_parse_reasoning_effort(self):
+        # Contract: every shape parse_reasoning_effort produces renders sanely.
+        from hermes_constants import parse_reasoning_effort, reasoning_label
+        for level in ("minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+            assert reasoning_label(parse_reasoning_effort(level)) == level
+        assert reasoning_label(parse_reasoning_effort("none")) == "none"
+        assert reasoning_label(parse_reasoning_effort(False)) == "none"
+        assert reasoning_label(parse_reasoning_effort("")) == ""
+        assert reasoning_label(parse_reasoning_effort("garbage")) == ""
+
+    def test_falsy_enabled_maps_to_none_deliberately(self):
+        # DELIBERATE semantics (Greptile #405 P2): truthiness, not `is False`.
+        # A falsy enabled (0, None, "") means "disabled" — rendering an effort
+        # level for a disabled config would be the dishonest choice. Note
+        # parse_reasoning_effort only ever produces boolean enabled, so these
+        # shapes come only from nonstandard writers.
+        from hermes_constants import reasoning_label
+        assert reasoning_label({"enabled": 0, "effort": "high"}) == "none"
+        assert reasoning_label({"enabled": None, "effort": "high"}) == "none"

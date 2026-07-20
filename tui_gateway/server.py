@@ -4007,13 +4007,9 @@ def _turn_runtime_footer(agent, session: dict | None, turn_seconds: float | None
         context_tokens = max(0, getattr(comp, "last_prompt_tokens", 0) or 0)
         context_length = getattr(comp, "context_length", 0) or None
         reasoning_config = getattr(agent, "reasoning_config", None)
-        reasoning = None
-        if isinstance(reasoning_config, dict):
-            reasoning = (
-                "none"
-                if reasoning_config.get("enabled") is False
-                else str(reasoning_config.get("effort", "") or "") or None
-            )
+        from hermes_constants import reasoning_label
+
+        reasoning = reasoning_label(reasoning_config) or None
         return build_footer_line(
             user_config=_load_cfg(),
             platform_key="desktop",

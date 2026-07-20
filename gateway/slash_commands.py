@@ -4120,18 +4120,16 @@ class GatewaySlashCommandsMixin:
                             # banner). No live agent config here (the temp
                             # compression agent isn't the resident agent), so
                             # resolve session override > per-model > global.
+                            # Label mapping via the shared chokepoint.
                             try:
-                                _rcfg = self._resolve_session_reasoning_config(
-                                    source=source, model=model or "",
+                                from hermes_constants import (
+                                    reasoning_label as _rlabel,
                                 )
-                                _r = ""
-                                if isinstance(_rcfg, dict) and _rcfg:
-                                    if not _rcfg.get("enabled", True):
-                                        _r = "none"
-                                    else:
-                                        _r = str(
-                                            _rcfg.get("effort", "") or ""
-                                        ).strip()
+                                _r = _rlabel(
+                                    self._resolve_session_reasoning_config(
+                                        source=source, model=model or "",
+                                    )
+                                )
                                 if _r and _r not in {"default", "none"}:
                                     _model_part = (
                                         f"{_model_part} · r:{_r}"

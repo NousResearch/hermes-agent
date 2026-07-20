@@ -218,6 +218,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",  # default; overridden by api_mode in config
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+    ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+    ),
     "bedrock": HermesOverlay(
         transport="bedrock_converse",
         auth_type="aws_sdk",
@@ -314,6 +322,10 @@ ALIASES: Dict[str, str] = {
 
     # alibaba
     "dashscope": "alibaba",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",

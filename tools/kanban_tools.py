@@ -840,8 +840,12 @@ def _handle_create(args: dict, **kw) -> str:
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
+    # Parse triage BEFORE assignee check — triage tasks don't need an assignee.
+    triage, bool_error = _parse_bool_arg(args, "triage")
+    if bool_error:
+        return tool_error(bool_error)
     assignee = args.get("assignee")
-    if not assignee:
+    if not triage and not assignee:
         return tool_error(
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
@@ -867,9 +871,6 @@ def _handle_create(args: dict, **kw) -> str:
     _inherit_workspace = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
-    triage, bool_error = _parse_bool_arg(args, "triage")
-    if bool_error:
-        return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
@@ -912,7 +913,7 @@ def _handle_create(args: dict, **kw) -> str:
                 conn,
                 title=str(title).strip(),
                 body=body,
-                assignee=str(assignee),
+                assignee=assignee,
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
@@ -1409,8 +1410,9 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Profile name that should execute this task "
                     "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                    "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "Required for normal tasks — tasks without an assignee are never "
+                    "dispatched. OPTIONAL when triage=true (task lands in triage "
+                    "for a specifier to flesh out before dispatch)."
                 ),
             },
             "body": {
@@ -1543,7 +1545,7 @@ KANBAN_CREATE_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": ["title", "assignee"],
+        "required": ["title"],
     },
 }
 

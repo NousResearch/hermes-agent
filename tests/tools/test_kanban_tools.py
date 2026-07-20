@@ -1178,6 +1178,27 @@ def test_create_parses_triage_string_true(worker_env):
         conn.close()
 
 
+def test_create_triage_task_without_assignee_stores_none(worker_env):
+    """Regression test for #55283: triage tasks without assignee must store
+    assignee=None (not the string 'None')."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "triage without assignee",
+        "triage": "true",
+        # no assignee provided
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task.status == "triage"
+        assert task.assignee is None, f"expected None, got {task.assignee!r}"
+    finally:
+        conn.close()
+
+
 def test_create_rejects_bad_triage(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({

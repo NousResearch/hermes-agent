@@ -54,6 +54,11 @@ x_search:
   # with x_search tool access works.
   model: grok-4.5
 
+  # Optional reasoning effort: low, medium, high, or xhigh. When omitted,
+  # the selected model's default applies. xhigh is supported only by
+  # models that document it, such as grok-4.20-multi-agent.
+  # reasoning_effort: low
+
   # Request timeout in seconds. x_search can take 60–120s for
   # complex queries — the default is generous. Minimum: 30.
   timeout_seconds: 180
@@ -62,6 +67,10 @@ x_search:
   # Each retry backs off (1.5x attempt seconds, capped at 5s).
   retries: 2
 ```
+
+`reasoning_effort` is sent to the xAI Responses API as
+`reasoning: {effort: ...}`. Leave it unset for models that do not support
+configurable reasoning. Invalid values fail before an API request is made.
 
 ## Tool parameters
 

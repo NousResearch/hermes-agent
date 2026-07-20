@@ -52,6 +52,7 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    excluded_providers: list = None
 
     def with_overrides(
         self,
@@ -96,12 +97,14 @@ def load_picker_context() -> ConfigContext:
         current_provider = ""
         current_base_url = ""
     raw = cfg.get("providers")
+    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
+        excluded_providers=excluded if isinstance(excluded, list) else [],
     )
 
 
@@ -179,6 +182,7 @@ def build_models_payload(
         refresh=refresh,
         probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider,
+        excluded_providers=ctx.excluded_providers or [],
     )
 
     moa_row = _moa_provider_row(ctx.current_provider)

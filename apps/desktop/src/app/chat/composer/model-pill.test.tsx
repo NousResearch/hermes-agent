@@ -64,6 +64,7 @@ describe('ModelPill pinned-override badge', () => {
     const { unmount } = render(
       <ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
     )
+
     expect(screen.getByTestId('model-pinned-dot')).toBeTruthy()
     unmount()
 

@@ -2031,6 +2031,7 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
     "_pending_one_turn_model_restores",
     "_session_reasoning_overrides",
+    "_session_service_tier_overrides",
     "_pending_model_notes",
     "_last_resolved_model",
     "_queued_events",
@@ -3055,6 +3056,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _session_service_tier_overrides: Dict[str, Optional[str]] = {}
     _pending_turn_sidecar_notes: Dict[str, List[str]] = {}
     _session_ephemeral_pin: Dict[str, tuple] = {}
     _session_vc_last: Dict[str, str] = {}
@@ -3264,6 +3266,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session fast-mode overrides from /fast.
+        # Key: session_key, Value: "priority" or None (explicit normal).
+        self._session_service_tier_overrides: Dict[str, Optional[str]] = {}
         # Per-turn must-deliver notes relocated out of the ephemeral system
         # prompt (auto-reset note, first-contact intro, voice-channel change).
         # Staged by _handle_message_with_agent, consumed once by run_sync and
@@ -5238,6 +5243,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
+    def _resolve_session_service_tier(
+        self,
+        source=None,
+        session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the effective service tier for a session.
+
+        A session-scoped /fast override wins over the config default. The
+        override dict stores "priority" or None (explicit normal), so key
+        presence — not value truthiness — decides whether it applies.
+        """
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        overrides = getattr(self, "_session_service_tier_overrides", {}) or {}
+        if resolved_session_key and resolved_session_key in overrides:
+            return overrides[resolved_session_key]
+        return self._load_service_tier()
+
+    def _set_session_service_tier_override(
+        self,
+        session_key: str,
+        service_tier,
+        clear: bool = False,
+    ) -> None:
+        """Set or clear the session-scoped /fast override.
+
+        ``service_tier`` is "priority" or None (explicit normal). Pass
+        ``clear=True`` to remove the override entirely (fall back to config).
+        """
+        if not session_key:
+            return
+        if "_session_service_tier_overrides" not in self.__dict__:
+            # Force an instance-level dict: the class attribute is a shared
+            # default for partially-constructed test runners, and mutating it
+            # would leak overrides across runner instances.
+            self._session_service_tier_overrides = {}
+        if clear:
+            self._session_service_tier_overrides.pop(session_key, None)
+        else:
+            self._session_service_tier_overrides[session_key] = service_tier
+
     @staticmethod
     def _load_service_tier() -> str | None:
         """Load Priority Processing setting from config.yaml.
@@ -6981,7 +7032,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not ledger_enabled():
                 return 0
-            claimed = await asyncio.to_thread(sweep_recoverable)
+            # Only claim rows we can actually send this boot: self.adapters
+            # holds a platform only after its connect() succeeded, and each
+            # claim spends one of the row's three redelivery attempts.
+            _deliverable = {
+                getattr(p, "value", str(p)) for p in self.adapters
+            }
+            claimed = await asyncio.to_thread(
+                sweep_recoverable, None, deliverable_platforms=_deliverable
+            )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
             return 0
@@ -7859,13 +7918,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
+        chat_restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
         # dedup marker only suppresses a /restart when we KNOW we just came out
         # of a restart cycle (see _is_stale_restart_redelivery).
-        if _restart_notification_pending() or planned_restart_notification_pending:
+        if chat_restart_notification_pending:
             self._booted_from_restart = True
         await self._send_restart_notification()
 
@@ -13807,8 +13867,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The previous gateway wrote ``.restart_last_processed.json`` with the
         triggering platform + update_id when it processed the /restart.  If
         we now see a /restart on the same platform with an update_id <= that
-        recorded value AND the marker is recent (< 5 minutes), it's a
-        redelivery and should be ignored.
+        recorded value, it is a redelivery when this process booted from that
+        restart. Otherwise the marker must still be recent (< 5 minutes).
 
         Only applies to Telegram today (the only platform that exposes a
         numeric cross-session update ordering); other platforms return False.
@@ -13860,6 +13920,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         recorded_uid = data.get("update_id")
         if not isinstance(recorded_uid, int):
             return False
+        if event.platform_update_id > recorded_uid:
+            return False
+
+        # A service-managed restart can legitimately take longer than the
+        # marker's normal five-minute trust window while adapters, cron, and
+        # in-flight deliveries drain. If this process booted from the recorded
+        # chat restart, the first same-or-older update is still that restart's
+        # redelivery regardless of elapsed wall time. Consume the boot signal
+        # one-shot so a later genuine command is evaluated normally.
+        if getattr(self, "_booted_from_restart", False):
+            self._booted_from_restart = False
+            return True
+
         # Staleness guard: ignore markers older than 5 minutes.  A legitimately
         # old marker (e.g. crash recovery where notify never fired) should not
         # swallow a fresh /restart from the user.
@@ -13867,7 +13940,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if isinstance(requested_at, (int, float)):
             if time.time() - requested_at > 300:
                 return False
-        return event.platform_update_id <= recorded_uid
+        return True
 
 
 
@@ -14680,7 +14753,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source, model=model
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -19895,7 +19968,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 model=model,
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = self._resolve_session_service_tier(
+                source=source, session_key=session_key
+            )
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -21744,14 +21819,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
-                    _previewed = bool(result.get("response_previewed"))
-                    first_response = result.get("final_response", "")
+                    # The queued branch needs raw ``result`` for interruption,
+                    # history, and recursion state, but delivery must use the
+                    # finalized task result. The latter contains empty/failure
+                    # normalization and any final response processing applied by
+                    # _run_agent_task; sending the raw copy bypasses those steps.
+                    _delivery_result = response if isinstance(response, dict) else (result or {})
+                    _previewed = bool(_delivery_result.get("response_previewed"))
+                    first_response = _delivery_result.get("final_response", "")
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
                         previewed=_previewed,
                     )
-                    if first_response and not _already_streamed:
+                    # Apply the same predicate as the normal completed-turn path.
+                    # This direct queued-send branch predates intentional-silence
+                    # filtering, so without this check it leaks the literal marker.
+                    try:
+                        from gateway.response_filters import is_intentional_silence_agent_result
+                        _intentional_silence = is_intentional_silence_agent_result(
+                            _delivery_result, first_response,
+                        )
+                    except Exception:
+                        _intentional_silence = False
+                    if _intentional_silence:
+                        logger.info(
+                            "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                            session_key or "?",
+                        )
+                    elif first_response and not _already_streamed:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",

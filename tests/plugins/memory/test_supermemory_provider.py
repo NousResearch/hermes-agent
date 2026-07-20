@@ -17,11 +17,13 @@ from plugins.memory.supermemory import (
 
 
 class FakeClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid",
+                 base_url: str = ""):
         self.api_key = api_key
         self.timeout = timeout
         self.container_tag = container_tag
         self.search_mode = search_mode
+        self.base_url = base_url
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
@@ -373,6 +375,107 @@ def test_invalid_search_mode_falls_back_to_default(monkeypatch, tmp_path):
     assert p._search_mode == "hybrid"
 
 
+# -- Base URL tests -------------------------------------------------------------
+
+
+def test_base_url_defaults_to_cloud(monkeypatch, tmp_path):
+    """Without config or env override, the client targets api.supermemory.ai."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.delenv("SUPERMEMORY_BASE_URL", raising=False)
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "https://api.supermemory.ai"
+    assert p._client.base_url == "https://api.supermemory.ai"
+
+
+def test_base_url_env_var_override(monkeypatch, tmp_path):
+    """SUPERMEMORY_BASE_URL points the provider at a self-hosted server (trailing slash stripped)."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://localhost:6767/")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "http://localhost:6767"
+    assert p._client.base_url == "http://localhost:6767"
+
+
+def test_base_url_config_overrides_env(monkeypatch, tmp_path):
+    """base_url in supermemory.json takes precedence over the env var."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://env-host:6767")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"base_url": "http://config-host:6767/"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "http://config-host:6767"
+    assert p._client.base_url == "http://config-host:6767"
+
+
+def test_client_passes_custom_base_url_to_sdk(monkeypatch):
+    """SDK operations and raw conversation ingest share one normalized base URL."""
+    import sys
+    import types
+
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    captured = {}
+
+    class StubSupermemory:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    module = types.ModuleType("supermemory")
+    module.Supermemory = StubSupermemory
+    monkeypatch.setitem(sys.modules, "supermemory", module)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    client = _SupermemoryClient(
+        api_key="test-key",
+        timeout=1.0,
+        container_tag="hermes",
+        base_url="http://localhost:6767/",
+    )
+
+    assert client._base_url == "http://localhost:6767"
+    assert captured["base_url"] == "http://localhost:6767"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected_url"),
+    [
+        ("https://api.supermemory.ai", "https://api.supermemory.ai/v4/conversations"),
+        ("http://localhost:6767", "http://localhost:6767/v4/conversations"),
+    ],
+)
+def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expected_url):
+    """Raw conversation ingest follows the same endpoint as SDK operations."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._timeout = 1.0
+    client._base_url = base_url
+
+    captured = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
+    assert captured["url"] == expected_url
+
+
 # -- Multi-container tests ----------------------------------------------------
 
 
@@ -533,9 +636,13 @@ def _stub_supermemory_importable(monkeypatch):
 
 def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
     _stub_supermemory_importable(monkeypatch)
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    seen_base_urls = []
 
     class CountingClient(FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            seen_base_urls.append(self.base_url)
+
         def get_profile(self, query=None, *, container_tag=None):
             return {
                 "static": ["Prefers TypeScript"],
@@ -544,10 +651,13 @@ def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
             }
 
     monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", CountingClient)
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://env-host:6767")
+    _save_supermemory_config({"base_url": "http://localhost:6767/"}, str(tmp_path))
     status = _probe_supermemory_connection("test-key", str(tmp_path))
     assert status["ok"] is True
     assert status["profile_facts"] == 2
     assert status["auto_recall"] is True
+    assert seen_base_urls == ["http://localhost:6767"]
 
 
 def test_probe_supermemory_connection_client_error(monkeypatch, tmp_path):

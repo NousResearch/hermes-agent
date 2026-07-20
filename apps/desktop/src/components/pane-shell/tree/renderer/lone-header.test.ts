@@ -6,6 +6,7 @@ describe('forceLoneHeaderForPanes', () => {
   const chrome =
     (placement?: string, uncloseable = false) =>
     () => ({ placement, uncloseable })
+
   const noCollapse = () => false
 
   it('forces a header for session-tile ids even without registered chrome', () => {

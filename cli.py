@@ -119,6 +119,52 @@ def format_duration_compact(*args, **kwargs):
     return f"{days:.1f}d"
 
 
+# Cached reverse map of config.yaml ``model_aliases:`` so the TUI can show
+# friendly names instead of full Palantir RIDs / long catalog IDs. Built
+# lazily on first call; cache is process-lifetime (config is read once at
+# session start, so further invalidation is unnecessary).
+_REVERSE_ALIAS_CACHE: dict[str, str] | None = None
+
+
+def _reverse_alias_for_display(model_name: str) -> str:
+    """Return the shortest configured alias for ``model_name``, or ``model_name``.
+
+    Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
+    and ``model.aliases:`` (string-based, set via ``hermes config set``)
+    from config.yaml. Multiple aliases pointing at the same model — the
+    shortest wins, so ``opus47`` beats ``palantir-claude47``.
+    """
+    global _REVERSE_ALIAS_CACHE
+    if not model_name:
+        return model_name
+    if _REVERSE_ALIAS_CACHE is None:
+        rmap: dict[str, str] = {}
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            ma = cfg.get("model_aliases")
+            if isinstance(ma, dict):
+                for alias, entry in ma.items():
+                    if isinstance(entry, dict):
+                        m = str(entry.get("model", "") or "").strip()
+                        if m and (m not in rmap or len(alias) < len(rmap[m])):
+                            rmap[m] = alias
+            mdl = cfg.get("model", {}) or {}
+            if isinstance(mdl, dict):
+                simple = mdl.get("aliases")
+                if isinstance(simple, dict):
+                    for alias, val in simple.items():
+                        if isinstance(val, str) and val.strip():
+                            v = val.strip()
+                            m = v.split("/", 1)[1] if "/" in v else v
+                            if m and (m not in rmap or len(alias) < len(rmap[m])):
+                                rmap[m] = alias
+        except Exception:
+            pass
+        _REVERSE_ALIAS_CACHE = rmap
+    return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
+
+
 def format_token_count_compact(*args, **kwargs):
     value = int(args[0] if args else kwargs.get("value", 0))
     abs_value = abs(value)
@@ -4580,7 +4626,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
-        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        # Friendly display: prefer reverse-alias from config.yaml ``model_aliases:``
+        # before slash/length truncation. This turns long Palantir RIDs like
+        # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
+        # into the user's chosen short name (e.g. ``opus-4.7``) in the status bar.
+        model_short = _reverse_alias_for_display(model_name)
+        if model_short == model_name:
+            model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+            # Strip Palantir RID prefixes via the shared display formatter so
+            # this site and ``ModelSwitchResult`` confirmation can't drift.
+            from hermes_cli.model_switch import format_model_for_display
+            model_short = format_model_for_display(model_short)
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:
@@ -7095,11 +7151,77 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self.reasoning_config = _parse_reasoning_config(
+            CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
+        # /new is a full conversation boundary: session-scoped runtime
+        # overrides (/model --session, /fast, one-turn restores) do not carry
+        # forward.  Re-derive model/provider and service tier from config.yaml
+        # so a session-only switch never leaks into the next session (#48055,
+        # #23131).
+        self._pending_one_turn_model_restore = None
+        self.service_tier = _parse_service_tier_config(
+            CLI_CONFIG["agent"].get("service_tier", "")
+        )
+        _model_config = CLI_CONFIG.get("model", {})
+        _config_model = (
+            (_model_config.get("default") or _model_config.get("model") or "")
+            if isinstance(_model_config, dict)
+            else (_model_config or "")
+        )
+        if _config_model and _config_model != getattr(self, "model", None):
+            _config_provider = (
+                _model_config.get("provider", "")
+                if isinstance(_model_config, dict)
+                else ""
+            )
+            try:
+                from hermes_cli.model_switch import switch_model as _switch_model
+
+                _reset_result = _switch_model(
+                    raw_input=_config_model,
+                    current_provider=self.provider or "",
+                    current_model=self.model or "",
+                    current_base_url=self.base_url or "",
+                    current_api_key=self.api_key or "",
+                    is_global=False,
+                    explicit_provider=_config_provider or "",
+                )
+                if _reset_result.success:
+                    if self.agent:
+                        self.agent.switch_model(
+                            new_model=_reset_result.new_model,
+                            new_provider=_reset_result.target_provider,
+                            api_key=_reset_result.api_key,
+                            base_url=_reset_result.base_url,
+                            api_mode=_reset_result.api_mode,
+                        )
+                    self.model = _reset_result.new_model
+                    self.provider = _reset_result.target_provider
+                    self.requested_provider = _reset_result.target_provider
+                    self._explicit_api_key = _reset_result.api_key
+                    self._explicit_base_url = _reset_result.base_url
+                    if _reset_result.api_key:
+                        self.api_key = _reset_result.api_key
+                    if _reset_result.base_url:
+                        self.base_url = _reset_result.base_url
+                    if _reset_result.api_mode:
+                        self.api_mode = _reset_result.api_mode
+                    if not silent:
+                        _cprint(
+                            f"  (model reset to config default: "
+                            f"{_reset_result.new_model})"
+                        )
+            except Exception:
+                # Best-effort: an unreachable config default must never block
+                # /new. The session keeps the current working model.
+                logger.debug("/new model reset to config default failed", exc_info=True)
         _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
+            self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
@@ -7996,14 +8118,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 return
 
+        from hermes_cli.model_switch import format_model_for_display
+        _display_old = format_model_for_display(old_model)
+        _display_new = format_model_for_display(result.new_model)
+
         self._pending_model_switch_note = (
-            f"[Note: model was just switched from {old_model} to {result.new_model} "
+            f"[Note: model was just switched from {_display_old} to {_display_new} "
             f"via {result.provider_label or result.target_provider}. "
             f"Adjust your self-identification accordingly.]"
         )
 
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {result.new_model}")
+        _cprint(f"  ✓ Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
@@ -8129,16 +8255,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Supports:
           /model                              — show current model + usage hints
-          /model <name>                       — switch model (persists by default)
+          /model <name>                       — switch model (this session only)
           /model <name> --once                — switch for the next turn only
-          /model <name> --session             — switch for this session only
-          /model <name> --global              — switch and persist (explicit)
+          /model <name> --session             — switch for this session only (explicit)
+          /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
 
-        Persistence defaults to on (``model.persist_switch_by_default`` in
-        config.yaml, default True). Use ``--session`` for this CLI session or
-        ``--once`` for the next turn only.
+        Persistence defaults to off (``model.persist_switch_by_default`` in
+        config.yaml, default False — switches are session-scoped). Use
+        ``--global`` to persist, or ``--once`` for the next turn only.
         """
         from hermes_cli.model_switch import (
             switch_model,
@@ -8165,11 +8291,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if one_turn and not model_input and not explicit_provider:
             _cprint("  ✗ /model --once requires a model or provider.")
             return
-        # Resolve the effective persistence once: --session overrides the
-        # config-gated default, --global forces persist, otherwise defer to
-        # model.persist_switch_by_default (defaults to True so /model survives
-        # across sessions).
-        persist_global = resolve_persist_behavior(is_global_flag, is_session, is_once=one_turn)
+        # Resolve the effective persistence once: --global forces persist,
+        # --session/--once force session-scope, otherwise defer to
+        # model.persist_switch_by_default (defaults to False so /model is
+        # session-scoped unless the user opts in).
+        persist_global = resolve_persist_behavior(
+            is_global_flag, is_session, is_once=one_turn,
+            explicit_provider=explicit_provider,
+        )
 
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's
@@ -8327,8 +8456,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Store a note to prepend to the next user message so the model
         # knows a switch occurred (avoids injecting system messages mid-history
         # which breaks providers and prompt caching).
+        from hermes_cli.model_switch import format_model_for_display
+        _display_old = format_model_for_display(old_model)
+        _display_new = format_model_for_display(result.new_model)
+
         self._pending_model_switch_note = (
-            f"[Note: model was just switched from {old_model} to {result.new_model} "
+            f"[Note: model was just switched from {_display_old} to {_display_new} "
             f"via {result.provider_label or result.target_provider}. "
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
@@ -8340,7 +8473,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {result.new_model}")
+        _cprint(f"  ✓ Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
@@ -9992,13 +10125,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"  Error generating insights: {e}")
 
     def _check_config_mcp_changes(self) -> None:
-        """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.
+        """Detect mcp_servers changes in config.yaml and react.
 
         Called from process_loop every CONFIG_WATCH_INTERVAL seconds.
         Compares config.yaml mtime + mcp_servers section against the last
-        known state.  When a change is detected, triggers _reload_mcp() and
-        informs the user so they know the tool list has been refreshed.
+        known state.  When a change is detected:
+
+        * By default (``mcp.auto_reload_on_config_change: true``) it
+          auto-triggers ``_reload_mcp()`` and informs the user — legacy
+          behaviour from #1474.
+        * When opted out (``mcp.auto_reload_on_config_change: false``) it
+          does NOT reload.  Instead it notifies the user that the config
+          changed and that they can apply it with ``/reload-mcp`` — while
+          warning that ``/reload-mcp`` rebuilds the tool surface and
+          **invalidates the provider prompt cache** (the next message
+          re-sends the full input prefix, expensive on long-context /
+          high-reasoning models).  This stops silent cache-breaking reloads
+          when config.yaml is rewritten frequently by external tooling or
+          other Hermes instances.
         """
+
         import yaml as _yaml
 
         CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
@@ -10030,10 +10176,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
 
         new_mcp = new_cfg.get("mcp_servers") or {}
+        # Expand ${VAR} templates so the comparison is consistent with the
+        # init snapshot (self._config_mcp_servers), which was populated from
+        # the deep-merged + expanded config.  Without this, any
+        # save_config_value() that rewrites config.yaml (even for unrelated
+        # keys) triggers a false-positive MCP reload because the raw yaml
+        # still has "${POWERMEM_API_KEY}" while the snapshot has the
+        # expanded value.
+        from hermes_cli.config import _expand_env_vars
+        new_mcp = _expand_env_vars(new_mcp)
         if new_mcp == self._config_mcp_servers:
             return  # mcp_servers unchanged (some other section was edited)
 
+        # Detected a change in the mcp_servers section.  By default we
+        # auto-reload (legacy behaviour), but if the user has opted out we
+        # notify instead of reloading — because every reload rebuilds the
+        # agent tool surface and INVALIDATES the provider prompt cache (the
+        # next message re-sends the full input prefix, which is expensive on
+        # long-context / high-reasoning models).
+        #
+        # The toggle is the top-level ``mcp.auto_reload_on_config_change``
+        # key (see DEFAULT_CONFIG).  Read it from the config we just parsed
+        # so the user can flip it in the same edit that changes mcp_servers;
+        # missing key means default-on.
+        _mcp_cfg = new_cfg.get("mcp")
+        _auto = (
+            _mcp_cfg.get("auto_reload_on_config_change", True)
+            if isinstance(_mcp_cfg, dict)
+            else True
+        )
+
         self._config_mcp_servers = new_mcp
+
+        if not _auto:
+            # Notify the user that the config changed but do NOT auto-reload.
+            # They can apply the new settings on their own terms with
+            # /reload-mcp — which we explicitly warn may invalidate the cache.
+            print()
+            print("🔄 MCP server config changed — reload skipped (auto-reload disabled).")
+            print("   New settings are NOT applied yet. To apply them now, run:")
+            print("     /reload-mcp")
+            print("   ⚠️  Note: /reload-mcp rebuilds the tool set and invalidates the")
+            print("   provider prompt cache (next message re-sends full input tokens).")
+            return
+
         # Notify user and reload.  Run in a separate thread with a hard
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).
@@ -13040,8 +13226,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # --- /model picker modal ---
             if self._model_picker_state:
                 try:
-                    # Picker selections persist by default (same default as
-                    # /model <name>); honour model.persist_switch_by_default.
+                    # Picker selections follow the same session-scoped default
+                    # as /model <name>; honour model.persist_switch_by_default.
                     from hermes_cli.model_switch import resolve_persist_behavior
 
                     self._handle_model_picker_selection(

@@ -166,10 +166,11 @@ def test_terminal_fails_closed_for_nonlocal_backend_git(backend, cwd, monkeypatc
 @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "/bin/bash"])
 def test_shell_c_git_payload_fails_closed(shell, tmp_path):
     bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
     tokens = _gateway_session(bound_repo)
     try:
         error = check_terminal_side_effect_allowed(
-            f"{shell} -c 'git commit -m nested'", bound_repo
+            f"{shell} -c 'git -C {other_repo} commit -m nested'", bound_repo
         )
     finally:
         clear_session_vars(tokens)
@@ -338,4 +339,3 @@ def test_non_repo_invocation_does_not_hide_later_mutation(tmp_path):
 
     assert error is not None
     assert "outside authoritative workspace binding" in error
-

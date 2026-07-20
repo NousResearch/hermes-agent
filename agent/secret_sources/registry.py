@@ -176,10 +176,21 @@ def _ensure_builtin_sources() -> None:
                        exc_info=True)
 
 
-def _reset_registry_for_tests() -> None:
+def reset_registry_for_testing() -> None:
+    """Clear all registered sources and reset the built-in-load latch.
+
+    Test-support seam: the conformance kit and the internal suite use this to
+    start from an empty registry (then register just the source under test).
+    It is not part of the SecretSource protocol; the frozen
+    ``SECRET_SOURCE_API_VERSION`` contract is unchanged.
+    """
     global _BUILTINS_LOADED
     _SOURCES.clear()
     _BUILTINS_LOADED = False
+
+
+# Back-compat alias for the internal suite's existing call sites.
+_reset_registry_for_tests = reset_registry_for_testing
 
 
 # ---------------------------------------------------------------------------

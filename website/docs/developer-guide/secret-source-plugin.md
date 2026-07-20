@@ -143,11 +143,11 @@ Multi-source precedence, conflict warnings, and `(from My Vault)` provenance lab
 
 ## Validate with the conformance kit
 
-Subclass the kit from the Hermes repo (`tests/secret_sources/conformance.py`) in your plugin's tests:
+The conformance kit ships with `hermes-agent`. Subclass it in your plugin's tests:
 
 ```python
 import pytest
-from tests.secret_sources.conformance import SecretSourceConformance
+from agent.secret_sources.testing import SecretSourceConformance
 
 class TestMyVaultConformance(SecretSourceConformance):
     @pytest.fixture

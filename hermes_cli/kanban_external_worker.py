@@ -87,8 +87,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -361,6 +363,7 @@ class Lease:
     result_hash: Optional[str] = None
     disposition: Optional[str] = None
     block_kind: Optional[str] = None
+    previous_failure_signatures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -707,7 +710,9 @@ def _validate_taskspec(obj: Any) -> str:
         keys=_TASKSPEC_NESTED_KEYS["execution"],
     )
     for field_name in ("timeout_seconds", "max_attempts", "max_tokens"):
-        _ensure_int(execution[field_name], label=f"execution.{field_name}")
+        value = _ensure_int(execution[field_name], label=f"execution.{field_name}")
+        if value <= 0:
+            raise SpecParseError(f"execution.{field_name} must be positive")
     cost = execution["max_cost_usd"]
     if cost is not None and (
         isinstance(cost, bool)
@@ -947,13 +952,34 @@ def _validate_execution_result(
         isinstance(cost, bool)
         or not isinstance(cost, (int, float))
         or not math.isfinite(float(cost))
+        or float(cost) < 0
     ):
-        raise SpecParseError("mas.usage.cost_usd must be finite numeric or null")
-    _ensure_str(usage["cost_status"], label="mas.usage.cost_status")
-    _ensure_str(usage["source"], label="mas.usage.source")
+        raise SpecParseError(
+            "mas.usage.cost_usd must be non-negative finite numeric or null"
+        )
+    cost_status = _ensure_str(
+        usage["cost_status"], label="mas.usage.cost_status"
+    )
+    if cost_status not in {"known", "unknown"}:
+        raise SpecParseError(f"unsupported cost status: {cost_status!r}")
+    source = _ensure_str(usage["source"], label="mas.usage.source")
+    if source not in {"provider-reported", "cli-reported", "estimated", "unknown"}:
+        raise SpecParseError(f"unsupported usage source: {source!r}")
+    if cost_status == "unknown" and cost is not None:
+        raise SpecParseError("unknown cost must remain null")
+    if cost_status == "known" and (cost is None or source == "unknown"):
+        raise SpecParseError("known cost requires numeric value and provenance")
 
-    _ensure_nullable_str(mas["failure_signature"], label="mas.failure_signature")
+    failure_signature = _ensure_nullable_str(
+        mas["failure_signature"], label="mas.failure_signature"
+    )
+    if failure_signature is not None and (
+        not failure_signature or len(failure_signature) > 128
+    ):
+        raise SpecParseError("mas.failure_signature must be 1..128 characters")
     summary = _ensure_str(mas["summary"], label="mas.summary")
+    if not summary or len(summary) > 2_000:
+        raise SpecParseError("mas.summary must be 1..2000 characters")
     artifacts = mas["artifacts"]
     if not isinstance(artifacts, list):
         raise SpecParseError("mas.artifacts must be an array")
@@ -1021,7 +1047,46 @@ def _read_attachment_bytes(row: sqlite3.Row) -> bytes:
     return raw
 
 
-def _lease_from_run_row(row: sqlite3.Row) -> Lease:
+def _previous_failure_signatures(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> tuple[str, ...]:
+    """Return validated signatures from closed earlier runs of the same spec."""
+
+    prior_rows = conn.execute(
+        "SELECT id, external_spec_attachment_id, external_spec_hash, "
+        "       external_spec_schema, external_result_json, external_result_hash "
+        "FROM task_runs "
+        "WHERE task_id = ? AND worker_kind = ? AND external_spec_hash = ? "
+        "  AND ended_at IS NOT NULL AND id < ? "
+        "ORDER BY id ASC",
+        (row["task_id"], WORKER_KIND, row["external_spec_hash"], int(row["id"])),
+    ).fetchall()
+    signatures: list[str] = []
+    for prior in prior_rows:
+        raw_json = prior["external_result_json"]
+        stored_hash = prior["external_result_hash"]
+        if not isinstance(raw_json, str) or not isinstance(stored_hash, str):
+            raise ResultRejected("prior external run has incomplete result evidence")
+        prior_spec = SpecIdentity(
+            attachment_id=int(prior["external_spec_attachment_id"]),
+            spec_hash=prior["external_spec_hash"],
+            schema_version=prior["external_spec_schema"],
+        )
+        actual_hash, facts = _validate_and_hash_result(
+            raw_json.encode("utf-8"),
+            expected_run_id=int(prior["id"]),
+            expected_spec=prior_spec,
+        )
+        if actual_hash != stored_hash:
+            raise ResultRejected("prior external result hash drift")
+        signature = facts["parsed"]["mas"]["failure_signature"]
+        if signature is not None:
+            signatures.append(signature)
+    return tuple(signatures)
+
+
+def _lease_from_run_row(conn: sqlite3.Connection, row: sqlite3.Row) -> Lease:
     """Build a :class:`Lease` from a ``task_runs`` row using its CURRENT
     lease state. Used by read paths (:func:`list_active`, :func:`get_run`)."""
     spec = SpecIdentity(
@@ -1050,6 +1115,7 @@ def _lease_from_run_row(row: sqlite3.Row) -> Lease:
         result_hash=row["external_result_hash"],
         disposition=row["external_terminal_disposition"],
         block_kind=row["external_block_kind"],
+        previous_failure_signatures=_previous_failure_signatures(conn, row),
     )
 
 
@@ -1739,6 +1805,23 @@ def claim_external(
             raise ClaimRejected(
                 f"attachment {expected_spec.attachment_id} lock hash drift"
             )
+        spec_payload = _decode_strict_json(raw)
+        _validate_taskspec(spec_payload)
+        max_attempts = int(spec_payload["execution"]["max_attempts"])
+        # Attempts are scoped to closed external runs of this exact spec. Check
+        # the ceiling before the task-state CAS so rejection is mutation-free.
+        prior = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_runs "
+            "WHERE task_id = ? AND worker_kind = ? "
+            "AND external_spec_hash = ? AND ended_at IS NOT NULL",
+            (task_id, WORKER_KIND, expected_spec.spec_hash),
+        ).fetchone()
+        attempt = int(prior["n"]) + 1
+        if attempt > max_attempts:
+            raise ClaimRejected(
+                f"task {task_id} exhausted max_attempts={max_attempts} "
+                f"for spec {expected_spec.spec_hash}"
+            )
         # CAS: only transition ready → running if the task is still
         # ready and unclaimed. A concurrent writer (dashboard, native
         # claim, another external worker) flips status and we refuse.
@@ -1754,14 +1837,6 @@ def claim_external(
             raise ClaimRejected(
                 f"task {task_id} not claimable (racing writer changed state)"
             )
-        # Attempts are scoped to closed external runs of this exact spec.
-        prior = conn.execute(
-            "SELECT COUNT(*) AS n FROM task_runs "
-            "WHERE task_id = ? AND worker_kind = ? "
-            "AND external_spec_hash = ? AND ended_at IS NOT NULL",
-            (task_id, WORKER_KIND, expected_spec.spec_hash),
-        ).fetchone()
-        attempt = int(prior["n"]) + 1
         run_cur = conn.execute(
             "INSERT INTO task_runs ("
             "    task_id, status, claim_lock, claim_expires, started_at, "
@@ -1802,15 +1877,10 @@ def claim_external(
             },
             run_id=run_id,
         )
-        return Lease(
-            run_id=run_id,
-            task_id=task_id,
-            spec=expected_spec,
-            lease_token=lease_token,
-            lease_state=LEASE_ACTIVE,
-            lease_expires_at=int(lease_expires_at),
-            attempt=attempt,
-        )
+        claimed = conn.execute(
+            "SELECT * FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        return _lease_from_run_row(conn, claimed)
 
 
 def bind_process(
@@ -1857,7 +1927,7 @@ def bind_process(
                 LEASE_BOUND,
             }:
                 raise LeaseStateError(f"run {run_id} is not in bound state")
-            return _lease_from_run_row(row)
+            return _lease_from_run_row(conn, row)
         if (
             lease.lease_state != LEASE_ACTIVE
             or (row["external_lease_state"] or LEASE_ACTIVE) != LEASE_ACTIVE
@@ -1904,7 +1974,7 @@ def bind_process(
         updated = conn.execute(
             "SELECT * FROM task_runs WHERE id = ?", (run_id,)
         ).fetchone()
-        return _lease_from_run_row(updated)
+        return _lease_from_run_row(conn, updated)
 
 
 def heartbeat(
@@ -1965,7 +2035,7 @@ def heartbeat(
         updated = conn.execute(
             "SELECT * FROM task_runs WHERE id = ?", (run_id,)
         ).fetchone()
-        return _lease_from_run_row(updated)
+        return _lease_from_run_row(conn, updated)
 
 
 def still_owns(
@@ -2120,7 +2190,7 @@ def hold_for_recovery(
         updated = conn.execute(
             "SELECT * FROM task_runs WHERE id = ?", (run_id,)
         ).fetchone()
-        return _lease_from_run_row(updated)
+        return _lease_from_run_row(conn, updated)
 
 
 # ---------------------------------------------------------------------------
@@ -2712,7 +2782,7 @@ def list_active(
         params.append(host)
     q += " ORDER BY r.started_at ASC, r.id ASC"
     rows = conn.execute(q, params).fetchall()
-    return [_lease_from_run_row(r) for r in rows]
+    return [_lease_from_run_row(conn, r) for r in rows]
 
 
 def get_run(
@@ -2727,7 +2797,7 @@ def get_run(
     ).fetchone()
     if row is None:
         raise ExternalWorkerError(f"unknown external run {run_id}")
-    return _lease_from_run_row(row)
+    return _lease_from_run_row(conn, row)
 
 
 def read_result(
@@ -2841,7 +2911,7 @@ def put_artifact(
         # (impossible because AUTOINCREMENT, but be safe).
         if dest_path.exists():
             dest_path = dest_dir / f"{run_id}-{safe}-{sha[:8]}"
-        dest_path.write_bytes(data)
+        _durably_write_new_file(dest_path, data)
         try:
             conn.execute(
                 "INSERT INTO task_external_artifacts "
@@ -2860,7 +2930,7 @@ def put_artifact(
                 ),
             )
         except Exception:
-            dest_path.unlink(missing_ok=True)
+            _durably_unlink(dest_path)
             raise
         return ArtifactRef(
             run_id=run_id,
@@ -2868,6 +2938,50 @@ def put_artifact(
             sha256=sha,
             size=len(data),
         )
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    directory_fd = os.open(path, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _durably_unlink(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    _fsync_directory(path.parent)
+
+
+def _durably_write_new_file(path: Path, data: bytes) -> None:
+    """Publish new bytes without replacement, then make the name durable."""
+
+    fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(raw_temp)
+    published = False
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Hard-link publication is atomic and refuses to replace an existing
+        # destination. Both names are in the same directory/filesystem.
+        os.link(temp_path, path)
+        published = True
+        temp_path.unlink()
+        _fsync_directory(path.parent)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        if published:
+            path.unlink(missing_ok=True)
+        try:
+            _fsync_directory(path.parent)
+        except OSError:
+            pass
+        raise
 
 
 def read_artifact(

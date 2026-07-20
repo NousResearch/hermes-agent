@@ -4569,6 +4569,10 @@ def complete_task(
     """
     now = int(time.time())
 
+    # Reject an external run before generic completion can emit any event. The
+    # checks inside write transactions below remain necessary to close races.
+    _assert_no_open_external_run(conn, task_id, "complete_task")
+
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
@@ -4580,6 +4584,7 @@ def complete_task(
         )
         if phantom_cards:
             with write_txn(conn):
+                _assert_no_open_external_run(conn, task_id, "complete_task")
                 _append_event(
                     conn, task_id, "completion_blocked_hallucination",
                     {

@@ -102,6 +102,7 @@ def _result_json(
     summary: str = "fixture result",
     deliverable: dict | None = None,
     artifacts: list[dict] | None = None,
+    failure_signature: str | None = None,
 ) -> bytes:
     if outcome is None:
         outcome = "completed" if process is not None else "aborted_before_start"
@@ -164,7 +165,7 @@ def _result_json(
                     "cost_status": "unknown",
                     "source": "unknown",
                 },
-                "failure_signature": None,
+                "failure_signature": failure_signature,
                 "summary": summary,
                 "artifacts": artifacts or [],
             }
@@ -550,6 +551,82 @@ def test_claim_copies_spec_identity_into_task_runs(kanban_home, conn):
     events = kb.list_events(conn, tid)
     claimed = next(event for event in events if event.kind == "external_claimed")
     assert lease.lease_token not in json.dumps(claimed.payload)
+
+
+def test_second_claim_carries_validated_prior_failure_signature(kanban_home, conn):
+    tid, _aid, _raw, spec, first = _submit_and_claim(conn)
+    first_result = _result_json(
+        run_id=first.run_id,
+        task_id=tid,
+        spec=spec,
+        disposition="REQUEUE",
+        failure_signature="same-check-failure",
+    )
+    xw.finalize(
+        conn,
+        lease=first,
+        disposition="REQUEUE",
+        result_bytes=first_result,
+    )
+
+    second = xw.claim_external(
+        conn,
+        task_id=tid,
+        expected_spec=spec,
+        lease_token="lease-2",
+        lease_expires_at=int(time.time()) + 600,
+    )
+
+    assert second.attempt == 2
+    assert second.previous_failure_signatures == ("same-check-failure",)
+
+
+def test_claim_refuses_attempt_beyond_taskspec_ceiling(kanban_home, conn):
+    tid, _aid, _raw, spec, first = _submit_and_claim(conn)
+    xw.finalize(
+        conn,
+        lease=first,
+        disposition="REQUEUE",
+        result_bytes=_result_json(
+            run_id=first.run_id,
+            task_id=tid,
+            spec=spec,
+            disposition="REQUEUE",
+        ),
+    )
+    second = xw.claim_external(
+        conn,
+        task_id=tid,
+        expected_spec=spec,
+        lease_token="lease-2",
+        lease_expires_at=int(time.time()) + 600,
+    )
+    xw.finalize(
+        conn,
+        lease=second,
+        disposition="REQUEUE",
+        result_bytes=_result_json(
+            run_id=second.run_id,
+            task_id=tid,
+            spec=spec,
+            disposition="REQUEUE",
+            attempt=2,
+        ),
+    )
+
+    with pytest.raises(xw.ClaimRejected, match="exhausted max_attempts=2"):
+        xw.claim_external(
+            conn,
+            task_id=tid,
+            expected_spec=spec,
+            lease_token="lease-3",
+            lease_expires_at=int(time.time()) + 600,
+        )
+
+    assert kb.get_task(conn, tid).status == "ready"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)
+    ).fetchone()[0] == 2
 
 
 def test_claim_refuses_second_open_run_after_task_state_drift(kanban_home, conn):
@@ -1637,6 +1714,26 @@ def test_native_lifecycle_refuses_open_external_run_despite_task_drift(
     assert run["ended_at"] is None
 
 
+def test_complete_with_phantom_cards_refuses_external_run_without_event(
+    kanban_home, conn
+):
+    tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
+
+    with pytest.raises(kb.ExternalTaskConflict) as caught:
+        kb.complete_task(
+            conn,
+            tid,
+            result="native",
+            created_cards=["t_does_not_exist"],
+        )
+
+    assert caught.value.operation == "complete_task"
+    assert caught.value.run_id == lease.run_id
+    assert "completion_blocked_hallucination" not in {
+        event.kind for event in kb.list_events(conn, tid)
+    }
+
+
 def test_native_recovery_scans_ignore_open_external_run(kanban_home, conn, monkeypatch):
     tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
     lease = _expire_lease(conn, lease)
@@ -1716,6 +1813,42 @@ def test_put_artifact_idempotent_for_same_name_same_bytes(kanban_home, conn):
         (lease.run_id,),
     ).fetchone()
     assert int(rows["n"]) == 1
+
+
+def test_put_artifact_fsyncs_blob_and_directory_before_return(
+    kanban_home, conn, monkeypatch
+):
+    _tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
+    calls: list[int] = []
+    real_fsync = xw.os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        calls.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(xw.os, "fsync", recording_fsync)
+    xw.put_artifact(conn, lease=lease, name="durable.txt", data=b"payload")
+
+    assert len(calls) >= 2
+
+
+def test_put_artifact_fsync_failure_leaves_no_row_or_blob(
+    kanban_home, conn, monkeypatch
+):
+    _tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
+
+    def failing_fsync(_fd: int) -> None:
+        raise OSError("injected fsync failure")
+
+    monkeypatch.setattr(xw.os, "fsync", failing_fsync)
+    with pytest.raises(OSError, match="injected fsync failure"):
+        xw.put_artifact(conn, lease=lease, name="lost.txt", data=b"payload")
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM task_external_artifacts WHERE run_id = ?",
+        (lease.run_id,),
+    ).fetchone()[0] == 0
+    assert not list(Path(kanban_home).rglob("*lost.txt*"))
 
 
 def test_put_artifact_rejects_divergent_bytes_same_name(kanban_home, conn):
@@ -2072,6 +2205,62 @@ def test_recovery_hold_rejects_already_persisted_result(kanban_home, conn):
             ),
         )
     assert xw.get_run(conn, run_id=lease.run_id).recovery_count == 0
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "unknown-zero-cost",
+        "negative-cost",
+        "bad-cost-status",
+        "bad-cost-source",
+        "oversized-failure-signature",
+        "oversized-summary",
+    ],
+)
+def test_put_result_rejects_invalid_cost_and_bounded_text(
+    kanban_home, conn, variant
+):
+    tid, _aid, _raw, spec, lease = _submit_and_claim(conn)
+    document = json.loads(
+        _result_json(
+            run_id=lease.run_id,
+            task_id=tid,
+            spec=spec,
+            disposition="BLOCK",
+            block_kind="capability",
+        )
+    )
+    mas = document["mas"]
+    usage = mas["usage"]
+    if variant == "unknown-zero-cost":
+        usage["cost_usd"] = 0
+    elif variant == "negative-cost":
+        usage.update(
+            cost_usd=-1,
+            cost_status="known",
+            source="provider-reported",
+        )
+    elif variant == "bad-cost-status":
+        usage["cost_status"] = "maybe"
+    elif variant == "bad-cost-source":
+        usage.update(cost_usd=1, cost_status="known", source="invented")
+    elif variant == "oversized-failure-signature":
+        mas["failure_signature"] = "x" * 129
+    else:
+        mas["summary"] = "x" * 2_001
+    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+
+    with pytest.raises(xw.ResultRejected, match="invalid ExecutionResult schema"):
+        xw.put_result(
+            conn,
+            lease=lease,
+            disposition="BLOCK",
+            block_kind="capability",
+            result_bytes=raw,
+        )
+
+    assert xw.read_result(conn, lease=lease) is None
 
 
 def test_recovery_replays_staged_requeue_after_two_prior_holds(kanban_home, conn):

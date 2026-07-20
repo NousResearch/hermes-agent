@@ -185,7 +185,35 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
         name = str(entry.get("name") or "").strip() if isinstance(entry, dict) else ""
         if name:
             known.update(aliases(name, str(entry.get("provider_key") or "").strip()))
+    # Runtime model-provider plugins have their own lazy registry. Doctor must
+    # consult the same registry inference uses before rejecting a configured id;
+    # otherwise a loaded user plugin can appear in the printed known list while
+    # still being marked unknown by the static auth/models.dev catalogs.
+    known.update(_runtime_plugin_provider_ids())
     return known, custom_providers, resolve_auth, normalize, resolve_full
+
+
+def _runtime_plugin_provider_ids() -> set[str]:
+    """Return canonical names and aliases from ``providers.list_providers()``.
+
+    User plugins under ``$HERMES_HOME/plugins/model-providers/`` are discovered
+    at runtime and are not owned by ``resolve_provider_full()``.
+    """
+    plugin_ids: set[str] = set()
+    try:
+        from providers import list_providers as _list_plugin_providers
+        for profile in _list_plugin_providers():
+            profile_name = str(getattr(profile, "name", "") or "").strip().lower()
+            if profile_name:
+                plugin_ids.add(profile_name)
+            plugin_ids.update(
+                str(alias).strip().lower()
+                for alias in (getattr(profile, "aliases", ()) or ())
+                if str(alias).strip()
+            )
+    except Exception:
+        pass
+    return plugin_ids
 
 
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
@@ -220,6 +248,7 @@ def _validate_model_config(config_path, issues: list) -> None:
     provider = provider_raw.lower()
     default_model = (model_section.get("default") or model_section.get("model") or "").strip()
     known_providers, custom_providers, resolve_auth, normalize, resolve_full = _known_provider_ids(cfg)
+    plugin_provider_ids = _runtime_plugin_provider_ids()
     valid_provider_ids = set(known_providers)
     accept = {provider} if provider else set()
     for known_provider in known_providers if normalize is not None else ():
@@ -235,7 +264,9 @@ def _validate_model_config(config_path, issues: list) -> None:
                 accept.add(runtime_provider)
             except Exception:
                 runtime_provider = provider
-        if resolve_full is not None:
+        # Do not force runtime plugin ids through the static models.dev resolver;
+        # that catalog does not own $HERMES_HOME/plugins/model-providers/*.
+        if resolve_full is not None and provider not in plugin_provider_ids:
             provider_def = resolve_full(provider, cfg.get("providers"), custom_providers)
             catalog_provider = provider_def.id if provider_def is not None else None
             accept.update({catalog_provider} - {None})

@@ -72,9 +72,10 @@ def _find_same_source_duplicate(
             continue
         if _logical_key(fact) != logical_key:
             continue
-        if event.get("source_identity") != source_identity:
+        evidence = event.get("evidence") or {}
+        if not isinstance(evidence, Mapping) or _source_identity(evidence) != source_identity:
             continue
-        if event.get("canonical_value_hash") != canonical_value_hash:
+        if _sha256(canonical_json(fact.get("value"))) != canonical_value_hash:
             continue
         return event
     return None
@@ -96,7 +97,8 @@ def _normalize_operation(
     if proposed_operation == "retract":
         return "retract", None
 
-    active_hash = active_event.get("canonical_value_hash")
+    active_fact = active_event.get("fact") or {}
+    active_hash = _sha256(canonical_json(active_fact.get("value"))) if isinstance(active_fact, Mapping) else None
     if active_hash == _sha256(canonical_value):
         return "confirm", None
     return "supersede", None
@@ -108,6 +110,7 @@ def reconcile_candidate(
     observation: Mapping[str, Any],
     candidate: Mapping[str, Any],
     occurred_at: str,
+    extraction: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Deterministic idempotent reconciliation for a single candidate fact.
 
@@ -163,6 +166,11 @@ def reconcile_candidate(
     if operation is None:
         return {"decision": "none", "event": None, "reason": reason}
 
+    if active_event is not None and operation in {"confirm", "retract"}:
+        active_fact = active_event.get("fact")
+        if isinstance(active_fact, Mapping) and active_fact.get("kind") is not None:
+            fact["kind"] = active_fact["kind"]
+
     if operation == "confirm" and active_event is not None:
         fact_id = str(active_event["fact_id"])
         supersedes = None
@@ -189,15 +197,13 @@ def reconcile_candidate(
     event = {
         "schema_version": 1,
         "event_id": event_id,
-        "event_key": event_key,
         "occurred_at": occurred_at,
         "operation": operation,
         "fact_id": fact_id,
         "supersedes": supersedes,
         "fact": fact,
-        "source_identity": source_identity,
-        "canonical_value_hash": canonical_value_hash,
         "evidence": {
+            "type": str(candidate.get("evidence_type") or "user_stated"),
             "profile": observation.get("profile"),
             "platform": observation.get("platform"),
             "session_id": observation.get("session_id"),
@@ -206,6 +212,12 @@ def reconcile_candidate(
             "speaker_id": observation.get("speaker_id"),
             "conversation_id": observation.get("conversation_id"),
             "thread_id": observation.get("thread_id"),
+        },
+        "extraction": {
+            "schema_name": str((extraction or {}).get("schema_name") or "truth-ledger.fact-candidates.v1"),
+            "provider": str((extraction or {}).get("provider") or "unknown"),
+            "model": str((extraction or {}).get("model") or "unknown"),
+            "prompt_version": int((extraction or {}).get("prompt_version") or 1),
         },
     }
 

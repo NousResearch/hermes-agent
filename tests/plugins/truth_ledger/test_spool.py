@@ -1,41 +1,110 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import sys
 import time
+import types
 from pathlib import Path
 
+import pytest
 
-def test_enqueue_creates_pending_file_with_restrictive_mode(tmp_path, spool_mod):
+
+def _load_schemas_module():
+    repo_root = Path(__file__).resolve().parents[3]
+    plugin_dir = repo_root / "plugins" / "truth-ledger"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.truth_ledger.schemas",
+        plugin_dir / "schemas.py",
+        submodule_search_locations=[str(plugin_dir)],
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    if "hermes_plugins" not in sys.modules:
+        ns = types.ModuleType("hermes_plugins")
+        ns.__path__ = []
+        sys.modules["hermes_plugins"] = ns
+    if "hermes_plugins.truth_ledger" not in sys.modules:
+        pkg = types.ModuleType("hermes_plugins.truth_ledger")
+        pkg.__path__ = [str(plugin_dir)]
+        sys.modules["hermes_plugins.truth_ledger"] = pkg
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["hermes_plugins.truth_ledger.schemas"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _source_envelope() -> dict[str, object]:
+    return {
+        "schema_name": "truth-ledger.source-envelope.v1",
+        "schema_version": 1,
+        "captured_at": "2026-07-19T00:00:00Z",
+        "profile": "automation-operator",
+        "session_id": "sess-1",
+        "turn_id": "turn-1",
+        "origin": {
+            "platform": "cli",
+            "conversation_id": "conv-1",
+            "thread_id": "thread-1",
+            "speaker_id": "user-1",
+        },
+        "input": {"user_message": "Keep responses concise."},
+        "output": {"assistant_response": "Understood."},
+    }
+
+
+def _load_json(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_pending_record(spool, *, payload_path: Path, **overrides) -> Path:
+    record = {
+        "schema_name": "truth-ledger.spool-record.v1",
+        "schema_version": 1,
+        "envelope_id": f"env_{payload_path.stem or 'injected'}",
+        "state": "pending",
+        "captured_at": "2026-07-19T00:00:00Z",
+        "attempt_count": 0,
+        "idempotency_key": f"automation-operator:sess-1:{payload_path.stem or 'turn'}",
+        "source_ref": {"profile": "automation-operator", "session_id": "sess-1", "turn_id": payload_path.stem or "turn"},
+        "payload_path": str(payload_path),
+        "flow": {},
+    }
+    record.update(overrides)
+    path = spool.pending_dir / f"inject-{time.time_ns()}.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+def test_spool_record_representation_is_schema_coherent_across_lifecycle(tmp_path, spool_mod):
     spool = spool_mod.TruthSpool(tmp_path)
+    schemas_mod = _load_schemas_module()
 
-    result = spool.enqueue({"event": "assert", "fact_id": "f1"})
+    result = spool.enqueue(_source_envelope())
 
     assert result["ok"] is True
-    path = Path(result["path"])
-    assert path.parent.name == "pending"
-    assert path.exists()
-    mode = path.stat().st_mode & 0o777
-    assert mode == 0o600
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["event"] == "assert"
-    assert payload["fact_id"] == "f1"
-
-
-def test_claim_retry_and_dead_letter_flow(tmp_path, spool_mod):
-    spool = spool_mod.TruthSpool(tmp_path, soft_count=10, hard_count=20)
-    spool.enqueue({"event": "assert", "fact_id": "f1"})
+    pending_record_path = Path(result["path"])
+    pending_record = _load_json(pending_record_path)
+    schemas_mod.validate_document("spool-record.v1", pending_record)
+    source_payload_path = Path(str(pending_record["payload_path"]))
+    schemas_mod.validate_document("source-envelope.v1", _load_json(source_payload_path))
 
     claim = spool.claim_next(owner="worker-1")
     assert claim is not None
     processing_path = Path(claim["path"])
     assert processing_path.parent.name == "processing"
+    processing_record = _load_json(processing_path)
+    schemas_mod.validate_document("spool-record.v1", processing_record)
+    assert processing_record["state"] == "processing"
 
     retry = spool.retry_processing(processing_path, error_code="SQLITE_BUSY")
     assert retry["ok"] is True
-    pending_path = Path(retry["path"])
-    assert pending_path.parent.name == "pending"
+    retried_pending_path = Path(retry["path"])
+    assert retried_pending_path.parent.name == "pending"
+    retried_pending_record = _load_json(retried_pending_path)
+    schemas_mod.validate_document("spool-record.v1", retried_pending_record)
+    assert retried_pending_record["attempt_count"] == 1
 
     claim2 = spool.claim_next(owner="worker-2")
     assert claim2 is not None
@@ -45,16 +114,19 @@ def test_claim_retry_and_dead_letter_flow(tmp_path, spool_mod):
     assert dead["ok"] is True
     dead_path = Path(dead["path"])
     assert dead_path.parent.name == "dead-letter"
-    dead_payload = json.loads(dead_path.read_text(encoding="utf-8"))
-    assert dead_payload["dead_letter_reason"] == "permanent"
+    dead_record = _load_json(dead_path)
+    schemas_mod.validate_document("spool-record.v1", dead_record)
+    assert dead_record["state"] == "dead_lettered"
+    assert dead_record["attempt_count"] == 1
 
 
 def test_soft_and_hard_caps_are_enforced_without_throwing(tmp_path, spool_mod):
     spool = spool_mod.TruthSpool(tmp_path, soft_count=2, hard_count=3)
 
-    r1 = spool.enqueue({"fact_id": "a"})
-    r2 = spool.enqueue({"fact_id": "b"})
-    r3 = spool.enqueue({"fact_id": "c"})
+    envelope = _source_envelope()
+    r1 = spool.enqueue({**envelope, "turn_id": "turn-a"})
+    r2 = spool.enqueue({**envelope, "turn_id": "turn-b"})
+    r3 = spool.enqueue({**envelope, "turn_id": "turn-c"})
     assert r1["ok"] and r2["ok"] and r3["ok"]
 
     # soft cap sheds oldest pending to dead-letter
@@ -63,17 +135,17 @@ def test_soft_and_hard_caps_are_enforced_without_throwing(tmp_path, spool_mod):
 
     # hard cap should fail-open: no exception, explicit rejection.
     strict = spool_mod.TruthSpool(tmp_path / "strict", soft_count=99, hard_count=3)
-    assert strict.enqueue({"fact_id": "a"})["ok"]
-    assert strict.enqueue({"fact_id": "b"})["ok"]
-    assert strict.enqueue({"fact_id": "c"})["ok"]
-    r4 = strict.enqueue({"fact_id": "d"})
+    assert strict.enqueue({**envelope, "turn_id": "strict-a"})["ok"]
+    assert strict.enqueue({**envelope, "turn_id": "strict-b"})["ok"]
+    assert strict.enqueue({**envelope, "turn_id": "strict-c"})["ok"]
+    r4 = strict.enqueue({**envelope, "turn_id": "strict-d"})
     assert r4["ok"] is False
     assert r4["reason"] == "queue_hard_cap"
 
 
 def test_recover_stale_processing_moves_back_to_pending(tmp_path, spool_mod):
     spool = spool_mod.TruthSpool(tmp_path)
-    spool.enqueue({"fact_id": "stale"})
+    spool.enqueue({**_source_envelope(), "turn_id": "stale"})
     claim = spool.claim_next(owner="worker")
     assert claim is not None
 
@@ -85,3 +157,235 @@ def test_recover_stale_processing_moves_back_to_pending(tmp_path, spool_mod):
     assert moved == 1
     assert not processing_path.exists()
     assert len(list((tmp_path / "spool" / "pending").glob("*.json"))) == 1
+
+
+def test_ack_processing_removes_record_and_only_owned_payloads(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+
+    enqueue = spool.enqueue({**_source_envelope(), "turn_id": "owned-payload"})
+    assert enqueue["ok"] is True
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    owned_payload_path = Path(str(claim["record"]["payload_path"]))
+    assert owned_payload_path.exists()
+
+    result = spool.ack_processing(processing_path)
+    assert result["ok"] is True
+    assert processing_path.exists() is False
+    assert owned_payload_path.exists() is False
+
+    foreign_payload = tmp_path / "foreign" / "payload.json"
+    foreign_payload.parent.mkdir(parents=True, exist_ok=True)
+    foreign_payload.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+    record_path = spool.processing_dir / "foreign-processing.json"
+    record_path.write_text(
+        json.dumps(
+            {
+                "schema_name": "truth-ledger.spool-record.v1",
+                "schema_version": 1,
+                "envelope_id": "env_foreign",
+                "state": "processing",
+                "captured_at": "2026-07-19T00:00:00Z",
+                "attempt_count": 0,
+                "idempotency_key": "automation-operator:sess-1:turn-foreign",
+                "source_ref": {"profile": "automation-operator", "session_id": "sess-1", "turn_id": "turn-foreign"},
+                "payload_path": str(foreign_payload),
+                "flow": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = spool.ack_processing(record_path)
+    assert result["ok"] is True
+    assert record_path.exists() is False
+    assert foreign_payload.exists() is True
+
+
+def test_dead_letter_and_soft_overflow_remove_payload_files(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path, soft_count=1, hard_count=5)
+
+    first = spool.enqueue({**_source_envelope(), "turn_id": "overflow-1"})
+    assert first["ok"] is True
+    first_record = _load_json(Path(first["path"]))
+    first_payload_path = Path(str(first_record["payload_path"]))
+    assert first_payload_path.exists()
+
+    second = spool.enqueue({**_source_envelope(), "turn_id": "overflow-2"})
+    assert second["ok"] is True
+
+    dead_files = sorted((tmp_path / "spool" / "dead-letter").glob("*.json"))
+    assert dead_files
+    overflow_record = _load_json(dead_files[0])
+    assert overflow_record["state"] == "dead_lettered"
+    assert overflow_record["flow"]["dead_letter_reason"] == "queue_overflow"
+    assert overflow_record["source_ref"]["session_id"] == "sess-1"
+    assert "input" not in json.dumps(overflow_record)
+    assert first_payload_path.exists() is False
+
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    payload_path = Path(str(claim["record"]["payload_path"]))
+    assert payload_path.exists() is True
+
+    dead = spool.dead_letter(processing_path, reason="permanent")
+    assert dead["ok"] is True
+    dead_record = _load_json(Path(dead["path"]))
+    assert dead_record["state"] == "dead_lettered"
+    assert dead_record["flow"]["dead_letter_reason"] == "permanent"
+    assert dead_record["source_ref"]["turn_id"] == "overflow-2"
+    assert "input" not in json.dumps(dead_record)
+    assert payload_path.exists() is False
+
+
+def test_retry_and_recovery_retain_payload_while_work_is_pending_or_processing(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    enqueue = spool.enqueue({**_source_envelope(), "turn_id": "retry-and-recover"})
+    assert enqueue["ok"] is True
+
+    pending_record = _load_json(Path(enqueue["path"]))
+    payload_path = Path(str(pending_record["payload_path"]))
+    assert payload_path.exists() is True
+
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    assert payload_path.exists() is True
+
+    retry = spool.retry_processing(processing_path, error_code="TEMP")
+    assert retry["ok"] is True
+    retry_record = _load_json(Path(retry["path"]))
+    assert retry_record["state"] == "pending"
+    assert Path(str(retry_record["payload_path"])) == payload_path
+    assert payload_path.exists() is True
+
+    claim_again = spool.claim_next(owner="worker-2")
+    assert claim_again is not None
+    processing_again_path = Path(claim_again["path"])
+    stale = time.time() - 600
+    os.utime(processing_again_path, (stale, stale))
+
+    moved = spool.recover_stale_processing(stale_seconds=60)
+    assert moved == 1
+    recovered_pending = sorted(spool.pending_dir.glob("*.json"))
+    assert len(recovered_pending) == 1
+    recovered_record = _load_json(recovered_pending[0])
+    assert recovered_record["state"] == "pending"
+    assert Path(str(recovered_record["payload_path"])) == payload_path
+    assert payload_path.exists() is True
+
+
+def test_recover_stale_processing_tolerates_record_disappearing_mid_recovery(tmp_path, spool_mod, monkeypatch):
+    spool = spool_mod.TruthSpool(tmp_path)
+    spool.enqueue({**_source_envelope(), "turn_id": "race-disappear"})
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    stale = time.time() - 600
+    os.utime(processing_path, (stale, stale))
+
+    original_load_record = spool._load_record
+
+    def _load_record_with_disappearing_file(path: Path):
+        if path == processing_path and path.exists():
+            path.unlink()
+            raise FileNotFoundError("processing record removed by concurrent close")
+        return original_load_record(path)
+
+    monkeypatch.setattr(spool, "_load_record", _load_record_with_disappearing_file)
+
+    moved = spool.recover_stale_processing(stale_seconds=60)
+    assert moved == 0
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert list(spool.dead_letter_dir.glob("*.json")) == []
+
+
+def test_claim_next_quarantines_malformed_and_schema_invalid_spool_records(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+
+    malformed_path = spool.pending_dir / "inject-malformed.json"
+    malformed_path.write_text("{not-json", encoding="utf-8")
+
+    owned_payload = spool.payloads_dir / "owned.json"
+    owned_payload.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+    _write_pending_record(spool, payload_path=owned_payload, unexpected="field")
+
+    claim = spool.claim_next(owner="worker")
+    assert claim is None
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert list(spool.processing_dir.glob("*.json")) == []
+
+    dead_records = [_load_json(p) for p in sorted(spool.dead_letter_dir.glob("*.json"))]
+    assert len(dead_records) == 2
+    assert {r["flow"]["dead_letter_reason"] for r in dead_records} == {"invalid_spool_record"}
+    assert owned_payload.exists() is False
+
+
+def test_claim_next_quarantines_missing_or_invalid_source_payloads(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+
+    invalid_payload = spool.payloads_dir / "invalid-envelope.json"
+    invalid_payload.write_text(json.dumps({"schema_name": "truth-ledger.source-envelope.v1"}), encoding="utf-8")
+    _write_pending_record(spool, payload_path=invalid_payload)
+
+    missing_payload = spool.payloads_dir / "missing-envelope.json"
+    _write_pending_record(spool, payload_path=missing_payload)
+
+    claim = spool.claim_next(owner="worker")
+    assert claim is None
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert list(spool.processing_dir.glob("*.json")) == []
+
+    dead_records = [_load_json(p) for p in sorted(spool.dead_letter_dir.glob("*.json"))]
+    assert len(dead_records) == 2
+    assert {r["flow"]["dead_letter_reason"] for r in dead_records} == {
+        "invalid_source_envelope",
+        "missing_payload",
+    }
+    assert invalid_payload.exists() is False
+
+
+def test_claim_next_rejects_payload_paths_outside_owned_root_including_symlinks(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+
+    external = tmp_path / "external" / "secret.json"
+    external.parent.mkdir(parents=True, exist_ok=True)
+    external.write_text('{"secret":"top-secret"}', encoding="utf-8")
+
+    _write_pending_record(spool, payload_path=external)
+
+    symlink_path = spool.payloads_dir / "link-secret.json"
+    symlink_path.symlink_to(external)
+    _write_pending_record(spool, payload_path=symlink_path)
+
+    claim = spool.claim_next(owner="worker")
+    assert claim is None
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert list(spool.processing_dir.glob("*.json")) == []
+
+    dead_records = [_load_json(p) for p in sorted(spool.dead_letter_dir.glob("*.json"))]
+    assert len(dead_records) == 2
+    assert {r["flow"]["dead_letter_reason"] for r in dead_records} == {"payload_path_out_of_root"}
+    assert external.exists() is True
+    assert external.read_text(encoding="utf-8") == '{"secret":"top-secret"}'
+    assert symlink_path.exists() is True
+
+
+def test_enqueue_rolls_back_payload_when_pending_record_write_fails(tmp_path, spool_mod, monkeypatch):
+    spool = spool_mod.TruthSpool(tmp_path)
+    original_write = spool_mod._write_private_json_atomic
+
+    def _fail_pending(path, payload):
+        if path.parent == spool.pending_dir:
+            raise OSError("synthetic pending write failure")
+        return original_write(path, payload)
+
+    monkeypatch.setattr(spool_mod, "_write_private_json_atomic", _fail_pending)
+
+    with pytest.raises(OSError, match="synthetic pending write failure"):
+        spool.enqueue(_source_envelope())
+
+    assert list(spool.payloads_dir.glob("*.json")) == []
+    assert list(spool.pending_dir.glob("*.json")) == []

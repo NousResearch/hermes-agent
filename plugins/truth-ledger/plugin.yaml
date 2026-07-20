@@ -1,0 +1,7 @@
+name: truth-ledger
+version: "0.1.0"
+description: "Opt-in lifecycle capture for Truth Ledger source envelopes."
+author: NousResearch
+hooks:
+  - on_session_start
+  - post_llm_call

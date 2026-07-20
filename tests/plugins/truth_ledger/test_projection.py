@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -109,3 +110,118 @@ def test_rebuild_current_view_accepts_operation_field_for_assert(tmp_path, proje
     out = projection_mod.rebuild_current_view(tmp_path)
     assert out["applied"] == 1
     assert out["active"] == 1
+
+
+def test_rebuild_current_view_supports_reconciliation_nested_fact_shape(tmp_path, projection_mod):
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    _append(
+        ledger_file,
+        {
+            "event_id": "e1",
+            "operation": "assert",
+            "fact_id": "fact_1",
+            "fact": {
+                "scope": "user",
+                "subject": "u1",
+                "key": "timezone",
+                "value": "UTC",
+            },
+            "occurred_at": "2026-07-17T20:00:00Z",
+        },
+    )
+    _append(
+        ledger_file,
+        {
+            "event_id": "e2",
+            "operation": "assert",
+            "fact_id": "fact_2",
+            "fact": {
+                "scope": "user",
+                "subject": "u1",
+                "key": "language",
+                "value": "en",
+            },
+            "occurred_at": "2026-07-17T20:01:00Z",
+        },
+    )
+
+    out = projection_mod.rebuild_current_view(tmp_path)
+    assert out["applied"] == 2
+    assert out["active"] == 2
+
+
+def test_rebuild_current_view_reports_and_quarantines_invalid_source_lines(tmp_path, projection_mod):
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    ledger_file.parent.mkdir(parents=True, exist_ok=True)
+    ledger_file.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_id": "e1",
+                        "operation": "assert",
+                        "fact_id": "fact_1",
+                        "fact": {
+                            "scope": "user",
+                            "subject": "u1",
+                            "key": "timezone",
+                            "value": "UTC",
+                        },
+                        "occurred_at": "2026-07-17T20:00:00Z",
+                    },
+                    separators=(",", ":"),
+                ),
+                '{"event_id":"bad"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    out = projection_mod.rebuild_current_view(tmp_path)
+    assert out["applied"] == 1
+    assert out["active"] == 1
+    assert out["invalid_source_records"] == 1
+    assert out["quarantined_files"] == 1
+
+
+def test_rebuild_current_view_is_deterministic_after_derived_state_deletion(tmp_path, projection_mod):
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    _append(
+        ledger_file,
+        {
+            "event_id": "e1",
+            "operation": "assert",
+            "fact_id": "fact_1",
+            "fact": {
+                "scope": "user",
+                "subject": "u1",
+                "key": "timezone",
+                "value": "UTC",
+            },
+            "occurred_at": "2026-07-17T20:00:00Z",
+        },
+    )
+    _append(
+        ledger_file,
+        {
+            "event_id": "e2",
+            "operation": "confirm",
+            "fact_id": "fact_1",
+            "fact": {
+                "scope": "user",
+                "subject": "u1",
+                "key": "timezone",
+                "value": "UTC",
+            },
+            "occurred_at": "2026-07-17T20:01:00Z",
+        },
+    )
+
+    first = projection_mod.rebuild_current_view(tmp_path)
+    hash_one = hashlib.sha256(Path(first["path"]).read_bytes()).hexdigest()
+
+    Path(first["path"]).unlink()
+    second = projection_mod.rebuild_current_view(tmp_path)
+    hash_two = hashlib.sha256(Path(second["path"]).read_bytes()).hexdigest()
+
+    assert hash_one == hash_two

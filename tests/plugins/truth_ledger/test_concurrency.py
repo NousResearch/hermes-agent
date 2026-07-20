@@ -29,36 +29,41 @@ def _load_ledger_module():
     return mod
 
 
+def _event(event_id: str, key: str, value) -> dict:
+    return {
+        "schema_version": 1,
+        "event_id": event_id,
+        "occurred_at": "2026-07-17T20:00:00Z",
+        "operation": "assert",
+        "fact_id": f"fact_{event_id.removeprefix('evt_')}",
+        "supersedes": None,
+        "fact": {"scope": "user", "kind": "preference", "subject": "u1", "key": key, "value": value},
+        "evidence": {
+            "type": "user_stated", "profile": "default", "platform": "cli",
+            "session_id": "s1", "turn_id": "t1", "task_id": None,
+            "speaker_id": "u1", "conversation_id": None, "thread_id": None,
+        },
+        "extraction": {
+            "schema_name": "truth-ledger.fact-candidates.v1",
+            "provider": "test", "model": "test", "prompt_version": 1,
+        },
+    }
+
+
 def _worker(root: str, start: int, count: int, q):
     ledger_mod = _load_ledger_module()
     store = ledger_mod.LedgerStore(Path(root))
     indexed = 0
     duplicate = 0
     for i in range(start, start + count):
-        event = {
-            "event": "assert",
-            "event_id": f"evt-{i}",
-            "scope": "user",
-            "subject": "u1",
-            "key": f"k{i}",
-            "value": i,
-            "occurred_at": "2026-07-17T20:00:00Z",
-        }
+        event = _event(f"evt_{i}", f"k{i}", i)
         out = store.append_event(event=event, event_key=f"k-{i}")
         if out["status"] == "indexed":
             indexed += 1
         elif out["status"] == "duplicate":
             duplicate += 1
 
-    race = {
-        "event": "assert",
-        "event_id": "evt-race",
-        "scope": "user",
-        "subject": "u1",
-        "key": "race",
-        "value": "same",
-        "occurred_at": "2026-07-17T20:00:00Z",
-    }
+    race = _event("evt_race", "race", "same")
     out = store.append_event(event=race, event_key="race-key")
     q.put({"indexed": indexed, "duplicate": duplicate, "race_status": out["status"]})
 

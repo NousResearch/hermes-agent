@@ -29,7 +29,9 @@
       "properties": {
         "platform": {"type": "string", "minLength": 1, "maxLength": 64},
         "conversation_id": {"type": ["string", "null"], "maxLength": 256},
+        "chat_id": {"type": ["string", "null"], "maxLength": 256},
         "thread_id": {"type": ["string", "null"], "maxLength": 256},
+        "chat_type": {"type": ["string", "null"], "maxLength": 64},
         "speaker_id": {"type": ["string", "null"], "maxLength": 256}
       }
     },

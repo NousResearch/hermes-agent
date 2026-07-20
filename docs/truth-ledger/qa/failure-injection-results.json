@@ -1,0 +1,184 @@
+{
+  "task_id": "t_df29cdae",
+  "verdict": "PASS",
+  "summary": {
+    "scenarios_total": 14,
+    "scenarios_passed": 14,
+    "defects_repaired": 6
+  },
+  "defects_repaired": [
+    {
+      "id": "T14-F1",
+      "title": "dead-letter reason hidden in review output",
+      "red": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_commands.py -q",
+        "signal": "FAILED test_review_report_reads_nested_dead_letter_reason_from_flow: expected schema_mismatch got unknown"
+      },
+      "green": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_commands.py -q",
+        "signal": "7 passed, 0 failed"
+      },
+      "files": [
+        "plugins/truth-ledger/commands.py",
+        "tests/plugins/truth_ledger/test_commands.py"
+      ]
+    },
+    {
+      "id": "T14-F2",
+      "title": "unbounded in-memory dedupe state",
+      "red": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_lifecycle_integration.py -q",
+        "signal": "FAILED test_post_llm_call_bounds_seen_dedupe_state: len(_SEEN_ENVELOPES)=3000 > 1024"
+      },
+      "green": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_lifecycle_integration.py -q",
+        "signal": "14 passed, 0 failed"
+      },
+      "files": [
+        "plugins/truth-ledger/__init__.py",
+        "tests/plugins/truth_ledger/test_lifecycle_integration.py"
+      ]
+    },
+    {
+      "id": "T14-F3",
+      "title": "SQLite lock raised exception instead of fail-open retry",
+      "red": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_ledger.py -q",
+        "signal": "FAILED test_append_event_returns_retry_when_index_db_is_locked: sqlite3.OperationalError: database is locked"
+      },
+      "green": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_ledger.py -q",
+        "signal": "5 passed, 0 failed"
+      },
+      "files": [
+        "plugins/truth-ledger/ledger.py",
+        "tests/plugins/truth_ledger/test_ledger.py"
+      ]
+    },
+    {
+      "id": "T14-F4",
+      "title": "pending atomic replace interruption left temp artifacts",
+      "red": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_lifecycle_integration.py tests/plugins/truth_ledger/test_spool.py -q -k \"permission_denied_at_pending_atomic_replace or interruption_between_tmp_write_and_pending_replace\"",
+        "signal": "FAILED: .tmp-*.json artifacts persisted in pending after replace fault injection"
+      },
+      "green": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_lifecycle_integration.py tests/plugins/truth_ledger/test_spool.py -q -k \"permission_denied_at_pending_atomic_replace or interruption_between_tmp_write_and_pending_replace\"",
+        "signal": "targeted boundary tests passed"
+      },
+      "files": [
+        "plugins/truth-ledger/spool.py",
+        "tests/plugins/truth_ledger/test_lifecycle_integration.py"
+      ]
+    },
+    {
+      "id": "T14-F5",
+      "title": "lifecycle close/recovery disappearance race quarantined as corruption",
+      "red": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_spool.py -q -k record_disappearing_mid_recovery",
+        "signal": "FAILED test_recover_stale_processing_tolerates_record_disappearing_mid_recovery: moved == 1"
+      },
+      "green": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_spool.py -q -k record_disappearing_mid_recovery",
+        "signal": "targeted race test passed"
+      },
+      "files": [
+        "plugins/truth-ledger/spool.py",
+        "tests/plugins/truth_ledger/test_spool.py"
+      ]
+    },
+    {
+      "id": "T14-F6",
+      "title": "interruption after append before index commit duplicated logical event",
+      "red": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_ledger.py -q -k interrupted_after_append_before_index_commit",
+        "signal": "FAILED test_append_event_is_idempotent_when_interrupted_after_append_before_index_commit: len(lines)==2"
+      },
+      "green": {
+        "command": "scripts/run_tests.sh tests/plugins/truth_ledger/test_ledger.py -q -k interrupted_after_append_before_index_commit",
+        "signal": "targeted boundary test passed with single event line"
+      },
+      "files": [
+        "plugins/truth-ledger/ledger.py",
+        "tests/plugins/truth_ledger/test_ledger.py"
+      ]
+    }
+  ],
+  "fault_matrix": [
+    {
+      "scenario": "disk full",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_lifecycle_integration.py::test_post_llm_call_fail_open_on_enospc_at_payload_fsync_cleans_tmp_and_retries (injects OSError(errno.ENOSPC) at spool._write_private_json_atomic file fsync boundary)"
+    },
+    {
+      "scenario": "permission denied at pending atomic replace",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_lifecycle_integration.py::test_post_llm_call_is_fail_open_on_permission_denied_at_pending_atomic_replace"
+    },
+    {
+      "scenario": "sqlite busy/locked",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_ledger.py::test_append_event_returns_retry_when_index_db_is_locked"
+    },
+    {
+      "scenario": "interruption between tmp write and pending replace",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_lifecycle_integration.py::test_post_llm_call_recovers_from_interruption_between_tmp_write_and_pending_replace"
+    },
+    {
+      "scenario": "interruption after ledger append before index commit",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_ledger.py::test_append_event_is_idempotent_when_interrupted_after_append_before_index_commit"
+    },
+    {
+      "scenario": "malformed model json",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_extractor.py::test_extract_malformed_parsed_payload_is_conservative_dead_letter"
+    },
+    {
+      "scenario": "schema mismatch",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_extractor.py::test_extract_schema_mismatch_dead_letters_without_secret_leakage"
+    },
+    {
+      "scenario": "provider timeout/5xx",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_extractor.py::test_extract_timeout_is_retry_with_jitter_delay + test_extract_http_5xx_is_retry_then_dead_letter_when_attempts_exhausted"
+    },
+    {
+      "scenario": "duplicate callback",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_lifecycle_integration.py::test_post_llm_call_enqueues_once_and_never_persists_conversation_history"
+    },
+    {
+      "scenario": "partial final jsonl line",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_ledger.py::test_scan_quarantines_partial_tail and tests/plugins/truth_ledger/test_projection.py::test_rebuild_current_view_reports_and_quarantines_invalid_source_lines"
+    },
+    {
+      "scenario": "oversized turn",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_ledger.py::test_append_event_rejects_oversized_record + tests/plugins/truth_ledger/test_contracts_and_schemas.py::test_source_envelope_and_dead_letter_size_limits"
+    },
+    {
+      "scenario": "credential-like strings",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_lifecycle_integration.py::test_realistic_synthetic_credential_never_leaks_across_spool_or_extractor_surfaces + tests/plugins/test_truth_ledger_admission_redaction.py::test_secret_value_is_rejected_and_redacted_in_reason"
+    },
+    {
+      "scenario": "unknown speaker",
+      "status": "pass",
+      "evidence": "tests/plugins/test_truth_ledger_admission_redaction.py::test_unknown_speaker_blocks_user_scope"
+    },
+    {
+      "scenario": "concurrent writers + lifecycle close/recovery race",
+      "status": "pass",
+      "evidence": "tests/plugins/truth_ledger/test_concurrency.py::test_multiprocess_append_is_non_corrupt_and_idempotent + tests/plugins/truth_ledger/test_spool.py::test_recover_stale_processing_moves_back_to_pending + tests/plugins/truth_ledger/test_spool.py::test_recover_stale_processing_tolerates_record_disappearing_mid_recovery + tests/plugins/truth_ledger/test_lifecycle_integration.py::test_on_session_start_recovers_stale_processing"
+    }
+  ],
+  "verification_commands": [
+    "scripts/run_tests.sh tests/plugins/truth_ledger/test_commands.py tests/plugins/truth_ledger/test_lifecycle_integration.py tests/plugins/truth_ledger/test_ledger.py tests/plugins/truth_ledger/test_spool.py tests/plugins/truth_ledger/test_projection.py tests/plugins/truth_ledger/test_extractor.py -q",
+    "scripts/run_tests.sh tests/plugins/truth_ledger/test_concurrency.py tests/plugins/test_truth_ledger_admission_redaction.py tests/plugins/test_truth_ledger_reconciliation.py -q",
+    "git diff --check"
+  ]
+}

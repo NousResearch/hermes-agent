@@ -1,6 +1,9 @@
 import copy
 import importlib.util
+import json
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 
 def _load_reconciliation_module():
@@ -192,3 +195,28 @@ def test_history_is_not_mutated_by_reconciliation():
     )
 
     assert history == original
+
+
+def test_runtime_reconciliation_event_conforms_to_frozen_ledger_schema():
+    mod = _load_reconciliation_module()
+    result = mod.reconcile_candidate(
+        history=[],
+        observation=_obs(turn_id="t-schema"),
+        candidate=_candidate("concise"),
+        occurred_at="2026-07-17T22:00:00Z",
+        extraction={
+            "schema_name": "truth-ledger.fact-candidates.v1",
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "prompt_version": 2,
+        },
+    )
+    event = result["event"]
+    schema_path = Path(__file__).resolve().parents[2] / "plugins" / "truth-ledger" / "schemas" / "ledger-event-v1.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    errors = sorted(Draft202012Validator(schema).iter_errors(event), key=lambda err: list(err.path))
+    assert errors == []
+    assert set(event) == {
+        "schema_version", "event_id", "occurred_at", "operation", "fact_id",
+        "supersedes", "fact", "evidence", "extraction",
+    }

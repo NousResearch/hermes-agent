@@ -7,8 +7,22 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
+
+from jsonschema import Draft202012Validator
+
+
+@lru_cache(maxsize=1)
+def _ledger_event_validator() -> Draft202012Validator:
+    schema_path = Path(__file__).with_name("schemas") / "ledger-event-v1.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    return Draft202012Validator(schema)
+
+
+def _valid_ledger_event(document: Dict[str, Any]) -> bool:
+    return next(_ledger_event_validator().iter_errors(document), None) is None
 
 
 def _mkdir_private(path: Path) -> None:
@@ -91,34 +105,113 @@ class LedgerStore:
             )
             conn.commit()
 
+    def _find_event_offset_and_checksum(self, ledger_file: Path, event_id: str) -> tuple[int | None, str | None]:
+        if not ledger_file.exists():
+            return None, None
+
+        offset = 0
+        with ledger_file.open("rb") as fh:
+            for raw_line in fh:
+                offset += len(raw_line)
+                try:
+                    row = json.loads(raw_line.decode("utf-8"))
+                except Exception:
+                    continue
+                if str(row.get("event_id") or "") == event_id:
+                    return offset, hashlib.sha256(raw_line).hexdigest()
+        return None, None
+
     def append_event(self, event: Dict[str, Any], event_key: str) -> Dict[str, Any]:
         event_copy = dict(event)
         event_copy.setdefault("occurred_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        event_id = str(event_copy.get("event_id") or hashlib.sha256(event_key.encode("utf-8")).hexdigest()[:32])
+        event_id = str(event_copy.get("event_id") or f"evt_{hashlib.sha256(event_key.encode('utf-8')).hexdigest()[:32]}")
         event_copy["event_id"] = event_id
 
         line = json.dumps(event_copy, separators=(",", ":"), ensure_ascii=False)
         line_bytes = line.encode("utf-8") + b"\n"
         if len(line_bytes) > self.record_hard_bytes:
             return {"status": "rejected", "reason": "record_hard_cap"}
+        if not _valid_ledger_event(event_copy):
+            return {"status": "rejected", "reason": "invalid_ledger_event"}
 
         month = event_copy["occurred_at"][:7]
         ledger_file = self.ledger_dir / f"{month}.jsonl"
 
-        with self._connect() as conn:
-            cur = conn.execute("SELECT status FROM event_journal WHERE event_key = ?", (event_key,))
-            row = cur.fetchone()
-            if row and row[0] == "indexed":
-                return {"status": "duplicate", "event_id": event_id}
-            if row is None:
-                conn.execute(
-                    "INSERT INTO event_journal(event_key, event_id, status, ledger_file, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    (event_key, event_id, "intent", ledger_file.name, time.time()),
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "SELECT status, event_id, ledger_file FROM event_journal WHERE event_key = ?",
+                    (event_key,),
                 )
-                conn.commit()
+                row = cur.fetchone()
+                if row and row[0] == "indexed":
+                    return {"status": "duplicate", "event_id": event_id}
+                if row and row[0] == "intent":
+                    intent_event_id = str(row[1] or event_id)
+                    intent_ledger_name = str(row[2] or ledger_file.name)
+                    intent_ledger_file = self.ledger_dir / intent_ledger_name
+                    event_id = intent_event_id
+                    event_copy["event_id"] = event_id
+                    line = json.dumps(event_copy, separators=(",", ":"), ensure_ascii=False)
+                    line_bytes = line.encode("utf-8") + b"\n"
+                    recovered_offset, recovered_checksum = self._find_event_offset_and_checksum(
+                        intent_ledger_file,
+                        intent_event_id,
+                    )
+                    if recovered_offset is not None and recovered_checksum is not None:
+                        conn.execute(
+                            "UPDATE event_journal SET status = ?, ledger_offset = ?, checksum = ?, updated_at = ? WHERE event_key = ?",
+                            ("indexed", recovered_offset, recovered_checksum, time.time(), event_key),
+                        )
+                        conn.commit()
+                        return {
+                            "status": "indexed",
+                            "event_id": intent_event_id,
+                            "ledger_file": str(intent_ledger_file),
+                            "recovered_from_intent": True,
+                        }
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO event_journal(event_key, event_id, status, ledger_file, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        (event_key, event_id, "intent", ledger_file.name, time.time()),
+                    )
+                    conn.commit()
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                return {"status": "retry", "reason": "index_db_locked", "event_id": event_id}
+            raise
 
         try:
             with _FileLock(self.append_lock, timeout_seconds=0.2):
+                with self._connect() as conn:
+                    cur = conn.execute(
+                        "SELECT status, event_id, ledger_file FROM event_journal WHERE event_key = ?",
+                        (event_key,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] == "indexed":
+                        return {"status": "duplicate", "event_id": str(row[1] or event_id)}
+                    if row and row[0] == "intent":
+                        intent_event_id = str(row[1] or event_id)
+                        intent_ledger_name = str(row[2] or ledger_file.name)
+                        intent_ledger_file = self.ledger_dir / intent_ledger_name
+                        recovered_offset, recovered_checksum = self._find_event_offset_and_checksum(
+                            intent_ledger_file,
+                            intent_event_id,
+                        )
+                        if recovered_offset is not None and recovered_checksum is not None:
+                            conn.execute(
+                                "UPDATE event_journal SET status = ?, ledger_offset = ?, checksum = ?, updated_at = ? WHERE event_key = ?",
+                                ("indexed", recovered_offset, recovered_checksum, time.time(), event_key),
+                            )
+                            conn.commit()
+                            return {
+                                "status": "indexed",
+                                "event_id": intent_event_id,
+                                "ledger_file": str(intent_ledger_file),
+                                "recovered_from_intent": True,
+                            }
+
                 _mkdir_private(ledger_file.parent)
                 with ledger_file.open("ab") as fh:
                     fh.write(line_bytes)
@@ -133,12 +226,17 @@ class LedgerStore:
             return {"status": "retry", "reason": "append_lock_timeout", "event_id": event_id}
 
         checksum = hashlib.sha256(line_bytes).hexdigest()
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE event_journal SET status = ?, ledger_offset = ?, checksum = ?, updated_at = ? WHERE event_key = ?",
-                ("indexed", offset, checksum, time.time(), event_key),
-            )
-            conn.commit()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE event_journal SET status = ?, ledger_offset = ?, checksum = ?, updated_at = ? WHERE event_key = ?",
+                    ("indexed", offset, checksum, time.time(), event_key),
+                )
+                conn.commit()
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                return {"status": "retry", "reason": "index_db_locked", "event_id": event_id}
+            raise
 
         return {"status": "indexed", "event_id": event_id, "ledger_file": str(ledger_file)}
 

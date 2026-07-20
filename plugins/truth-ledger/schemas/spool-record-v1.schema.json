@@ -33,6 +33,20 @@
         "turn_id": {"type": ["string", "null"], "maxLength": 256}
       }
     },
-    "payload_path": {"type": "string", "minLength": 1, "maxLength": 4096}
+    "payload_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "processing_owner": {"type": "string", "maxLength": 256},
+        "claimed_at": {"type": "number"},
+        "last_error_code": {"type": "string", "maxLength": 256},
+        "next_retry_at": {"type": "number"},
+        "dead_letter_reason": {"type": "string", "maxLength": 256},
+        "dead_letter_at": {"type": "number"},
+        "recovered_at": {"type": "number"},
+        "decode_error": {"type": "boolean"}
+      }
+    }
   }
 }

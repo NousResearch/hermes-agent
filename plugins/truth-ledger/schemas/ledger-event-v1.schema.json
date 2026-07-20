@@ -83,7 +83,7 @@
         "schema_name": {"const": "truth-ledger.fact-candidates.v1"},
         "provider": {"type": "string", "minLength": 1, "maxLength": 128},
         "model": {"type": "string", "minLength": 1, "maxLength": 256},
-        "prompt_version": {"const": 1}
+        "prompt_version": {"type": "integer", "minimum": 1}
       }
     }
   },

@@ -2,9 +2,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { assertRequiredScopes, devDashboardGraphql, isDevDashboardMode, mergeRuntimeEnv } from './shopify-dev-dashboard-auth.mjs';
+import { assertRequiredScopes, devDashboardGraphql, getDevDashboardAccess, isDevDashboardMode, mergeRuntimeEnv } from './shopify-dev-dashboard-auth.mjs';
 
 const REQUIRED_SCOPES = 'read_locales,write_locales,read_markets,write_markets,read_translations,write_translations';
+const READ_SCOPES = 'read_locales,read_markets,read_translations';
 let currentEnv = {};
 
 export function loadSkillHubEnv(envPath) {
@@ -65,8 +66,10 @@ function runShopifyCli(args, options) {
 
 export async function shopifyGraphql(host, query, variables = {}) {
   if (isDevDashboardMode(currentEnv)) {
+    const access = await getDevDashboardAccess(currentEnv, host);
+    const requiredScopes = /(^|\n)\s*mutation\b/i.test(query) ? REQUIRED_SCOPES : READ_SCOPES;
+    assertRequiredScopes(access.scopes, requiredScopes);
     const result = await devDashboardGraphql(currentEnv, host, query, variables);
-    assertRequiredScopes(result.scopes, REQUIRED_SCOPES);
     return result.data;
   }
   const directory = mkdtempSync(join(tmpdir(), 'skill-hub-shopify-cli-'));

@@ -1,6 +1,6 @@
 # Translation API Reference
 
-Use Shopify CLI stored OAuth only. Do not request Admin API tokens, Client IDs, app secrets, or automation tokens.
+Use Shopify CLI stored OAuth by default. A trusted long-running connection for the merchant's own store may use Dev Dashboard Client ID and Client Secret; never request either secret in chat or persist access tokens. The optional Automation Token is only for an approved future permission-release command and never grants store consent.
 
 ## Required scopes
 

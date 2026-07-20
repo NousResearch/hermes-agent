@@ -33,6 +33,8 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _get_inherit_mcp_toolsets,
+    _merge_delegation_profile,
 )
 
 
@@ -2598,57 +2600,108 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
             self.assertEqual(mock_child._credential_pool, mock_pool)
 
-    @patch("tools.delegate_tool._load_config", return_value={})
-    def test_build_child_agent_preserves_mcp_toolsets_by_default(self, mock_cfg):
-        parent = _make_mock_parent()
-        parent.enabled_toolsets = ["web", "browser", "mcp-MiniMax"]
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
-
+class TestBuildChildAgent(unittest.TestCase):
+    def _build_enabled_toolsets(self, parent, cfg, toolsets):
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            MockAgent.return_value = MagicMock()
             _build_child_agent(
                 task_index=0,
-                goal="Test narrowed toolsets",
+                goal="Test delegated tool policy",
                 context=None,
-                toolsets=["web", "browser"],
+                toolsets=toolsets,
                 model=None,
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
+                delegation_cfg=cfg,
             )
+            return MockAgent.call_args[1]["enabled_toolsets"]
+
+    def test_get_inherit_mcp_toolsets_defaults_to_false(self):
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            self.assertFalse(_get_inherit_mcp_toolsets())
+
+    def test_build_child_agent_root_false_strict_intersection(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "mcp-activix_lsp"]
+        cfg = {
+            "inherit_mcp_toolsets": False,
+            "toolsets": ["file"],
+        }
 
         self.assertEqual(
-            MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser", "mcp-MiniMax"],
+            self._build_enabled_toolsets(parent, cfg, cfg["toolsets"]),
+            ["file"],
         )
 
-    @patch(
-        "tools.delegate_tool._load_config",
-        return_value={"inherit_mcp_toolsets": False},
-    )
-    def test_build_child_agent_strict_intersection_when_opted_out(self, mock_cfg):
+    def test_build_child_agent_profile_true_opts_back_into_mcp_inheritance(self):
         parent = _make_mock_parent()
-        parent.enabled_toolsets = ["web", "browser", "mcp-MiniMax"]
-
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
-
-            _build_child_agent(
-                task_index=0,
-                goal="Test narrowed toolsets",
-                context=None,
-                toolsets=["web", "browser"],
-                model=None,
-                max_iterations=10,
-                parent_agent=parent,
-                task_count=1,
-            )
+        parent.enabled_toolsets = ["file", "mcp-activix_lsp"]
+        root_cfg = {
+            "inherit_mcp_toolsets": False,
+            "profiles": {
+                "mcp-worker": {
+                    "inherit_mcp_toolsets": True,
+                    "toolsets": ["file"],
+                }
+            },
+        }
+        cfg = _merge_delegation_profile(root_cfg, "mcp-worker")
 
         self.assertEqual(
-            MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser"],
+            self._build_enabled_toolsets(parent, cfg, cfg["toolsets"]),
+            ["file", "mcp-activix_lsp"],
+        )
+
+    def test_build_child_agent_explicit_mcp_toolset_survives_strict_intersection(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "mcp-activix_lsp"]
+        cfg = {
+            "inherit_mcp_toolsets": False,
+            "toolsets": ["file", "activix_lsp"],
+        }
+
+        with patch(
+            "tools.registry.registry.get_toolset_alias_target",
+            return_value="mcp-activix_lsp",
+        ):
+            self.assertEqual(
+                self._build_enabled_toolsets(parent, cfg, cfg["toolsets"]),
+                ["file", "mcp-activix_lsp"],
+            )
+
+    def test_build_child_agent_profile_false_overrides_root_true(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "mcp-activix_lsp"]
+        root_cfg = {
+            "inherit_mcp_toolsets": True,
+            "profiles": {
+                "strict-worker": {
+                    "inherit_mcp_toolsets": False,
+                    "toolsets": ["file"],
+                }
+            },
+        }
+        cfg = _merge_delegation_profile(root_cfg, "strict-worker")
+
+        self.assertFalse(cfg["inherit_mcp_toolsets"])
+        self.assertEqual(
+            self._build_enabled_toolsets(parent, cfg, cfg["toolsets"]),
+            ["file"],
+        )
+
+    def test_build_child_agent_without_explicit_toolsets_keeps_parent_toolsets(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "mcp-activix_lsp"]
+        cfg = {"inherit_mcp_toolsets": False}
+
+        self.assertEqual(
+            self._build_enabled_toolsets(parent, cfg, None),
+            ["file", "mcp-activix_lsp"],
         )
 
 

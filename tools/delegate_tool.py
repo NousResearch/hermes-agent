@@ -661,7 +661,7 @@ def _get_inherit_mcp_toolsets(cfg: Optional[dict] = None) -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     if cfg is None:
         cfg = _load_config()
-    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
+    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=False)
 
 
 def _normalize_profile_name(profile: Optional[str]) -> Optional[str]:
@@ -1081,6 +1081,25 @@ def _is_mcp_toolset_name(name: str) -> bool:
     except Exception:
         target = None
     return bool(target and str(target).startswith("mcp-"))
+
+
+def _resolve_child_toolset_name(name: str, available_toolsets: set[str]) -> Optional[str]:
+    """Resolve an explicit child toolset against the parent's available names."""
+    if name in available_toolsets:
+        return name
+    try:
+        from tools.registry import registry
+
+        target = registry.get_toolset_alias_target(str(name))
+    except Exception:
+        target = None
+    if (
+        target is not None
+        and str(target).startswith("mcp-")
+        and str(target) in available_toolsets
+    ):
+        return str(target)
+    return None
 
 
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
@@ -1719,7 +1738,11 @@ def _build_child_agent(
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
+        child_toolsets = []
+        for toolset_name in toolsets:
+            resolved_name = _resolve_child_toolset_name(toolset_name, expanded_parent)
+            if resolved_name is not None:
+                child_toolsets.append(resolved_name)
         if _get_inherit_mcp_toolsets(delegation_cfg):
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets

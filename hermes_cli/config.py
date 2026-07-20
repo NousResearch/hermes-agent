@@ -2137,11 +2137,11 @@ DEFAULT_CONFIG = {
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
         # When delegate_task narrows child toolsets explicitly, preserve any
-        # MCP toolsets the parent already has enabled. On by default so
-        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
-        # extras" without silently stripping MCP tools the parent already has.
-        # Set to false for strict intersection.
-        "inherit_mcp_toolsets": True,
+        # MCP toolsets the parent already has enabled. Off by default so
+        # narrowing (e.g. toolsets=["web","browser"]) uses strict
+        # intersection unless the operator opts in. Profiles that need MCP
+        # access can set this to true or request an exact MCP alias explicitly.
+        "inherit_mcp_toolsets": False,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

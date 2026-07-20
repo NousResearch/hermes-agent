@@ -485,9 +485,9 @@ describe('overlayConcurrentMessageChanges', () => {
     expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'completed persisted answer' }])
   })
 
-  it('replaces changed ids and appends rows created after the baseline', () => {
+  it('replaces an activation stream placeholder and appends rows created after the baseline', () => {
     const baseline = [msg('assistant-stream-runtime', 'assistant', 'partial A', { pending: true })]
-    const authoritative = [msg('assistant-stream-runtime', 'assistant', 'partial A', { pending: true })]
+    const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
 
     const current = [
       msg('assistant-stream-runtime', 'assistant', 'partial A + delta B', { pending: true }),

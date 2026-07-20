@@ -511,6 +511,11 @@ export function overlayConcurrentMessageChanges(
   let changed = false
   const overlaid = [...nextMessages]
 
+  let activationStreamIndex = overlaid.findIndex(
+    message =>
+      message.role === 'assistant' && message.id.startsWith('assistant-stream-') && !baselineById.has(message.id)
+  )
+
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
     const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
@@ -526,6 +531,16 @@ export function overlayConcurrentMessageChanges(
         overlaid[nextIndex] = current
         changed = true
       }
+
+      continue
+    }
+
+    if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {
+      nextIndexById.delete(overlaid[activationStreamIndex].id)
+      nextIndexById.set(current.id, activationStreamIndex)
+      overlaid[activationStreamIndex] = current
+      activationStreamIndex = -1
+      changed = true
 
       continue
     }

@@ -250,6 +250,10 @@ class TestSpawnEnvIsolation:
         import subprocess
         from agent.transports import codex_app_server as cas
 
+        # This test owns only the Kanban sandbox override. Keep executable
+        # resolution deterministic; its Windows-native selection is covered by
+        # the resolver-specific test below.
+        monkeypatch.setattr(cas, "resolve_codex_binary", lambda codex_bin: codex_bin)
         captured = {}
 
         class FakePopen:
@@ -295,6 +299,31 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+
+class TestWindowsCodexBinaryResolution:
+    def test_prefers_native_executable_behind_windows_cmd_shim(self, monkeypatch):
+        from agent.transports import codex_app_server as cas
+
+        cmd_shim = r"C:\\Users\\example\\AppData\\Roaming\\npm\\codex.cmd"
+        native_exe = (
+            r"C:\\Users\\example\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex"
+            r"\\node_modules\\@openai\\codex-win32-x64\\vendor\\x64\\bin\\codex.exe"
+        )
+
+        monkeypatch.setattr(cas.glob, "glob", lambda _pattern: [])
+        assert cas.resolve_codex_binary(
+            "codex",
+            is_windows=True,
+            which=lambda name: cmd_shim if name == "codex.cmd" else None,
+        ) == cmd_shim
+
+        monkeypatch.setattr(cas.glob, "glob", lambda _pattern: [native_exe])
+        assert cas.resolve_codex_binary(
+            "codex",
+            is_windows=True,
+            which=lambda name: cmd_shim if name == "codex.cmd" else None,
+        ) == native_exe
 
 
 class TestSpawnEnvSecretStripping:

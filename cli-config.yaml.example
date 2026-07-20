@@ -583,28 +583,27 @@ memory:
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
-# automatically cleared. Without resets, conversation context grows indefinitely
-# which increases API costs with every message.
+# automatically cleared. Default is "none": sessions never auto-reset —
+# conversation context lives until you /reset or /new manually, or context
+# compression kicks in. Opt in to automatic resets if you prefer sessions to
+# clear on a schedule (long-lived context increases API cost per message,
+# though prompt caching and compression keep this manageable).
 #
-# When a reset triggers, the agent first saves important information to its
-# persistent memory — but the conversation context is wiped. The agent starts
-# fresh but retains learned facts via its memory system.
-#
-# Users can always manually reset with /reset or /new in chat.
+# When an automatic reset triggers, the agent first saves important
+# information to its persistent memory — but the conversation context is
+# wiped. The agent starts fresh but retains learned facts via its memory
+# system.
 #
 # Modes:
-#   "both"  - Reset on EITHER inactivity timeout or daily boundary (recommended)
-#   "idle"  - Reset only after N minutes of inactivity
-#   "daily" - Reset only at a fixed hour each day
-#   "none"  - Never auto-reset; context lives until /reset or compression kicks in
-#
-# When a reset triggers, the agent gets one turn to save important memories and
-# skills before the context is wiped. Persistent memory carries across sessions.
+#   "none"  - Never auto-reset (default); context lives until /reset or compression
+#   "idle"  - Reset after N minutes of inactivity
+#   "daily" - Reset at a fixed hour each day
+#   "both"  - Reset on EITHER inactivity timeout or daily boundary
 #
 session_reset:
-  mode: both           # "both", "idle", "daily", or "none"
-  idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
-  at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
+  mode: none           # "none", "idle", "daily", or "both"
+  idle_minutes: 1440   # Inactivity timeout in minutes (used by "idle"/"both")
+  at_hour: 4           # Daily reset hour, 0-23 local time (used by "daily"/"both")
 
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow

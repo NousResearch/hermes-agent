@@ -1118,6 +1118,49 @@ class TestBedrockContextResolution:
         mock_fetch.assert_not_called()
 
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_bedrock_claude_4_6_resolves_to_1m_before_probe(self, mock_fetch):
+        """Claude 4.6 Bedrock IDs resolve to the 1M table entry."""
+        ctx = get_model_context_length(
+            "us.anthropic.claude-sonnet-4-6",
+            provider="bedrock",
+            base_url="https://bedrock-runtime.us-east-2.amazonaws.com",
+        )
+        assert ctx == 1_000_000
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_bedrock_claude_fable_resolves_to_1m_not_128k_default(self, mock_fetch):
+        """Fable on Bedrock must hit its own table entry, not the 128K default.
+
+        DEFAULT_CONTEXT_LENGTHS maps claude-fable-5 -> 1M, but the Bedrock
+        branch at step 1b returns get_bedrock_context_length() before that
+        catalog is ever consulted — so a missing BEDROCK_CONTEXT_LENGTHS
+        entry silently reported 128K for a 1M model.
+        """
+        ctx = get_model_context_length(
+            "global.anthropic.claude-fable-5",
+            provider="bedrock",
+            base_url="https://bedrock-runtime.us-east-2.amazonaws.com",
+        )
+        assert ctx == 1_000_000
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_bedrock_claude_4_6_ignores_stale_200k_cache(self, mock_fetch, tmp_path):
+        """Old 200K Bedrock cache entries must not mask the 1M table entry."""
+        cache_file = tmp_path / "context_length_cache.yaml"
+        base_url = "https://bedrock-runtime.us-east-2.amazonaws.com"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("us.anthropic.claude-sonnet-4-6", base_url, 200_000)
+            ctx = get_model_context_length(
+                "us.anthropic.claude-sonnet-4-6",
+                provider="bedrock",
+                base_url=base_url,
+            )
+        assert ctx == 1_000_000
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_bedrock_url_without_provider_hint(self, mock_fetch):
         """bedrock-runtime host infers Bedrock even when provider is omitted."""
         ctx = get_model_context_length(

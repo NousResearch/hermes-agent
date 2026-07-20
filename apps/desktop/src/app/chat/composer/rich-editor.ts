@@ -130,6 +130,10 @@ export function appendComposerContents(target: DocumentFragment | HTMLElement, t
 export function renderComposerContents(target: HTMLElement, text: string) {
   target.replaceChildren()
   appendComposerContents(target, text)
+
+  if (!target.childNodes.length) {
+    target.append(document.createElement('br'))
+  }
 }
 
 /** Caret range when the selection lives inside `editor`; else null. */
@@ -148,6 +152,10 @@ function composerSelectionRange(editor: HTMLElement) {
  *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
  *  ~O(n²) on large multiline blobs. */
 export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+    editor.replaceChildren()
+  }
+
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 
@@ -276,6 +284,10 @@ export function composerPlainText(node: Node): string {
     return el.dataset.refText
   }
 
+  if (el.dataset.slot === RICH_INPUT_SLOT && el.childNodes.length === 1 && el.firstChild?.nodeName === 'BR') {
+    return ''
+  }
+
   if (el.tagName === 'BR') {
     return '\n'
   }
@@ -350,6 +362,10 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   const last = editor.lastChild
 
   if (last?.nodeName === 'BR') {
+    if (editor.childNodes.length === 1) {
+      return
+    }
+
     let prev: ChildNode | null = last.previousSibling
 
     while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
@@ -359,5 +375,9 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     if (!prev || (prev as HTMLElement).dataset?.refText) {
       editor.removeChild(last)
     }
+  }
+
+  if (!editor.childNodes.length) {
+    editor.append(document.createElement('br'))
   }
 }

@@ -125,9 +125,14 @@ function buildRefFragment(
 
 export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly InlineRefInput[]) {
   const parsed = refs.map(parseInlineRef).filter((ref): ref is NonNullable<typeof ref> => ref !== null)
+  const hasEmptySentinel = editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR'
 
   if (!parsed.length) {
     return null
+  }
+
+  if (hasEmptySentinel) {
+    editor.replaceChildren()
   }
 
   editor.focus({ preventScroll: true })
@@ -135,7 +140,7 @@ export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonl
   const selection = window.getSelection()
 
   const range =
-    selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
+    !hasEmptySentinel && selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
       ? selection.getRangeAt(0)
       : null
 

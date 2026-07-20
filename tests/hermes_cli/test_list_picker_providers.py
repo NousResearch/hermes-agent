@@ -19,6 +19,12 @@ import pytest
 from hermes_cli import model_switch
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_custom_provider_model_probe(monkeypatch):
+    """Keep custom-provider picker fixtures independent of local model servers."""
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+
+
 def _make_provider(slug, name=None, models=None, *, is_current=False,
                    is_user_defined=False, source="built-in", api_url=None):
     """Build a dict shaped like ``list_authenticated_providers`` output."""

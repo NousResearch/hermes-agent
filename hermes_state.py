@@ -26,10 +26,22 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
+from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+
+def _scrub_surrogates(value: Any) -> Any:
+    """Replace lone surrogates when *value* is text; pass anything else through.
+
+    sqlite3 encodes bound ``str`` parameters as UTF-8 and raises
+    ``UnicodeEncodeError`` on lone surrogates (U+D800..U+DFFF), so a single
+    such code point anywhere in a message aborts the whole write. No-op for
+    well-formed text.
+    """
+    return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
@@ -3292,6 +3304,10 @@ class SessionDB:
         if not title:
             return None
 
+        # Lone surrogates cannot be bound by sqlite3 (UnicodeEncodeError at
+        # UTF-8 encode time) — scrub them like every other write path here.
+        title = _sanitize_surrogates(title)
+
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
@@ -4098,13 +4114,26 @@ class SessionDB:
         sentinel-prefixed JSON string for lists/dicts. Paired with
         :meth:`_decode_content` on read.
         """
-        if content is None or isinstance(content, (str, bytes, int, float)):
+        if isinstance(content, str):
+            # Lone UTF-16 surrogates reach here inside tool results scraped
+            # from the web/social platforms (the same input that crashed the
+            # guardrail hasher). The proactive sanitizer upstream only cleans
+            # the *api_messages* copy, and the recovery sanitizer only runs
+            # after the API call itself raises — which it no longer does — so
+            # the canonical history keeps them and this write is where they
+            # land. Left raw, sqlite3 raises UnicodeEncodeError, the flush is
+            # abandoned, and the session silently stops persisting for the
+            # rest of its life. Scrub so persistence never fails.
+            return _sanitize_surrogates(content)
+        if content is None or isinstance(content, (bytes, int, float)):
             return content
         try:
+            # json.dumps defaults to ensure_ascii=True, which escapes any
+            # surrogate as \udXXX — already safe to bind.
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)
         except (TypeError, ValueError):
             # Last-resort fallback: stringify so persistence never fails.
-            return str(content)
+            return _sanitize_surrogates(str(content))
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
@@ -4156,7 +4185,10 @@ class SessionDB:
         ``api_content`` is the exact content string sent to the API for this
         message when it differs from ``content`` (ephemeral memory/plugin
         injections, persist overrides).  It is a byte-fidelity sidecar for
-        prompt-cache-stable replay — stored verbatim, never sanitized.
+        prompt-cache-stable replay — stored as sent, except lone surrogates
+        (which sqlite3 cannot bind and which the conversation loop scrubs
+        from every outgoing payload anyway, so the scrubbed form IS the
+        wire bytes).
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -4204,20 +4236,20 @@ class SessionDB:
                     stored_content,
                     tool_call_id,
                     tool_calls_json,
-                    tool_name,
+                    _scrub_surrogates(tool_name),
                     effect_disposition,
                     message_timestamp,
                     token_count,
                     finish_reason,
-                    reasoning,
-                    reasoning_content,
+                    _scrub_surrogates(reasoning),
+                    _scrub_surrogates(reasoning_content),
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
                     1,
-                    api_content if isinstance(api_content, str) else None,
+                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -4300,20 +4332,20 @@ class SessionDB:
                     self._encode_content(msg.get("content")),
                     msg.get("tool_call_id"),
                     tool_calls_json,
-                    msg.get("tool_name"),
+                    _scrub_surrogates(msg.get("tool_name")),
                     msg.get("effect_disposition"),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    msg.get("reasoning") if role == "assistant" else None,
-                    msg.get("reasoning_content") if role == "assistant" else None,
+                    _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
+                    _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
-                    api_content if isinstance(api_content, str) else None,
+                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                 ),
             )
             inserted += 1
@@ -4464,7 +4496,7 @@ class SessionDB:
                 "WHERE session_id = ? AND role = 'user' AND active = 1 "
                 "ORDER BY id DESC LIMIT 1"
                 ") AND content IS ?",
-                (api_content, session_id, encoded),
+                (_scrub_surrogates(api_content), session_id, encoded),
             )
             return cursor.rowcount
 

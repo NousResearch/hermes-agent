@@ -4,9 +4,9 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import { createClientSessionState } from '@/lib/chat-runtime'
 import { chatMessageText } from '@/lib/chat-messages'
-import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -55,10 +55,13 @@ async function mountStream() {
 
 const start = () => act(() => handleEvent!({ payload: {}, session_id: SID, type: 'message.start' }))
 const delta = (text: string) => act(() => handleEvent!({ payload: { text }, session_id: SID, type: 'message.delta' }))
+
 const interim = (text: string) =>
   act(() => handleEvent!({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
+
 const complete = (text: string) =>
   act(() => handleEvent!({ payload: { text }, session_id: SID, type: 'message.complete' }))
+
 const completePreviewed = (text: string) =>
   act(() => handleEvent!({ payload: { text, response_previewed: true }, session_id: SID, type: 'message.complete' }))
 
@@ -69,11 +72,13 @@ function getState(): ClientSessionState {
 function assistantText(): string {
   const state = getState()
   const last = [...state.messages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+
   return last ? chatMessageText(last) : ''
 }
 
 function assistantMessages(): string[] {
   const state = getState()
+
   return state.messages
     .filter(m => m.role === 'assistant' && !m.hidden)
     .map(m => chatMessageText(m))
@@ -222,7 +227,9 @@ describe('useMessageStream interim text sealing', () => {
     // Empty text
     await act(() => handleEvent!({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as RpcEvent))
     // Undefined text
-    await act(() => handleEvent!({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as RpcEvent))
+    await act(() =>
+      handleEvent!({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as RpcEvent)
+    )
 
     // Turn continues without finalizing or throwing
     expect(getState().busy).toBe(true)

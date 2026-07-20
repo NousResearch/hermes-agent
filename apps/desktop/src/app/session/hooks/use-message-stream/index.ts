@@ -379,6 +379,7 @@ export function useMessageStream({
         }
 
         const authoritativeText = renderMediaTags(text).trim()
+
         if (!authoritativeText) {
           return state
         }
@@ -386,29 +387,30 @@ export function useMessageStream({
         const streamId = state.streamId
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleText = stripGeneratedImageEchoes(
-            authoritativeText, generatedImageEchoSources(parts)
-          ).trim()
+          const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
+
           return mergeFinalAssistantText(parts, visibleText)
         }
 
         let nextMessages = state.messages
+
         if (streamId && nextMessages.some(m => m.id === streamId)) {
           // Finalize the existing streaming bubble in place
           nextMessages = nextMessages.map(m =>
-            m.id === streamId
-              ? { ...m, parts: replaceTextPart(m.parts), pending: false }
-              : m
+            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false } : m
           )
         } else {
           // No streaming bubble — create a standalone interim message
-          nextMessages = [...nextMessages, {
-            id: `assistant-interim-${Date.now()}`,
-            role: 'assistant' as const,
-            parts: [assistantTextPart(authoritativeText)],
-            pending: false,
-            branchGroupId: state.pendingBranchGroup ?? undefined
-          }]
+          nextMessages = [
+            ...nextMessages,
+            {
+              id: `assistant-interim-${Date.now()}`,
+              role: 'assistant' as const,
+              parts: [assistantTextPart(authoritativeText)],
+              pending: false,
+              branchGroupId: state.pendingBranchGroup ?? undefined
+            }
+          ]
         }
 
         return {
@@ -451,6 +453,7 @@ export function useMessageStream({
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+
           return mergeFinalAssistantText(parts, visibleFinalText)
         }
 

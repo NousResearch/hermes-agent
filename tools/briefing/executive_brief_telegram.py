@@ -33,7 +33,10 @@ class TelegramDeliveryError(Exception):
 
 
 def _get_home_channel() -> str:
-    return os.environ.get("HERMES_TELEGRAM_HOME_CHANNEL") or "telegram"
+    raw = os.environ.get("HERMES_TELEGRAM_HOME_CHANNEL") or os.environ.get("TELEGRAM_HOME_CHANNEL") or "telegram"
+    if raw.isdigit():
+        return f"telegram:{raw}"
+    return raw
 
 
 def _call_send_message(payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -55,19 +55,20 @@ see the underlying tool, not the bridge.
 
 ## When does it activate?
 
-By default Tool Search runs in `auto` mode: it activates only when the
-deferrable tool schemas would consume at least 10% of the active model's
-context window. Below that, the tools-array assembly is a pure
-pass-through and you pay no overhead.
+Tool Search uses **tiered disclosure**: the presence of *any* deferrable
+(MCP/plugin) tool activates the bridge; what scales with catalog size is
+how much of the catalog stays visible, not whether schemas defer.
 
-This decision is re-evaluated every time the tools array is built, so:
+| Tier | Condition | What the model sees |
+| --- | --- | --- |
+| **0** | No MCP/plugin tools | Every tool eager, no bridge. Pass-through. |
+| **1** | Deferred catalog's listing fits the budget | Bridge + a skills-style manifest of every deferred tool (name + short description, degrading to names-only when over budget). |
+| **2** | Listing exceeds the budget even names-only (e.g. Cloudflare's flat API surface: ~3,300 tools whose names alone are ~32K tokens) | Bare bridge — tools are discoverable only through `tool_search`. |
 
-- A session with just a few MCP tools and a long context model never
-  activates Tool Search.
-- A session with many MCP servers attached (15+ tools typically) starts
-  activating it.
-- Removing MCP servers mid-session correctly returns to direct exposure
-  on the next assembly.
+The listing budget is `min(threshold_pct% of context, listing_max_tokens)`.
+The decision is re-evaluated every time the tools array is built, so
+adding or removing MCP servers mid-session moves the session between
+tiers on the next assembly.
 
 ## Configuration
 
@@ -75,21 +76,21 @@ This decision is re-evaluated every time the tools array is built, so:
 tools:
   tool_search:
     enabled: auto       # auto (default), on, or off
-    threshold_pct: 10   # percentage of context — only used in auto mode
+    threshold_pct: 10   # listing budget as a percentage of context
     search_default_limit: 5
     max_search_limit: 20
     listing: auto       # embed a grouped name+description catalog manifest
-    listing_max_tokens: 4000
+    listing_max_tokens: 20000
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `auto` | `auto` activates above threshold; `on` always activates if there's at least one deferrable tool; `off` disables entirely. |
-| `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
+| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). |
+| `threshold_pct` | `10` | Listing budget as a percentage of the active model's context length. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
-| `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to a bare count); `on`/`off` force either way. |
-| `listing_max_tokens` | `4000` | Token budget for the embedded listing. Range 200–20000. |
+| `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the bare tier-2 bridge); `on`/`off` force either way. |
+| `listing_max_tokens` | `20000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. |
 
 ### Why the listing exists
 
@@ -112,13 +113,15 @@ tools:
 ## When NOT to use it
 
 Tool Search trades a fixed per-turn token cost (the three bridge tool
-schemas, ~300 tokens) and at least one extra round trip (search →
-describe → call) for the savings on the deferred schemas. It's a clear
-win when you have many tools and use few per turn; it's overhead when
-you have few tools total.
+schemas plus the catalog listing) and at least one extra round trip on
+cold tools (describe → call) for the savings on the deferred schemas.
+At tier 1 the listing keeps every capability visible, so the discovery
+round trip usually disappears — the model goes straight to
+`tool_describe`. Live benchmarking showed the listing mode matching
+eager loading's task success while costing less than the bare bridge.
 
-The `auto` default handles this for you. If you set `enabled: on`
-unconditionally, expect a slight per-turn cost on small toolsets.
+If you want the old always-eager behavior for a small toolset, set
+`enabled: off`.
 
 ## Trade-offs that don't go away
 

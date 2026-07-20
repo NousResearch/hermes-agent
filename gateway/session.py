@@ -95,6 +95,7 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+from agent.turn_context import extract_api_content_sidecar
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -378,6 +379,28 @@ def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_M
     return json.dumps(text, ensure_ascii=False)
 
 
+def neutralize_untrusted_inline_text(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
+    """Collapse untrusted text to a single inert line, unquoted.
+
+    Sibling of :func:`_format_untrusted_prompt_value` for call sites that must
+    preserve the surrounding format (e.g. an inline ``[Name] message turn``
+    prefix) instead of a standalone ``**Label:** "value"`` line — JSON-quoting
+    would visibly change a well-behaved value's rendering there.
+
+    Embedded newlines are the injection vector both helpers guard against:
+    they let an untrusted display name masquerade as a new markdown section
+    (a fake heading, an "## Override" block) inside content the model reads
+    every turn. Collapsing them to a single space keeps a normal value
+    byte-identical while making a hostile one visually inert.
+    """
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
+    text = "".join(ch if ch >= " " or ch == "\t" else " " for ch in text)
+    text = " ".join(text.split())
+    if max_chars and len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return text
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -541,6 +564,16 @@ def build_session_context_prompt(
                 "Do not promise to perform these actions. If the user asks, explain "
                 "that you can only read messages sent directly to you and respond."
             )
+        # Static (never per-turn): live voice-channel state used to be
+        # appended here and changed bytes every turn the bot sat in a voice
+        # channel, busting the prompt cache.  It now arrives on the current
+        # user message as a `[Voice channel now: ...]` note, injected only
+        # when it actually changed.
+        lines.append("")
+        lines.append(
+            "Voice-channel state, when relevant, appears in the current "
+            "message as a `[Voice channel now: ...]` note."
+        )
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(
@@ -1006,6 +1039,10 @@ class SessionStore:
         self._persisted_routing_generation = 0
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
+        self._transcript_retry_lock = threading.Lock()
+        self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
+        self._transcript_append_failures: Dict[str, int] = {}
+        self._fts_rebuild_attempted = False
         self._has_active_processes_fn = has_active_processes_fn
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
@@ -1021,6 +1058,21 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+    def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
+        """Return whether a session has active work, failing closed on registry errors."""
+        if self._has_active_processes_fn is None:
+            return False
+        try:
+            return bool(self._has_active_processes_fn(session_key))
+        except Exception as exc:
+            logger.warning(
+                "has_active_processes_fn raised during %s for %s; keeping session alive: %s",
+                context,
+                session_key,
+                exc,
+            )
+            return True
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -1156,12 +1208,14 @@ class SessionStore:
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
                     recovered_entry = None
+                    recovery_lookup_failed = False
                     if entry.origin is not None:
                         try:
                             recovered_entry = self._recover_session_from_db(
                                 session_key=key,
                                 source=entry.origin,
                                 now=_now(),
+                                raise_on_lookup_error=True,
                             )
                         except Exception as exc:
                             logger.debug(
@@ -1171,6 +1225,10 @@ class SessionStore:
                                 entry.session_id,
                                 exc,
                             )
+                            recovery_lookup_failed = True
+
+                    if recovery_lookup_failed:
+                        continue
 
                     # If the stale entry points at a compression-ended parent but
                     # a newer live child session exists for the exact same gateway
@@ -1394,6 +1452,7 @@ class SessionStore:
         session_key: str,
         source: SessionSource,
         now: datetime,
+        raise_on_lookup_error: bool = False,
     ) -> Optional[SessionEntry]:
         """Rebuild a missing session-key mapping from durable state.db data."""
         if not self._db:
@@ -1412,6 +1471,8 @@ class SessionStore:
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            if raise_on_lookup_error:
+                raise
             return None
         if not recovered:
             return None
@@ -1560,6 +1621,22 @@ class SessionStore:
                         "Session DB expiry_finalized write failed for %s: %s",
                         entry.session_id, exc,
                     )
+            try:
+                # Expiry finalization is a real conversation boundary. Without
+                # a durable ``session_reset`` end_reason, later agent cleanup can
+                # close the row as ``agent_close``; stale-route recovery treats
+                # that as resumable and resurrects the expired full history.
+                #
+                # promote_to_session_reset is conditional: it only promotes
+                # live rows or rows ended with ``agent_close``.  Explicit
+                # boundaries (compression, session_reset, new_command, etc.)
+                # are preserved — the first writer wins.
+                self._db.promote_to_session_reset(entry.session_id)
+            except Exception as exc:
+                logger.debug(
+                    "Session DB promote_to_session_reset failed for %s: %s",
+                    entry.session_id, exc,
+                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -1568,13 +1645,12 @@ class SessionStore:
         Used by the background expiry watcher to proactively flush memories.
         Sessions with active background processes are never considered expired.
         """
-        if self._has_active_processes_fn:
-            if self._has_active_processes_fn(entry.session_key):
-                logger.debug(
-                    "Session %s not expired — active background processes",
-                    entry.session_key,
-                )
-                return False
+        if self._has_active_processes_safe(entry.session_key, context="expiry"):
+            logger.debug(
+                "Session %s not expired — active background processes",
+                entry.session_key,
+            )
+            return False
 
         policy = self.config.get_reset_policy(
             platform=entry.platform,
@@ -1669,14 +1745,13 @@ class SessionStore:
         
         Sessions with active background processes are never reset.
         """
-        if self._has_active_processes_fn:
-            session_key = self._generate_session_key(source)
-            if self._has_active_processes_fn(session_key):
-                logger.debug(
-                    "Session reset skipped for %s — active background processes",
-                    session_key,
-                )
-                return None
+        session_key = self._generate_session_key(source)
+        if self._has_active_processes_safe(session_key, context="reset"):
+            logger.debug(
+                "Session reset skipped for %s — active background processes",
+                session_key,
+            )
+            return None
 
         policy = self.config.get_reset_policy(
             platform=source.platform,
@@ -1873,13 +1948,24 @@ class SessionStore:
             elif _entry_for_checks.resume_pending:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
                 if not _reset_reason:
-                    _fw = auto_continue_freshness_window()
-                    _ref_time = (
-                        _entry_for_checks.last_resume_marked_at
-                        or _entry_for_checks.updated_at
+                    # Freshness-gate stale resume_pending zombies (#46934) —
+                    # but honor an explicit ``session_reset.mode: none``: the
+                    # user opted out of ALL automatic resets, so an expired
+                    # resume marker must fall through to a normal resume of
+                    # the preserved transcript, never a silent fresh session
+                    # (#61052).
+                    _policy = self.config.get_reset_policy(
+                        platform=source.platform,
+                        session_type=source.chat_type,
                     )
-                    if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
-                        _reset_reason = "resume_pending_expired"
+                    if _policy.mode != "none":
+                        _fw = auto_continue_freshness_window()
+                        _ref_time = (
+                            _entry_for_checks.last_resume_marked_at
+                            or _entry_for_checks.updated_at
+                        )
+                        if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                            _reset_reason = "resume_pending_expired"
             else:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
 
@@ -1904,9 +1990,10 @@ class SessionStore:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
                     # state.db.  Drop it and fall through to recovery/create.
-                    # Recovery finder reopens ``agent_close`` rows (preserving
-                    # the transcript) but returns None for other end_reasons
-                    # (e.g. /new), starting a fresh session.
+                    # Recovery finder reopens ``agent_close`` and mistaken
+                    # ``ws_orphan_reap`` rows (preserving the transcript) but
+                    # returns None for other end_reasons (e.g. /new), starting
+                    # a fresh session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "
@@ -1915,6 +2002,14 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
+                    # If an expiry watcher (daily/idle reset) already finalized
+                    # this session, honour the reset decision instead of silently
+                    # reopening it via recovery.
+                    if _reset_reason:
+                        was_auto_reset = True
+                        auto_reset_reason = _reset_reason
+                        reset_had_activity = entry.last_prompt_tokens > 0
+                        db_end_session_id = entry.session_id
                     entry = None
                     _needs_recover = True
                 elif entry.session_id != _stale_session_id:
@@ -1992,6 +2087,7 @@ class SessionStore:
                     "chat_id": source.chat_id,
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
+                    "profile_name": source.profile,
                 }
 
         if _needs_save:
@@ -1999,8 +2095,21 @@ class SessionStore:
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
+            # Use the specific reset reason so state.db is auditable (e.g.
+            # "resume_pending_expired" is distinguishable from a normal
+            # "session_reset" caused by idle/daily expiry).
+            _db_end_reason = auto_reset_reason if auto_reset_reason else "session_reset"
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                # promote_to_session_reset, not end_session: the row may
+                # already be ended with a recoverable accidental reason
+                # (agent_close / ws_orphan_reap), which first-reason-wins
+                # end_session would preserve — leaving the reset session
+                # resurrectable by stale-route recovery (#61220, #61993).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, _db_end_reason)
+                else:
+                    self._db.end_session(db_end_session_id, _db_end_reason)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2169,15 +2278,8 @@ class SessionStore:
                 # The callback is keyed by session_key (see process_registry.
                 # has_active_for_session); passing session_id here used to
                 # never match, so active sessions got pruned anyway.
-                if self._has_active_processes_fn is not None:
-                    try:
-                        if self._has_active_processes_fn(entry.session_key):
-                            continue
-                    except Exception as exc:
-                        logger.debug(
-                            "has_active_processes_fn raised during prune for %s: %s",
-                            entry.session_key, exc,
-                        )
+                if self._has_active_processes_safe(entry.session_key, context="prune"):
+                    continue
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:
@@ -2268,11 +2370,20 @@ class SessionStore:
                 "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
+                "profile_name": old_entry.origin.profile if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                # Promote (not plain end_session): an accidental
+                # agent_close/ws_orphan_reap end must not survive an explicit
+                # user reset, or recovery resurrects the reset session
+                # (#61993 — the user's /new was silently undone).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, "session_reset")
+                else:
+                    self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2333,7 +2444,15 @@ class SessionStore:
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_switch")
+                # Promote (not plain end_session): a stale agent_close /
+                # ws_orphan_reap end on the outgoing session must be upgraded
+                # to the explicit switch boundary, or recovery can resurrect
+                # it over the user's /resume choice (#61220 bug class).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, "session_switch")
+                else:
+                    self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
 
@@ -2401,31 +2520,145 @@ class SessionStore:
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
         """
-        if self._db and not skip_db:
-            try:
-                self._db.append_message(
-                    session_id=session_id,
-                    role=message.get("role", "unknown"),
-                    content=message.get("content"),
-                    tool_name=message.get("tool_name"),
-                    tool_calls=message.get("tool_calls"),
-                    tool_call_id=message.get("tool_call_id"),
-                    reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
-                    reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
-                    reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
-                    codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
-                    codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
-                    # Platform-side message id (yuanbao msg_id, telegram update_id, …).
-                    # Accept either explicit ``platform_message_id`` or the legacy
-                    # ``message_id`` key the JSONL transcript used.
-                    platform_message_id=(
-                        message.get("platform_message_id") or message.get("message_id")
-                    ),
-                    observed=bool(message.get("observed")),
-                    timestamp=message.get("timestamp"),
+        if not self._db or skip_db:
+            return
+        with self._transcript_retry_lock:
+            pending = self._dirty_transcripts.setdefault(session_id, [])
+            pending.append(dict(message))
+            # Cap pending messages per session to avoid unbounded memory
+            # growth when the DB is persistently broken. Drop the oldest.
+            if len(pending) > self._MAX_PENDING_PER_SESSION:
+                dropped = pending.pop(0)
+                logger.warning(
+                    "Session DB transcript pending queue full for %s "
+                    "(cap=%d); dropping oldest message to make room",
+                    session_id, self._MAX_PENDING_PER_SESSION,
                 )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
+            # Snapshot the first pending message, then release the lock
+            # before the DB write so other sessions are not blocked.
+            msg = pending[0]
+        # DB write outside the retry lock — other sessions can append
+        # concurrently. We re-acquire the lock only to update the queue.
+        while True:
+            try:
+                self._append_transcript_message(session_id, msg)
+            except Exception as exc:
+                if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                    try:
+                        self._append_transcript_message(session_id, msg)
+                    except Exception as retry_exc:
+                        exc = retry_exc
+                    else:
+                        with self._transcript_retry_lock:
+                            if pending and pending[0] is msg:
+                                pending.pop(0)
+                            if not pending:
+                                self._dirty_transcripts.pop(session_id, None)
+                                self._transcript_append_failures.pop(session_id, None)
+                        continue
+                with self._transcript_retry_lock:
+                    failures = self._transcript_append_failures.get(session_id, 0) + 1
+                    self._transcript_append_failures[session_id] = failures
+                logger.warning(
+                    "Session DB transcript append failed for %s "
+                    "(failure_count=%d, pending=%d); will retry: %s",
+                    session_id, failures, len(pending), exc,
+                )
+                return
+            else:
+                with self._transcript_retry_lock:
+                    if pending and pending[0] is msg:
+                        pending.pop(0)
+                    if not pending:
+                        self._dirty_transcripts.pop(session_id, None)
+                        self._transcript_append_failures.pop(session_id, None)
+                        return
+                    msg = pending[0]
+                continue
+
+    def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
+        """Write one transcript row. Caller handles retry queuing."""
+        self._db.append_message(
+            session_id=session_id,
+            role=message.get("role", "unknown"),
+            content=message.get("content"),
+            tool_name=message.get("tool_name"),
+            tool_calls=message.get("tool_calls"),
+            tool_call_id=message.get("tool_call_id"),
+            reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
+            reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
+            reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
+            codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
+            codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
+            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
+            observed=bool(message.get("observed")),
+            timestamp=message.get("timestamp"),
+            # api_content sidecar: the exact bytes sent to the API for
+            # this message (prompt-cache-stable replay). Must survive
+            # any gateway-side persistence path or the next turn's
+            # replay diverges at this row.
+            api_content=extract_api_content_sidecar(message),
+        )
+
+    # Maximum in-memory pending messages per session before dropping the
+    # oldest. Prevents unbounded growth when the DB is persistently broken.
+    _MAX_PENDING_PER_SESSION = 200
+
+    @staticmethod
+    def _is_fts_corruption_error(exc: Exception) -> bool:
+        """True if *exc* looks like an FTS index corruption error.
+
+        Matches the specific SQLite error strings for malformed disk images
+        and FTS table corruption — not bare ``"fts"`` substrings which match
+        unrelated words like ``"shifts"`` or ``"gifts"``.
+        """
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "database disk image is malformed",
+                "malformed database schema",
+                "messages_fts",
+                "no such table: messages_fts",
+            )
+        )
+
+    def _rebuild_fts_once(self) -> bool:
+        """Attempt FTS5 ``rebuild`` command once per store lifetime.
+
+        Delegates to ``SessionDB.rebuild_fts()`` which handles locking and
+        table-existence checks internally. Returns ``True`` when at least
+        one index was rebuilt.
+        """
+        if self._fts_rebuild_attempted:
+            return False
+        self._fts_rebuild_attempted = True
+        db = self._db
+        if db is None or not hasattr(db, "rebuild_fts"):
+            return False
+        try:
+            rebuilt = db.rebuild_fts()
+        except Exception as exc:
+            logger.warning("Session DB FTS rebuild failed: %s", exc)
+            return False
+        if rebuilt:
+            logger.warning(
+                "Rebuilt %d Session DB FTS index(es) after append corruption",
+                rebuilt,
+            )
+        return rebuilt > 0
+
+    def _clear_dirty_transcript(self, session_id: str) -> None:
+        """Drop queued pending messages for a session.
+
+        Called by ``rewrite_transcript`` and ``rewind_session`` so that
+        /retry, /undo, /compress — which replace or truncate the transcript —
+        don't leave stale messages that would be re-inserted on the next
+        append.
+        """
+        with self._transcript_retry_lock:
+            self._dirty_transcripts.pop(session_id, None)
+            self._transcript_append_failures.pop(session_id, None)
     
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
@@ -2461,6 +2694,7 @@ class SessionStore:
         """
         if not self._db:
             return True
+        self._clear_dirty_transcript(session_id)
         try:
             self._db.replace_messages(session_id, messages)
             return True
@@ -2478,7 +2712,13 @@ class SessionStore:
         if not self._db:
             return []
         try:
-            return self._db.get_messages_as_conversation(session_id)
+            # repair_alternation: this load feeds LIVE REPLAY. A durable
+            # user;user wedge (e.g. a turn that persisted no assistant row)
+            # would otherwise re-trigger the pre-request repair on every
+            # request forever — heal it once at the restore boundary.
+            return self._db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []
@@ -2497,6 +2737,7 @@ class SessionStore:
         """
         if not self._db:
             return None
+        self._clear_dirty_transcript(session_id)
         if n < 1:
             n = 1
         try:

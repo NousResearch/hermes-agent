@@ -47,7 +47,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
@@ -58,7 +58,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
@@ -213,6 +213,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-fable-5": 1000000,
     "claude-fable": 1000000,
+    "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,
@@ -275,8 +276,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
+    "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
+    "qwen3-max": 262144,          # 256K context (qwen3-max-2026-01-23 snapshot, Coding Plan)
     "qwen": 131072,
     # MiniMax — M3 is 1M context (max output 512K); M2.x series is 204,800.
     # Keys use substring matching (longest-first), so "minimax-m3" wins over
@@ -316,8 +319,23 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
     "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
-    # Kimi
+    # Kimi — K3 ships with a 1 Mi context window (1,048,576; verified against
+    # models.dev and OpenRouter live metadata, matching the endpoint-scoped
+    # override in _endpoint_scoped_context_length). Longest-key-first substring
+    # matching ensures "kimi-k3" resolves to 1M while older/unknown Kimi models
+    # still hit the generic 256K fallback.
+    "kimi-k3": 1_048_576,
     "kimi": 262144,
+    # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
+    # so these fallbacks keep token budgeting / compression from probing down
+    # to the 128k default. Ids are matched longest-first, so dated variants
+    # (e.g. solar-pro3-250127) resolve via their family prefix.
+    # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
+    # Solar Open 2 = 256K.
+    "solar-open2": 262144,  # 256K
+    "solar-pro3": 131072,
+    "solar-pro2": 65536,
+    "solar-mini": 32768,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).
@@ -527,6 +545,35 @@ def _lmstudio_server_root(base_url: str) -> str:
 
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
+
+
+def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
+    """Return metadata confirmed only for the Kimi Coding endpoint.
+
+    Kimi Coding serves K3 under the bare slug ``k3``, but users may also
+    configure or select the public-facing aliases ``kimi-k3`` and
+    ``kimi-k3-cot``. Only canonical ``https://api.kimi.com/coding`` endpoints
+    (legacy Moonshot keys do not serve K3) get the 1 Mi context window.
+    """
+    normalized = _normalize_base_url(base_url)
+    try:
+        parsed = urlparse(normalized)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "api.kimi.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") in {"/coding", "/coding/v1"}
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() in {"k3", "kimi-k3", "kimi-k3-cot"}
+    ):
+        return 1_048_576
+    return None
 
 
 def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
@@ -806,6 +853,24 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         if novita_output is not None:
             pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
         return pricing
+
+    # DeepInfra ships pricing under ``metadata.pricing`` with $/MTok values:
+    # ``input_tokens``, ``output_tokens``, ``cache_read_tokens``. Convert to
+    # per-token strings so the generic cost machinery (usage_pricing.py)
+    # consumes them through the same path as OpenRouter / OpenAI.
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    deepinfra_pricing = metadata.get("pricing") if metadata else None
+    if isinstance(deepinfra_pricing, dict) and any(
+        k in deepinfra_pricing for k in ("input_tokens", "output_tokens", "cache_read_tokens")
+    ):
+        result: Dict[str, Any] = {}
+        if deepinfra_pricing.get("input_tokens") is not None:
+            result["prompt"] = str(float(deepinfra_pricing["input_tokens"]) / 1_000_000)
+        if deepinfra_pricing.get("output_tokens") is not None:
+            result["completion"] = str(float(deepinfra_pricing["output_tokens"]) / 1_000_000)
+        if deepinfra_pricing.get("cache_read_tokens") is not None:
+            result["cache_read"] = str(float(deepinfra_pricing["cache_read_tokens"]) / 1_000_000)
+        return result
 
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
@@ -2028,6 +2093,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs
        bypass the cache here so step 5b can always reconcile against
        the authoritative portal /v1/models response.
@@ -2097,10 +2163,34 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # Malformed user-provided URLs (for example an unmatched IPv6 bracket)
+    # make urllib.parse raise. Context resolution should treat those as an
+    # unknown endpoint rather than crashing before the inference layer can
+    # report the configuration error itself.
+    if base_url:
+        try:
+            parsed_base_url = urlparse(_normalize_base_url(base_url))
+            _ = parsed_base_url.port
+        except ValueError:
+            base_url = ""
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    # Endpoint-scoped provider metadata. Keep this ahead of the persistent
+    # cache so a value learned for a multiplexed provider's other endpoint
+    # cannot override the endpoint where the model was actually validated.
+    endpoint_context = _endpoint_scoped_context_length(model, base_url)
+    if endpoint_context is not None:
+        return endpoint_context
+
+    is_bedrock_context = provider == "bedrock" or (
+        base_url
+        and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    )
 
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
@@ -2170,6 +2260,30 @@ def get_model_context_length(
                     model, base_url,
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
+            # Invalidate stale Bedrock entries seeded before the Claude 4.6+
+            # long-context table was corrected to 1M. The static table is a
+            # FLOOR, not an override: probe-derived cache entries (step 1b)
+            # may legitimately exceed the table (real window read from
+            # Bedrock's length-validation error), so only under-reporting
+            # entries are dropped — never a cached value above the table.
+            elif is_bedrock_context:
+                try:
+                    from agent.bedrock_adapter import get_bedrock_context_length
+                    bedrock_ctx = get_bedrock_context_length(model)
+                    if cached < bedrock_ctx:
+                        logger.info(
+                            "Dropping stale Bedrock cache entry %s@%s -> %s; "
+                            "using static Bedrock table value %s",
+                            model,
+                            base_url,
+                            f"{cached:,}",
+                            f"{bedrock_ctx:,}",
+                        )
+                        _invalidate_cached_context_length(model, base_url)
+                        return bedrock_ctx
+                except ImportError:
+                    pass
+                return cached
             else:
                 if is_local_endpoint(base_url):
                     return _reconcile_local_cached_context_length(
@@ -2180,22 +2294,50 @@ def get_model_context_length(
     # 1b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels API doesn't expose context window sizes,
     # so we maintain a curated table in bedrock_adapter.py that reflects
-    # AWS-imposed limits (e.g. 200K for Claude models vs 1M on the native
-    # Anthropic API).  This must run BEFORE the custom-endpoint probe at
+    # Bedrock-hosted model limits (e.g. older Claude 4 at 200K; Claude
+    # Opus/Sonnet 4.6+ at 1M).  This must run BEFORE the custom-endpoint probe at
     # step 2 — bedrock-runtime.<region>.amazonaws.com is not in
     # _URL_TO_PROVIDER, so it would otherwise be treated as a custom endpoint,
     # fail the /models probe (Bedrock doesn't expose that shape), and fall
     # back to the 128K default before reaching the original step 4b branch.
-    if provider == "bedrock" or (
-        base_url
-        and base_url_hostname(base_url).startswith("bedrock-runtime.")
-        and base_url_host_matches(base_url, "amazonaws.com")
-    ):
+    if is_bedrock_context:
         try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            return get_bedrock_context_length(model)
+            from agent.bedrock_adapter import (
+                get_bedrock_context_length,
+                resolve_bedrock_region,
+            )
         except ImportError:
             pass  # boto3 not installed — fall through to generic resolution
+        else:
+            # Bedrock does not expose the context window via any metadata API,
+            # so get_bedrock_context_length() probes the live endpoint (one
+            # fast, pre-inference length rejection) to read the real window.
+            # Cache the probe result per model so we pay that cost once, not
+            # every turn — keyed by base_url when present, else a synthetic
+            # bedrock:// key so display/offline paths share the entry.
+            cache_key_url = base_url or "bedrock://"
+            cached = get_cached_context_length(model, cache_key_url)
+            if cached is not None:
+                return cached
+            # Resolve region from the base_url host first, then the standard
+            # AWS region chain.  An empty region disables probing (table only).
+            region = ""
+            if base_url:
+                _m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url)
+                if _m:
+                    region = _m.group(1)
+            if not region:
+                try:
+                    region = resolve_bedrock_region()
+                except Exception:
+                    region = ""
+            ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
+            if ctx and region:
+                # Only persist probe-derived values (region present); a pure
+                # table fallback shouldn't poison the cache against a later
+                # successful probe.
+                save_context_length(model, cache_key_url, ctx)
+            return ctx
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)

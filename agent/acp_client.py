@@ -36,11 +36,12 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 from agent.acp_agent_registry import (
     agent_display_name,
+    agent_env_unset,
     agent_install_hint,
     normalize_agent_name,
     resolve_agent_launch,
 )
-from agent.file_safety import get_read_block_error, is_write_denied
+from agent.file_safety import get_read_block_error, get_write_denied_error
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
@@ -89,7 +90,7 @@ def _resolve_home_dir() -> str:
     return "/tmp"
 
 
-def _build_subprocess_env() -> dict[str, str]:
+def _build_subprocess_env(env_unset: tuple[str, ...] = ()) -> dict[str, str]:
     # ACP agents are model-driving CLI executors: they legitimately need LLM
     # provider credentials. Route through the central helper so Tier-1 secrets
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
@@ -98,6 +99,11 @@ def _build_subprocess_env() -> dict[str, str]:
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    # Per-agent session markers to strip (e.g. the Claude Code bridge won't
+    # launch inside a parent Claude Code session) — declared on the registry
+    # entry so this stays agent-agnostic.
+    for marker in env_unset:
+        env.pop(marker, None)
     return env
 
 
@@ -529,7 +535,7 @@ class ACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
-                env=_build_subprocess_env(),
+                env=_build_subprocess_env(env_unset=agent_env_unset(self.agent_name)),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -733,10 +739,9 @@ class ACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
-                if is_write_denied(str(path)):
-                    raise PermissionError(
-                        f"Write denied: '{path}' is a protected system/credential file."
-                    )
+                denied = get_write_denied_error(str(path))
+                if denied:
+                    raise PermissionError(denied)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))
                 response = {

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 from dataclasses import dataclass
 
 
@@ -35,6 +36,22 @@ class ACPAgentEntry:
 
     args: tuple[str, ...] = ()
     """Default arguments passed to *command*."""
+
+    command_fallbacks: tuple[str, ...] = ()
+    """Alternative executables tried (in order) when *command* is not on PATH.
+
+    Lets an agent prefer a maintained/official bin while still resolving an
+    older or vendor-alternate bin that happens to be installed instead.
+    """
+
+    env_unset: tuple[str, ...] = ()
+    """Env vars stripped from the child process before launching this agent.
+
+    Some ACP bridges self-guard against running *inside* their own parent CLI
+    session (e.g. the Claude Code bridge aborts when ``CLAUDECODE`` and the
+    ``CLAUDE_CODE_*`` session markers are present). Declaring them here keeps
+    the generic client agent-agnostic — see ``_build_subprocess_env``.
+    """
 
     display_name: str = ""
     """Human-readable name for logs and error messages."""
@@ -62,12 +79,18 @@ ACP_AGENT_REGISTRY: dict[str, ACPAgentEntry] = {
         legacy_args_env_var="HERMES_COPILOT_ACP_ARGS",
     ),
     "claude": ACPAgentEntry(
-        command="claude-code-acp",
+        command="claude-agent-acp",
+        command_fallbacks=("claude-code-acp",),
+        # The Claude Code bridge refuses to launch when it detects it is
+        # running inside another Claude Code session (guard keyed off these
+        # markers); strip them so Hermes can drive it from any environment.
+        env_unset=("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"),
         display_name="Claude Code",
         install_hint=(
-            "Install the official adapter: "
-            "npm install -g @zed-industries/claude-code-acp "
-            "(requires Claude Code CLI credentials or ANTHROPIC_API_KEY)."
+            "Install the maintained adapter: "
+            "npm install -g @agentclientprotocol/claude-agent-acp "
+            "(the older @zed-industries/claude-code-acp bin also works). "
+            "Requires Claude Code CLI credentials or ANTHROPIC_API_KEY."
         ),
     ),
     "codex": ACPAgentEntry(
@@ -130,6 +153,24 @@ def agent_install_hint(agent_name: str) -> str:
     )
 
 
+def agent_env_unset(agent_name: str) -> tuple[str, ...]:
+    """Env vars to strip from *agent_name*'s child process (empty if none)."""
+    entry = get_agent_entry(agent_name)
+    return entry.env_unset if entry else ()
+
+
+def _preferred_command(entry: ACPAgentEntry) -> str:
+    """First of ``command``/``command_fallbacks`` on PATH, else ``command``.
+
+    Falling back to the primary ``command`` when nothing is installed keeps
+    the not-found error message and install hint pointed at the preferred bin.
+    """
+    for candidate in (entry.command, *entry.command_fallbacks):
+        if shutil.which(candidate):
+            return candidate
+    return entry.command
+
+
 def _command_env_key(agent_name: str) -> str:
     return f"HERMES_ACP_{normalize_agent_name(agent_name).upper().replace('-', '_')}_COMMAND"
 
@@ -174,7 +215,7 @@ def resolve_agent_launch(agent_name: str) -> tuple[str, list[str]]:
                 command = value  # legacy contract: command path only
                 break
         if not command:
-            command = entry.command
+            command = _preferred_command(entry)
         args = list(entry.args)
     else:
         raise ValueError(

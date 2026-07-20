@@ -32,10 +32,12 @@ def test_marker_base_url():
 
 
 def test_agent_name_derived_from_base_url():
-    client = ACPClient(base_url="acp://claude", acp_cwd="/tmp")
+    # Nothing installed on PATH -> registry resolves to the preferred bin.
+    with patch("agent.acp_agent_registry.shutil.which", return_value=None):
+        client = ACPClient(base_url="acp://claude", acp_cwd="/tmp")
     assert client.agent_name == "claude"
     assert client.agent_display_name == "Claude Code"
-    assert client._acp_command == "claude-code-acp"
+    assert client._acp_command == "claude-agent-acp"
     assert client.api_key == "claude-acp"
 
 
@@ -98,7 +100,37 @@ def test_missing_command_error_includes_install_hint():
             client._run_prompt("hi", timeout_seconds=1.0)
     message = str(excinfo.value)
     assert "Claude Code" in message
-    assert "@zed-industries/claude-code-acp" in message
+    assert "@agentclientprotocol/claude-agent-acp" in message
+
+
+def test_claude_bridge_prefers_official_but_falls_back_to_zed():
+    # Only the older Zed bin is installed -> registry resolves to it.
+    def _only_zed(name):
+        return "/usr/bin/claude-code-acp" if name == "claude-code-acp" else None
+
+    with patch("agent.acp_agent_registry.shutil.which", side_effect=_only_zed):
+        client = ACPClient(agent_name="claude", acp_cwd="/tmp")
+    assert client._acp_command == "claude-code-acp"
+
+
+def test_claude_env_unset_strips_session_markers():
+    # The claude agent declares the Claude Code session markers to strip so
+    # the bridge launches even inside a parent Claude Code session.
+    from agent.acp_agent_registry import agent_env_unset
+    from agent.acp_client import _build_subprocess_env
+
+    markers = agent_env_unset("claude")
+    assert "CLAUDECODE" in markers
+
+    with patch.dict(
+        "os.environ",
+        {"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_SSE_PORT": "9"},
+    ):
+        env = _build_subprocess_env(env_unset=markers)
+    for marker in markers:
+        assert marker not in env
+    # Non-claude agents strip nothing.
+    assert agent_env_unset("gemini") == ()
 
 
 def test_early_exit_hook_default_is_generic(monkeypatch):

@@ -192,6 +192,7 @@ def test_review_fork_inherits_parent_toolset_config():
     import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
+    agent.responses_transport = "websocket-cached"
 
     captured = {}
     _Recorder = _make_recorder_class(captured)
@@ -212,6 +213,10 @@ def test_review_fork_inherits_parent_toolset_config():
     assert init_kwargs.get("disabled_toolsets") == agent.disabled_toolsets, (
         f"disabled_toolsets mismatch: {init_kwargs.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
+    )
+    assert init_kwargs.get("responses_transport") == "sse", (
+        "A review fork sharing the foreground session_id must keep an isolated "
+        "transport lifecycle so close() cannot retire the foreground WebSocket."
     )
 
 

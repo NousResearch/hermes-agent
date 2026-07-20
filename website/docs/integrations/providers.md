@@ -83,6 +83,10 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add openai-codex` (or `hermes model` → OpenAI Codex) to start a fresh device-code login; the quarantine clears on the next successful exchange.
+
+Codex Responses uses SSE streaming by default. Advanced users can opt into the ChatGPT Codex WebSocket transport with `model.responses_transport: websocket`, `websocket-cached`, or `auto` in `config.yaml`. `websocket-cached` reuses a session-scoped socket and sends appended input deltas with upstream `previous_response_id` when strict prefix checks pass. `auto` retries one retryable replay-safe WebSocket failure, then keeps that session/runtime on SSE. Ambiguous failures after `response.create` stop without replaying a request that may already be running; explicit server rejection events retain normal status-aware recovery.
+
+WebSocket support uses the native `responses.connect()` API in Hermes' pinned OpenAI SDK and preserves request overrides, provider extension fields, custom handshake headers, proxy environment variables, and `SSL_CERT_FILE`. Handshakes have a 15-second bound, the server's 60-minute connection-limit event triggers a safe reconnect, and `x-codex-turn-state` is retained within one user turn and reset at the next turn. Initial support is scoped to the `openai-codex` provider on `https://chatgpt.com/backend-api/codex`. Generic OpenAI Responses endpoints and clients with custom httpx transports use `responses_transport: sse`.
 :::
 
 :::warning

@@ -1152,6 +1152,11 @@ def try_recover_primary_transport(
         agent.provider = rt["provider"]
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
+        from agent.codex_websocket_transport import set_agent_codex_responses_transport
+
+        set_agent_codex_responses_transport(
+            agent, rt.get("responses_transport", "sse")
+        )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1315,6 +1320,11 @@ def restore_primary_runtime(agent) -> bool:
         agent.provider = rt["provider"]
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
+        from agent.codex_websocket_transport import set_agent_codex_responses_transport
+
+        set_agent_codex_responses_transport(
+            agent, rt.get("responses_transport", "sse")
+        )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1490,6 +1500,7 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
     "ConnectError", "RemoteProtocolError",
     "APIConnectionError", "APITimeoutError",
+    "WebSocketNotStartedError",
 })
 
 
@@ -1924,7 +1935,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    responses_transport=None,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -1959,6 +1978,16 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    if responses_transport is None:
+        same_codex_provider = (
+            (old_provider or "").strip().lower() == "openai-codex"
+            and (new_provider or "").strip().lower() == "openai-codex"
+        )
+        responses_transport = (
+            getattr(agent, "responses_transport", "sse")
+            if same_codex_provider
+            else "sse"
+        )
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -1979,6 +2008,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "provider",
             "base_url",
             "api_mode",
+            "responses_transport",
             "api_key",
             "client",
             "_anthropic_client",
@@ -2030,6 +2060,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
+        from agent.codex_websocket_transport import set_agent_codex_responses_transport
+
+        set_agent_codex_responses_transport(agent, responses_transport)
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2256,6 +2289,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "provider": agent.provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
+        "responses_transport": getattr(agent, "responses_transport", "sse"),
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,

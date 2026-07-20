@@ -363,6 +363,7 @@ def test_make_agent_honors_per_session_model_override():
         "base_url": "https://api.z.ai/v1",
         "api_key": "sk-glm",
         "api_mode": "chat_completions",
+        "responses_transport": "websocket-cached",
     }
 
     with (
@@ -400,6 +401,7 @@ def test_make_agent_honors_per_session_model_override():
         # Concrete credentials from the switch survive the rebuild.
         assert kwargs["base_url"] == "https://api.z.ai/v1"
         assert kwargs["api_key"] == "sk-glm"
+        assert kwargs["responses_transport"] == "websocket-cached"
 
 
 def test_apply_model_switch_does_not_leak_process_env():
@@ -419,6 +421,7 @@ def test_apply_model_switch_does_not_leak_process_env():
         base_url = "https://api.z.ai/v1"
         api_key = "sk-glm"
         api_mode = "chat_completions"
+        responses_transport = "sse"
 
     class _FakeAgent:
         def __init__(self):

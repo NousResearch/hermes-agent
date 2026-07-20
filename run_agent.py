@@ -492,6 +492,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        responses_transport: str = "sse",
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -568,6 +569,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            responses_transport=responses_transport,
         )
 
     def _get_session_db_for_recall(self):
@@ -808,10 +810,26 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        responses_transport=None,
+    ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(
+            self,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            responses_transport,
+        )
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -1204,6 +1222,7 @@ class AIAgent:
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
             "auth_mode": getattr(self, "auth_mode", "") or "",
+            "responses_transport": getattr(self, "responses_transport", "sse") or "sse",
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -3599,7 +3618,8 @@ class AIAgent:
         except Exception:
             pass
 
-        # Close the OpenAI/httpx client to release sockets immediately.
+        # Close LLM transport sockets immediately. A rebuilt agent receives
+        # fresh runtime credentials and must start a fresh continuation chain.
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -3607,6 +3627,13 @@ class AIAgent:
                 self.client = None
         except Exception:
             pass
+        if getattr(self, "responses_transport", "sse") != "sse":
+            try:
+                from agent.codex_websocket_transport import cleanup_codex_websocket_session
+
+                cleanup_codex_websocket_session(getattr(self, "session_id", None))
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -3655,7 +3682,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Close LLM transport sockets
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -3663,6 +3690,13 @@ class AIAgent:
                 self.client = None
         except Exception:
             pass
+        if getattr(self, "responses_transport", "sse") != "sse":
+            try:
+                from agent.codex_websocket_transport import cleanup_codex_websocket_session
+
+                cleanup_codex_websocket_session(getattr(self, "session_id", None))
+            except Exception:
+                pass
 
         # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
@@ -4294,6 +4328,12 @@ class AIAgent:
         ``EPIPE`` so it can unwind and close ``client`` from its own context
         — which is where the FD release belongs.
         """
+        websocket_abort = getattr(self, "_active_codex_websocket_abort", None)
+        if callable(websocket_abort):
+            try:
+                websocket_abort()
+            except Exception:
+                logger.debug("Codex WebSocket abort failed (%s)", reason, exc_info=True)
         if client is None:
             return
         try:

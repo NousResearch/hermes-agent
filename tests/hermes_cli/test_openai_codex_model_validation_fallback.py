@@ -62,3 +62,32 @@ def test_switch_model_allows_openai_codex_model_missing_from_listing():
     assert result.target_provider == "openai-codex"
     assert result.warning_message
     assert "OpenAI Codex model listing" in result.warning_message
+
+
+def test_switch_model_preserves_resolved_codex_responses_transport():
+    runtime = {
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "responses_transport": "websocket-cached",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "codex-token",
+    }
+    with (
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime),
+        patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
+        ),
+    ):
+        result = switch_model(
+            "gpt-5.3-codex",
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="https://chatgpt.com/backend-api/codex",
+            current_api_key="codex-token",
+            user_providers=None,
+        )
+
+    assert result.success is True
+    assert result.api_mode == "codex_responses"
+    assert result.responses_transport == "websocket-cached"

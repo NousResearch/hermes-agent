@@ -1865,6 +1865,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _api_key = None
     _base_url = None
     _api_mode = None
+    _responses_transport = "sse"
     _resolved_provider = None
     _credential_pool = None
     _request_overrides: Dict[str, Any] = {}
@@ -1887,6 +1888,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
+        _responses_transport = _rp.get("responses_transport", "sse")
         _resolved_provider = _rp.get("provider") or _provider
         _credential_pool = _rp.get("credential_pool")
         _request_overrides = _merge_request_overrides(
@@ -1918,6 +1920,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
+            responses_transport=_responses_transport,
             credential_pool=_credential_pool,
             request_overrides=_request_overrides,
             **_agent_kwargs,

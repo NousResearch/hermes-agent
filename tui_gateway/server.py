@@ -1592,7 +1592,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 resume_overrides = current.get("resume_runtime_overrides")
                 if isinstance(resume_overrides, dict) and resume_overrides:
                     # Cold deferred resume: restore the full persisted runtime
-                    # identity (model/provider/base_url/api_mode/reasoning/tier)
+                    # identity (model/provider/base_url/api_mode/transport/reasoning/tier)
                     # exactly as the eager resume path's _stored_session_runtime_
                     # overrides splat did, so a deferred build can't drop the
                     # provider and fail with "No LLM provider configured".
@@ -1958,6 +1958,7 @@ def _ensure_session_db_row(session: dict) -> None:
         ("provider", "provider"),
         ("base_url", "base_url"),
         ("api_mode", "api_mode"),
+        ("responses_transport", "responses_transport"),
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
@@ -2568,6 +2569,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         provider = billing_provider
     base_url = str(model_config.get("base_url") or "").strip()
     api_mode = str(model_config.get("api_mode") or "").strip()
+    responses_transport = str(
+        model_config.get("responses_transport") or ""
+    ).strip()
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
@@ -2604,6 +2608,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "provider": provider or None,
             "base_url": base_url or None,
             "api_mode": api_mode or None,
+            "responses_transport": responses_transport or None,
         }
     if provider:
         overrides["provider_override"] = provider
@@ -2625,6 +2630,9 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     provider = str(getattr(agent, "provider", "") or "").strip()
     base_url = str(getattr(agent, "base_url", "") or "").strip()
     api_mode = str(getattr(agent, "api_mode", "") or "").strip()
+    responses_transport = str(
+        getattr(agent, "responses_transport", "") or ""
+    ).strip()
     reasoning_config = getattr(agent, "reasoning_config", None)
     service_tier = getattr(agent, "service_tier", None)
 
@@ -2665,6 +2673,10 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         config["api_mode"] = api_mode
     else:
         config.pop("api_mode", None)
+    if responses_transport:
+        config["responses_transport"] = responses_transport
+    else:
+        config.pop("responses_transport", None)
     if isinstance(reasoning_config, dict):
         config["reasoning_config"] = reasoning_config
     else:
@@ -3335,6 +3347,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                responses_transport=result.responses_transport,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -3381,6 +3394,7 @@ def _apply_model_switch(
             "base_url": result.base_url,
             "api_key": result.api_key,
             "api_mode": result.api_mode,
+            "responses_transport": result.responses_transport,
         }
     if persist_global:
         _persist_model_switch(result)
@@ -4604,6 +4618,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "api_key": getattr(agent, "api_key", None) or None,
         "provider": getattr(agent, "provider", None) or None,
         "api_mode": getattr(agent, "api_mode", None) or None,
+        "responses_transport": getattr(agent, "responses_transport", "sse") or "sse",
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
@@ -5020,6 +5035,7 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
+        override_responses_transport = model_override.get("responses_transport")
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
@@ -5060,6 +5076,8 @@ def _make_agent(
                 runtime["api_key"] = override_api_key
             if override_api_mode:
                 runtime["api_mode"] = override_api_mode
+            if override_responses_transport is not None:
+                runtime["responses_transport"] = override_responses_transport
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -5083,6 +5101,7 @@ def _make_agent(
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),
+        responses_transport=runtime.get("responses_transport", "sse"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),

@@ -59,6 +59,7 @@ def _custom_agent(base_url=MIMO_URL):
         provider="custom",
         base_url=base_url,
         api_mode="chat_completions",
+        responses_transport="sse",
         reasoning_config=None,
         service_tier=None,
     )
@@ -74,6 +75,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
         assert config["provider"] == "custom:mimo-v2.5-pro"
         assert config["base_url"] == MIMO_URL
+        assert config["responses_transport"] == "sse"
         # Credentials must keep coming from config/provider resolution,
         # never from the session DB.
         assert "api_key" not in config
@@ -109,6 +111,26 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
         agent.base_url = "https://api.anthropic.com"
 
         assert _runtime_model_config(agent)["provider"] == "anthropic"
+
+    def test_restores_responses_transport_from_session_model_config(self):
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        overrides = _stored_session_runtime_overrides(
+            {
+                "model": "gpt-codex",
+                "model_config": json.dumps(
+                    {
+                        "model": "gpt-codex",
+                        "provider": "openai-codex",
+                        "responses_transport": "websocket-cached",
+                    }
+                ),
+            }
+        )
+
+        assert overrides["model_override"]["responses_transport"] == (
+            "websocket-cached"
+        )
 
 
 def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
@@ -350,5 +372,3 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
 
         persisted = captured.get("model_config") or {}
         assert persisted.get("provider") == "custom:mimo-v2.5-pro"
-
-

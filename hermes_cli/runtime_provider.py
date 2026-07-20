@@ -347,6 +347,15 @@ _VALID_API_MODES = {
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
 }
+_VALID_RESPONSES_TRANSPORTS = {"sse", "websocket", "websocket-cached", "auto"}
+
+
+def _parse_responses_transport(raw: Any) -> str:
+    if isinstance(raw, str):
+        normalized = raw.strip().lower().replace("_", "-")
+        if normalized in _VALID_RESPONSES_TRANSPORTS:
+            return normalized
+    return "sse"
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -530,6 +539,11 @@ def _resolve_runtime_from_pool_entry(
     return {
         "provider": provider,
         "api_mode": api_mode,
+        **(
+            {"responses_transport": _parse_responses_transport(model_cfg.get("responses_transport"))}
+            if provider == "openai-codex"
+            else {}
+        ),
         "base_url": base_url,
         "api_key": api_key,
         "source": getattr(entry, "source", "pool"),
@@ -1410,6 +1424,7 @@ def _resolve_explicit_runtime(
         return {
             "provider": "openai-codex",
             "api_mode": "codex_responses",
+            "responses_transport": _parse_responses_transport(model_cfg.get("responses_transport")),
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",
@@ -1789,6 +1804,7 @@ def resolve_runtime_provider(
                 "api_mode": "codex_responses",
                 "base_url": creds.get("base_url", "").rstrip("/"),
                 "api_key": creds.get("api_key", ""),
+                "responses_transport": _parse_responses_transport(model_cfg.get("responses_transport")),
                 "source": creds.get("source", "hermes-auth-store"),
                 "last_refresh": creds.get("last_refresh"),
                 "requested_provider": requested_provider,

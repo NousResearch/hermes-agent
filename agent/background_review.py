@@ -716,6 +716,10 @@ def _run_review_in_thread(
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
                 api_mode=_rt.get("api_mode"),
+                # The review fork shares the foreground session_id and closes
+                # immediately after its run. Keep it on an isolated HTTP stream
+                # so its teardown cannot close the foreground session socket.
+                responses_transport="sse",
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,
                 credential_pool=_rt.get("credential_pool"),

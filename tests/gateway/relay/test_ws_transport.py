@@ -151,6 +151,31 @@ async def test_outbound_round_trips_with_correlation(server):
 
 
 @pytest.mark.asyncio
+async def test_edit_outbound_round_trips_with_full_wire_action(server):
+    """Prove the edit operation crosses the production WebSocket transport."""
+    t = WebSocketRelayTransport(server.url, "discord", "appShared")
+    await t.connect()
+    try:
+        await t.handshake()
+        action = {
+            "op": "edit",
+            "chat_id": "chan1",
+            "message_id": "msg1",
+            "content": "final text",
+            "finalize": True,
+            "metadata": {"scope_id": "guildA"},
+        }
+        result = await t.send_outbound(action, platform="discord")
+
+        assert result == {"success": True, "message_id": "srv-edit"}
+        outbound = next(f for f in server.received if f["type"] == "outbound")
+        assert outbound["action"] == action
+        assert outbound["platform"] == "discord"
+    finally:
+        await t.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_follow_up_round_trips(server):
     t = WebSocketRelayTransport(server.url, "discord", "appShared")
     await t.connect()

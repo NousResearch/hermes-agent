@@ -112,18 +112,21 @@ async def test_go_idle_awaits_ack(server):
 
 
 @pytest.mark.asyncio
-async def test_descriptor_handler_failure_does_not_block_handshake():
-    t = WebSocketRelayTransport("ws://127.0.0.1:1", "discord", "appShared")
-    t._descriptor_ready = asyncio.get_running_loop().create_future()
+async def test_descriptor_handler_failure_does_not_block_handshake(server):
+    """Drive the callback through the production socket reader."""
+    t = WebSocketRelayTransport(server.url, "discord", "appShared")
 
     def broken_handler(_descriptor):
         raise RuntimeError("boom")
 
     t.set_descriptor_handler(broken_handler)
-    await t._handle_frame(json.dumps({"type": "descriptor", "descriptor": DESCRIPTOR}))
-
-    descriptor = await asyncio.wait_for(t.handshake(), timeout=0.1)
-    assert descriptor.supports_edit is True
+    await t.connect()
+    try:
+        descriptor = await asyncio.wait_for(t.handshake(), timeout=1)
+        assert descriptor.supports_edit is True
+        assert t._reader is not None and not t._reader.done()
+    finally:
+        await t.disconnect()
 
 
 @pytest.mark.asyncio

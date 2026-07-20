@@ -8302,11 +8302,14 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
     }
 
     const primary = await ensureBackend(null)
+    const sliceUrl = `${primary.baseUrl}/api/profiles/sessions?${searchParams}`
+    const sliceOpts = { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
-    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-      method: 'GET',
-      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+    // OAuth-mode primaries have no static token (cookie-authed via the
+    // partition) — plain fetchJson would 401 and the catch below would
+    // silently blank this profile's slice (see requestJsonForProfile).
+    return (primary.authMode === 'oauth' ? fetchJsonViaOauthSession(sliceUrl, sliceOpts) : fetchJson(sliceUrl, primary.token, sliceOpts))
+      .catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles)
@@ -8322,11 +8325,14 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const primary = await ensureBackend(null)
+  const baseUrl = `${primary.baseUrl}/api/profiles/sessions?${searchParams}`
+  const baseOpts = { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
-  const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-    method: 'GET',
-    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
+  // Same OAuth caveat as fetchProfilesSessionSlice: token is null for OAuth
+  // primaries, so route through the cookie-bound session or the base
+  // aggregate 401s and silently contributes zero rows.
+  const base = (await (primary.authMode === 'oauth' ? fetchJsonViaOauthSession(baseUrl, baseOpts) : fetchJson(baseUrl, primary.token, baseOpts))
+    .catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.

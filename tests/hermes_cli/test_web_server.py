@@ -2589,6 +2589,121 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def _schema_provider_options(self, key):
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        return resp.json()["fields"][key]["options"]
+
+    def test_config_schema_merges_custom_command_tts_provider(self):
+        """A tts.providers.<name> command block appears in tts.provider options,
+        appended AFTER the built-ins (original order preserved, no re-sort)."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        builtins = list(CONFIG_SCHEMA["tts.provider"]["options"])
+
+        cfg = load_config()
+        cfg.setdefault("tts", {}).setdefault("providers", {})["mycustomtts"] = {
+            "type": "command",
+            "command": "mytts --text {text} --out {output}",
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert options[: len(builtins)] == builtins  # built-in order kept
+        assert "mycustomtts" in options
+        assert options.count("mycustomtts") == 1
+        # The module-level schema must NOT have been mutated.
+        assert "mycustomtts" not in CONFIG_SCHEMA["tts.provider"]["options"]
+
+    def test_config_schema_merges_custom_command_stt_provider(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("stt", {}).setdefault("providers", {})["mywhisper"] = {
+            "command": "whisper-cli {input}",  # type: omitted → command implied
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("stt.provider")
+        assert "mywhisper" in options
+
+    def test_config_schema_excludes_builtin_name_collisions(self):
+        """A providers.EDGE command block must NOT be offered — the runtime
+        rejects built-in names as command providers (case-insensitively)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("tts", {}).setdefault("providers", {})["EDGE"] = {
+            "type": "command",
+            "command": "fake-edge {text}",
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        lowered = [o.lower() for o in options]
+        assert lowered.count("edge") == 1  # only the built-in entry
+
+    def test_config_schema_excludes_non_command_blocks(self):
+        """Built-in-shaped blocks (voice/model, no command) and non-dicts are
+        not offered as providers."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        tts = cfg.setdefault("tts", {})
+        tts.setdefault("providers", {})["notacommand"] = {"voice": "en-US-Foo"}
+        tts["stringy"] = "oops"
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert "notacommand" not in options
+        assert "stringy" not in options
+
+    def test_config_schema_preserves_current_custom_provider_value(self):
+        """A custom active tts.provider without a providers.<name> block stays
+        selectable (current-value preservation, matching desktop behavior)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("tts", {})["provider"] = "orphancustom"
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert "orphancustom" in options
+
+    def test_config_schema_reflects_config_changes_without_restart(self):
+        """Options are computed per-request — adding a provider after the
+        first schema fetch shows up on the next fetch."""
+        from hermes_cli.config import load_config, save_config
+
+        before = self._schema_provider_options("tts.provider")
+        assert "latecomer" not in before
+
+        cfg = load_config()
+        cfg.setdefault("tts", {}).setdefault("providers", {})["latecomer"] = {
+            "type": "command",
+            "command": "late {text}",
+        }
+        save_config(cfg)
+
+        after = self._schema_provider_options("tts.provider")
+        assert "latecomer" in after
+
+    def test_config_schema_legacy_toplevel_command_provider(self):
+        """The legacy top-level ``tts.<name>`` command block (runtime
+        back-compat fallback) is also offered."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("tts", {})["legacytts"] = {
+            "type": "command",
+            "command": "legacy {text}",
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert "legacytts" in options
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
@@ -4073,6 +4188,157 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
 
+    def test_custom_endpoints_list_includes_direct_custom_config(self):
+        """A bare model.provider=custom config should show up in Desktop even
+        before the user has materialized it under providers.
+        """
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "gpt-5.4",
+                "base_url": "http://127.0.0.1:8081/v1",
+                "api_key": "sk-local",
+            },
+            "providers": {},
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current"] == {
+            "provider": "custom",
+            "model": "gpt-5.4",
+            "base_url": "http://127.0.0.1:8081/v1",
+        }
+        assert data["endpoints"][0]["id"] == "custom"
+        assert data["endpoints"][0]["source"] == "direct-config"
+        assert data["endpoints"][0]["has_api_key"] is True
+
+    def test_custom_endpoint_upsert_persists_provider_and_sets_default(self):
+        """Desktop can persist an OpenAI-compatible proxy in providers and make
+        it the default for new chats.
+        """
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "axet-proxy",
+                "name": "Axet Proxy",
+                "base_url": "http://127.0.0.1:8081/v1/",
+                "model": "gpt-5.4",
+                "api_key": "sk-local",
+                "context_length": 262144,
+                "make_default": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["id"] == "axet-proxy"
+        endpoint = next(e for e in data["endpoints"] if e["id"] == "axet-proxy")
+        assert endpoint["base_url"] == "http://127.0.0.1:8081/v1"
+        assert endpoint["model"] == "gpt-5.4"
+        assert endpoint["is_current"] is True
+
+        cfg = load_config()
+        assert cfg["providers"]["axet-proxy"]["base_url"] == "http://127.0.0.1:8081/v1"
+        assert cfg["providers"]["axet-proxy"]["models"]["gpt-5.4"]["context_length"] == 262144
+        assert cfg["model"]["provider"] == "axet-proxy"
+        assert cfg["model"]["default"] == "gpt-5.4"
+        assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
+
+    def _seed_custom_provider_with_key(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/m1",
+                "api_key": "sk-stored-old",
+                "models": {"acme/m1": {}},
+            }
+        }
+        save_config(cfg)
+
+    def test_set_model_main_honors_an_explicitly_supplied_api_key(self):
+        """A key in the request must win over the provider entry's stored one.
+
+        The entry-key fallback exists so switching to a configured provider
+        picks up its credential. Applying it unconditionally discards a key the
+        caller is rotating in — and ``model.api_key`` outranks the environment
+        at client construction (#62269), so the stale key keeps authenticating
+        while the UI reports the change saved.
+        """
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "acme",
+                "model": "acme/m1",
+                "api_key": "sk-new-rotated",
+            },
+        )
+        assert resp.status_code == 200
+        assert load_config()["model"]["api_key"] == "sk-new-rotated"
+
+    def test_set_model_main_falls_back_to_the_provider_entry_key(self):
+        """With no key in the request the stored one is still adopted."""
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "acme", "model": "acme/m1"},
+        )
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["api_key"] == "sk-stored-old"
+        # The sibling base_url fill is unaffected.
+        assert model_cfg["base_url"] == "https://llm.acme.corp/v1"
+
+    def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
+        """Selecting a named custom endpoint from the Desktop model picker
+        should keep its endpoint URL attached to model config.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"provider": "nous", "default": "hermes-4"},
+            "providers": {
+                "axet-proxy": {
+                    "name": "Axet Proxy",
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "api_key": "sk-local",
+                    "model": "gpt-5.4",
+                    "models": {"gpt-5.4": {}},
+                }
+            },
+        })
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "axet-proxy", "model": "gpt-5.4"},
+        )
+
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["provider"] == "axet-proxy"
+        assert model_cfg["default"] == "gpt-5.4"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8081/v1"
+        assert model_cfg["api_key"] == "sk-local"
+
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
         import hermes_cli.nous_subscription as ns
@@ -5389,6 +5655,26 @@ class TestNewEndpoints:
         by_name = {p["name"]: p for p in resp.json()["providers"]}
         assert by_name["ElevenLabs"]["status"] == "ready"
 
+    def test_get_toolset_config_tts_rows_carry_provider_key(self):
+        """TTS provider rows surface their tts_provider config key.
+
+        The desktop Capabilities panel renders the provider's voice/model
+        config fields (tts.<key>.*) inline; without the key it can only show
+        API keys. Every built-in TTS row declares one.
+        """
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        providers = resp.json()["providers"]
+        assert providers
+        for prov in providers:
+            assert prov.get("tts_provider"), f"row {prov['name']!r} missing tts_provider"
+        by_name = {p["name"]: p for p in providers}
+        assert by_name["OpenAI TTS"]["tts_provider"] == "openai"
+        assert by_name["Microsoft Edge TTS"]["tts_provider"] == "edge"
+        # Non-TTS toolsets must not grow the field.
+        web = self.client.get("/api/tools/toolsets/web/config").json()
+        assert all("tts_provider" not in p for p in web["providers"])
+
     def test_get_toolset_config_reflects_selected_provider(self):
         """Selecting a provider is reflected in the next /config read.
 
@@ -5449,10 +5735,186 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_select_managed_nous_provider_reports_needs_nous_auth(self, monkeypatch):
+        """Selecting a managed Nous row while logged out flags needs_nous_auth.
+
+        Regression: the GUI PUT wrote browser.cloud_provider + use_gateway
+        but skipped the Portal entitlement handshake the CLI runs inline
+        (ensure_nous_portal_access) — so the row never activated and nothing
+        told the user to sign in. The endpoint now reports the entitlement
+        gap so the client can drive the existing Nous OAuth flow.
+        """
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_portal_account_info",
+            lambda *a, **k: NousPortalAccountInfo(
+                logged_in=False, source="none", fresh=False, paid_service_access=None
+            ),
+        )
+
+        resp = self.client.put(
+            "/api/tools/toolsets/browser/provider",
+            json={"provider": "Nous Subscription (Browser Use cloud)"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["needs_nous_auth"] is True
+        assert data["feature"] == "browser"
+        # The selection is still persisted — activation is what's gated.
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["browser"]["cloud_provider"] == "browser-use"
+
+    def test_select_managed_nous_provider_entitled_no_auth_flag(self, monkeypatch):
+        """A signed-in, entitled subscriber gets no needs_nous_auth field."""
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_portal_account_info",
+            lambda *a, **k: NousPortalAccountInfo(
+                logged_in=True, source="jwt", fresh=True, paid_service_access=True
+            ),
+        )
+
+        resp = self.client.put(
+            "/api/tools/toolsets/browser/provider",
+            json={"provider": "Nous Subscription (Browser Use cloud)"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert "needs_nous_auth" not in data
+
+    def test_select_unmanaged_provider_has_no_nous_auth_field(self):
+        """Non-managed rows never carry the entitlement fields."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert "needs_nous_auth" not in data
+        assert "feature" not in data
+
     def test_select_toolset_provider_unknown_toolset_returns_400(self):
         resp = self.client.put(
             "/api/tools/toolsets/not_a_real_toolset/provider",
             json={"provider": "whatever"},
+        )
+        assert resp.status_code == 400
+
+    # -- Web capability split (search vs extract backends) ------------------
+
+    def test_web_config_reports_per_capability_backends(self):
+        """GET web/config carries the resolved search/extract backends.
+
+        The runtime resolves web_search and web_extract independently
+        (web.search_backend / web.extract_backend → web.backend → auto-detect);
+        the config payload must surface both so the GUI can show which backend
+        each capability actually hits.
+        """
+        resp = self.client.get("/api/tools/toolsets/web/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "active_search_backend" in data
+        assert "active_extract_backend" in data
+        # Provider rows carry their backend key + supported capabilities so
+        # the GUI can hide "Use for Extract" on search-only rows.
+        rows_with_backend = [p for p in data["providers"] if p.get("web_backend")]
+        assert rows_with_backend, "expected at least one provider with a web backend key"
+        for prov in rows_with_backend:
+            assert isinstance(prov["capabilities"], list)
+            assert set(prov["capabilities"]) <= {"search", "extract"}
+            assert prov["capabilities"], "a web provider must support at least one capability"
+
+    def test_web_capability_fields_only_on_web_toolset(self):
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "active_search_backend" not in data
+        assert "active_extract_backend" not in data
+
+    def test_select_web_search_backend_matches_runtime_resolution(self, monkeypatch):
+        """PUT provider with capability=search writes web.search_backend and the
+        runtime search dispatcher resolves to it — while extract is untouched."""
+        # Make SearXNG available so both the endpoint gate and the runtime
+        # availability check agree it's usable.
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8888")
+        # Give extract an explicit shared backend so the assertion isn't
+        # hostage to whatever creds exist on the machine running the tests.
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        base = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert base.status_code == 200
+
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "SearXNG", "capability": "search"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["capability"] == "search"
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["search_backend"] == "searxng"
+        # The shared backend selected first must be preserved for extract.
+        assert cfg["web"]["backend"] == "firecrawl"
+
+        # The REAL runtime resolution — not a parallel reimplementation.
+        from tools.web_tools import _get_extract_backend, _get_search_backend
+        assert _get_search_backend() == "searxng"
+        assert _get_extract_backend() == "firecrawl"
+
+        # And the config endpoint reports the same split.
+        data = self.client.get("/api/tools/toolsets/web/config").json()
+        assert data["active_search_backend"] == "searxng"
+        assert data["active_extract_backend"] == "firecrawl"
+
+    def test_select_web_extract_backend_writes_extract_key(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted", "capability": "extract"},
+        )
+        assert resp.status_code == 200
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["extract_backend"] == "firecrawl"
+        # Whole-provider/search keys untouched by a capability-scoped write
+        # (the default config seeds them as empty strings).
+        assert not cfg["web"].get("search_backend")
+
+        from tools.web_tools import _get_extract_backend
+        assert _get_extract_backend() == "firecrawl"
+
+    def test_select_web_capability_rejects_unsupported_capability(self):
+        """A search-only provider (ddgs) can't be set as the extract backend."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "DuckDuckGo (ddgs)", "capability": "extract"},
+        )
+        assert resp.status_code == 400
+        assert "does not support extract" in resp.json()["detail"]
+
+    def test_select_web_capability_rejects_bad_values(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted", "capability": "browse"},
+        )
+        assert resp.status_code == 400
+
+        # capability is a web-only concept.
+        resp = self.client.put(
+            "/api/tools/toolsets/tts/provider",
+            json={"provider": "Microsoft Edge TTS", "capability": "search"},
         )
         assert resp.status_code == 400
 

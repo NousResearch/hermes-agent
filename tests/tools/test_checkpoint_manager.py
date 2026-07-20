@@ -22,6 +22,7 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    DEFAULT_EXCLUDES,
     format_checkpoint_list,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,

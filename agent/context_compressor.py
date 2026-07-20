@@ -955,9 +955,14 @@ class ContextCompressor(ContextEngine):
         super().on_session_start(session_id, **kwargs)
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
+        fresh_handoff = bool(kwargs.get("fresh_handoff", False))
         session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
         previous_fallback_streak = self._fallback_compression_streak
-        if boundary_reason == "compression" and old_session_id:
+        if (
+            boundary_reason == "compression"
+            and old_session_id
+            and not fresh_handoff
+        ):
             getter = getattr(session_db, "get_compression_fallback_streak", None)
             if callable(getter):
                 try:
@@ -972,7 +977,7 @@ class ContextCompressor(ContextEngine):
                         exc,
                     )
         self.bind_session_state(session_db, session_id)
-        if boundary_reason == "compression":
+        if boundary_reason == "compression" and not fresh_handoff:
             # Rotation creates a fresh child row before this callback. Preserve
             # the logical conversation's streak until boundary bookkeeping
             # persists the updated value onto the child row.

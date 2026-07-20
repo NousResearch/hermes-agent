@@ -727,6 +727,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "agent.auto_handoff_on_compression.mode": {
+        "type": "select",
+        "description": "Compression handoff mode when repeated compression becomes risky",
+        "options": ["prompt_user", "fresh_session"],
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",

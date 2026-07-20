@@ -3484,6 +3484,11 @@ class GatewaySlashCommandsMixin:
                 # guarding the seam against illegal role adjacency.
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
+                    from agent.conversation_compression import (
+                        persist_rejoined_partial_compression,
+                    )
+
+                    persist_rejoined_partial_compression(tmp_agent, compressed)
 
                 # _compress_context either rotated (legacy: ended the old
                 # session, created a continuation id — write compressed messages

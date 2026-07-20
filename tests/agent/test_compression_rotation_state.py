@@ -5,9 +5,9 @@ three pieces of state used to be lost or corrupted:
 
   * #33618 — a persistent ``/goal`` did not follow the rotation (``load_goal``
     is a flat per-session lookup with no lineage walk), so it silently died.
-  * #33906/#33907 — if the child ``create_session`` raised, the outer handler
-    only warned and let the agent continue on the NEW (un-indexed) id,
-    producing an orphan session missing from state.db.
+  * #33906/#33907 — child insertion and parent closure could split across
+    independent writes, producing either an orphan child or a closed parent
+    without a usable continuation when a later write failed.
   * #27633 — the compaction-boundary ``on_session_start`` notification omitted
     the ``platform`` kwarg, so context-engine plugins saw ``source=unknown``
     for every message after the boundary.
@@ -126,21 +126,27 @@ class TestOrphanRollbackOnCreateFailure:
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
 
-        # Make the CHILD create_session raise, but let the initial parent
-        # end_session/reopen work. We patch create_session to blow up.
-        real_create = db.create_session
-
+        # Make the atomic child transition fail before commit. The compressed
+        # transcript must fall back in-place on the still-active parent.
         def _boom(*a, **k):
             raise RuntimeError("FOREIGN KEY constraint failed")
 
-        with patch.object(db, "create_session", side_effect=_boom):
-            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        with patch.object(
+            db, "rotate_session_for_compression", side_effect=_boom
+        ):
+            returned, _ = agent._compress_context(
+                _msgs(), "sys", approx_tokens=120_000
+            )
 
-        # The live id must roll back to the still-indexed parent — NOT a
-        # phantom child id that has no row in state.db.
+        # The live id stays attached to the active parent and the fallback has
+        # durably re-baselined that same row — never a phantom child.
         assert agent.session_id == parent
-        assert db.get_session(parent) is not None
-        _ = real_create  # silence unused
+        parent_row = db.get_session(parent)
+        assert parent_row is not None
+        assert parent_row["ended_at"] is None
+        assert [row["content"] for row in db.get_messages(parent)] == [
+            message["content"] for message in returned
+        ]
 
 
 class TestPlatformForwardedAtBoundary:

@@ -7226,6 +7226,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._handle_resume_command(f"/resume {index}")
         return True
 
+    def _handle_handoff_packet_command(self, cmd_original: str) -> None:
+        """Handle ``/handoff-packet [note]`` without changing session state."""
+        if not getattr(self, "agent", None):
+            _cprint("  No active agent -- send a message first.")
+            return
+        messages = list(getattr(self, "conversation_history", None) or [])
+        if not messages:
+            _cprint("  No conversation history to summarize into a handoff packet.")
+            return
+
+        parts = cmd_original.split(None, 1)
+        note = parts[1].strip() if len(parts) > 1 else None
+        with self._busy_command("Writing handoff packet..."):
+            try:
+                from agent.conversation_compression import create_handoff_packet
+                from agent.model_metadata import estimate_request_tokens_rough
+
+                system_prompt = (
+                    getattr(self.agent, "_cached_system_prompt", "") or ""
+                )
+                approx_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=system_prompt,
+                    tools=getattr(self.agent, "tools", None) or None,
+                )
+                packet, path = create_handoff_packet(
+                    self.agent,
+                    messages,
+                    approx_tokens=approx_tokens,
+                    note=note,
+                )
+            except Exception as exc:
+                _cprint(f"  ❌ Handoff packet failed: {exc}")
+                return
+
+        if path:
+            _cprint(f"  ✅ Handoff packet written: {path}")
+            _cprint(
+                "     Start a fresh session with /new and paste the packet "
+                "if you want to continue there."
+            )
+        else:
+            _cprint("  ⚠️  Could not write handoff artifact; copy the packet below:")
+            _cprint(packet)
+
 
 
     def save_conversation(self):
@@ -8842,6 +8887,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
+        elif canonical == "handoff-packet":
+            self._handle_handoff_packet_command(cmd_original)
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
         elif canonical == "subscription":
@@ -9754,6 +9801,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # adjacency, defending provider role-alternation rules.
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
+                    from agent.conversation_compression import (
+                        persist_rejoined_partial_compression,
+                    )
+
+                    persist_rejoined_partial_compression(self.agent, compressed)
                 self.conversation_history = compressed
                 # _compress_context ends the old session and creates a new child
                 # session on the agent (run_agent.py::_compress_context). Sync the

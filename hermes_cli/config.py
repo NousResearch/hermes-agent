@@ -1187,6 +1187,18 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Proactive lifecycle handoff for long sessions whose repeated
+        # context compression is likely to degrade quality. Disabled by
+        # default; when enabled, Hermes can write a compact handoff packet
+        # and either present it to the user or continue from a fresh linked
+        # session with only that packet as active context.
+        "auto_handoff_on_compression": {
+            "enabled": False,
+            "after_compressions": 2,
+            "max_auto_handoffs": 1,
+            "mode": "prompt_user",  # prompt_user | fresh_session
+            "handoff_artifact_dir": ".hermes/handoffs",
+        },
 
         # Per-model reasoning effort overrides (spelling-tolerant).
         # Dict mapping model names (any reasonable spelling) to effort levels.

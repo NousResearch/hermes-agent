@@ -31,14 +31,19 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import re
 import tempfile
 import uuid
 import threading
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 from typing import Any, Optional, Tuple
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.redact import redact_sensitive_text
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,428 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+_HANDOFF_MAX_BYTES = 32 * 1024
+_HANDOFF_MAX_MESSAGES = 24
+_HANDOFF_MAX_TODOS = 24
+_HANDOFF_FIELD_INPUT_CHARS = 8192
+_HANDOFF_MESSAGE_CHARS = 1200
+_HANDOFF_TODO_CHARS = 320
+_HANDOFF_ROLE_CHARS = 32
+_HANDOFF_PATH_CHARS = 512
+
+_ARTIFACT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_ARTIFACT_URL_RE = re.compile(r"\b(?:https?|wss?|ftp)://[^\s<>()\[\]{}]+", re.IGNORECASE)
+_ARTIFACT_SENSITIVE_QUERY_KEYS = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "token",
+        "api_key",
+        "apikey",
+        "client_secret",
+        "password",
+        "passwd",
+        "auth",
+        "authorization",
+        "jwt",
+        "session",
+        "cookie",
+        "secret",
+        "key",
+        "code",
+        "signature",
+        "x-amz-signature",
+    }
+)
+_ARTIFACT_NAMED_SECRET_RE = re.compile(
+    r"(?i)(\b(?:api[_ .-]?key|access[_ .-]?token|refresh[_ .-]?token|"
+    r"client[_ .-]?secret|password|passwd|credential|authorization|auth[_ .-]?token|"
+    r"cookie|session[_ .-]?token|private[_ .-]?key|secret)\b\s*[:=]\s*)"
+    r"(?:['\"]?)[^\s,;&\"']+"
+)
+_ARTIFACT_HEADER_SECRET_RE = re.compile(
+    r"(?im)^((?:proxy-)?authorization|cookie|set-cookie|x-api-key|api-key)\s*:\s*.*$"
+)
+_ARTIFACT_PREFIX_SECRET_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:sk-|ghp_|github_pat_|gho_|ghu_|ghs_|ghr_|"
+    r"xox[baprs]-|AIza|pplx-|fal_|gAAAA|AKIA|sk_live_|sk_test_|rk_live_|"
+    r"SG\.|hf_|npm_|pypi-|dop_v1_|doo_v1_|gsk_|xai-|ntn_|fpk_)"
+    r"[A-Za-z0-9_.=/-]{8,}",
+    re.IGNORECASE,
+)
+_ARTIFACT_JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}"
+)
+
+
+def _bounded_value_repr(
+    value: Any,
+    *,
+    max_chars: int,
+    depth: int = 0,
+    seen: Optional[set[int]] = None,
+) -> str:
+    """Represent untrusted packet input with bounded work and cycle depth."""
+    if max_chars <= 0:
+        return ""
+    if isinstance(value, str):
+        return value[:max_chars]
+    if isinstance(value, bytes):
+        return value[:max_chars].decode("utf-8", errors="replace")
+    if value is None or isinstance(value, (bool, int, float)):
+        return str(value)[:max_chars]
+    if depth >= 3:
+        return f"<{type(value).__name__}>"
+    if seen is None:
+        seen = set()
+    identity = id(value)
+    if identity in seen:
+        return "<cycle>"
+    seen.add(identity)
+    try:
+        if isinstance(value, dict):
+            chunks = []
+            for key, item in islice(value.items(), 8):
+                key_text = _bounded_value_repr(
+                    key, max_chars=64, depth=depth + 1, seen=seen
+                )
+                item_text = _bounded_value_repr(
+                    item, max_chars=256, depth=depth + 1, seen=seen
+                )
+                chunks.append(f"{key_text}: {item_text}")
+            rendered = "{" + ", ".join(chunks) + "}"
+        elif isinstance(value, (list, tuple)):
+            chunks = [
+                _bounded_value_repr(
+                    item, max_chars=256, depth=depth + 1, seen=seen
+                )
+                for item in islice(iter(value), 8)
+            ]
+            rendered = "[" + ", ".join(chunks) + "]"
+        else:
+            # Do not call an arbitrary object's potentially expensive __str__.
+            rendered = f"<{type(value).__name__}>"
+        return rendered[:max_chars]
+    finally:
+        seen.discard(identity)
+
+
+def _sanitize_artifact_url(match: re.Match[str]) -> str:
+    raw_url = match.group(0)
+    trailing = ""
+    while raw_url and raw_url[-1] in ".,;:!?\"'":
+        trailing = raw_url[-1] + trailing
+        raw_url = raw_url[:-1]
+    try:
+        parts = urlsplit(raw_url)
+        netloc = parts.netloc
+        if "@" in netloc:
+            netloc = "[REDACTED]@" + netloc.rsplit("@", 1)[1]
+        query_parts = re.split(r"([&;])", parts.query)
+        for index in range(0, len(query_parts), 2):
+            field = query_parts[index]
+            if not field:
+                continue
+            key, separator, _value = field.partition("=")
+            if unquote_plus(key).strip().lower() in _ARTIFACT_SENSITIVE_QUERY_KEYS:
+                query_parts[index] = key + (separator or "=") + "[REDACTED]"
+        sanitized = urlunsplit(
+            (parts.scheme, netloc, parts.path, "".join(query_parts), parts.fragment)
+        )
+        return sanitized + trailing
+    except Exception:
+        # A malformed URL that still contains userinfo is safer fully hidden.
+        return "[REDACTED URL]" + trailing
+
+
+def _sanitize_artifact_text(
+    value: Any,
+    *,
+    max_chars: int,
+    multiline: bool = True,
+) -> str:
+    """Force-redact and bound text crossing the handoff-artifact boundary."""
+    input_limit = min(
+        _HANDOFF_FIELD_INPUT_CHARS,
+        max(1024, max_chars * 4),
+    )
+    text = _bounded_value_repr(value, max_chars=input_limit)
+    text = _ARTIFACT_CONTROL_RE.sub(" ", text)
+    if not multiline:
+        text = re.sub(r"[\r\n\t]+", " ", text)
+    text = _ARTIFACT_URL_RE.sub(_sanitize_artifact_url, text)
+    text = _ARTIFACT_HEADER_SECRET_RE.sub(
+        lambda match: f"{match.group(1)}: [REDACTED]", text
+    )
+    text = _ARTIFACT_NAMED_SECRET_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]", text
+    )
+    text = _ARTIFACT_PREFIX_SECRET_RE.sub("[REDACTED]", text)
+    text = _ARTIFACT_JWT_RE.sub("[REDACTED]", text)
+    text = redact_sensitive_text(text, force=True)
+    if len(text) > max_chars:
+        marker = "… [truncated]"
+        text = text[: max(0, max_chars - len(marker))] + marker
+    return text
+
+
+def _bound_packet_bytes(packet: str) -> str:
+    encoded = packet.encode("utf-8", errors="replace")
+    if len(encoded) <= _HANDOFF_MAX_BYTES:
+        return encoded.decode("utf-8")
+    marker = "\n… [packet truncated]\n".encode()
+    prefix = encoded[: _HANDOFF_MAX_BYTES - len(marker)]
+    return (prefix.decode("utf-8", errors="ignore") + marker.decode()).rstrip() + "\n"
+
+
+def _build_handoff_packet(
+    agent: Any,
+    messages: list,
+    *,
+    approx_tokens: Optional[int] = None,
+    note: Optional[str] = None,
+    active_session_id: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
+    automatic: bool = False,
+) -> str:
+    """Build a bounded, force-redacted continuation packet without file I/O."""
+    active_id = _sanitize_artifact_text(
+        active_session_id or getattr(agent, "session_id", None) or "unbound",
+        max_chars=160,
+        multiline=False,
+    )
+    parent_id = _sanitize_artifact_text(
+        parent_session_id or "none", max_chars=160, multiline=False
+    )
+    try:
+        cwd_value = os.getcwd()
+    except Exception:
+        cwd_value = "unknown"
+    cwd = _sanitize_artifact_text(
+        cwd_value, max_chars=_HANDOFF_PATH_CHARS, multiline=False
+    )
+    model = _sanitize_artifact_text(
+        getattr(agent, "model", "unknown"), max_chars=160, multiline=False
+    )
+    provider = _sanitize_artifact_text(
+        getattr(agent, "provider", "unknown"), max_chars=120, multiline=False
+    )
+    compression_count = max(
+        0,
+        int(getattr(getattr(agent, "context_compressor", None), "compression_count", 0) or 0),
+    )
+
+    lines = [
+        "# Hermes handoff packet",
+        "",
+        (
+            "Automatic bounded continuation packet. Verify live repository and "
+            "runtime state before editing."
+            if automatic
+            else "Manual packet; no new session started. Verify live state before editing."
+        ),
+        "",
+        "## Coordinates",
+        f"- Active session: `{active_id}`",
+        f"- Parent session: `{parent_id}`",
+        f"- Model/provider: `{model}` / `{provider}`",
+        f"- Working directory: `{cwd}`",
+        f"- Completed compressions before handoff: {compression_count}",
+    ]
+    if approx_tokens is not None:
+        try:
+            token_count = max(0, int(approx_tokens))
+        except (TypeError, ValueError):
+            token_count = 0
+        lines.append(f"- Approximate request tokens: {token_count:,}")
+    if note:
+        lines.extend(
+            [
+                "",
+                "## Operator note",
+                _sanitize_artifact_text(
+                    note, max_chars=1200, multiline=True
+                ),
+            ]
+        )
+
+    lines.extend(["", "## Recent bounded context"])
+    bounded_messages = messages[-_HANDOFF_MAX_MESSAGES:] if isinstance(messages, list) else []
+    if not bounded_messages:
+        lines.append("- No conversation messages were available.")
+    for message in bounded_messages:
+        if not isinstance(message, dict):
+            continue
+        role = _sanitize_artifact_text(
+            message.get("role", "unknown"),
+            max_chars=_HANDOFF_ROLE_CHARS,
+            multiline=False,
+        )
+        content = _sanitize_artifact_text(
+            message.get("content", ""),
+            max_chars=_HANDOFF_MESSAGE_CHARS,
+            multiline=True,
+        )
+        lines.extend([f"### {role}", content or "(empty)"])
+
+    lines.extend(["", "## Active todos"])
+    todo_items: list = []
+    try:
+        raw_todos = agent._todo_store.read()
+        if isinstance(raw_todos, list):
+            todo_items = raw_todos[:_HANDOFF_MAX_TODOS]
+    except Exception:
+        todo_items = []
+    active_todos = 0
+    for item in todo_items:
+        if not isinstance(item, dict):
+            continue
+        status = _sanitize_artifact_text(
+            item.get("status", "pending"), max_chars=32, multiline=False
+        )
+        if status.lower() in {"completed", "cancelled", "canceled"}:
+            continue
+        todo_id = _sanitize_artifact_text(
+            item.get("id", "todo"), max_chars=96, multiline=False
+        )
+        content = _sanitize_artifact_text(
+            item.get("content", ""),
+            max_chars=_HANDOFF_TODO_CHARS,
+            multiline=False,
+        )
+        lines.append(f"- [{status}] {todo_id}: {content}")
+        active_todos += 1
+    if active_todos == 0:
+        lines.append("- No active todos were available.")
+
+    lines.extend(
+        [
+            "",
+            "## Continuation rules",
+            "- Re-read repository instructions and verify current git/session state.",
+            "- Treat this packet as bounded context, not as authoritative live state.",
+            "- Preserve tests, lineage, routing, and persistence invariants.",
+            "",
+        ]
+    )
+    return _bound_packet_bytes("\n".join(lines))
+
+
+def _handoff_artifact_directory(agent: Any) -> Optional[Path]:
+    home = get_hermes_home().resolve()
+    configured = str(
+        getattr(agent, "_auto_handoff_artifact_dir", ".hermes/handoffs")
+        or ".hermes/handoffs"
+    )
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        parts = candidate.parts
+        if parts and parts[0] == ".hermes":
+            candidate = Path(*parts[1:])
+        candidate = home / candidate
+    try:
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(home)
+        relative_parts = resolved.relative_to(home).parts
+        current = home
+        for part in relative_parts:
+            current = current / part
+            if current.exists() and current.is_symlink():
+                return None
+        resolved.mkdir(parents=True, exist_ok=True, mode=0o700)
+        resolved = resolved.resolve(strict=True)
+        resolved.relative_to(home)
+        return resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _publish_handoff_artifact(agent: Any, packet: str) -> Path:
+    """Publish *packet* atomically with 0600, no-clobber file semantics."""
+    directory = _handoff_artifact_directory(agent)
+    if directory is None:
+        raise OSError("handoff artifact directory is outside HERMES_HOME or unsafe")
+    data = _bound_packet_bytes(packet).encode("utf-8")
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    dir_fd = os.open(directory, directory_flags)
+    try:
+        for _attempt in range(8):
+            stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+            final_name = f"handoff-{stamp}-{uuid.uuid4().hex}.md"
+            temp_name = f".{final_name}.{uuid.uuid4().hex}.tmp"
+            file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            file_flags |= getattr(os, "O_NOFOLLOW", 0)
+            file_fd = os.open(temp_name, file_flags, 0o600, dir_fd=dir_fd)
+            try:
+                try:
+                    os.fchmod(file_fd, 0o600)
+                    written = 0
+                    while written < len(data):
+                        chunk_size = os.write(file_fd, data[written:])
+                        if chunk_size <= 0:
+                            raise OSError(
+                                "handoff artifact write made no progress"
+                            )
+                        written += chunk_size
+                    os.fsync(file_fd)
+                finally:
+                    os.close(file_fd)
+            except BaseException:
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    pass
+                raise
+            try:
+                os.link(
+                    temp_name,
+                    final_name,
+                    src_dir_fd=dir_fd,
+                    dst_dir_fd=dir_fd,
+                    follow_symlinks=False,
+                )
+                os.fsync(dir_fd)
+                return directory / final_name
+            except FileExistsError:
+                continue
+            finally:
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    pass
+        raise FileExistsError("could not allocate a unique handoff artifact name")
+    finally:
+        os.close(dir_fd)
+
+
+def create_handoff_packet(
+    agent: Any,
+    messages: list,
+    *,
+    approx_tokens: Optional[int] = None,
+    note: Optional[str] = None,
+    active_session_id: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
+) -> Tuple[str, Optional[Path]]:
+    """Build and publish a manual packet without rotating or consuming quota."""
+    packet = _build_handoff_packet(
+        agent,
+        messages,
+        approx_tokens=approx_tokens,
+        note=note,
+        active_session_id=active_session_id,
+        parent_session_id=parent_session_id,
+        automatic=False,
+    )
+    try:
+        return packet, _publish_handoff_artifact(agent, packet)
+    except Exception as exc:
+        logger.warning("Could not publish handoff packet: %s", exc)
+        return packet, None
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -421,6 +848,176 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def _new_compression_session_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+def _sync_rotated_session_context(agent: Any, session_id: str) -> None:
+    """Synchronize tool/gateway and logging coordinates after DB commit."""
+    try:
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(session_id)
+    except Exception:
+        os.environ["HERMES_SESSION_ID"] = session_id
+    try:
+        from hermes_logging import set_session_context
+
+        set_session_context(session_id)
+    except Exception:
+        pass
+
+
+def _mark_child_messages_persisted(agent: Any, messages: list) -> None:
+    agent._last_flushed_db_idx = len(messages)
+    agent._flushed_db_message_session_id = agent.session_id
+    agent._flushed_db_message_ids = {
+        id(message) for message in messages if isinstance(message, dict)
+    }
+
+
+def _authoritative_rotation_committed(
+    session_db: Any,
+    parent_session_id: str,
+    child_session_id: str,
+) -> bool:
+    """Resolve ambiguous post-commit exceptions from authoritative rows."""
+    try:
+        parent = session_db.get_session(parent_session_id)
+        child = session_db.get_session(child_session_id)
+    except Exception:
+        return False
+    return bool(
+        parent
+        and child
+        and parent.get("ended_at") is not None
+        and parent.get("end_reason") == "compression"
+        and child.get("ended_at") is None
+        and child.get("parent_session_id") == parent_session_id
+    )
+
+
+def _rotate_compression_session(
+    agent: Any,
+    *,
+    parent_session_id: str,
+    child_session_id: str,
+    child_messages: list,
+    system_prompt: str,
+    consume_auto_handoff: bool,
+) -> Tuple[bool, int, Optional[Exception]]:
+    """Invoke the atomic SessionDB API and classify ambiguous exceptions."""
+    session_db = getattr(agent, "_session_db", None)
+    if session_db is None:
+        return False, 0, RuntimeError("SessionDB unavailable")
+    child_config = dict(getattr(agent, "_session_init_model_config", {}) or {})
+    try:
+        count = session_db.rotate_session_for_compression(
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            source=getattr(agent, "platform", None)
+            or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            model=getattr(agent, "model", None),
+            model_config=child_config,
+            system_prompt=system_prompt,
+            messages=child_messages,
+            consume_auto_handoff=consume_auto_handoff,
+            max_auto_handoffs=getattr(
+                agent, "_auto_handoff_max_auto_handoffs", 0
+            ),
+        )
+        return True, max(0, int(count)), None
+    except Exception as exc:
+        # _execute_write commits before best-effort post-write maintenance. A
+        # wrapper/observer can therefore raise after the transaction committed.
+        # Never "compensate" a committed child by reopening its parent: inspect
+        # canonical rows and adopt the child when the transition is complete.
+        if _authoritative_rotation_committed(
+            session_db, parent_session_id, child_session_id
+        ):
+            try:
+                count = session_db.get_auto_handoff_count(child_session_id)
+            except Exception:
+                count = getattr(agent, "_auto_handoff_count", 0)
+            logger.warning(
+                "Compression rotation raised after its DB transition committed "
+                "(%s); adopting authoritative child %s.",
+                exc,
+                child_session_id,
+            )
+            return True, max(0, int(count or 0)), exc
+        return False, getattr(agent, "_auto_handoff_count", 0), exc
+
+
+def _reset_agent_for_fresh_handoff(
+    agent: Any,
+    *,
+    parent_session_id: str,
+    child_session_id: str,
+    system_prompt: str,
+    child_messages: list,
+    handoff_count: int,
+) -> None:
+    """Re-baseline all in-memory state owned by a fresh continuation child."""
+    agent.session_id = child_session_id
+    agent._parent_session_id = parent_session_id
+    agent._session_db_created = True
+    agent._cached_system_prompt = system_prompt
+    agent._compression_feasibility_checked = False
+    agent._auto_handoff_count = handoff_count
+    child_config = dict(getattr(agent, "_session_init_model_config", {}) or {})
+    child_config["_auto_handoff_count"] = handoff_count
+    agent._session_init_model_config = child_config
+    _mark_child_messages_persisted(agent, child_messages)
+    _sync_rotated_session_context(agent, child_session_id)
+
+    reset = getattr(
+        getattr(agent, "context_compressor", None), "on_session_reset", None
+    )
+    if callable(reset):
+        try:
+            reset()
+        except Exception as exc:
+            logger.debug("context engine fresh-handoff reset failed: %s", exc)
+
+    # Reset child-owned usage/verdict state without touching the in-flight
+    # parent registry slot; note_turn_end intentionally clears that old slot.
+    for attr in (
+        "session_prompt_tokens",
+        "session_completion_tokens",
+        "session_total_tokens",
+        "session_api_calls",
+        "session_input_tokens",
+        "session_output_tokens",
+        "session_cache_read_tokens",
+        "session_cache_write_tokens",
+        "session_reasoning_tokens",
+        "_user_turn_count",
+        "_turns_since_memory",
+        "_iters_since_skill",
+    ):
+        setattr(agent, attr, 0)
+    agent.session_estimated_cost_usd = 0.0
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+    agent._session_messages = []
+    agent._last_aux_fallback_warning_key = None
+    agent._compression_warning = None
+    agent._gateway_turn_context_notes = ""
+    agent._current_api_request_id = ""
+    task_id = getattr(agent, "_current_task_id", None) or "default"
+    agent._current_turn_id = f"{child_session_id}:{task_id}:handoff"
+
+
+def _remove_failed_auto_artifact(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        logger.debug("Could not remove unused handoff artifact %s", path)
+
+
 def conversation_history_after_compression(agent: Any, messages: list) -> Optional[list]:
     """Return the correct flush baseline after a compression boundary.
 
@@ -442,6 +1039,25 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
     if bool(getattr(agent, "_last_compaction_in_place", False)):
         return list(messages)
     return None
+
+
+def persist_rejoined_partial_compression(agent: Any, messages: list) -> bool:
+    """Persist the full transcript after a manual head-only compression.
+
+    ``compress_context`` sees only the head selected by ``/compress here`` and
+    therefore cannot include the caller-owned verbatim tail in its boundary
+    write. Once the caller rejoins that tail, replace only the active rows. This
+    preserves the pre-compaction archive created by in-place compaction while
+    making both in-place and legacy-child sessions immediately resumable with
+    the exact rejoined transcript.
+    """
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if session_db is None or not session_id:
+        return False
+    session_db.replace_messages(session_id, messages, active_only=True)
+    _mark_child_messages_persisted(agent, messages)
+    return True
 
 
 _SYNTHETIC_USER_PREFIXES = (
@@ -1021,189 +1637,418 @@ def compress_context(
             })
         _ensure_compressed_has_user_turn(messages, compressed)
 
+        _prior_system_prompt = (
+            getattr(agent, "_cached_system_prompt", None) or system_message
+        )
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)
         agent._cached_system_prompt = new_system_prompt
 
-        if agent._session_db:
+        old_session_id: Optional[str] = None
+        boundary_completed = False
+        fresh_handoff_completed = False
+        _handoff_artifact: Optional[Path] = None
+        _handoff_packet: Optional[str] = None
+        _handoff_fallback_packet: Optional[str] = None
+        _planned_child_id: Optional[str] = None
+        _rotation_failure: Optional[Exception] = None
+        _fresh_parent_title: Optional[str] = None
+
+        session_db = getattr(agent, "_session_db", None)
+        parent_session_id = getattr(agent, "session_id", None)
+        try:
+            completed_compressions = max(
+                0, int(agent.context_compressor.compression_count or 0)
+            )
+        except (TypeError, ValueError):
+            completed_compressions = 0
+        try:
+            durable_handoffs = max(
+                0,
+                int(
+                    session_db.get_auto_handoff_count(parent_session_id)
+                    if session_db is not None and parent_session_id
+                    else getattr(agent, "_auto_handoff_count", 0)
+                ),
+            )
+        except Exception:
+            durable_handoffs = max(
+                0, int(getattr(agent, "_auto_handoff_count", 0) or 0)
+            )
+        agent._auto_handoff_count = durable_handoffs
+        try:
+            handoff_after = max(
+                1, int(getattr(agent, "_auto_handoff_after_compressions", 2))
+            )
+            handoff_max = max(
+                0, int(getattr(agent, "_auto_handoff_max_auto_handoffs", 1))
+            )
+        except (TypeError, ValueError):
+            handoff_after, handoff_max = 2, 1
+        handoff_mode = str(
+            getattr(agent, "_auto_handoff_mode", "prompt_user")
+            or "prompt_user"
+        ).lower()
+        handoff_eligible = bool(
+            getattr(agent, "_auto_handoff_on_compression_enabled", False)
+            and not force
+            and focus_topic is None
+            and session_db is not None
+            and parent_session_id
+            and completed_compressions >= handoff_after
+            and durable_handoffs < handoff_max
+            and handoff_mode in {"fresh_session", "prompt_user"}
+        )
+        if handoff_eligible:
+            _planned_child_id = (
+                _new_compression_session_id()
+                if handoff_mode == "fresh_session" or not in_place
+                else parent_session_id
+            )
             try:
-                # Trigger memory extraction on the current session before the
-                # transcript is rewritten (runs in BOTH modes — the logical
-                # conversation's pre-compaction turns are about to be summarized
-                # away regardless of whether the id rotates).
+                _handoff_packet = _build_handoff_packet(
+                    agent,
+                    messages,
+                    approx_tokens=approx_tokens,
+                    active_session_id=_planned_child_id,
+                    parent_session_id=(
+                        parent_session_id
+                        if _planned_child_id != parent_session_id
+                        else None
+                    ),
+                    automatic=True,
+                )
+                if (
+                    handoff_mode == "prompt_user"
+                    and _planned_child_id != parent_session_id
+                ):
+                    # Build the rollback coordinate variant before attempting
+                    # legacy rotation. If the transaction fails and compaction
+                    # persists in place, publication remains nonthrowing packet
+                    # selection rather than post-transition packet construction.
+                    _handoff_fallback_packet = _build_handoff_packet(
+                        agent,
+                        messages,
+                        approx_tokens=approx_tokens,
+                        active_session_id=parent_session_id,
+                        parent_session_id=None,
+                        automatic=True,
+                    )
+            except Exception as packet_error:
+                logger.warning(
+                    "Could not build bounded handoff packet; continuing with "
+                    "ordinary compression: %s",
+                    packet_error,
+                )
+                agent._emit_warning(
+                    f"⚠️ Could not build bounded handoff packet: {packet_error}"
+                )
+                handoff_eligible = False
+
+        # Memory extraction is independent from the DB transition. It must not
+        # be able to strand a committed child or prevent the safe persistence
+        # fallback from running.
+        if session_db is not None:
+            try:
                 agent.commit_memory_session(messages)
+            except Exception as memory_error:
+                logger.debug(
+                    "Pre-compression memory extraction failed: %s", memory_error
+                )
 
-                if in_place:
-                    # ── In-place compaction: keep the same session_id ──────────
-                    # No end_session, no new row, no parent_session_id, no title
-                    # renumber, no contextvar/env/logging re-sync. The session's
-                    # id, title, cwd, /goal, and gateway routing all stay put.
-                    #
-                    # Durable, NON-DESTRUCTIVE replace: soft-archive the
-                    # pre-compaction turns (active=0, kept on disk + FTS-searchable +
-                    # recoverable) and insert `compressed` as the new live (active=1)
-                    # set, atomically. `compressed` already carries the surviving
-                    # tail (current-turn messages the compressor kept via
-                    # protect_last_n), so we DON'T pre-flush here — a flush would
-                    # INSERT current-turn rows that archive_and_compact would then
-                    # archive alongside the rest (harmless but wasted writes). The
-                    # live-context load filters active=1, so a resume reloads ONLY
-                    # the compacted set; the original turns remain under the SAME id
-                    # for search/recovery (Teknium review — keep one durable id
-                    # WITHOUT destroying history, unlike a hard replace_messages).
-                    # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
-                    # Reset the flush identity set so the next turn's appends are
-                    # diffed against the COMPACTED transcript: the compacted dicts
-                    # are passed as conversation_history next turn and skipped by
-                    # identity, so only genuinely new turn messages get appended
-                    # (no dup of the summary, no resurrection of dropped turns).
+        # A fresh child's active context is the packet itself. Publish it before
+        # committing the transition so every potentially failing packet step is
+        # complete. A failed write consumes no quota and falls through to the
+        # current ordinary compaction behavior.
+        if (
+            handoff_eligible
+            and handoff_mode == "fresh_session"
+            and _handoff_packet
+            and _planned_child_id
+            and isinstance(new_system_prompt, str)
+            and new_system_prompt.strip()
+        ):
+            try:
+                _handoff_artifact = _publish_handoff_artifact(
+                    agent, _handoff_packet
+                )
+            except Exception as artifact_error:
+                logger.warning(
+                    "Could not publish bounded handoff packet; continuing with "
+                    "ordinary compression: %s",
+                    artifact_error,
+                )
+                agent._emit_warning(
+                    f"⚠️ Could not write bounded handoff packet: {artifact_error}"
+                )
+                handoff_eligible = False
+
+        if (
+            handoff_eligible
+            and handoff_mode == "fresh_session"
+            and _handoff_packet
+            and _handoff_artifact
+            and _planned_child_id
+        ):
+            assert session_db is not None
+            assert parent_session_id is not None
+            try:
+                _fresh_parent_title = session_db.get_session_title(
+                    parent_session_id
+                )
+            except Exception:
+                _fresh_parent_title = None
+            packet_messages = [{"role": "user", "content": _handoff_packet}]
+            rotated, consumed, _rotation_failure = _rotate_compression_session(
+                agent,
+                parent_session_id=parent_session_id,
+                child_session_id=_planned_child_id,
+                child_messages=packet_messages,
+                system_prompt=new_system_prompt,
+                consume_auto_handoff=True,
+            )
+            if rotated:
+                old_session_id = parent_session_id
+                boundary_completed = True
+                fresh_handoff_completed = True
+                compressed = packet_messages
+                _reset_agent_for_fresh_handoff(
+                    agent,
+                    parent_session_id=parent_session_id,
+                    child_session_id=_planned_child_id,
+                    system_prompt=new_system_prompt,
+                    child_messages=packet_messages,
+                    handoff_count=consumed,
+                )
+                try:
+                    from hermes_cli.goals import migrate_goal_to_session
+
+                    migrate_goal_to_session(
+                        parent_session_id,
+                        _planned_child_id,
+                        reason="compression",
+                    )
+                except Exception as goal_error:
+                    logger.debug(
+                        "Could not migrate goal on fresh handoff: %s",
+                        goal_error,
+                    )
+                if _fresh_parent_title:
+                    try:
+                        child_title = session_db.get_next_title_in_lineage(
+                            _fresh_parent_title
+                        )
+                        session_db.set_session_title(
+                            _planned_child_id, child_title
+                        )
+                    except Exception as title_error:
+                        logger.debug(
+                            "Could not propagate title on fresh handoff: %s",
+                            title_error,
+                        )
+                agent._emit_status(
+                    f"📦 Bounded handoff {consumed}/{handoff_max} started "
+                    f"session {agent.session_id}. Packet: {_handoff_artifact}"
+                )
+            else:
+                _remove_failed_auto_artifact(_handoff_artifact)
+                _handoff_artifact = None
+                logger.warning(
+                    "Fresh bounded handoff rolled back; preserving parent %s "
+                    "and using in-place compaction: %s",
+                    parent_session_id,
+                    _rotation_failure,
+                )
+                agent._emit_warning(
+                    "⚠️ Fresh handoff could not rotate atomically; continuing "
+                    "on the original session with in-place compaction."
+                )
+
+        if not fresh_handoff_completed and session_db is not None and parent_session_id:
+            # A failed fresh rotation always falls back in-place, even when the
+            # legacy config requested child rotation. This keeps routing on the
+            # active parent and gives the compressed transcript a coherent DB
+            # baseline rather than appending it over uncompressed rows.
+            persist_in_place = in_place or _rotation_failure is not None
+            if persist_in_place:
+                try:
+                    session_db.archive_and_compact(parent_session_id, compressed)
+                    try:
+                        session_db.update_system_prompt(
+                            parent_session_id, new_system_prompt
+                        )
+                    except Exception as prompt_error:
+                        logger.debug(
+                            "Could not refresh in-place system prompt: %s",
+                            prompt_error,
+                        )
                     agent._flushed_db_message_ids = set()
-                    # Rotation-independent signal: the conversation was compacted in
-                    # place (id unchanged). The gateway reads this (NOT an id-change
-                    # diff) to re-baseline transcript handling.
-                    compacted_in_place = True
-                else:
-                    # ── Rotation (legacy): end this session, fork a continuation ─
-                    # Flush any un-persisted current-turn messages to the OLD
-                    # session before ending it, so they survive in the preserved
-                    # parent transcript (#47202). (In-place skips this — see above.)
-                    try:
-                        agent._flush_messages_to_session_db(messages)
-                    except Exception:
-                        pass  # best-effort — don't block compression on a flush error
-                    # Propagate title to the new session with auto-numbering
-                    old_title = agent._session_db.get_session_title(agent.session_id)
-                    agent._session_db.end_session(agent.session_id, "compression")
-                    old_session_id = agent.session_id
-                    agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-                    # Ordering contract: the agent thread updates the contextvar here;
-                    # the gateway propagates to SessionEntry after run_in_executor returns.
-                    try:
-                        from gateway.session_context import set_current_session_id
-
-                        set_current_session_id(agent.session_id)
-                    except Exception:
-                        os.environ["HERMES_SESSION_ID"] = agent.session_id
-                    # The gateway/tools session context (ContextVar + env) and the
-                    # logging session context are SEPARATE mechanisms. The call above
-                    # moves the former; the ``[session_id]`` tag on log lines comes
-                    # from ``hermes_logging._session_context`` (set once per turn in
-                    # conversation_loop.py). Without this, post-rotation log lines in
-                    # the same turn keep the STALE old id while the message/DB/gateway
-                    # state carry the new one — breaking log correlation exactly at the
-                    # compaction boundary (see #34089). Guarded separately so a logging
-                    # failure can never regress the routing update above.
-                    try:
-                        from hermes_logging import set_session_context
-
-                        set_session_context(agent.session_id)
-                    except Exception:
-                        pass
-                    agent._session_db_created = False
-                    try:
-                        agent._session_db.create_session(
-                            session_id=agent.session_id,
-                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                            model=agent.model,
-                            model_config=agent._session_init_model_config,
-                            parent_session_id=old_session_id,
-                        )
-                    except Exception as _cs_err:
-                        # The child row could not be created (e.g. FK constraint,
-                        # contended write). Previously the outer handler simply
-                        # warned and let the agent continue on the NEW id — which
-                        # has no row in state.db, producing an orphan: the parent
-                        # is ended, the child is never indexed, and every
-                        # subsequent message is attributed to a session that
-                        # doesn't exist (#33906/#33907). Roll the live id back to
-                        # the parent so the conversation stays attached to a real,
-                        # indexed session instead of a phantom.
-                        logger.warning(
-                            "Compression child session create failed (%s) — "
-                            "rolling back to parent session %s to avoid an orphan.",
-                            _cs_err, old_session_id,
-                        )
-                        agent.session_id = old_session_id
-                        try:
-                            from gateway.session_context import set_current_session_id
-                            set_current_session_id(agent.session_id)
-                        except Exception:
-                            os.environ["HERMES_SESSION_ID"] = agent.session_id
-                        try:
-                            from hermes_logging import set_session_context
-                            set_session_context(agent.session_id)
-                        except Exception:
-                            pass
-                        # Re-open the parent: it was ended above, but we're
-                        # continuing on it, so it must not stay closed.
-                        try:
-                            agent._session_db.reopen_session(old_session_id)
-                        except Exception:
-                            pass
-                        old_session_id = None  # no rotation happened
-                        # The parent row already exists in state.db, so mark the
-                        # session as created — _ensure_db_session would otherwise
-                        # retry a (harmless INSERT OR IGNORE) create next turn.
-                        agent._session_db_created = True
-                        raise
-                    agent._session_db_created = True
-                    # Carry a persistent /goal onto the continuation session.
-                    # Compression mints a fresh child id; load_goal does a flat
-                    # per-session lookup with no parent walk, so without this an
-                    # active goal silently dies at the boundary (#33618).
-                    try:
-                        from hermes_cli.goals import migrate_goal_to_session
-                        migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
-                    except Exception as _goal_err:
-                        logger.debug("Could not migrate goal on compression: %s", _goal_err)
-                    # Auto-number the title for the continuation session
-                    if old_title:
-                        try:
-                            new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                            agent._session_db.set_session_title(agent.session_id, new_title)
-                        except (ValueError, Exception) as e:
-                            logger.debug("Could not propagate title on compression: %s", e)
-
-                # Shared post-write steps (both modes target agent.session_id, which
-                # in-place keeps and rotation has already reassigned to the new id):
-                # refresh the stored system prompt and reset the flush cursor so the
-                # next turn re-bases its append diff.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-                if in_place:
                     agent._last_flushed_db_idx = 0
-                else:
-                    # A headless turn can be killed before its finalizer. Persist
-                    # the rotated child's compacted handoff at the boundary so
-                    # the new session is immediately resumable.
-                    agent._session_db.replace_messages(agent.session_id, compressed)
-                    agent._last_flushed_db_idx = len(compressed)
-                    agent._flushed_db_message_session_id = agent.session_id
-                    agent._flushed_db_message_ids = {
-                        id(message)
-                        for message in compressed
-                        if isinstance(message, dict)
-                    }
-            except Exception as e:
-                # If the rotation rolled back to the parent (orphan-avoidance
-                # above), agent.session_id is the still-indexed parent and
-                # old_session_id was cleared — so this is recovery, not an
-                # un-indexed orphan. Otherwise an earlier step failed before the
-                # child was created and the warning's original meaning holds.
-                if locals().get("old_session_id") is None and not in_place:
+                    agent._flushed_db_message_session_id = parent_session_id
+                    compacted_in_place = True
+                    boundary_completed = True
+                except Exception as fallback_error:
                     logger.warning(
-                        "Compression rotation aborted and rolled back to the "
-                        "parent session (%s): %s", agent.session_id or "?", e,
+                        "In-place compression persistence failed for active "
+                        "session %s: %s",
+                        parent_session_id,
+                        fallback_error,
+                    )
+                    agent._cached_system_prompt = _prior_system_prompt
+                    return messages, _prior_system_prompt
+            else:
+                # Legacy child rotation now uses the same single transaction as
+                # fresh handoff: strict child insert + transcript + parent close.
+                try:
+                    agent._flush_messages_to_session_db(messages)
+                except Exception as flush_error:
+                    logger.warning(
+                        "Could not flush the parent before compression rotation; "
+                        "falling back in-place: %s",
+                        flush_error,
+                    )
+                    _rotation_failure = flush_error
+
+                old_title = None
+                try:
+                    old_title = session_db.get_session_title(parent_session_id)
+                except Exception:
+                    pass
+                child_id = _planned_child_id or _new_compression_session_id()
+                if _rotation_failure is None:
+                    rotated, inherited_count, _rotation_failure = (
+                        _rotate_compression_session(
+                            agent,
+                            parent_session_id=parent_session_id,
+                            child_session_id=child_id,
+                            child_messages=compressed,
+                            system_prompt=new_system_prompt,
+                            consume_auto_handoff=False,
+                        )
                     )
                 else:
-                    logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                    rotated, inherited_count = False, durable_handoffs
 
-        # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
-        # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
-        # is the id the boundary notifications attribute the prior state to: the old
-        # id on rotation, the (unchanged) current id in-place.
-        _old_sid = locals().get("old_session_id")
-        _is_boundary = bool(_old_sid) or in_place
+                if rotated:
+                    old_session_id = parent_session_id
+                    boundary_completed = True
+                    agent.session_id = child_id
+                    agent._parent_session_id = parent_session_id
+                    agent._session_db_created = True
+                    agent._auto_handoff_count = inherited_count
+                    child_config = dict(
+                        getattr(agent, "_session_init_model_config", {}) or {}
+                    )
+                    child_config["_auto_handoff_count"] = inherited_count
+                    agent._session_init_model_config = child_config
+                    _mark_child_messages_persisted(agent, compressed)
+                    _sync_rotated_session_context(agent, child_id)
+                    try:
+                        from hermes_cli.goals import migrate_goal_to_session
+
+                        migrate_goal_to_session(
+                            parent_session_id, child_id, reason="compression"
+                        )
+                    except Exception as goal_error:
+                        logger.debug(
+                            "Could not migrate goal on compression: %s", goal_error
+                        )
+                    if old_title:
+                        try:
+                            new_title = session_db.get_next_title_in_lineage(old_title)
+                            session_db.set_session_title(child_id, new_title)
+                        except Exception as title_error:
+                            logger.debug(
+                                "Could not propagate title on compression: %s",
+                                title_error,
+                            )
+                else:
+                    logger.warning(
+                        "Atomic compression rotation rolled back; preserving "
+                        "parent %s and using in-place compaction: %s",
+                        parent_session_id,
+                        _rotation_failure,
+                    )
+                    try:
+                        session_db.archive_and_compact(
+                            parent_session_id, compressed
+                        )
+                        try:
+                            session_db.update_system_prompt(
+                                parent_session_id, new_system_prompt
+                            )
+                        except Exception:
+                            pass
+                        agent.session_id = parent_session_id
+                        agent._session_db_created = True
+                        _sync_rotated_session_context(agent, parent_session_id)
+                        agent._flushed_db_message_ids = set()
+                        agent._last_flushed_db_idx = 0
+                        agent._flushed_db_message_session_id = parent_session_id
+                        compacted_in_place = True
+                        boundary_completed = True
+                    except Exception as fallback_error:
+                        logger.warning(
+                            "Compression rotation and in-place fallback both "
+                            "failed for %s: %s",
+                            parent_session_id,
+                            fallback_error,
+                        )
+                        agent._cached_system_prompt = _prior_system_prompt
+                        return messages, _prior_system_prompt
+
+        # Prompt-only mode never changes the normal persistence semantics. The
+        # packet was built before any legacy rotation and is published only
+        # after final session coordinates are authoritative. Consume quota only
+        # after successful publication; delete the artifact if DB consumption
+        # loses a race or fails, so failed writes/updates cannot burn quota.
+        if (
+            handoff_eligible
+            and handoff_mode == "prompt_user"
+            and _handoff_packet
+            and boundary_completed
+            and session_db is not None
+            and agent.session_id
+        ):
+            try:
+                if (
+                    _handoff_fallback_packet
+                    and agent.session_id != _planned_child_id
+                ):
+                    _handoff_packet = _handoff_fallback_packet
+                _handoff_artifact = _publish_handoff_artifact(
+                    agent, _handoff_packet
+                )
+                consumed = session_db.consume_auto_handoff(
+                    agent.session_id,
+                    max_auto_handoffs=handoff_max,
+                )
+                agent._auto_handoff_count = consumed
+                child_config = dict(
+                    getattr(agent, "_session_init_model_config", {}) or {}
+                )
+                child_config["_auto_handoff_count"] = consumed
+                agent._session_init_model_config = child_config
+                agent._emit_status(
+                    f"📦 Session quality threshold reached. Review the "
+                    f"bounded packet before /new: {_handoff_artifact}"
+                )
+            except Exception as artifact_error:
+                _remove_failed_auto_artifact(_handoff_artifact)
+                _handoff_artifact = None
+                logger.warning(
+                    "Could not write/record prompt-only handoff packet: %s",
+                    artifact_error,
+                )
+                agent._emit_warning(
+                    f"⚠️ Could not write bounded handoff packet: {artifact_error}"
+                )
+
+        # Compaction-boundary bookkeeping uses explicit completed persistence,
+        # never merely the configured in_place flag. This keeps null-DB and
+        # rolled-back transitions from publishing false gateway coordinates.
+        _old_sid = old_session_id
+        _is_boundary = boundary_completed
         _boundary_parent = _old_sid or agent.session_id or ""
 
         # Notify the context engine that a compaction boundary occurred. Plugin
@@ -1218,6 +2063,7 @@ def compress_context(
                     agent.session_id or "",
                     boundary_reason="compression",
                     old_session_id=_boundary_parent,
+                    fresh_handoff=fresh_handoff_completed,
                     platform=getattr(agent, "platform", None) or "cli",
                     conversation_id=getattr(agent, "_gateway_session_key", None),
                 )
@@ -1247,7 +2093,7 @@ def compress_context(
         # not just CLI stdout. _emit_status still _vprints for the CLI, and
         # storing it on _compression_warning lets replay_compression_warning
         # re-deliver it once a late-bound gateway status_callback is wired (#36908).
-        _cc = agent.context_compressor.compression_count
+        _cc = completed_compressions
         if _cc >= 2:
             _cc_msg = (
                 f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
@@ -1266,8 +2112,8 @@ def compress_context(
                     "platform": agent.platform or "",
                     "session_id": agent.session_id,
                     "old_session_id": _old_sid or "",
-                    "in_place": in_place,
-                    "compression_count": agent.context_compressor.compression_count,
+                    "in_place": compacted_in_place,
+                    "compression_count": completed_compressions,
                 })
             except Exception as e:
                 logger.debug("event_callback error on session:compress: %s", e)
@@ -1286,15 +2132,16 @@ def compress_context(
             system_prompt=new_system_prompt or "",
             tools=agent.tools or None,
         )
-        agent.context_compressor.last_compression_rough_tokens = _compressed_est
-        agent.context_compressor.last_prompt_tokens = -1
-        agent.context_compressor.last_completion_tokens = 0
-        agent.context_compressor.awaiting_real_usage_after_compression = True
+        if not fresh_handoff_completed:
+            agent.context_compressor.last_compression_rough_tokens = _compressed_est
+            agent.context_compressor.last_prompt_tokens = -1
+            agent.context_compressor.last_completion_tokens = 0
+            agent.context_compressor.awaiting_real_usage_after_compression = True
         # Arm the effectiveness verdict only after a completed rewrite crosses
         # the full compaction boundary. Exceptions, aborts, and no-op attempts
         # leave this false, so unrelated later usage cannot be charged to an
         # attempt that never changed the transcript.
-        if _compression_made_progress:
+        if _compression_made_progress and not fresh_handoff_completed:
             record_boundary = getattr(
                 type(agent.context_compressor),
                 "record_completed_compaction",
@@ -1318,9 +2165,10 @@ def compress_context(
             pass
 
         logger.info(
-            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
+            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=%s",
             agent.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
+            not fresh_handoff_completed,
         )
         return compressed, new_system_prompt
     finally:

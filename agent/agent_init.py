@@ -1593,6 +1593,69 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Proactive compression handoff policy. Disabled by default; when
+    # enabled, repeated successful context compression can generate a
+    # structured handoff packet and optionally continue from a fresh linked
+    # session. Keep parsing tolerant so bad config never prevents agent
+    # startup.
+    _auto_handoff_cfg = _agent_section.get("auto_handoff_on_compression", {})
+    if not isinstance(_auto_handoff_cfg, dict):
+        _auto_handoff_cfg = {}
+    agent._auto_handoff_on_compression_enabled = str(
+        _auto_handoff_cfg.get("enabled", False)
+    ).lower() in {"true", "1", "yes", "on"}
+    try:
+        agent._auto_handoff_after_compressions = max(
+            1, int(_auto_handoff_cfg.get("after_compressions", 2))
+        )
+    except (TypeError, ValueError):
+        agent._auto_handoff_after_compressions = 2
+    try:
+        agent._auto_handoff_max_auto_handoffs = max(
+            0, int(_auto_handoff_cfg.get("max_auto_handoffs", 1))
+        )
+    except (TypeError, ValueError):
+        agent._auto_handoff_max_auto_handoffs = 1
+    _auto_handoff_mode = str(
+        _auto_handoff_cfg.get("mode", "prompt_user") or "prompt_user"
+    ).strip().lower()
+    if _auto_handoff_mode not in {"prompt_user", "fresh_session"}:
+        _ra().logger.warning(
+            "Invalid agent.auto_handoff_on_compression.mode=%r — using prompt_user",
+            _auto_handoff_mode,
+        )
+        _auto_handoff_mode = "prompt_user"
+    agent._auto_handoff_mode = _auto_handoff_mode
+    agent._auto_handoff_artifact_dir = str(
+        _auto_handoff_cfg.get("handoff_artifact_dir", ".hermes/handoffs")
+        or ".hermes/handoffs"
+    )
+    # The quota belongs to the compression lineage, not this in-memory agent.
+    # Compression children persist the consumed count in model_config; reload it
+    # on resume/restart so a fresh process cannot mint an unlimited descendant
+    # chain by resetting the counter to zero.
+    agent._auto_handoff_count = 0
+    if agent._session_db is not None and agent.session_id:
+        try:
+            _get_handoff_count = getattr(
+                agent._session_db, "get_auto_handoff_count", None
+            )
+            if callable(_get_handoff_count):
+                _raw_handoff_count = _get_handoff_count(agent.session_id)
+                if isinstance(_raw_handoff_count, (int, float, str)):
+                    agent._auto_handoff_count = max(
+                        0, int(_raw_handoff_count or 0)
+                    )
+        except Exception as _handoff_count_err:
+            _ra().logger.debug(
+                "Could not load bounded-handoff count for session %s: %s",
+                agent.session_id,
+                _handoff_count_err,
+            )
+    agent._session_init_model_config["_auto_handoff_count"] = (
+        agent._auto_handoff_count
+    )
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

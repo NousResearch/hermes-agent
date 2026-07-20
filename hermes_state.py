@@ -2013,6 +2013,194 @@ class SessionDB:
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
+    @staticmethod
+    def _auto_handoff_count_from_config(raw_config: Any) -> int:
+        """Read the durable bounded-handoff counter from model_config."""
+        if isinstance(raw_config, str):
+            try:
+                raw_config = json.loads(raw_config)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return 0
+        if not isinstance(raw_config, dict):
+            return 0
+        value = raw_config.get("_auto_handoff_count", 0)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, parsed)
+
+    def get_auto_handoff_count(self, session_id: str) -> int:
+        """Return the durable bounded-handoff count for *session_id*."""
+        session = self.get_session(session_id)
+        if not session:
+            return 0
+        return self._auto_handoff_count_from_config(session.get("model_config"))
+
+    def consume_auto_handoff(
+        self, session_id: str, *, max_auto_handoffs: int
+    ) -> int:
+        """Atomically consume one prompt-only handoff quota unit.
+
+        The active-session validation and compare/increment happen in the same
+        write transaction, so concurrent compaction paths cannot both consume
+        the last available unit.
+        """
+        maximum = max(0, int(max_auto_handoffs))
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT ended_at, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None or row["ended_at"] is not None:
+                raise ValueError(
+                    f"auto-handoff requires an active parent session: {session_id}"
+                )
+            count = self._auto_handoff_count_from_config(row["model_config"])
+            if count >= maximum:
+                raise ValueError(
+                    f"auto-handoff quota exhausted for session {session_id}"
+                )
+            try:
+                model_config = json.loads(row["model_config"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                model_config = {}
+            if not isinstance(model_config, dict):
+                model_config = {}
+            count += 1
+            model_config["_auto_handoff_count"] = count
+            result = conn.execute(
+                "UPDATE sessions SET model_config = ? "
+                "WHERE id = ? AND ended_at IS NULL",
+                (json.dumps(model_config), session_id),
+            )
+            if result.rowcount != 1:
+                raise ValueError(
+                    f"auto-handoff requires an active parent session: {session_id}"
+                )
+            return count
+
+        return self._execute_write(_do)
+
+    def rotate_session_for_compression(
+        self,
+        *,
+        parent_session_id: str,
+        child_session_id: str,
+        source: str,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        model: str = None,
+        model_config: Dict[str, Any] = None,
+        system_prompt: str = None,
+        user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
+        cwd: str = None,
+        profile_name: str = None,
+        consume_auto_handoff: bool = False,
+        max_auto_handoffs: Optional[int] = None,
+    ) -> int:
+        """Atomically create a compression child and close its active parent.
+
+        Validation, the strict child INSERT, initial child transcript, and the
+        parent ``end_reason='compression'`` update share one ``BEGIN IMMEDIATE``
+        transaction. Any child/message/end trigger failure therefore rolls the
+        entire transition back; callers never need to fake a transaction with
+        ``create_session()`` plus ``end_session()`` compensation.
+
+        Returns the lineage's durable auto-handoff count. When
+        ``consume_auto_handoff`` is true, quota validation/increment is part of
+        this same transaction and the increment is written into the child's
+        model_config before publication.
+        """
+        if not parent_session_id or not child_session_id:
+            raise ValueError("compression rotation requires parent and child ids")
+        if parent_session_id == child_session_id:
+            raise ValueError("compression rotation child must differ from parent")
+        child_messages = list(messages or [])
+        supplied_config = dict(model_config or {})
+        maximum = (
+            max(0, int(max_auto_handoffs))
+            if max_auto_handoffs is not None
+            else 0
+        )
+
+        def _do(conn):
+            parent = conn.execute(
+                """SELECT source, user_id, session_key, chat_id, chat_type,
+                          thread_id, model_config, cwd, profile_name, ended_at
+                   FROM sessions WHERE id = ?""",
+                (parent_session_id,),
+            ).fetchone()
+            if parent is None or parent["ended_at"] is not None:
+                raise ValueError(
+                    "compression rotation requires an active parent session: "
+                    f"{parent_session_id}"
+                )
+
+            handoff_count = self._auto_handoff_count_from_config(
+                parent["model_config"]
+            )
+            if consume_auto_handoff:
+                if handoff_count >= maximum:
+                    raise ValueError(
+                        "auto-handoff quota exhausted for session "
+                        f"{parent_session_id}"
+                    )
+                handoff_count += 1
+
+            child_config = dict(supplied_config)
+            child_config["_auto_handoff_count"] = handoff_count
+            conn.execute(
+                """INSERT INTO sessions (
+                       id, source, user_id, session_key, chat_id, chat_type,
+                       thread_id, model, model_config, system_prompt,
+                       parent_session_id, cwd, profile_name, started_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    child_session_id,
+                    source or parent["source"] or "cli",
+                    user_id if user_id is not None else parent["user_id"],
+                    session_key if session_key is not None else parent["session_key"],
+                    chat_id if chat_id is not None else parent["chat_id"],
+                    chat_type if chat_type is not None else parent["chat_type"],
+                    thread_id if thread_id is not None else parent["thread_id"],
+                    model,
+                    json.dumps(child_config),
+                    system_prompt,
+                    parent_session_id,
+                    cwd if cwd is not None else parent["cwd"],
+                    profile_name
+                    if profile_name is not None
+                    else parent["profile_name"],
+                    time.time(),
+                ),
+            )
+            inserted, tool_calls = self._insert_message_rows(
+                conn, child_session_id, child_messages
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (inserted, tool_calls, child_session_id),
+            )
+            ended = conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = 'compression' "
+                "WHERE id = ? AND ended_at IS NULL",
+                (time.time(), parent_session_id),
+            )
+            if ended.rowcount != 1:
+                raise ValueError(
+                    "compression rotation requires an active parent session: "
+                    f"{parent_session_id}"
+                )
+            return handoff_count
+
+        return self._execute_write(_do)
+
     def record_gateway_session_peer(
         self,
         session_id: str,
@@ -2772,17 +2960,49 @@ class SessionDB:
         model_config_json: str,
         model: Optional[str] = None,
     ) -> None:
-        """Update model_config and optionally model for an existing session.
+        """Update runtime metadata without overwriting SessionDB-owned keys.
 
         Uses COALESCE so that passing model=None leaves the stored model
-        column unchanged.  Routes through _execute_write for the standard
-        BEGIN IMMEDIATE + jitter-retry + lock guarantee.
+        column unchanged. The read/merge/write routes through _execute_write,
+        keeping reserved metadata preservation in the same BEGIN IMMEDIATE
+        transaction as the update.
         """
+        owned_keys = ("_auto_handoff_count",)
+
         def _do(conn):
+            row = conn.execute(
+                "SELECT model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return
+
+            try:
+                incoming_config = json.loads(model_config_json)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("model_config_json must encode a JSON object") from exc
+            if not isinstance(incoming_config, dict):
+                raise ValueError("model_config_json must encode a JSON object")
+
+            try:
+                stored_config = json.loads(row["model_config"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                stored_config = {}
+            if not isinstance(stored_config, dict):
+                stored_config = {}
+
+            merged_config = dict(incoming_config)
+            for key in owned_keys:
+                merged_config.pop(key, None)
+                if key in stored_config:
+                    merged_config[key] = stored_config[key]
+
             conn.execute(
-                "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                (model_config_json, model, session_id),
+                "UPDATE sessions SET model_config = ?, "
+                "model = COALESCE(?, model) WHERE id = ?",
+                (json.dumps(merged_config), model, session_id),
             )
+
         self._execute_write(_do)
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:

@@ -435,6 +435,9 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      delegationInherit: string
+      delegationCustomModelId: string
+      delegationCurrentlyInheriting: string
     }
     credentials: {
       pasteKey: string

@@ -13,6 +13,11 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   diagnostics on every open/change, exit cleanly on shutdown.
 - ``"errors"`` — same as ``clean`` but the published diagnostics
   carry one severity-1 entry pointing at line 0:0.
+- ``"sequence"`` — emit a per-publish sequence of states read from the
+  ``MOCK_LSP_SEQUENCE`` env var (comma-separated ``error``/``clean``,
+  e.g. ``"error,clean,error"``).  Each ``didOpen``/``didChange`` advances
+  to the next state; the final state repeats for any further pushes.  Lets
+  a test drive an old-error → clean → later-edit lifecycle deterministically.
 - ``"crash"`` — exit immediately after responding to ``initialize``
   (simulates a crashing server).
 - ``"slow"`` — same as ``clean`` but sleeps 1s before responding to
@@ -56,6 +61,14 @@ def write_message(obj):
 
 def main():
     script = os.environ.get("MOCK_LSP_SCRIPT", "clean")
+    # For the "sequence" script: a per-publish list of "error"/"clean"
+    # states and a cursor that advances on each didOpen/didChange.
+    sequence = [
+        s.strip()
+        for s in os.environ.get("MOCK_LSP_SEQUENCE", "").split(",")
+        if s.strip()
+    ]
+    publish_index = 0
 
     while True:
         msg = read_message()
@@ -96,20 +109,24 @@ def main():
             td = params.get("textDocument") or {}
             uri = td.get("uri", "")
             version = td.get("version", 0)
+            error_diag = {
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 5},
+                },
+                "severity": 1,
+                "code": "MOCK001",
+                "source": "mock-lsp",
+                "message": "synthetic error from mock-lsp",
+            }
             diagnostics = []
             if script == "errors":
-                diagnostics = [
-                    {
-                        "range": {
-                            "start": {"line": 0, "character": 0},
-                            "end": {"line": 0, "character": 5},
-                        },
-                        "severity": 1,
-                        "code": "MOCK001",
-                        "source": "mock-lsp",
-                        "message": "synthetic error from mock-lsp",
-                    }
-                ]
+                diagnostics = [error_diag]
+            elif script == "sequence" and sequence:
+                state = sequence[min(publish_index, len(sequence) - 1)]
+                publish_index += 1
+                if state == "error":
+                    diagnostics = [error_diag]
             write_message(
                 {
                     "jsonrpc": "2.0",

@@ -369,13 +369,16 @@ class LSPService:
                 diags = [d for d in diags if _diag_key(d) not in seen]
             # Roll baseline forward — next call returns deltas relative
             # to the just-emitted state, mirroring claude-code's
-            # diagnosticTracking.
+            # diagnosticTracking.  An empty snapshot is a real result
+            # (the file is now clean), not a "skip": roll it forward too
+            # so a baseline captured before a since-fixed error doesn't
+            # linger and either re-surface or mask the next edit's
+            # genuine diagnostics.
             try:
                 fresh = self._loop.run(self._current_diags_async(file_path), timeout=2.0) or []
             except Exception:  # noqa: BLE001
                 fresh = []
-            if fresh:
-                self._delta_baseline[abs_path] = fresh
+            self._delta_baseline[abs_path] = fresh
 
         if diags:
             eventlog.log_diagnostics(server_id, file_path, len(diags))
@@ -478,8 +481,16 @@ class LSPService:
         srv = find_server_for_file(file_path)
         if not (ws and gated and srv):
             return []
+        # Resolve the per-server root exactly as _get_or_spawn() does:
+        # clients are keyed by (server_id, per_server_root), which can
+        # differ from the git workspace root for nested projects.  Keying
+        # on the bare workspace root here would miss the live client and
+        # return a false-empty snapshot, wrongly clearing the baseline.
+        per_server_root = srv.resolve_root(file_path, ws)
+        if per_server_root is None:
+            return []
         with self._state_lock:
-            client = self._clients.get((srv.server_id, ws))
+            client = self._clients.get((srv.server_id, per_server_root))
         if client is None:
             return []
         return list(client.diagnostics_for(file_path))

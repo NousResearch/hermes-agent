@@ -173,6 +173,48 @@ class TestStartRun:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_start_forwards_empty_enabled_toolsets_to_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "enabled_toolsets": []},
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.called:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert mock_create.call_args.kwargs["enabled_toolsets_override"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "enabled_toolsets",
+        [None, "terminal", ["terminal", 1], [""], {"terminal": True}],
+    )
+    async def test_start_rejects_invalid_enabled_toolsets(
+        self, adapter, enabled_toolsets
+    ):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "enabled_toolsets": enabled_toolsets},
+            )
+        assert resp.status == 400
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
     async def test_start_invalid_history_does_not_allocate_run(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

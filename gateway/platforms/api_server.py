@@ -1712,6 +1712,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1732,6 +1733,11 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``enabled_toolsets_override`` is a per-run restriction. It may only
+        remove toolsets from the API server platform configuration; it cannot
+        grant a toolset that the platform did not already expose. An explicit
+        empty list therefore creates a genuinely tool-free agent.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1805,7 +1811,13 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        platform_toolsets = set(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets_override is None:
+            enabled_toolsets = sorted(platform_toolsets)
+        else:
+            enabled_toolsets = sorted(
+                platform_toolsets.intersection(enabled_toolsets_override)
+            )
 
         max_iterations = _current_max_iterations()
 
@@ -1983,6 +1995,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
+                "run_toolset_restriction": True,
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
@@ -4700,6 +4713,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
+        enabled_toolsets_override = None
+        if "enabled_toolsets" in body:
+            raw_enabled_toolsets = body["enabled_toolsets"]
+            if not isinstance(raw_enabled_toolsets, list) or any(
+                not isinstance(item, str) or not item.strip()
+                for item in raw_enabled_toolsets
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "'enabled_toolsets' must be an array of non-empty strings"
+                    ),
+                    status=400,
+                )
+            enabled_toolsets_override = list(dict.fromkeys(raw_enabled_toolsets))
+
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
@@ -4823,6 +4851,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        enabled_toolsets_override=enabled_toolsets_override,
                     )
                 self._active_run_agents[run_id] = agent
 

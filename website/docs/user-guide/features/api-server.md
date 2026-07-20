@@ -252,7 +252,18 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, `previous_response_id`, or `enabled_toolsets`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+
+`enabled_toolsets` is a per-run restriction, not a capability grant. Hermes intersects it with the API server platform's configured toolsets, so a client cannot enable tools that the platform does not expose. Send an empty array to create a genuinely tool-free run:
+
+```json
+{
+  "input": "Summarize the supplied document without external actions.",
+  "enabled_toolsets": []
+}
+```
+
+Clients that require this security boundary should first verify `features.run_toolset_restriction` from `GET /v1/capabilities`; older servers may ignore unknown request fields.
 
 ### GET /v1/runs/\{run_id\}
 

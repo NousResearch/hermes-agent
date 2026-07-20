@@ -808,6 +808,22 @@ class TestLowercaseDottedConfigKeys:
         result = redact_sensitive_text(text)
         assert "mysecretvalue123" not in result
 
+    def test_shell_substitutions_in_config_assignments_unchanged(self):
+        texts = [
+            "password=$(cat /run/secrets/db_password)",
+            "app.token=`cat /run/secrets/app_token`",
+            'password="$(cat /run/secrets/db_password)"',
+            "app.token='`cat /run/secrets/app_token`'",
+        ]
+        for text in texts:
+            assert redact_sensitive_text(text) == text
+
+    def test_config_literals_with_shell_metacharacters_still_redacted(self):
+        secrets = ["literal$secret", "literal`secret"]
+        for secret in secrets:
+            assert secret not in redact_sensitive_text(f"password={secret}")
+            assert secret not in redact_sensitive_text(f"app.token={secret}")
+
     def test_yaml_unquoted_password(self):
         text = "password: Sup3rS3cret!"
         result = redact_sensitive_text(text)

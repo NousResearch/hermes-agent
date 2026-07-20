@@ -9,6 +9,7 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { GridTestOverlay } from './gridTestOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -157,6 +158,7 @@ export function FloatingOverlays({
   const theme = useStore($uiTheme)
 
   const hasAny =
+    overlay.gridTest ||
     overlay.modelPicker ||
     overlay.pager ||
     overlay.petPicker ||
@@ -178,6 +180,12 @@ export function FloatingOverlays({
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+      {overlay.gridTest && (
+        <FloatBox color={theme.color.border}>
+          <GridTestOverlay cols={Math.max(24, cols - 6)} state={overlay.gridTest} t={theme} />
+        </FloatBox>
+      )}
+
       {overlay.sessions && (
         <FloatBox color={theme.color.border}>
           <ActiveSessionSwitcher

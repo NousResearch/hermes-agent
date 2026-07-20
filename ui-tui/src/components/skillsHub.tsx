@@ -11,7 +11,7 @@ const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
+export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
   const [skillsByCat, setSkillsByCat] = useState<Record<string, string[]>>({})
   const [selectedCat, setSelectedCat] = useState('')
   const [catIdx, setCatIdx] = useState(0)
@@ -23,7 +23,10 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const terminalWidth = Math.max(1, (stdout?.columns ?? 80) - 6)
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, terminalWidth))
+  const widthCap = Math.max(24, Math.trunc(maxWidth ?? preferredWidth))
+  const width = Math.max(24, Math.min(preferredWidth, widthCap))
 
   useEffect(() => {
     gw.request<{ skills?: Record<string, string[]> }>('skills.manage', { action: 'list' })
@@ -303,6 +306,7 @@ interface SkillInfo {
 
 interface SkillsHubProps {
   gw: GatewayClient
+  maxWidth?: number
   onClose: () => void
   t: Theme
 }

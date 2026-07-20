@@ -35,12 +35,9 @@ _PNG = base64.b64decode(
 
 
 @pytest.fixture
-def kanban_home(tmp_path: Path, monkeypatch):
-    """Isolated HERMES_HOME with a fresh kanban DB for each test."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    """Isolated HERMES_HOME with a fresh kanban DB (shared fail-closed guard)."""
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
 

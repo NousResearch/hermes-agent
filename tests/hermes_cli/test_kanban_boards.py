@@ -36,32 +36,17 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def fresh_home(tmp_path, monkeypatch):
+def fresh_home(tmp_path, monkeypatch, isolate_kanban_root):
     """Isolated HERMES_HOME with no prior kanban state.
 
-    The autouse hermetic conftest already nukes credentials + TZ; this
-    fixture layers a per-test HERMES_HOME plus a path-init cache reset
-    so each test sees a truly empty board set.
+    Routes through the shared fail-closed guard (tests/conftest.py): it
+    clears every inherited Kanban pin, resets the path-init cache, and
+    asserts the resolved home + kanban.db stay under ``tmp_path`` so each
+    test sees a truly empty board set that can never touch a live board.
+    Board-resolution tests in this file layer their own pins on top after
+    setup, which is unaffected by the setup-time containment check.
     """
-    home = tmp_path / "hermes_home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    for var in (
-        "HERMES_KANBAN_DB",
-        "HERMES_KANBAN_WORKSPACES_ROOT",
-        "HERMES_KANBAN_HOME",
-        "HERMES_KANBAN_BOARD",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    # Also reset hermes_constants cache so get_default_hermes_root() re-reads.
-    try:
-        import hermes_constants
-        hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    # Kanban module-level init cache must not leak between tests.
-    kb._INITIALIZED_PATHS.clear()
-    return home
+    return isolate_kanban_root(tmp_path, monkeypatch, home=tmp_path / "hermes_home")
 
 
 # ---------------------------------------------------------------------------

@@ -7,24 +7,26 @@ the task is skipped (existing behavior preserved).
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 
 import pytest
 
 
 @pytest.fixture()
-def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
-    test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
-    monkeypatch.setenv("HERMES_HOME", test_home)
+def isolated_kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    Routes the home through the shared fail-closed guard (tests/conftest.py)
+    so it lives under ``tmp_path`` and every inherited Kanban pin is cleared
+    before resolution — replacing the previous out-of-tmp ``mkdtemp`` home.
+    """
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     # Force-reimport so the fresh HERMES_HOME is picked up.
     for mod in list(sys.modules.keys()):
         if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
             del sys.modules[mod]
     from hermes_cli import kanban_db
-    yield kanban_db, test_home
+    yield kanban_db, str(home)
     # Cleanup is best-effort; tempfile dir survives but pytest isolation
     # gives each test its own monkeypatched HERMES_HOME so no cross-test
     # contamination.

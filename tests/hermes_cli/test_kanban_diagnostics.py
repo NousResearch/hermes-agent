@@ -24,11 +24,9 @@ from hermes_cli import kanban_diagnostics as kd
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard (tests/conftest.py).
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
 

@@ -38,12 +38,14 @@ from hermes_cli import kanban_db as kb
 
 
 @pytest.fixture
-def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolated HERMES_HOME with an empty kanban DB."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolate_kanban_root) -> Path:
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    Routes through the shared fail-closed guard (tests/conftest.py) so a
+    poisoned inherited Kanban pin can never redirect these mutations at a
+    live board.
+    """
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
 

@@ -24,15 +24,10 @@ from hermes_cli import kanban_db as kb
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard (tests/conftest.py).
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db_path = kb.kanban_db_path(board="default")
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
     kb.init_db()
     return home
 

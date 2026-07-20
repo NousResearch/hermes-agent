@@ -138,7 +138,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
-        "kanban_unblock",
+        "kanban_unblock", "kanban_archive",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -149,20 +149,28 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def worker_env(monkeypatch, tmp_path):
+def worker_env(monkeypatch, tmp_path, isolate_kanban_root):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
-    after we've created the task."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    after we've created the task.
+
+    Every mutation-capable test built on this fixture must run against a
+    freshly-created temp DB, never a developer's (or CI's) live board. The
+    shared :func:`tests.conftest._isolate_kanban_root` helper scrubs any
+    inherited Kanban pins — a stray ``HERMES_KANBAN_DB`` /
+    ``HERMES_KANBAN_BOARD`` / ``HERMES_KANBAN_TASK`` would otherwise route
+    resolution away from this test's tempdir — and asserts that BOTH the
+    resolved kanban home and ``kanban.db`` live under the temp root before
+    anything is created. (conftest's autouse ``_hermetic_environment``
+    already blanks these; the helper is the second, fail-closed layer.)
+    """
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
     from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
+    resolved_db = kb.kanban_db_path().resolve()
     kb.init_db()
+    assert resolved_db.exists(), f"temp kanban DB not created at {resolved_db}"
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
@@ -617,22 +625,17 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     assert ok.get("ok") is True
 
 
-def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
+def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path, isolate_kanban_root):
     """Goal-mode tasks must pass the auxiliary judge before completion.
     Regression for #38367: workers bypassing the judge via early kanban_complete."""
-    from pathlib import Path as _Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    # Set up isolated HERMES_HOME
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Fail-closed isolation of Kanban home+DB inside the per-test tmp root.
+    isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
     try:
@@ -648,7 +651,7 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
     def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
-        return "continue", "missing verification evidence", False
+        return "continue", "missing verification evidence", False, None
 
     monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
     monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
@@ -670,25 +673,20 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         conn2.close()
 
 
-def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path):
+def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path, isolate_kanban_root):
     """Fail-open: an unreachable judge must not wedge a goal_mode worker.
 
     judge_goal returns a "continue" verdict when no auxiliary model is
     configured, which is indistinguishable from a real "not done" judgment.
     The gate probes availability first, so completion proceeds rather than
     being rejected forever when no judge can be reached."""
-    from pathlib import Path as _Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
     try:
@@ -740,20 +738,19 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
-def _make_goal_mode_worker_env(monkeypatch, tmp_path):
+def _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
-    matching the pattern used by the kanban_complete judge gate tests."""
-    from pathlib import Path as _Path
+    matching the pattern used by the kanban_complete judge gate tests.
+
+    Uses the shared fail-closed :func:`tests.conftest._isolate_kanban_root`
+    helper (passed in, since a plain function cannot request a fixture) so
+    the goal-mode block tests can never touch a live board."""
     from hermes_cli import kanban_db as kb
 
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
     try:
@@ -768,14 +765,14 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     return goal_task_id
 
 
-def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path, isolate_kanban_root):
     """A goal_mode worker calling kanban_block with no kind must not be able
     to use it as an unguarded escape from the goal loop (Issue #38696,
     sibling of the kanban_complete judge gate / Issue #38367)."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     out = kt._handle_block({"reason": "giving up"})
     d = json.loads(out)
     assert "error" in d
@@ -788,13 +785,13 @@ def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path, isolate_kanban_root):
     """`capability` / `transient` are valid kinds in general but must not
     let a goal_mode worker exit the loop without going through the judge."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     for kind in ("capability", "transient"):
         out = kt._handle_block({"reason": "blocked", "kind": kind})
         d = json.loads(out)
@@ -807,7 +804,7 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path, isolate_kanban_root):
     """`dependency` and `needs_input` represent a genuine external blocker
     the worker cannot resolve itself — these remain ungated.
 
@@ -818,7 +815,7 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     out = kt._handle_block({"reason": "waiting on another task", "kind": "dependency"})
     d = json.loads(out)
     assert d.get("ok") is True
@@ -830,11 +827,11 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path, isolate_kanban_root):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     out = kt._handle_block({"reason": "need a decision from the user", "kind": "needs_input"})
     d = json.loads(out)
     assert d.get("ok") is True
@@ -2715,3 +2712,412 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_archive — orchestrator-only administrative retirement
+# ---------------------------------------------------------------------------
+#
+# Unlike kanban_complete (which records a *successful* outcome and is limited
+# to running/ready/blocked), archive administratively retires a card from any
+# non-archived status — including a ``triage`` card that never became
+# actionable. It is orchestrator-only: hidden from a normal chat session and
+# from dispatcher-spawned workers, and rejected at runtime if a worker reaches
+# the handler anyway. The underlying kb.archive_task preserves comments,
+# events, runs, attachments, and dependency edges, appends an ``archived``
+# event, and recomputes dependents so children gated on the archived parent
+# promote immediately.
+
+
+@pytest.fixture
+def orchestrator_env(monkeypatch, tmp_path, isolate_kanban_root):
+    """Simulate an orchestrator profile: fresh isolated Kanban home, the
+    ``kanban`` toolset enabled, and NO task-scope pin.
+
+    Routes through the shared fail-closed
+    :func:`tests.conftest._isolate_kanban_root` helper (like ``worker_env``)
+    so EVERY mutation-capable Kanban path — the DB, workspaces, the
+    attachments root, and worker logs — is scrubbed of inherited pins and
+    asserted to live under ``tmp_path`` before any board state is created. A
+    stray ``HERMES_KANBAN_ATTACHMENTS_ROOT`` (or ``HERMES_KANBAN_DB`` /
+    ``HERMES_KANBAN_BOARD`` / ``HERMES_KANBAN_WORKSPACES_ROOT`` / …) pin left
+    in the environment can't route an orchestrator mutation — including an
+    attachment write — outside the temp root. The helper also clears the
+    task-scope pin, keeping this an orchestrator (no ``HERMES_KANBAN_TASK``)
+    context.
+    """
+    home = isolate_kanban_root(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    from hermes_cli import kanban_db as kb
+    resolved_db = kb.kanban_db_path().resolve()
+    kb.init_db()
+    assert resolved_db.exists(), f"temp kanban DB not created at {resolved_db}"
+    return home
+
+
+def test_kanban_archive_orchestrator_only_gating(monkeypatch, tmp_path):
+    """kanban_archive is visible only to a profile that enables the kanban
+    toolset without a task pin — hidden from a normal chat session AND from a
+    dispatcher-spawned worker."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # noqa: F401  ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    def _kanban_names():
+        invalidate_check_fn_cache()
+        schema = registry.get_definitions(
+            set(resolve_toolset("hermes-cli")), quiet=True
+        )
+        return {s["function"].get("name") for s in schema if "function" in s}
+
+    # 1. Orchestrator (kanban toolset, no task pin) sees it.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    assert "kanban_archive" in _kanban_names()
+
+    # 2. Dispatcher-spawned worker (task pinned) does NOT — even though this
+    #    profile also lists the kanban toolset, task scope wins.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    assert "kanban_archive" not in _kanban_names()
+
+
+def test_kanban_archive_hidden_from_regular_chat(monkeypatch, tmp_path):
+    """A normal `hermes chat` session (no task, no kanban toolset) must not
+    see kanban_archive."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()  # no config.yaml → no kanban toolset
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # noqa: F401  ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(
+        set(resolve_toolset("hermes-cli")), quiet=True
+    )
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    assert "kanban_archive" not in names
+
+
+def test_worker_archive_rejected_orchestrator_only(worker_env):
+    """A dispatcher-spawned worker can never archive — not a sibling's task,
+    not even its own. The runtime guard rejects the call before any DB write,
+    so a buggy/prompt-injected worker cannot retire foreign board state."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(
+            conn, title="sibling", assignee="peer", triage=True
+        )
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+
+    # Foreign target — rejected.
+    out = kt._handle_archive({"task_id": other})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "orchestrator-only" in d.get("error", "")
+
+    # Own task target — also rejected (workers close via kanban_complete).
+    out2 = kt._handle_archive({"task_id": worker_env})
+    d2 = json.loads(out2)
+    assert d2.get("ok") is not True
+    assert "orchestrator-only" in d2.get("error", "")
+
+    # Neither task was archived.
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "triage"
+        assert kb.get_task(conn, worker_env).status != "archived"
+    finally:
+        conn.close()
+
+
+def test_archive_triage_card(orchestrator_env):
+    """An orchestrator can archive a triage card that never became
+    actionable; the card lands in ``archived`` with an ``archived`` event."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="unactionable idea", assignee="factory", triage=True
+        )
+        assert kb.get_task(conn, tid).status == "triage"
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_archive({"task_id": tid})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d.get("task_id") == tid
+    assert d.get("status") == "archived"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "archived"
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "archived" in kinds
+    finally:
+        conn.close()
+
+
+def test_archive_preserves_related_rows_and_recomputes_dependents(
+    orchestrator_env,
+):
+    """Archiving preserves comments, events, runs, attachments, and
+    dependency edges, appends an ``archived`` event, and recomputes
+    dependents so a child gated on the archived parent promotes to ready."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(
+            conn, title="parent to archive", assignee="factory"
+        )
+        # A claimed run → attempt history that must survive the archive.
+        kb.claim_task(conn, parent)
+        kb.add_comment(conn, parent, author="human", body="keep me")
+        att_id = kb.store_attachment_bytes(conn, parent, "note.txt", b"data")
+        # A child gated on the parent dependency.
+        child = kb.create_task(
+            conn, title="child", assignee="factory", parents=(parent,)
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        runs_before = kb.list_runs(conn, parent)
+        assert runs_before
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_archive({"task_id": parent})
+    assert json.loads(out).get("ok") is True, out
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, parent).status == "archived"
+        # Comments preserved.
+        assert [c.body for c in kb.list_comments(conn, parent)] == ["keep me"]
+        # Runs preserved (the in-flight run is closed, not dropped).
+        assert len(kb.list_runs(conn, parent)) == len(runs_before)
+        # Attachments preserved.
+        atts = kb.list_attachments(conn, parent)
+        assert [a.id for a in atts] == [att_id]
+        # Dependency edge preserved in both directions.
+        assert child in kb.child_ids(conn, parent)
+        assert parent in kb.parent_ids(conn, child)
+        # Archive event appended.
+        assert "archived" in [e.kind for e in kb.list_events(conn, parent)]
+        # Dependents recomputed: an archived parent no longer blocks, so the
+        # child promotes to ready immediately.
+        assert kb.get_task(conn, child).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_archive_idempotent_error_on_already_archived(orchestrator_env):
+    """Re-archiving an already-archived card returns a precise error rather
+    than a silent success."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="dupe", assignee="factory", triage=True)
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_archive({"task_id": tid})).get("ok") is True
+    out = kt._handle_archive({"task_id": tid})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "already archived" in d.get("error", "")
+
+
+def test_archive_unknown_task_precise_error(orchestrator_env):
+    """Archiving an unknown id reports it clearly, not a generic failure."""
+    from tools import kanban_tools as kt
+    out = kt._handle_archive({"task_id": "t_deadbeefcafe"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "not found" in d.get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# kanban_complete — precise noncompletable-status errors
+# ---------------------------------------------------------------------------
+#
+# When completion fails, the worker/orchestrator should learn *why*: an
+# unknown id, an already-archived (administratively retired) card, or an
+# existing status that simply is not completable (triage, done). A precise
+# message lets the model choose the right recovery instead of blindly
+# retrying.
+
+
+def test_complete_unknown_task_precise_error(orchestrator_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_complete(
+        {"task_id": "t_deadbeefcafe", "summary": "close ghost"}
+    )
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    err = d.get("error", "")
+    assert "unknown" in err.lower()
+
+
+def test_complete_archived_task_precise_error(orchestrator_env):
+    """Completing an archived card is distinct from completing an unknown or
+    otherwise-noncompletable one — the error must name the archived state."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retired", assignee="factory")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.commit()
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": tid, "summary": "revive?"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "archived" in d.get("error", "").lower()
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "archived"
+    finally:
+        conn.close()
+
+
+def test_complete_triage_rejected_as_noncompletable(orchestrator_env):
+    """A triage card is not a *successful* outcome: kanban_complete rejects
+    it with a message naming the noncompletable status, distinct from the
+    unknown-id and archived cases."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="raw idea", assignee="factory", triage=True
+        )
+        assert kb.get_task(conn, tid).status == "triage"
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": tid, "summary": "premature close"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    err = d.get("error", "")
+    assert "triage" in err
+    assert "not completable" in err or "noncompletable" in err
+    # The card is untouched — still in triage, not done.
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "triage"
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def _orchestrator_env_with_leaked_attachments_pin(
+    request, monkeypatch, tmp_path_factory
+):
+    """Poison ``HERMES_KANBAN_ATTACHMENTS_ROOT``, THEN build ``orchestrator_env``.
+
+    Simulates a stray attachments-root pin leaked from a developer shell or a
+    dispatcher-spawned worker that survives into the orchestrator fixture's own
+    setup. The poison directory is created by ``tmp_path_factory`` so it is a
+    *sibling* of the per-test ``tmp_path`` — never underneath it.
+
+    The ordering guarantee — poison present *before* ``orchestrator_env`` runs
+    its fail-closed ``isolate_kanban_root`` scrub — is enforced here in code,
+    NOT by pytest argument-list position: the pin is set first, and only then
+    does ``request.getfixturevalue`` trigger ``orchestrator_env``'s setup. This
+    runs after conftest's autouse ``_hermetic_environment`` has blanked the var
+    (autouse fixtures set up first), so the pin genuinely reproduces one that
+    leaks past the hermetic layer. Returns the poison directory.
+    """
+    poison = tmp_path_factory.mktemp("leaked_attachments_root")
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(poison))
+    # Trigger orchestrator_env only now — its isolate_kanban_root scrub must
+    # run WITH the poison present. getfixturevalue makes the order explicit so
+    # a future edit to a test's argument list cannot silently defeat the guard.
+    request.getfixturevalue("orchestrator_env")
+    return poison
+
+
+def test_orchestrator_attachment_stays_under_temp_root_despite_leaked_pin(
+    _orchestrator_env_with_leaked_attachments_pin, tmp_path
+):
+    """An orchestrator attachment write must land under the per-test temp
+    root even when ``HERMES_KANBAN_ATTACHMENTS_ROOT`` is poisoned to an
+    external location.
+
+    Behavior-level guard for the isolation contract: ``attachments_root`` is a
+    mutation-capable Kanban path, and a leaked pin has highest precedence in
+    ``kanban_db.attachments_root``. If the orchestrator fixture does not route
+    through the shared fail-closed ``isolate_kanban_root`` helper, the pin
+    survives and ``kanban_attach`` writes the blob outside ``tmp_path`` — a
+    unit test scribbling on a developer's real (or a foreign) attachments
+    tree. The fixed fixture scrubs the pin and asserts containment before the
+    board is created.
+    """
+    import base64
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    poison_root = _orchestrator_env_with_leaked_attachments_pin.resolve()
+    temp_root = tmp_path.resolve()
+    # Sanity: the poison location is genuinely outside the temp root, so a
+    # write landing there is a real escape, not a false alarm.
+    assert not poison_root.is_relative_to(temp_root)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="orchestrator card", assignee="factory"
+        )
+    finally:
+        conn.close()
+
+    content = b"orchestrator attachment bytes"
+    out = kt._handle_attach({
+        "task_id": tid,
+        "filename": "leak-check.txt",
+        "content_base64": base64.b64encode(content).decode(),
+        "content_type": "text/plain",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, tid)
+        assert [a.filename for a in atts] == ["leak-check.txt"]
+        stored = Path(atts[0].stored_path).resolve()
+    finally:
+        conn.close()
+
+    # The blob must live under the per-test temp root, never the leaked pin.
+    assert stored.read_bytes() == content
+    assert stored.is_relative_to(temp_root), (
+        f"attachment {stored} escaped temp root {temp_root} "
+        f"(leaked pin {poison_root})"
+    )
+    assert not stored.is_relative_to(poison_root)
+    # Nothing should have been written into the poisoned external tree.
+    assert not any(poison_root.rglob("*")), (
+        f"attachment escaped into leaked pin dir {poison_root}"
+    )

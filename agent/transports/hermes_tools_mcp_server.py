@@ -21,8 +21,12 @@ Scope (what we expose):
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
-    heartbeat/show/list/create/            handoff (stateless: read env var,
-    unblock/link)                          write ~/.hermes/kanban.db)
+    heartbeat/show + worker-visible         handoff (stateless: read env var,
+    follow-ups create/link + orchestrator-  write ~/.hermes/kanban.db).
+    only list/unblock/archive)              Worker-visible: kanban_create,
+                                            kanban_link. Orchestrator-only
+                                            routing: kanban_list,
+                                            kanban_unblock, kanban_archive.
 
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
@@ -139,13 +143,17 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_heartbeat",
     "kanban_show",
     "kanban_list",
-    # NOTE: kanban_create / kanban_unblock / kanban_link are orchestrator-
-    # only — the kanban tool gates them on HERMES_KANBAN_TASK being unset.
-    # They're exposed here for orchestrator agents running on the codex
-    # runtime that need to dispatch new tasks.
+    # NOTE: kanban_create / kanban_link are worker-visible follow-up and
+    # dependency tools — commonly used by orchestrators to fan out and wire
+    # edges, but not orchestrator-only. The strict orchestrator-only routing
+    # tools are kanban_list, kanban_unblock, and kanban_archive, which the
+    # kanban tool gates on HERMES_KANBAN_TASK being unset. All are exposed here
+    # for orchestrator agents running on the codex runtime that need to
+    # dispatch new tasks.
     "kanban_create",
     "kanban_unblock",
     "kanban_link",
+    "kanban_archive",
 )
 
 

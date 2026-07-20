@@ -131,6 +131,7 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 | `kanban_create` | Fan out child tasks from the current task. Used by orchestrators and follow-up-spawning workers. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_link` | Link tasks with a parent → child dependency edge. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_unblock` | Move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
+| `kanban_archive` | Administratively retire a task from the board — a stale `triage` idea, duplicate, or abandoned work. Distinct from `kanban_complete` (a *successful* outcome): archive works from any status, preserves comments/events/runs/attachments/dependencies, and promotes dependents (an archived parent no longer blocks). Orchestrator-only; hidden from and refused at runtime for dispatcher-spawned task workers. | profile with `kanban` toolset |
 
 ## `project` toolset
 

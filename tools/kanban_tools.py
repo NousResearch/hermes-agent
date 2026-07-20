@@ -33,6 +33,8 @@ import logging
 import os
 from typing import Any, Optional
 
+import httpx
+
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
@@ -602,7 +604,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 verdict = "done"
                 reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
+                    verdict, reason, _parse_failed, _wait_directive = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
@@ -658,8 +660,39 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
             if not ok:
+                # Report *why* the completion failed so the model can pick
+                # the right recovery instead of blindly retrying: unknown
+                # id vs. an archived (administratively retired) card vs. an
+                # existing status that simply is not completable (triage,
+                # done) vs. a stale run token.
+                landed = kb.get_task(conn, tid)
+                if landed is None:
+                    return tool_error(
+                        f"could not complete {tid}: unknown task id "
+                        f"(no such task on this board)."
+                    )
+                status = landed.status
+                if status == "archived":
+                    return tool_error(
+                        f"could not complete {tid}: the task is archived. "
+                        f"Archiving is an administrative retirement, distinct "
+                        f"from completion — an archived card cannot be "
+                        f"re-completed."
+                    )
+                if status not in ("running", "ready", "blocked"):
+                    return tool_error(
+                        f"could not complete {tid}: status is {status!r}, which "
+                        f"is not completable. Only running, ready, or blocked "
+                        f"tasks can be completed (a triage card must be promoted "
+                        f"or archived, and a done card is already terminal)."
+                    )
+                # Completable status but the write still affected 0 rows —
+                # almost always a stale run token from a reclaimed/retried
+                # worker (expected_run_id no longer matches current_run_id).
                 return tool_error(
-                    f"could not complete {tid} (unknown id or already terminal)"
+                    f"could not complete {tid}: your run token is stale (the "
+                    f"task was reclaimed or retried under a newer run). Re-read "
+                    f"the task with kanban_show before retrying."
                 )
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
@@ -914,8 +947,6 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
     thing.
     """
     from urllib.parse import urljoin, urlparse
-
-    import httpx
 
     from tools.url_safety import is_safe_url
 
@@ -1302,6 +1333,62 @@ def _handle_unblock(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_unblock failed")
         return tool_error(f"kanban_unblock: {e}")
+
+
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a task administratively — orchestrator-only.
+
+    Distinct from ``kanban_complete``: completion records a *successful*
+    outcome and is limited to running/ready/blocked tasks, whereas archive
+    retires a card from any non-archived status — including a ``triage``
+    card that never became actionable, or a card whose work was abandoned.
+    The underlying ``kb.archive_task`` preserves the task's comments,
+    events, runs, attachments, and dependency edges: it only flips the
+    status to ``archived``, closes any in-flight run, appends an
+    ``archived`` event, and recomputes dependents so children gated on
+    this task promote immediately (an archived parent no longer blocks,
+    same as ``done``).
+
+    Guarded twice: the orchestrator-only ``check_fn`` keeps it out of the
+    worker schema entirely, and ``_require_orchestrator_tool`` refuses at
+    runtime if a dispatcher-spawned worker reaches the handler anyway —
+    so a worker can never retire foreign (or its own) board state.
+    """
+    guard = _require_orchestrator_tool("kanban_archive")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    # Belt-and-suspenders: the orchestrator-only guard above already
+    # rejects any worker context, but keep the per-task ownership check so
+    # the refusal path matches the other lifecycle tools.
+    ownership_err = _enforce_worker_task_ownership(str(tid))
+    if ownership_err:
+        return ownership_err
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if kb.get_task(conn, str(tid)) is None:
+                return tool_error(f"task {tid} not found")
+            ok = kb.archive_task(conn, str(tid))
+            if not ok:
+                # get_task found it above, so a False here means it was
+                # already archived (the only other rejection path).
+                return tool_error(f"task {tid} is already archived")
+            task = kb.get_task(conn, str(tid))
+            return _ok(
+                task_id=str(tid),
+                status=task.status if task else "archived",
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_archive: {e}")
+    except Exception as e:
+        logger.exception("kanban_archive failed")
+        return tool_error(f"kanban_archive: {e}")
 
 
 def _handle_link(args: dict, **kw) -> str:
@@ -1893,6 +1980,37 @@ KANBAN_UNBLOCK_SCHEMA = {
     },
 }
 
+KANBAN_ARCHIVE_SCHEMA = {
+    "name": "kanban_archive",
+    "description": (
+        "Administratively archive a Kanban task. This is a retirement, NOT "
+        "a successful completion — use ``kanban_complete`` when the work "
+        "actually finished. Archive is for cards that should leave the "
+        "active board without being marked done: a stale ``triage`` idea "
+        "that will not be worked, a duplicate, or abandoned work. It works "
+        "from any non-archived status (including triage, which "
+        "``kanban_complete`` refuses). The task's comments, events, "
+        "attempt history (runs), attachments, and dependency edges are all "
+        "preserved; an ``archived`` event is appended, and any child gated "
+        "on this task promotes immediately because an archived parent no "
+        "longer blocks (same as done). Orchestrator-only — dispatcher-"
+        "spawned task workers never see this tool and are refused at "
+        "runtime; a worker that wants to stop should use kanban_complete "
+        "or kanban_block for its own task instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to archive (required).",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
@@ -2013,6 +2131,15 @@ registry.register(
     handler=_handle_unblock,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
+)
+
+registry.register(
+    name="kanban_archive",
+    toolset="kanban",
+    schema=KANBAN_ARCHIVE_SCHEMA,
+    handler=_handle_archive,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🗄",
 )
 
 registry.register(

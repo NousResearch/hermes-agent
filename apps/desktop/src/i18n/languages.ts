@@ -12,6 +12,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'en'
   },
   {
+    id: 'fr',
+    name: 'Français',
+    englishName: 'French',
+    configValue: 'fr'
+  },
+  {
     id: 'zh',
     name: '简体中文',
     englishName: 'Simplified Chinese',
@@ -43,6 +49,18 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   en: 'en',
   'en-us': 'en',
   en_us: 'en',
+  fr: 'fr',
+  french: 'fr',
+  francais: 'fr',
+  'fr-fr': 'fr',
+  fr_fr: 'fr',
+  'fr-ca': 'fr',
+  fr_ca: 'fr',
+  'fr-be': 'fr',
+  fr_be: 'fr',
+  'fr-ch': 'fr',
+  fr_ch: 'fr',
+  français: 'fr',
   zh: 'zh',
   'zh-cn': 'zh',
   zh_cn: 'zh',
@@ -67,6 +85,8 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ja_jp: 'ja'
 }
 
+const FRENCH_REGION_LOCALE_RE = /^fr[-_][a-z]{2}$/
+
 export function isLocale(value: unknown): value is Locale {
   return typeof value === 'string' && LOCALE_OPTIONS.some(locale => locale.id === value)
 }
@@ -76,11 +96,23 @@ export function normalizeLocale(value: unknown): Locale {
     return DEFAULT_LOCALE
   }
 
-  return LOCALE_ALIASES[normalize(value)] ?? DEFAULT_LOCALE
+  const normalized = normalize(value)
+
+  if (FRENCH_REGION_LOCALE_RE.test(normalized)) {
+    return 'fr'
+  }
+
+  return LOCALE_ALIASES[normalized] ?? DEFAULT_LOCALE
 }
 
 export function isSupportedLocaleValue(value: unknown): boolean {
-  return typeof value === 'string' && LOCALE_ALIASES[normalize(value)] != null
+  if (typeof value !== 'string') {
+    return false
+  }
+
+  const normalized = normalize(value)
+
+  return FRENCH_REGION_LOCALE_RE.test(normalized) || LOCALE_ALIASES[normalized] != null
 }
 
 export function localeConfigValue(locale: Locale): string {

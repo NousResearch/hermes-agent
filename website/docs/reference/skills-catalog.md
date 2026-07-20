@@ -62,6 +62,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`kubernetes-readonly`](/docs/user-guide/skills/bundled/devops/devops-kubernetes-readonly) | Inspect clusters with read-only kubectl helpers. | `devops/kubernetes-readonly` |
 
 
 ## dogfood

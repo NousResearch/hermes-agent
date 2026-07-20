@@ -2227,7 +2227,9 @@ export interface SkillWriteResult {
 export interface ToolsetInfo {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   platform: string;
   platform_label: string;
   enabled: boolean;

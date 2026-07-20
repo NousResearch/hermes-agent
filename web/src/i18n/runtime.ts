@@ -143,12 +143,13 @@ export function persistConfiguredLocale(locale: Locale) {
   return api.saveConfig({ display: { language: locale } });
 }
 
-export function readConfiguredLocale(
-  config: Record<string, unknown>,
-): Locale | null {
+export function readConfiguredLocale(config: Record<string, unknown>): Locale {
   const display = config.display;
-  if (!display || typeof display !== "object") return null;
-  return normalizeLocale((display as Record<string, unknown>).language);
+  if (!display || typeof display !== "object") return DEFAULT_LOCALE;
+  return (
+    normalizeLocale((display as Record<string, unknown>).language) ??
+    DEFAULT_LOCALE
+  );
 }
 
 function configRevisionSignature(revision: ConfigRevisionResponse): string {
@@ -206,6 +207,27 @@ export function resolveNavLabel(
   const translated = (translations.app.nav as Record<string, unknown>)[
     labelKey
   ];
+  return typeof translated === "string" ? translated : fallback;
+}
+
+/** Resolve an optional bundled-plugin description key with a manifest fallback. */
+export function resolvePluginDescription(
+  translations: Translations,
+  fallback: string,
+  descriptionKey: unknown,
+): string {
+  if (
+    typeof descriptionKey !== "string" ||
+    !Object.prototype.hasOwnProperty.call(
+      translations.pluginsPage.descriptions,
+      descriptionKey,
+    )
+  ) {
+    return fallback;
+  }
+  const translated = (
+    translations.pluginsPage.descriptions as Record<string, unknown>
+  )[descriptionKey];
   return typeof translated === "string" ? translated : fallback;
 }
 

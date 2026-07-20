@@ -21,6 +21,7 @@ import {
   estimateTokensRough,
   fmtK,
   formatToolCall,
+  matchTransientTrailLine,
   parseToolTrailResultLine,
   pick,
   splitToolDuration,
@@ -40,6 +41,9 @@ import type {
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
+const DELEGATE_TOOL_LABEL = toolTrailLabel('delegate_task')
+const isDelegateToolCall = (label: string) =>
+  label === DELEGATE_TOOL_LABEL || label.startsWith(`${DELEGATE_TOOL_LABEL}(`)
 
 const fmtElapsed = (ms: number) => {
   const sec = Math.max(0, ms) / 1000
@@ -335,7 +339,7 @@ function SubagentAccordion({
         : 'dim'
 
   const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
-  const goalLabel = item.goal || `Subagent ${item.index + 1}`
+  const goalLabel = item.goal || ti('agents.fallbackName', { index: item.index + 1 })
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
 
@@ -354,13 +358,18 @@ function SubagentAccordion({
   const subtreeTools = aggregate.totalTools - localTools
 
   if (localTools > 0) {
-    rollupBits.push(`${localTools} tool${localTools === 1 ? '' : 's'}`)
+    rollupBits.push(
+      ti('agents.summaryTools', {
+        count: localTools,
+        noun: ti(localTools === 1 ? 'agents.tool' : 'agents.tools')
+      })
+    )
   }
 
   const localTokens = (item.inputTokens ?? 0) + (item.outputTokens ?? 0)
 
   if (localTokens > 0) {
-    rollupBits.push(`${fmtTokens(localTokens)} tok`)
+    rollupBits.push(ti('agents.summaryTokens', { tokens: fmtTokens(localTokens) }))
   }
 
   const filesLocal = (item.filesWritten?.length ?? 0) + (item.filesRead?.length ?? 0)
@@ -373,7 +382,7 @@ function SubagentAccordion({
     rollupBits.push(`${aggregate.descendantCount}↓`)
 
     if (subtreeTools > 0) {
-      rollupBits.push(`+${subtreeTools}t sub`)
+      rollupBits.push(ti('agents.subtreeAdditionalTools', { count: subtreeTools }))
     }
 
     if (aggregate.activeCount > 0 && item.status !== 'running') {
@@ -524,7 +533,10 @@ function SubagentAccordion({
             }
           }}
           open={openKids}
-          suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
+          suffix={ti('agents.childDepthSummary', {
+            count: aggregate.descendantCount,
+            depth: item.depth + 1
+          })}
           t={t}
           title={ti('section.spawned')}
         />
@@ -625,11 +637,12 @@ export const Thinking = memo(function Thinking({
   streaming?: boolean
   t: Theme
 }) {
+  const { locale } = useI18n()
   const preview = useMemo(() => {
     const raw = thinkingPreview(reasoning, mode, THINKING_COT_MAX)
 
-    return mode === 'full' ? boundedLiveRenderText(raw) : raw
-  }, [mode, reasoning])
+    return mode === 'full' ? boundedLiveRenderText(raw, {}, locale) : raw
+  }, [locale, mode, reasoning])
 
   const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
 
@@ -672,6 +685,7 @@ interface Group {
   color: string
   content: ReactNode
   details: DetailRow[]
+  isDelegate: boolean
   key: string
   label: string
 }
@@ -719,7 +733,7 @@ export const ToolTrail = memo(function ToolTrail({
     [commandOverride, detailsMode, sections]
   )
 
-  const { t: ti } = useI18n()
+  const { locale, t: ti } = useI18n()
   const [now, setNow] = useState(() => Date.now())
   // Local toggles own the open state once mounted.  Init from the resolved
   // section visibility so default-expanded sections (thinking/tools) render
@@ -761,7 +775,7 @@ export const ToolTrail = memo(function ToolTrail({
   const spawnTotals = useMemo(() => treeTotals(spawnTree), [spawnTree])
   const spawnWidths = useMemo(() => widthByDepth(spawnTree), [spawnTree])
   const spawnSpark = useMemo(() => sparkline(spawnWidths), [spawnWidths])
-  const spawnSummaryLabel = useMemo(() => formatSpawnSummary(spawnTotals), [spawnTotals])
+  const spawnSummaryLabel = useMemo(() => formatSpawnSummary(spawnTotals, locale), [locale, spawnTotals])
 
   if (
     !busy &&
@@ -790,6 +804,7 @@ export const ToolTrail = memo(function ToolTrail({
         color: parsed.mark === '✗' ? t.color.error : t.color.text,
         content: parsed.call,
         details: [],
+        isDelegate: isDelegateToolCall(parsed.call),
         key: `tr-${i}`,
         label: parsed.call
       })
@@ -806,13 +821,16 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    if (line.startsWith('drafting ')) {
-      const label = toolTrailLabel(line.slice(9).replace(/…$/, '').trim())
+    const transient = matchTransientTrailLine(line)
+
+    if (transient?.kind === 'draft') {
+      const label = toolTrailLabel(line.slice(transient.pattern.draftPrefix.length).replace(/…$/, '').trim())
 
       groups.push({
         color: t.color.text,
         content: label,
-        details: [{ color: t.color.muted, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
+        details: [{ color: t.color.muted, content: ti('tool.draftingProgress'), dimColor: true, key: `tr-${i}-d` }],
+        isDelegate: isDelegateToolCall(label),
         key: `tr-${i}`,
         label
       })
@@ -820,7 +838,7 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    if (line === 'analyzing tool output…') {
+    if (transient?.kind === 'analyze') {
       pushDetail({
         color: t.color.muted,
         dimColor: true,
@@ -845,13 +863,14 @@ export const ToolTrail = memo(function ToolTrail({
 
     groups.push({
       color: t.color.text,
+      isDelegate: tool.name === 'delegate_task',
       key: tool.id,
       label,
       details: tool.verboseArgs
         ? [
             {
               color: t.color.muted,
-              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
+              content: `${ti('tool.args')}:\n${boundedLiveRenderText(tool.verboseArgs, {}, locale)}`,
               dimColor: true,
               key: `${tool.id}-args`
             }
@@ -885,12 +904,14 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
+  const thinkingTokensLabel = tokenCount > 0 ? ti('tool.tokenCount', { count: fmtK(tokenCount) }) : null
 
-  const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
+  const toolTokensLabel =
+    toolTokens !== undefined && toolTokens > 0 ? ti('tool.tokenCount', { count: fmtK(toolTokens) }) : undefined
 
-  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
-  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
+  const totalTokensLabel =
+    tokenCount > 0 && toolTokenCount > 0 ? ti('tool.totalTokenCount', { count: fmtK(totalTokenCount) }) : null
+  const delegateGroups = groups.filter(g => g.isDelegate)
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
@@ -1067,7 +1088,7 @@ export const ToolTrail = memo(function ToolTrail({
             // Surface the /agents hint the moment a delegate group appears —
             // while it's still in-flight and before any subagent has
             // registered — so users can open the live monitor immediately.
-            const isDelegateGroup = group.label.startsWith('Delegate Task')
+            const isDelegateGroup = group.isDelegate
 
             return (
               <Box flexDirection="column" key={group.key}>

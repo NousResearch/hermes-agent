@@ -4688,6 +4688,11 @@ def test_complete_slash_details_args():
     assert any(item["text"] == " thinking" for item in resp_root["result"]["items"])
     assert any(item["text"] == "thinking" for item in resp_section["result"]["items"])
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
+    thinking = next(item for item in resp_root["result"]["items"] if item["text"] == " thinking")
+    expanded = next(item for item in resp_mode["result"]["items"] if item["text"] == "expanded")
+    assert thinking["meta_key"] == "completion.sectionOverride"
+    assert expanded["meta_key"] == "completion.setSection"
+    assert expanded["meta_vars"] == {"section": "thinking"}
 
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):

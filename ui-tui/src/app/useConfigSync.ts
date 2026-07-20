@@ -15,7 +15,7 @@ import {
   type IndicatorStyle,
   type StatusBarMode
 } from './interfaces.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -189,7 +189,13 @@ export async function hydrateFullConfig(
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey)
+
+  // A transient read failure must preserve every last-good display value,
+  // not only locale and voice.record_key. The mtime poll deliberately keeps
+  // the previous revision in this case so the same edit is retried.
+  if (cfg) {
+    applyDisplay(cfg, setBell, setVoiceRecordKey)
+  }
 
   return cfg
 }
@@ -203,23 +209,41 @@ export async function hydrateFullConfig(
  */
 export const syncChangedConfig = hydrateFullConfig
 
+/** Refresh a changed config revision and acknowledge it only after the full
+ * config payload was applied successfully. Keeping the old revision on failure
+ * makes the next poll retry the same edit instead of waiting for another write. */
+export async function syncConfigRevision(
+  gw: GatewayClient,
+  previousMtime: number,
+  setBell: (v: boolean) => void,
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+): Promise<number> {
+  const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+  const next = Number(revision?.mtime ?? 0)
+
+  if (!next || next === previousMtime) {
+    return previousMtime
+  }
+
+  const cfg = await syncChangedConfig(gw, setBell, setVoiceRecordKey)
+
+  return cfg ? next : previousMtime
+}
+
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
 ) => {
+  if (!cfg) {
+    return
+  }
+
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
 
-  // Only push the voice record key when the RPC actually returned a
-  // config payload. ``quietRpc()`` collapses failures to ``null``; if we
-  // reset the cached shortcut on every null we would clobber a custom
-  // binding after one transient RPC error until the next config edit
-  // (Copilot round-8 review on #19835). The mtime-poll loop advances
-  // ``mtimeRef`` before this call, so staying silent on null preserves
-  // the last-good state and lets the next successful poll refresh it.
-  if (setVoiceRecordKey && cfg) {
+  if (setVoiceRecordKey) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
   }
 
@@ -230,10 +254,7 @@ export const applyDisplay = (
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
-    // A failed config RPC is represented as null. Preserve the last-good
-    // language in that case; otherwise one transient read failure would
-    // overwrite the locale delivered by gateway.ready with English.
-    locale: cfg ? normalizeLocale(d.language) : getUiState().locale,
+    locale: normalizeLocale(d.language),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
@@ -252,6 +273,7 @@ export function useConfigSync({
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
+  const syncInFlightRef = useRef(false)
 
   useEffect(() => {
     if (!sid) {
@@ -262,11 +284,27 @@ export function useConfigSync({
     // can run long enough to delay prompt.submit on the single stdio RPC pipe.
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
+    mtimeRef.current = 0
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
-      mtimeRef.current = Number(r?.mtime ?? 0)
+    let active = true
+    syncInFlightRef.current = true
+    void (async () => {
+      const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+      const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+
+      if (active && cfg) {
+        mtimeRef.current = Number(revision?.mtime ?? 0)
+      }
+    })().finally(() => {
+      if (active) {
+        syncInFlightRef.current = false
+      }
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+
+    return () => {
+      active = false
+      syncInFlightRef.current = false
+    }
   }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
@@ -274,29 +312,31 @@ export function useConfigSync({
       return
     }
 
+    let active = true
     const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
-        const next = Number(r?.mtime ?? 0)
+      if (syncInFlightRef.current) {
+        return
+      }
 
-        if (!mtimeRef.current) {
-          if (next) {
+      syncInFlightRef.current = true
+      void syncConfigRevision(gw, mtimeRef.current, setBellOnComplete, setVoiceRecordKey)
+        .then(next => {
+          if (active) {
             mtimeRef.current = next
           }
-
-          return
-        }
-
-        if (!next || next === mtimeRef.current) {
-          return
-        }
-
-        mtimeRef.current = next
-
-        void syncChangedConfig(gw, setBellOnComplete, setVoiceRecordKey)
-      })
+        })
+        .finally(() => {
+          if (active) {
+            syncInFlightRef.current = false
+          }
+        })
     }, MTIME_POLL_MS)
 
-    return () => clearInterval(id)
+    return () => {
+      active = false
+      clearInterval(id)
+      syncInFlightRef.current = false
+    }
   }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
 }
 

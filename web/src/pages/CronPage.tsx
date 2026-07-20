@@ -276,7 +276,7 @@ function CronAdvancedFields({
               id={`${idPrefix}-script`}
               value={form.script}
               onChange={(e) => update("script", e.target.value)}
-              placeholder="relative/path/in/scripts"
+              placeholder={t.cron.scriptPlaceholder}
             />
           </div>
         </div>
@@ -287,7 +287,7 @@ function CronAdvancedFields({
             id={`${idPrefix}-workdir`}
             value={form.workdir}
             onChange={(e) => update("workdir", e.target.value)}
-            placeholder="/absolute/project/path"
+            placeholder={t.cron.workdirPlaceholder}
           />
         </div>
 

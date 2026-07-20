@@ -152,10 +152,25 @@ export interface Translations {
     reasoningEffortSet: string;
     modelSetRequiresReload: string;
     reconnecting: string;
+    reconnectingCode: string;
+    reconnectingInput: string;
     disconnected: string;
     reconnectNow: string;
     sessionEnded: string;
+    sessionEndedTerminal: string;
+    sessionEndedTerminalCode: string;
     startNewSession: string;
+    sessionTokenUnavailable: string;
+    imageUploadFailed: string;
+    imageUploadedDisconnected: string;
+    authFailed: string;
+    authFailedReason: string;
+    originRefused: string;
+    originRefusedReason: string;
+    websocketUnavailable: string;
+    websocketUnavailableReason: string;
+    localClientRefused: string;
+    localClientRefusedReason: string;
   };
 
   // ── Model picker dialog ──
@@ -595,7 +610,9 @@ export interface Translations {
     baseUrlOverride: string;
     noAgentHint: string;
     script: string;
+    scriptPlaceholder: string;
     workdir: string;
+    workdirPlaceholder: string;
     contextFromJobIds: string;
     oneJobIdPerLine: string;
     enabledToolsets: string;
@@ -644,6 +661,8 @@ export interface Translations {
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
+    identifierPlaceholder: string;
+    descriptions: Record<string, string>;
     inactive: string;
     installBtn: string;
     installHeading: string;
@@ -819,6 +838,7 @@ export interface Translations {
     localPath: string;
     localPathPlaceholder: string;
     url: string;
+    urlPlaceholder: string;
     notes: string;
     notesPlaceholder: string;
     cancel: string;
@@ -1692,7 +1712,25 @@ export interface Translations {
       hint: string;
       clipboard_unsupported: string;
       tweet_text: string;
+      tier_part: string;
+      tier_suffix: string;
+      unlocked_stamp: string;
     };
+    secretDefinition: {
+      name: string;
+      description: string;
+    };
+    categories: Record<string, string>;
+    tierNames: Record<string, string>;
+    criteria: {
+      secret: string;
+      threshold: string;
+      requirements: string;
+      default: string;
+      separator: string;
+    };
+    metrics: Record<string, string>;
+    definitions: Record<string, { name: string; description: string }>;
   };
 
   // ── Kanban ──

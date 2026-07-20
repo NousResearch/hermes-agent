@@ -808,7 +808,8 @@ class TurnController {
             Boolean(error),
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            error || resultText || summary || ''
+            error || resultText || summary || '',
+            getUiState().locale
           )
         : buildToolTrailLine(
             name,
@@ -823,7 +824,7 @@ class TurnController {
     const next = this.turnTools.filter(item => !sameToolTrailGroup(label, item))
 
     if (!this.activeTools.length) {
-      next.push('analyzing tool output…')
+      next.push(translate(getUiState().locale, 'tool.outputAnalysis'))
     }
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
@@ -929,7 +930,7 @@ class TurnController {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-      patchTurnState({ streaming: boundedLiveRenderText(visible) })
+      patchTurnState({ streaming: boundedLiveRenderText(visible, {}, getUiState().locale) })
     }, this.streamDelay)
   }
 
@@ -938,7 +939,7 @@ class TurnController {
     this.bufRef = text
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-    patchTurnState({ streaming: boundedLiveRenderText(visible) })
+    patchTurnState({ streaming: boundedLiveRenderText(visible, {}, getUiState().locale) })
   }
 
   startMessage() {

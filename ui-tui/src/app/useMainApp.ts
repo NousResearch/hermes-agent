@@ -133,7 +133,11 @@ export async function startPromptLiveSession({
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
 
     if (!result?.value) {
-      sys(translate(locale, 'errors.invalidResponse', { method: 'model switch' }))
+      sys(
+        translate(locale, 'errors.invalidResponse', {
+          method: translate(locale, 'action.switchModel')
+        })
+      )
 
       return sid
     }
@@ -676,7 +680,7 @@ export function useMainApp(gw: GatewayClient) {
           // survives on screen as standard output, matching the timeout path.
           appendMessage({
             role: 'system',
-            text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+            text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled', getUiState().locale)
           })
         }
 
@@ -1086,7 +1090,7 @@ export function useMainApp(gw: GatewayClient) {
       // (Switching between live sessions and `+ new` keep the current session
       // running, so those stay unguarded — that's the orchestrator's purpose.)
       resumeById: (id: string) => {
-        if (session.guardBusySessionSwitch('switch sessions')) {
+        if (session.guardBusySessionSwitch(translate(getUiState().locale, 'action.switchSessions'))) {
           return
         }
 

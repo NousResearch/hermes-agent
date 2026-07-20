@@ -120,7 +120,7 @@ export const sessionCommands: SlashCommand[] = [
   {
     name: 'model',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('change models')) {
+      if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchModel'))) {
         return
       }
 
@@ -159,7 +159,9 @@ export const sessionCommands: SlashCommand[] = [
 
               if (!r.value) {
                 return ctx.transcript.sys(
-                  translate(ctx.ui.locale, 'errors.invalidResponse', { method: 'model switch' })
+                  translate(ctx.ui.locale, 'errors.invalidResponse', {
+                    method: translate(ctx.ui.locale, 'action.switchModel')
+                  })
                 )
               }
 
@@ -196,7 +198,7 @@ export const sessionCommands: SlashCommand[] = [
       // CLOSE the current one, so guard it while a turn is in-flight to avoid
       // corrupting streaming/busy state. Bare opens the overlay to browse.
       if (trimmed) {
-        if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+        if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
           return
         }
 
@@ -306,7 +308,9 @@ export const sessionCommands: SlashCommand[] = [
             ctx.transcript.sys(
               translate(ctx.ui.locale, 'sys.compressedMessages', {
                 count: r.removed ?? 0,
-                tokens: r.usage?.total ? ` · ${fmtK(r.usage.total)} tok` : ''
+                tokens: r.usage?.total
+                  ? ` · ${fmtK(r.usage.total)} ${translate(ctx.ui.locale, 'usage.tokensShort')}`
+                  : ''
               })
             )
           })

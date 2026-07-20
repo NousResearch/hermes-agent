@@ -21,8 +21,9 @@ import { cn } from '@/lib/utils'
  * newly registered language packs appear here without component changes.
  *
  * No country flags by design — languages aren't countries, and flag pairings
- * inevitably create political mismappings (e.g. Mandarin variants ≠ any single
- * jurisdiction, English ≠ GB, Portuguese ≠ PT). Endonyms are unambiguous.
+ * inevitably create political mismappings (e.g. Simplified and Traditional
+ * Chinese ≠ any single jurisdiction, English ≠ GB, Portuguese ≠ PT). Endonyms
+ * are unambiguous.
  *
  * When placed at the bottom of the sidebar (next to ThemeSwitcher), pass
  * `dropUp` so the list opens above the trigger and avoids clipping below the

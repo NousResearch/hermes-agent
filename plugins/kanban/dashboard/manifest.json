@@ -2,6 +2,7 @@
   "name": "kanban",
   "label": "Kanban",
   "description": "Multi-agent collaboration board \u2014 drag-drop cards across columns, read comment threads, see which profile is running what",
+  "descriptionKey": "kanban",
   "icon": "Package",
   "version": "1.0.0",
   "tab": {

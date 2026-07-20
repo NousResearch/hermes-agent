@@ -416,7 +416,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const guardBusySessionSwitch = useCallback(
-    (what = 'switch sessions') => {
+    (what = ti('action.switchSessions')) => {
       if (!getUiState().busy) {
         return false
       }
@@ -425,7 +425,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       return true
     },
-    [sys]
+    [sys, ti]
   )
 
   return {

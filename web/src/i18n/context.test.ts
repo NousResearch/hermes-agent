@@ -9,6 +9,7 @@ import {
   persistConfiguredLocale,
   readConfiguredLocaleChange,
   resolveNavLabel,
+  resolvePluginDescription,
   resolveTranslationOverlay,
   resolveTranslations,
 } from "./runtime";
@@ -171,6 +172,29 @@ describe("Dashboard i18n framework", () => {
     expect(second).toEqual({ locale: null, revision: first.revision });
   });
 
+  it("returns to the registry default when the configured language is removed or invalid", async () => {
+    const getRevision = vi.spyOn(api, "getConfigRevision").mockResolvedValue({
+      mtime_ns: 10,
+      path: "/profile/config.yaml",
+      size: 20,
+    });
+    const getConfig = vi
+      .spyOn(api, "getConfig")
+      .mockResolvedValueOnce({ display: {} })
+      .mockResolvedValueOnce({ display: { language: "zh-unknown" } });
+
+    const missing = await readConfiguredLocaleChange(null);
+    getRevision.mockResolvedValue({
+      mtime_ns: 11,
+      path: "/profile/config.yaml",
+      size: 21,
+    });
+    const invalid = await readConfiguredLocaleChange(missing.revision);
+
+    expect(missing.locale).toBe("en");
+    expect(invalid.locale).toBe("en");
+  });
+
   it("returns a stable changed locale and defers a concurrently changing config", async () => {
     const getRevision = vi
       .spyOn(api, "getConfigRevision")
@@ -228,5 +252,11 @@ describe("Dashboard i18n framework", () => {
     expect(resolveNavLabel(catalog, "Plugin", { key: "kanban" })).toBe(
       "Plugin",
     );
+    expect(
+      resolvePluginDescription(catalog, "Kanban plugin", "kanban"),
+    ).toContain("多 Agent 协作看板");
+    expect(
+      resolvePluginDescription(catalog, "Third-party plugin", "toString"),
+    ).toBe("Third-party plugin");
   });
 });

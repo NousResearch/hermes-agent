@@ -157,16 +157,20 @@ def test_env_var_normalized(monkeypatch):
     assert i18n.get_language() == "zh"
 
 
-def test_config_language_refreshes_without_process_restart(monkeypatch):
-    """The central config cache, rather than an i18n lifetime cache, owns refresh."""
+def test_shared_python_language_changes_only_after_explicit_cache_reset(monkeypatch):
+    """Dashboard/TUI live refresh must not leak into other Python surfaces."""
     from hermes_cli import config as config_module
 
     current = {"display": {"language": "en"}}
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
-    monkeypatch.setattr(config_module, "load_config_readonly", lambda: current)
+    monkeypatch.setattr(config_module, "load_config", lambda: current)
+    i18n.reset_language_cache()
 
     assert i18n.get_language() == "en"
     current = {"display": {"language": "zh"}}
+    assert i18n.get_language() == "en"
+
+    i18n.reset_language_cache()
     assert i18n.get_language() == "zh"
 
 

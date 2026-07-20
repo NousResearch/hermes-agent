@@ -13775,12 +13775,12 @@ def _(rid, params: dict) -> dict:
 
         if is_context and not query:
             items = [
-                {"text": "@diff", "display": "@diff", "meta": "git diff"},
-                {"text": "@staged", "display": "@staged", "meta": "staged diff"},
-                {"text": "@file:", "display": "@file:", "meta": "attach file"},
-                {"text": "@folder:", "display": "@folder:", "meta": "attach folder"},
-                {"text": "@url:", "display": "@url:", "meta": "fetch url"},
-                {"text": "@git:", "display": "@git:", "meta": "git log"},
+                {"text": "@diff", "display": "@diff", "meta": "git diff", "meta_key": "completion.gitDiff"},
+                {"text": "@staged", "display": "@staged", "meta": "staged diff", "meta_key": "completion.stagedDiff"},
+                {"text": "@file:", "display": "@file:", "meta": "attach file", "meta_key": "completion.attachFile"},
+                {"text": "@folder:", "display": "@folder:", "meta": "attach folder", "meta_key": "completion.attachFolder"},
+                {"text": "@url:", "display": "@url:", "meta": "fetch url", "meta_key": "completion.fetchUrl"},
+                {"text": "@git:", "display": "@git:", "meta": "git log", "meta_key": "completion.gitLog"},
             ]
             return _ok(rid, {"items": items})
 
@@ -13883,6 +13883,7 @@ def _(rid, params: dict) -> dict:
                     "text": text,
                     "display": entry + suffix,
                     "meta": "dir" if is_dir else "",
+                    **({"meta_key": "completion.directory"} if is_dir else {}),
                 }
             )
             if len(items) >= 30:
@@ -13893,16 +13894,27 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"items": items})
 
 
-def _details_completion_item(value: str, meta: str = "") -> dict:
-    return {"text": value, "display": value, "meta": meta}
+def _details_completion_item(
+    value: str,
+    meta: str = "",
+    meta_key: str | None = None,
+    meta_vars: dict | None = None,
+) -> dict:
+    item = {"text": value, "display": value, "meta": meta}
+    if meta_key:
+        item["meta_key"] = meta_key
+    if meta_vars:
+        item["meta_vars"] = meta_vars
+    return item
 
 
 def _details_root_completion_item(
-    value: str, meta: str, needs_leading_space: bool
+    value: str, meta: str, needs_leading_space: bool, meta_key: str
 ) -> dict:
     return _details_completion_item(
         f" {value}" if needs_leading_space else value,
         meta,
+        meta_key,
     )
 
 
@@ -13926,16 +13938,16 @@ def _details_completions(text: str) -> list[dict] | None:
         return [
             *[
                 _details_root_completion_item(
-                    mode, "global mode", not has_trailing_space
+                    mode, "global mode", not has_trailing_space, "completion.globalMode"
                 )
                 for mode in modes
             ],
             _details_root_completion_item(
-                "cycle", "cycle global mode", not has_trailing_space
+                "cycle", "cycle global mode", not has_trailing_space, "completion.cycleGlobalMode"
             ),
             *[
                 _details_root_completion_item(
-                    section, "section override", not has_trailing_space
+                    section, "section override", not has_trailing_space, "completion.sectionOverride"
                 )
                 for section in sections
             ],
@@ -13952,6 +13964,11 @@ def _details_completions(text: str) -> list[dict] | None:
                     if candidate in sections
                     else "cycle global mode" if candidate == "cycle" else "global mode"
                 ),
+                (
+                    "completion.sectionOverride"
+                    if candidate in sections
+                    else "completion.cycleGlobalMode" if candidate == "cycle" else "completion.globalMode"
+                ),
             )
             for candidate in candidates
             if candidate.startswith(prefix) and candidate != prefix
@@ -13960,10 +13977,20 @@ def _details_completions(text: str) -> list[dict] | None:
     if len(parts) == 1 and has_trailing_space and parts[0].lower() in sections:
         return [
             *[
-                _details_completion_item(mode, f"set {parts[0].lower()}")
+                _details_completion_item(
+                    mode,
+                    f"set {parts[0].lower()}",
+                    "completion.setSection",
+                    {"section": parts[0].lower()},
+                )
                 for mode in modes
             ],
-            _details_completion_item("reset", f"clear {parts[0].lower()} override"),
+            _details_completion_item(
+                "reset",
+                f"clear {parts[0].lower()} override",
+                "completion.clearSectionOverride",
+                {"section": parts[0].lower()},
+            ),
         ]
 
     if len(parts) == 2 and not has_trailing_space and parts[0].lower() in sections:
@@ -13976,6 +14003,12 @@ def _details_completions(text: str) -> list[dict] | None:
                     if candidate == "reset"
                     else f"set {parts[0].lower()}"
                 ),
+                (
+                    "completion.clearSectionOverride"
+                    if candidate == "reset"
+                    else "completion.setSection"
+                ),
+                {"section": parts[0].lower()},
             )
             for candidate in (*modes, "reset")
             if candidate.startswith(prefix) and candidate != prefix

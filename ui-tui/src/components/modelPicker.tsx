@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
@@ -41,6 +41,8 @@ export function ModelPicker({
   t
 }: ModelPickerProps) {
   const { t: ti } = useI18n()
+  const translateRef = useRef(ti)
+  translateRef.current = ti
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -76,7 +78,7 @@ export function ModelPicker({
         const r = asRpcResult<ModelOptionsResponse>(raw)
 
         if (!r) {
-          setErr('invalid response: model.options')
+          setErr(translateRef.current('modelPicker.invalidResponse'))
           setLoading(false)
 
           return
@@ -213,7 +215,7 @@ export function ModelPicker({
             const r = asRpcResult<{ provider?: ModelOptionProvider }>(raw)
 
             if (!r?.provider) {
-              setKeyError('failed to save key')
+              setKeyError(ti('modelPicker.keySaveFailed'))
               setKeySaving(false)
 
               return
@@ -281,7 +283,9 @@ export function ModelPicker({
                         authenticated: false,
                         models: [],
                         total_models: 0,
-                        warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `hermes model` to configure'
+                        warning: p.key_env
+                          ? ti('modelPicker.pasteKeyToActivate', { key: p.key_env })
+                          : ti('modelPicker.runConfigure')
                       }
                     : p
                 )

@@ -182,7 +182,8 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
     const glyph = GLYPH[status] ?? '○'
     const ver = r.version ? ` v${r.version}` : ''
     const src = effectiveScope === 'all' && r.source === 'bundled' ? ti('plugins.bundledTag') : ''
-    const statusLabel = status === 'not enabled' ? ti('plugins.notEnabled') : status
+    const statusLabel =
+      status === 'not enabled' ? ti('plugins.notEnabled') : status === 'disabled' ? ti('plugins.disabled') : status
     const state = status === 'enabled' ? '' : ` (${statusLabel})`
 
     return `${glyph} ${r.name}${ver}${src}${state}`

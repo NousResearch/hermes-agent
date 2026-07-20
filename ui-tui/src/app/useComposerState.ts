@@ -201,7 +201,7 @@ export function useComposerState({
         }
       }
 
-      const label = pasteTokenLabel(cleanedText, lineCount)
+      const label = pasteTokenLabel(cleanedText, lineCount, getUiState().locale)
       const inserted = insertAtCursor(value, cursor, label)
 
       setPasteSnips(prev => trimSnips([...prev, { label, text: cleanedText }]))

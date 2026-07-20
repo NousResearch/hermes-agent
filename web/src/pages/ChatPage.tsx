@@ -39,7 +39,6 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
-  PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   type PtyConnectionState,
   shouldBlockPtyInput,
@@ -107,6 +106,15 @@ function generateChannelId(scope?: string): string {
 // terminal chrome just needs to sit quietly inside the dashboard.
 const DEFAULT_TERMINAL_BACKGROUND = "#000000";
 const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
+
+type ChatBanner =
+  | { kind: "authFailed"; reason?: string }
+  | { kind: "imageUploadFailed"; error: string }
+  | { kind: "imageUploadedDisconnected" }
+  | { kind: "localClientRefused"; reason?: string }
+  | { kind: "originRefused"; reason?: string }
+  | { kind: "sessionTokenUnavailable" }
+  | { kind: "websocketUnavailable"; reason?: string };
 
 function buildTerminalTheme(background: string, foreground: string) {
   return {
@@ -178,11 +186,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // In gated (OAuth) mode the server intentionally omits the session token —
   // the dashboard API layer authenticates the WS via a single-use ticket,
   // so a missing token there is expected, not an error.
-  const [banner, setBanner] = useState<string | null>(() =>
+  const [banner, setBanner] = useState<ChatBanner | null>(() =>
     typeof window !== "undefined" &&
     !window.__HERMES_SESSION_TOKEN__ &&
     !window.__HERMES_AUTH_REQUIRED__
-      ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
+      ? { kind: "sessionTokenUnavailable" }
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
@@ -274,7 +282,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     scope: string;
     title: string | null;
   }>({ scope: "", title: null });
-  const { t } = useI18n();
+  const { format, t } = useI18n();
+  const chatCopyRef = useRef(t.chatSidebar);
+  chatCopyRef.current = t.chatSidebar;
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -575,14 +585,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const reportImageUploadError = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[dashboard chat] image upload failed:", message);
-      setBanner(`Image upload failed: ${message}`);
+      setBanner({ kind: "imageUploadFailed", error: message });
     };
     const driveImageAttach = async (paths: string[]) => {
       for (const path of paths) {
         if (imageUploadDisposed) return;
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-          setBanner("Image uploaded, but chat is not connected — try again.");
+          setBanner({ kind: "imageUploadedDisconnected" });
           return;
         }
         ws.send(`/image ${path}`);
@@ -1028,39 +1038,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setLastCloseCode(ev.code);
         if (ev.code === 4401) {
           setPtyState("closed");
-          setBanner(
-            ev.reason
-              ? `Auth failed (${ev.reason}). Reload to refresh the session.`
-              : "Auth failed. Reload the page to refresh the session token.",
-          );
+          setBanner({ kind: "authFailed", reason: ev.reason || undefined });
           return;
         }
         if (ev.code === 4403) {
           // Host/Origin mismatch (DNS-rebinding guard).
           setPtyState("closed");
-          setBanner(
-            ev.reason
-              ? `Refused: ${ev.reason}.`
-              : "Refused: request host/origin doesn't match the dashboard.",
-          );
+          setBanner({ kind: "originRefused", reason: ev.reason || undefined });
           return;
         }
         if (ev.code === 4404) {
           setPtyState("closed");
-          setBanner(
-            ev.reason
-              ? `Chat websocket unavailable: ${ev.reason}.`
-              : "Chat websocket unavailable on this server.",
-          );
+          setBanner({
+            kind: "websocketUnavailable",
+            reason: ev.reason || undefined,
+          });
           return;
         }
         if (ev.code === 4408) {
           setPtyState("closed");
-          setBanner(
-            ev.reason
-              ? `Refused: ${ev.reason}.`
-              : "Refused: your client isn't permitted (server bound to localhost only).",
-          );
+          setBanner({
+            kind: "localClientRefused",
+            reason: ev.reason || undefined,
+          });
           return;
         }
         if (ev.code === 1011) {
@@ -1072,7 +1072,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         //   4410 = the agent PROCESS exited (real end) → restart affordance.
         //   4409 = superseded by a newer tab attaching the same token → stay quiet.
         if (ev.code === 4410) {
-          term.write(`\r\n\x1b[90m[session ended]\x1b[0m\r\n`);
+          term.write(
+            `\r\n\x1b[90m[${chatCopyRef.current.sessionEndedTerminal}]\x1b[0m\r\n`,
+          );
           setPtyState("ended");
           return;
         }
@@ -1091,7 +1093,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // `/exit`, or started a new session). NS-504: surface an explicit
         // restart affordance instead of leaving a dead terminal that only a
         // full page refresh could recover.
-        term.write(`\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`);
+        term.write(
+          `\r\n\x1b[90m[${chatCopyRef.current.sessionEndedTerminalCode.replace(
+            "{code}",
+            String(ev.code),
+          )}]\x1b[0m\r\n`,
+        );
         setPtyState("ended");
       };
 
@@ -1126,7 +1133,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           if (!blockedInputNoticeRef.current) {
             blockedInputNoticeRef.current = true;
             term.write(
-              `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
+              `\r\n\x1b[33m[${chatCopyRef.current.reconnectingInput}]\x1b[0m\r\n`,
             );
           }
           return;
@@ -1324,13 +1331,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
+  const bannerText = (() => {
+    if (!banner) return null;
+    const copy = t.chatSidebar;
+
+    switch (banner.kind) {
+      case "authFailed":
+        return banner.reason
+          ? format(copy.authFailedReason, { reason: banner.reason })
+          : copy.authFailed;
+      case "imageUploadFailed":
+        return format(copy.imageUploadFailed, { error: banner.error });
+      case "imageUploadedDisconnected":
+        return copy.imageUploadedDisconnected;
+      case "localClientRefused":
+        return banner.reason
+          ? format(copy.localClientRefusedReason, { reason: banner.reason })
+          : copy.localClientRefused;
+      case "originRefused":
+        return banner.reason
+          ? format(copy.originRefusedReason, { reason: banner.reason })
+          : copy.originRefused;
+      case "sessionTokenUnavailable":
+        return copy.sessionTokenUnavailable;
+      case "websocketUnavailable":
+        return banner.reason
+          ? format(copy.websocketUnavailableReason, { reason: banner.reason })
+          : copy.websocketUnavailable;
+    }
+  })();
   const reconnectBanner =
     ptyState === "reconnecting"
-      ? `Chat connection interrupted${
-          lastCloseCode ? ` (code ${lastCloseCode})` : ""
-        }. Reconnecting...`
+      ? lastCloseCode
+        ? format(t.chatSidebar.reconnectingCode, { code: lastCloseCode })
+        : t.chatSidebar.reconnecting
       : null;
-  const visibleBanner = banner ?? reconnectBanner;
+  const visibleBanner = bannerText ?? reconnectBanner;
   const showReconnectOverlay =
     ptyState === "reconnecting" || (ptyState === "closed" && !banner);
   const mobileModelToolsPortal =

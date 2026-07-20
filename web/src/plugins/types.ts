@@ -8,6 +8,8 @@ export interface PluginManifest {
   /** i18n key under `t.app.nav` for sidebar label translation. Falls back to `label` when unset. */
   labelKey?: string;
   description: string;
+  /** i18n key under `t.pluginsPage.descriptions`; unknown keys fall back to `description`. */
+  descriptionKey?: string;
   icon: string;
   version: string;
   tab: {

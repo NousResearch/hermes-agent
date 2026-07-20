@@ -37,6 +37,7 @@ import logging
 import os
 import sysconfig
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -218,16 +219,17 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
+@lru_cache(maxsize=1)
 def _configured_language() -> str | None:
-    """Read the current ``display.language`` through the central config cache.
+    """Read ``display.language`` from config.yaml once per process.
 
-    ``load_config_readonly()`` owns the mtime-aware cache and avoids a deepcopy
-    on cache hits. Keeping a second process-lifetime cache here would prevent a
-    running gateway from observing Dashboard language changes.
+    Dashboard and Ink own their live locale refresh independently. Keeping the
+    shared Python catalog process-stable avoids incidentally changing classic
+    CLI or messaging-platform presentation during this rollout.
     """
     try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
+        from hermes_cli.config import load_config
+        cfg = load_config()
         lang = (cfg.get("display") or {}).get("language")
         if lang:
             return _normalize_lang(lang)
@@ -237,11 +239,12 @@ def _configured_language() -> str | None:
 
 
 def reset_language_cache() -> None:
-    """Invalidate locale catalogs loaded by this process.
+    """Invalidate cached language resolution and locale catalogs.
 
-    Language configuration is already refreshed by the central mtime-aware
-    config cache; this hook remains useful for tests and catalog updates.
+    Call after a deliberate shared-Python language update or in tests. The
+    Dashboard and Ink live-refresh paths do not depend on this cache.
     """
+    _configured_language.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
 

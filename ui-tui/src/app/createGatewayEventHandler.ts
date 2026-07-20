@@ -116,7 +116,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     persistedAbandonedClarify.add(clarify.requestId)
     appendMessage({
       role: 'system',
-      text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+      text: formatAbandonedClarify(clarify.question, clarify.choices, 'timedOut', getUiState().locale)
     })
     patchOverlayState({ clarify: null })
   }
@@ -794,7 +794,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'approval.request': {
-        const description = String(ev.payload.description ?? 'dangerous command')
+        const description = String(ev.payload.description ?? ti('prompt.dangerousCommand'))
         // Only an explicit false (tirith warning) drops the permanent-allow option.
         const allowPermanent = ev.payload.allow_permanent !== false
 
@@ -988,7 +988,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         flashPet('failed')
 
         {
-          const message = String(ev.payload?.message || 'unknown error')
+          const message = String(ev.payload?.message || ti('common.unknownError'))
 
           turnController.pushActivity(message, 'error')
 

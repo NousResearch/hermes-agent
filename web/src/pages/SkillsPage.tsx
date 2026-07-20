@@ -709,7 +709,7 @@ export default function SkillsPage() {
                 {t.skills.url}
               </label>
               <Input
-                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                placeholder={t.skills.urlPlaceholder}
                 value={learnUrl}
                 onChange={(e) => setLearnUrl(e.target.value)}
               />

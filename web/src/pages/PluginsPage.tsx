@@ -25,6 +25,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
+import { resolvePluginDescription } from "@/i18n/runtime";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -851,7 +852,7 @@ export default function PluginsPage() {
               <Input
                 className="font-mono-ui lowercase"
                 id="install-url"
-                placeholder="owner/repo, owner/repo/subdir, or https://..."
+                placeholder={t.pluginsPage.identifierPlaceholder}
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}
@@ -951,7 +952,11 @@ export default function PluginsPage() {
                 <li className="text-xs text-text-secondary" key={m.name}>
 
 
-                  {m.label ?? m.name} — {m.description || m.tab?.path}
+                  {m.label ?? m.name} — {resolvePluginDescription(
+                    t,
+                    m.description || m.tab?.path,
+                    m.descriptionKey,
+                  )}
 
 
                   {!m.tab?.hidden ? (
@@ -1145,7 +1150,11 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         {row.description ? (
           <p className="min-w-0 w-full text-xs tracking-[0.06em] text-text-secondary break-words">
-            {row.description}
+            {resolvePluginDescription(
+              t,
+              row.description,
+              row.dashboard_manifest?.descriptionKey,
+            )}
           </p>
         ) : null}
 

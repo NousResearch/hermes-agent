@@ -15,6 +15,7 @@ export interface GatewayCompletionItem {
   display: string
   meta?: string
   meta_key?: string
+  meta_vars?: Record<string, string | number>
   text: string
 }
 

@@ -1109,7 +1109,7 @@ Built-in themes:
 | **Cyberpunk** (`cyberpunk`) | Neon green on black, Share Tech Mono |
 | **Rosé** (`rose`) | Pink + ivory, Fraunces serif, spacious |
 | **Zinc** (`zinc`) | Flat dark zinc, shadcn/ui-style chrome, Geist |
-| **Neon Samurai** (`neon-samurai`) | Indigo-black Osaka night, magenta & cyan neon, Geist |
+| **Neon Samurai** (`neon-samurai`) | Indigo-black Osaka night, magenta & cyan neon, pixel sakura, Geist |
 
 To build your own theme, add a plugin tab, inject into shell slots, or expose plugin-specific REST endpoints, see **[Extending the Dashboard](./extending-the-dashboard)** — the complete guide covers:
 

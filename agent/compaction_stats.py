@@ -348,7 +348,7 @@ def _content_to_text(content) -> str:
 
 def _is_summary_message(content) -> bool:
     global _LCM_SUMMARY_RE, _BUILTIN_SUMMARY_RE
-    if _LCM_SUMMARY_RE is None:
+    if _LCM_SUMMARY_RE is None or _BUILTIN_SUMMARY_RE is None:
         import re
         # LINE-ANCHORED (`(?m)^`) on purpose: a real summary row always carries
         # its marker at start-of-line (LCM joins summary parts with "\n\n---\n\n";

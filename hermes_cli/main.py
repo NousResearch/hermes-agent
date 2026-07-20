@@ -5715,6 +5715,38 @@ def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
     return True
 
 
+def _user_namespaces_available() -> bool:
+    """Return True when unprivileged user namespaces are usable on this host.
+
+    Probes by running ``unshare -Ur true`` with a short timeout.  This is the
+    authoritative check — it tests the actual kernel capability rather than
+    guessing from /proc/version or WSL detection.
+
+    Returns False when:
+    - ``unshare`` is not on PATH
+    - the subprocess times out
+    - the subprocess returns non-zero (namespace creation denied)
+    - any bounded subprocess or OS error occurs
+
+    The probe produces no mutation and requires no privileges.
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        unshare = shutil.which("unshare")
+        if not unshare:
+            return False
+        result = subprocess.run(
+            [unshare, "-Ur", "true"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def _desktop_linux_needs_no_sandbox() -> bool:
     """Return True when Chromium/Electron should bypass the Linux sandbox.
 
@@ -6047,12 +6079,34 @@ def cmd_gui(args: argparse.Namespace):
         sys.exit(1)
 
     launch_command = [str(packaged_executable)]
-    if not _desktop_linux_sandbox_fixup(packaged_executable):
-        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
-            launch_command.append("--no-sandbox")
-        else:
-            sys.exit(1)
+
+    # On Linux, prefer the user-namespace sandbox when available.  This avoids
+    # the SUID chrome-sandbox helper entirely — no sudo, no root-owned binary,
+    # no DrvFS permission issues.  The probe is authoritative: it tests the
+    # actual kernel capability rather than guessing from /proc/version.
+    # See also _user_namespaces_available().
+    if sys.platform == "linux" and _user_namespaces_available():
+        launch_command.append("--disable-setuid-sandbox")
+    elif not _desktop_linux_sandbox_fixup(packaged_executable):
+        # No safe sandbox mechanism is available.  Fail closed with a clear
+        # remediation message.  The launcher must never inject --no-sandbox
+        # or recommend running as root.
+        print("✗ Hermes Desktop cannot start: no usable Linux sandbox mechanism found.")
+        print("")
+        print("  This host does not support unprivileged user namespaces and the")
+        print("  Electron SUID chrome-sandbox helper is not safely configured.")
+        print("")
+        print("  Hermes refuses to disable Chromium sandboxing automatically.")
+        print("")
+        print("  To resolve, follow the administrator-reviewed sandbox setup")
+        print("  procedure for this host.  The required steps depend on your")
+        print("  Linux distribution and kernel configuration:")
+        print("")
+        print("    - Enable unprivileged user namespaces")
+        print("      (sysctl kernel.unprivileged_userns_clone=1)")
+        print("    - Or configure the Electron SUID chrome-sandbox helper")
+        print("      through the host's package manager or Electron setup")
+        sys.exit(1)
 
     launch_command.extend(config_electron_flags)
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")

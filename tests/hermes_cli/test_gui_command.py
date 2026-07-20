@@ -208,7 +208,8 @@ def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     sandbox.chmod(0o755)
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+    with patch("hermes_cli.main._user_namespaces_available", return_value=False), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
          patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -257,7 +258,8 @@ def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
 
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+    with patch("hermes_cli.main._user_namespaces_available", return_value=False), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -268,39 +270,27 @@ def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
-def test_gui_linux_falls_back_to_no_sandbox_when_userns_is_restricted(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
-    sandbox = packaged_exe.parent / "chrome-sandbox"
-    sandbox.write_text("", encoding="utf-8")
-
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--no-sandbox"], 0)
-
-    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
-         patch("hermes_cli.main._desktop_linux_needs_no_sandbox", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(skip_build=True))
-
-    assert exc.value.code == 0
-    mock_run.assert_called_once()
-    assert mock_run.call_args.args[0] == [str(packaged_exe), "--no-sandbox"]
-
-
-def test_gui_linux_exits_when_sandbox_fixup_fails_without_safe_fallback(tmp_path, monkeypatch):
+def test_gui_linux_exits_when_sandbox_fixup_fails_without_safe_fallback(tmp_path, monkeypatch, capsys):
+    """When neither user namespaces nor SUID fixup work, the launcher exits
+    with a remediation message and does NOT inject --no-sandbox."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch, platform="linux")
 
-    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
-         patch("hermes_cli.main._desktop_linux_needs_no_sandbox", return_value=False), \
+    with patch("hermes_cli.main._user_namespaces_available", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
          patch("hermes_cli.main.subprocess.run") as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
 
     assert exc.value.code == 1
     mock_run.assert_not_called()
+    output = capsys.readouterr().out
+    assert "no usable Linux sandbox mechanism" in output
+    # The error message must not recommend running as root or injecting
+    # --no-sandbox automatically.
+    assert "sudo" not in output
+    assert mock_run.call_count == 0  # never executed
 
 
 def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch):
@@ -578,7 +568,8 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
             return pack_ok
         return launch_ok
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main._user_namespaces_available", return_value=True), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
@@ -596,7 +587,7 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
     assert mock_run.call_count == 3
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "run", "pack"]
-    assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
+    assert mock_run.call_args_list[2].args[0] == [str(packaged_exe), "--disable-setuid-sandbox"]
 
 
 def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch, capsys):
@@ -687,7 +678,8 @@ def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeyp
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main._user_namespaces_available", return_value=True), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
@@ -1095,6 +1087,191 @@ def test_desktop_launch_options_normalizes_disable_gpu(raw, expected):
     with patch("hermes_cli.config.load_config", return_value=cfg):
         _, gpu = cli_main._desktop_launch_options()
     assert gpu == expected
+
+
+# --- User-namespace sandbox probe ------------------------------------------
+
+
+def test_user_namespaces_available_returns_true_when_unshare_succeeds(monkeypatch):
+    """When ``unshare -Ur true`` exits 0, the probe returns True."""
+    ok = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/unshare"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run:
+        assert cli_main._user_namespaces_available() is True
+    assert mock_run.call_args.args[0] == ["/usr/bin/unshare", "-Ur", "true"]
+    assert mock_run.call_args.kwargs["timeout"] == 5
+    assert mock_run.call_args.kwargs["check"] is False
+
+
+def test_user_namespaces_available_returns_false_when_unshare_fails(monkeypatch):
+    """When ``unshare -Ur true`` exits non-zero, the probe returns False."""
+    fail = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"operation not permitted")
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/unshare"), \
+         patch("hermes_cli.main.subprocess.run", return_value=fail):
+        assert cli_main._user_namespaces_available() is False
+
+
+def test_user_namespaces_available_returns_false_when_unshare_missing(monkeypatch):
+    """When ``unshare`` is not on PATH, the probe returns False without crashing."""
+    with patch("hermes_cli.main.shutil.which", return_value=None):
+        assert cli_main._user_namespaces_available() is False
+
+
+def test_user_namespaces_available_returns_false_on_subprocess_error(monkeypatch):
+    """When subprocess.run raises, the probe returns False without crashing."""
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/unshare"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=OSError("ENOENT")):
+        assert cli_main._user_namespaces_available() is False
+
+
+def test_user_namespaces_available_returns_false_on_timeout(monkeypatch):
+    """When subprocess.run times out, the probe returns False without crashing."""
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/unshare"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=subprocess.TimeoutExpired(["unshare"], 5)):
+        assert cli_main._user_namespaces_available() is False
+
+
+def test_user_namespaces_available_returns_false_on_non_linux(monkeypatch):
+    """On non-Linux platforms, the probe returns False immediately."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    assert cli_main._user_namespaces_available() is False
+
+
+# --- User-namespace sandbox launch path -------------------------------------
+
+
+def test_gui_linux_uses_userns_sandbox_when_available(tmp_path, monkeypatch):
+    """When user namespaces are available, --disable-setuid-sandbox is appended
+    and the SUID fixup is NOT invoked."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--disable-setuid-sandbox"], 0)
+
+    with patch("hermes_cli.main._user_namespaces_available", return_value=True), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup") as mock_fixup, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_fixup.assert_not_called()
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == [str(packaged_exe), "--disable-setuid-sandbox"]
+
+
+def test_gui_linux_falls_back_to_suid_when_userns_unavailable(tmp_path, monkeypatch):
+    """When user namespaces are unavailable, the existing SUID path is used."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    sandbox.chmod(0o755)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._user_namespaces_available", return_value=False), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    # SUID fixup was invoked (sudo chown + sudo chmod + launch)
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/sudo", "chown", "root:root", str(sandbox)]
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/sudo", "chmod", "4755", str(sandbox)]
+    assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
+
+
+def test_gui_linux_fails_closed_when_no_sandbox_mechanism_available(tmp_path, monkeypatch):
+    """When neither user namespaces nor SUID fixup work, the launcher exits
+    without adding --no-sandbox."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    with patch("hermes_cli.main._user_namespaces_available", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_needs_no_sandbox", return_value=False), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()
+
+
+def test_gui_linux_no_sandbox_not_injected_by_userns_path(tmp_path, monkeypatch):
+    """Regression: the user-namespace path must never inject --no-sandbox."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--disable-setuid-sandbox"], 0)
+
+    with patch("hermes_cli.main._user_namespaces_available", return_value=True), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup") as mock_fixup, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_fixup.assert_not_called()
+    args = mock_run.call_args.args[0]
+    assert "--no-sandbox" not in args
+    assert "--disable-setuid-sandbox" in args
+
+
+def test_gui_linux_userns_preserves_profile_and_backend_setup(tmp_path, monkeypatch):
+    """When user namespaces are used, the normal launcher env setup is preserved."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--disable-setuid-sandbox"], 0)
+
+    with patch("hermes_cli.main._user_namespaces_available", return_value=True), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(skip_build=True, fake_boot=True))
+
+    launch_env = mock_run.call_args.kwargs["env"]
+    assert launch_env.get("HERMES_DESKTOP_BOOT_FAKE") == "1"
+    assert launch_env.get("HERMES_DESKTOP_CWD") is not None
+
+
+def test_gui_linux_no_sandbox_never_injected_automatically():
+    """Regression: the production launcher must never automatically inject
+    --no-sandbox into the launch command.  The flag may only appear in
+    diagnostic text or user-facing error messages."""
+    import ast
+    import inspect
+
+    source = inspect.getsource(cli_main.cmd_gui)
+    tree = ast.parse(source)
+
+    class NoSandboxFinder(ast.NodeVisitor):
+        def __init__(self):
+            self.found_auto_injection = False
+
+        def visit_If(self, node):
+            # Check if this if-block appends --no-sandbox to launch_command
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call):
+                    # Look for .append("--no-sandbox") calls
+                    if (isinstance(child.func, ast.Attribute)
+                            and child.func.attr == "append"
+                            and child.args
+                            and isinstance(child.args[0], ast.Constant)
+                            and child.args[0].value == "--no-sandbox"):
+                        self.found_auto_injection = True
+            self.generic_visit(node)
+
+    finder = NoSandboxFinder()
+    finder.visit(tree)
+    assert not finder.found_auto_injection, (
+        "Production launcher must not automatically inject --no-sandbox. "
+        "Found .append('--no-sandbox') in cmd_gui source."
+    )
 
 
 def test_desktop_launch_options_survives_config_error():

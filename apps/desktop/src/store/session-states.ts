@@ -27,6 +27,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -198,21 +199,29 @@ export function clearAllSessionStates() {
   $sessionStates.set({})
 }
 
-// Derived per-session status sets. `$sessionStates` already holds `busy` and
-// `needsInput` for every runtime session (written by updateSessionState); these
-// are pure projections of it, not independently maintained atoms. This keeps the
-// data flow one-directional: gateway event → cache → $sessionStates → computed
-// views, eliminating the "projection atom out of sync with cache" bug class.
-export const $workingSessionIds = computed($sessionStates, states =>
+// Derived per-session status sets — pure projections of `$sessionStates` (which
+// holds `busy`/`needsInput` per runtime), keeping the data flow one-directional:
+// gateway event → cache → $sessionStates → computed views.
+//
+// Perf: `$sessionStates` is republished on EVERY message delta (tens/sec during
+// a turn), but these sets only change on busy/needsInput edges. `stableArray`
+// keeps the prior reference when membership is unchanged so `computed` skips the
+// emit — otherwise the whole sidebar + every row re-renders per token.
+const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientSessionState) => boolean) =>
   Object.values(states)
-    .filter(s => s.busy && s.storedSessionId)
+    .filter(s => pred(s) && s.storedSessionId)
     .map(s => s.storedSessionId!)
+
+let workingIds: readonly string[] = []
+export const $workingSessionIds = computed(
+  $sessionStates,
+  states => (workingIds = stableArray(workingIds, storedIds(states, s => s.busy)))
 )
 
-export const $attentionSessionIds = computed($sessionStates, states =>
-  Object.values(states)
-    .filter(s => s.needsInput && s.storedSessionId)
-    .map(s => s.storedSessionId!)
+let attentionIds: readonly string[] = []
+export const $attentionSessionIds = computed(
+  $sessionStates,
+  states => (attentionIds = stableArray(attentionIds, storedIds(states, s => s.needsInput)))
 )
 
 // ---------------------------------------------------------------------------

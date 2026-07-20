@@ -2774,6 +2774,76 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
 
 
+def _read_status_gateway_runtime_sync(
+    gateway_running: bool,
+    gateway_pid,
+    remote_health_body: dict | None,
+) -> Dict[str, Any]:
+    """Blocking gateway runtime reads for /api/status — run via asyncio.to_thread.
+
+    Extracting this synchronous block from the async handler prevents a burst
+    of concurrent sidebar refreshes (e.g. /api/profiles/sessions) from
+    monopolising uvicorn's single event loop worker while SQLite I/O and
+    config reads run inline.
+    """
+    gateway_state = None
+    gateway_platforms: dict = {}
+    gateway_exit_reason = None
+    gateway_updated_at = None
+    configured_gateway_platforms: set[str] | None = None
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_config = load_gateway_config()
+        configured_gateway_platforms = {
+            platform.value for platform in gateway_config.get_connected_platforms()
+        }
+    except Exception:
+        configured_gateway_platforms = None
+
+    local_runtime = read_runtime_status()
+    runtime = local_runtime
+    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+        runtime = remote_health_body
+    if not gateway_running and local_runtime is not None:
+        runtime_pid = get_runtime_status_running_pid(local_runtime)
+        if runtime_pid is not None:
+            gateway_running = True
+            gateway_pid = runtime_pid
+
+    if runtime:
+        gateway_state = runtime.get("gateway_state")
+        gateway_platforms = runtime.get("platforms") or {}
+        if configured_gateway_platforms is not None:
+            gateway_platforms = {
+                key: value
+                for key, value in gateway_platforms.items()
+                if key in configured_gateway_platforms
+            }
+        gateway_exit_reason = runtime.get("exit_reason")
+        gateway_updated_at = runtime.get("updated_at")
+        if not gateway_running:
+            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
+            gateway_platforms = {}
+        elif gateway_running and remote_health_body is not None:
+            if gateway_state in {None, "stopped"}:
+                gateway_state = "running"
+
+    if gateway_running and gateway_state is None and remote_health_body is not None:
+        gateway_state = "running"
+
+    return {
+        "gateway_running": gateway_running,
+        "gateway_pid": gateway_pid,
+        "gateway_state": gateway_state,
+        "gateway_platforms": gateway_platforms,
+        "gateway_exit_reason": gateway_exit_reason,
+        "gateway_updated_at": gateway_updated_at,
+        "runtime": runtime,
+        "configured_gateway_platforms": configured_gateway_platforms,
+    }
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2792,7 +2862,7 @@ async def get_status(profile: Optional[str] = None):
         status_scope.__enter__()
 
     try:
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = await asyncio.to_thread(check_config_version)
         # --- Gateway liveness detection ---
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
@@ -2812,63 +2882,19 @@ async def get_status(profile: Optional[str] = None):
                 if remote_health_body:
                     gateway_pid = remote_health_body.get("pid")
 
-        gateway_state = None
-        gateway_platforms: dict = {}
-        gateway_exit_reason = None
-        gateway_updated_at = None
-        configured_gateway_platforms: set[str] | None = None
-        try:
-            from gateway.config import load_gateway_config
-
-            gateway_config = load_gateway_config()
-            configured_gateway_platforms = {
-                platform.value for platform in gateway_config.get_connected_platforms()
-            }
-        except Exception:
-            configured_gateway_platforms = None
-
-        # Prefer the detailed health endpoint response (has full state) when the
-        # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
-        runtime = local_runtime
-        if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
-            runtime = remote_health_body
-        # The runtime-status PID fallback validates liveness with a local
-        # os.kill() probe, so it must only run against the LOCAL status file —
-        # never the remote health body, whose PID belongs to another host and
-        # is display-only. (Running os.kill on a remote PID is both wrong and
-        # trips the test live-system guard.)
-        if not gateway_running and local_runtime is not None:
-            runtime_pid = get_runtime_status_running_pid(local_runtime)
-            if runtime_pid is not None:
-                gateway_running = True
-                gateway_pid = runtime_pid
-
-        if runtime:
-            gateway_state = runtime.get("gateway_state")
-            gateway_platforms = runtime.get("platforms") or {}
-            if configured_gateway_platforms is not None:
-                gateway_platforms = {
-                    key: value
-                    for key, value in gateway_platforms.items()
-                    if key in configured_gateway_platforms
-                }
-            gateway_exit_reason = runtime.get("exit_reason")
-            gateway_updated_at = runtime.get("updated_at")
-            if not gateway_running:
-                gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
-                gateway_platforms = {}
-            elif gateway_running and remote_health_body is not None:
-                # The health probe confirmed the gateway is alive, but the local
-                # runtime status file may be stale (cross-container).  Override
-                # stopped/None state so the dashboard shows the correct badge.
-                if gateway_state in {None, "stopped"}:
-                    gateway_state = "running"
-
-        # If there was no runtime info at all but the health probe confirmed alive,
-        # ensure we still report the gateway as running (no shared volume scenario).
-        if gateway_running and gateway_state is None and remote_health_body is not None:
-            gateway_state = "running"
+        runtime_bundle = await asyncio.to_thread(
+            _read_status_gateway_runtime_sync,
+            gateway_running,
+            gateway_pid,
+            remote_health_body,
+        )
+        gateway_running = runtime_bundle["gateway_running"]
+        gateway_pid = runtime_bundle["gateway_pid"]
+        gateway_state = runtime_bundle["gateway_state"]
+        gateway_platforms = runtime_bundle["gateway_platforms"]
+        gateway_exit_reason = runtime_bundle["gateway_exit_reason"]
+        gateway_updated_at = runtime_bundle["gateway_updated_at"]
+        runtime = runtime_bundle["runtime"]
 
         active_sessions = await _status_active_sessions()
 

@@ -4,8 +4,24 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
+const REMOTE_API_DEFAULT_TIMEOUT_MS = 60_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+
+/**
+ * Classify whether a remote liveness probe failure is a transient timeout
+ * (keep cached connection) or a non-transient error (drop + rebuild).
+ *
+ * Exported here (not in main.ts) so tests can import the REAL implementation
+ * instead of re-implementing the predicate and silently drifting.
+ */
+function isTransientRemoteProbeError(error: unknown): boolean {
+  const msg = String((error as Error)?.message || error || '')
+  return (
+    /timed out connecting to Hermes backend/i.test(msg) ||
+    /\b(ETIMEDOUT|ESOCKETTIMEDOUT)\b/.test(msg)
+  )
+}
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
@@ -306,7 +322,9 @@ async function resolveReadableFileForIpc(
 export {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  REMOTE_API_DEFAULT_TIMEOUT_MS,
   encryptDesktopSecret,
+  isTransientRemoteProbeError,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,

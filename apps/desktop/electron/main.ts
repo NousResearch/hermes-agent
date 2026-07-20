@@ -97,7 +97,9 @@ import {
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  REMOTE_API_DEFAULT_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  isTransientRemoteProbeError,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
@@ -6452,7 +6454,8 @@ async function fetchJsonForProfile(profile, path) {
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
-  const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
+  const defaultTimeoutMs = conn.mode === 'remote' ? REMOTE_API_DEFAULT_TIMEOUT_MS : DEFAULT_FETCH_TIMEOUT_MS
+  const opts = { method, body, timeoutMs: defaultTimeoutMs }
 
   return conn.authMode === 'oauth' ? fetchJsonViaOauthSession(url, opts) : fetchJson(url, conn.token, opts)
 }
@@ -7795,11 +7798,23 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
 
   const base = conn.baseUrl.replace(/\/+$/, '')
 
+  // Slow is not dead: a busy remote dashboard can take >15s to answer /api/status
+  // while SQLite work runs in thread pool. Dropping the cached connection on a
+  // timeout forces ws-ticket remint + OAuth churn and amplifies into a reconnect
+  // storm (session.resume timeouts, "session expired" false positives).
+  const REMOTE_LIVENESS_PROBE_TIMEOUT_MS = 60_000
+
   try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: REMOTE_LIVENESS_PROBE_TIMEOUT_MS })
 
     return { ok: true, rebuilt: false }
-  } catch {
+  } catch (error) {
+    if (isTransientRemoteProbeError(error)) {
+      rememberLog(
+        'Remote liveness probe timed out; keeping cached connection (remote dashboard may be busy).'
+      )
+      return { ok: true, rebuilt: false }
+    }
     // Unreachable remote: drop the stale cache so the renderer's next reconnect
     // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
     // clears the connection promise for a remote (no child to SIGTERM).
@@ -8342,12 +8357,11 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const primary = await ensureBackend(null)
-
-  const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-    method: 'GET',
-    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
+  const base = (await requestJsonForProfile(null, `/api/profiles/sessions?${searchParams}`, 'GET').catch(() => ({
+    sessions: [],
+    total: 0,
+    profile_totals: {}
+  })) as any)
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -8404,7 +8418,9 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // defeating the deletion and leaving a zombie process.
   const routeProfile = resolveRouteProfile(tornDownProfile, profile)
   const connection = await ensureBackend(routeProfile)
-  const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+  const defaultTimeoutMs =
+    connection.mode === 'remote' ? REMOTE_API_DEFAULT_TIMEOUT_MS : DEFAULT_FETCH_TIMEOUT_MS
+  const timeoutMs = resolveTimeoutMs(request?.timeoutMs, defaultTimeoutMs)
 
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
     globalRemote: globalRemoteActive(),

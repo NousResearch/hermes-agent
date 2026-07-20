@@ -109,6 +109,8 @@ declare module '@hermes/ink' {
   export function isXtermJs(): boolean
   export function onTerminalBackground(listener: (hex: string) => void): void
   export function terminalBackgroundHex(): string | undefined
+  export function onTerminalForeground(listener: (hex: string) => void): void
+  export function terminalForegroundHex(): string | undefined
   export function parseOscColor(data: string): string | undefined
 
   export type ScrollFastPathStats = {

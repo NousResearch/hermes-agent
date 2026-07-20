@@ -245,6 +245,7 @@ export function useConfigSync({
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
+  const mcpRevRef = useRef('')
 
   useEffect(() => {
     if (!sid) {
@@ -270,10 +271,12 @@ export function useConfigSync({
     const id = setInterval(() => {
       quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
         const next = Number(r?.mtime ?? 0)
+        const nextMcpRev = String(r?.mcp_rev ?? '')
 
         if (!mtimeRef.current) {
           if (next) {
             mtimeRef.current = next
+            mcpRevRef.current = nextMcpRev
           }
 
           return
@@ -285,9 +288,21 @@ export function useConfigSync({
 
         mtimeRef.current = next
 
-        quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-          r => r && turnController.pushActivity('MCP reloaded after config change')
-        )
+        // Reload MCP only when the MCP-relevant config actually changed.
+        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
+        // reconnecting every MCP server for those costs seconds and made
+        // skin switching feel glacial. Older gateways don't send mcp_rev —
+        // fall back to reload-on-any-change there.
+        const mcpChanged = !nextMcpRev || nextMcpRev !== mcpRevRef.current
+
+        mcpRevRef.current = nextMcpRev
+
+        if (mcpChanged) {
+          quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
+            r => r && turnController.pushActivity('MCP reloaded after config change')
+          )
+        }
+
         void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
       })
     }, MTIME_POLL_MS)

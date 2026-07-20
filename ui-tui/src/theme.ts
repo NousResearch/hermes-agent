@@ -541,7 +541,9 @@ export function deriveTones(seeds: {
   const { accent, bg, primary, text } = seeds
   const isLight = (relativeLuminance(bg) ?? 0) > 0.5
   const inkBlend = mix(primary, text, 0.27)
-  const surface = mix(bg, desaturate(accent, 0.35), isLight ? 0.045 : 0.09)
+  // Fill tint keeps most of the accent's chroma — a heavier desaturate here
+  // read as washed-out ("a little too desat") next to authored fills.
+  const surface = mix(bg, desaturate(accent, 0.15), isLight ? 0.045 : 0.09)
 
   return {
     muted: isLight ? inkBlend : desaturate(mix(accent, bg, 0.19), 0.16),

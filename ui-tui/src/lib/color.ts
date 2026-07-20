@@ -265,6 +265,23 @@ export function retone(color: string, lightness: number, minSaturation = 0): str
   return toHex(fromHsl(h, Math.max(s, minSaturation), lightness))
 }
 
+/** Multiply HSL saturation by `factor` (clamped to 1), hue/lightness fixed. */
+export function boostSaturation(color: string, factor: number): string {
+  const rgb = parseColor(color)
+
+  if (!rgb) {
+    return color
+  }
+
+  const [h, s, l] = toHsl(rgb)
+
+  if (s === 0) {
+    return color
+  }
+
+  return toHex(fromHsl(h, Math.min(1, s * factor), l))
+}
+
 /**
  * Chainable form for multi-step derivations, e.g.
  * `color(text).mix(bg, 0.35).mix(accent, 0.18).ensureContrast(bg, 2.8).hex()`.

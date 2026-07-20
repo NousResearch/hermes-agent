@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 
-import { onTerminalBackground } from '@hermes/ink'
+import { forceRedraw, onTerminalBackground } from '@hermes/ink'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -50,9 +50,42 @@ const themeForSkin = (s: GatewaySkin) => {
 
 // Patch the live theme AND persist it for the next launch's first frame
 // (flash-free boot — see lib/themeBoot.ts).
+//
+// The force-redraw is load-bearing: a theme swap recolors EVERYTHING, but the
+// renderer's diff/blit cache treats layout-unchanged regions as reusable, so
+// incremental repaints after a swap can tear — stale cells keep the previous
+// palette (observed live: gold headers from the boot theme composited with
+// slate chrome, dark status fills surviving on a light terminal, half-
+// overwritten glyphs reading as "shadows"). One full clear+repaint after the
+// new theme has rendered guarantees a coherent frame. Deferred ~2 frames so
+// React + Ink flush the recolored tree first; skipping identical themes keeps
+// the no-op resolution path (boot cache confirmed by detection) paint-free.
+let lastCommittedTheme: Theme | null = null
+
 const commitTheme = (theme: Theme) => {
+  const changed = lastCommittedTheme !== null && !themesEqual(lastCommittedTheme, theme)
+
+  lastCommittedTheme = theme
   patchUiState({ theme })
   writeBootTheme(theme, process.env.HERMES_TUI_BACKGROUND)
+
+  if (changed) {
+    setTimeout(() => forceRedraw(process.stdout), 40).unref?.()
+  }
+}
+
+const themesEqual = (a: Theme, b: Theme) => {
+  if (a === b) {
+    return true
+  }
+
+  for (const key of Object.keys(a.color) as (keyof Theme['color'])[]) {
+    if (a.color[key] !== b.color[key]) {
+      return false
+    }
+  }
+
+  return a.brand.name === b.brand.name && a.brand.prompt === b.brand.prompt && a.bannerLogo === b.bannerLogo && a.bannerHero === b.bannerHero
 }
 
 const applySkin = (s: GatewaySkin) => {
@@ -122,13 +155,15 @@ export function syncThemeToTerminalBackground(): void {
   let resolved = false
 
   onTerminalBackground(hex => {
-    // xterm.js hosts (VS Code / Cursor) answer OSC 11 with #000000 when the
-    // editor theme sets no explicit terminal background — the renderer's
-    // unset DEFAULT, not the painted color (observed: pure black reported on
-    // a white terminal). A real vscode dark theme reports its actual surface
-    // (#1e1e1e etc.), so exactly-#000000 from a vscode host carries no
-    // signal: skip the cache and fall through to the OS-appearance inference.
-    if (hex === '#000000' && (process.env.TERM_PROGRAM ?? '') === 'vscode') {
+    // Exactly-#000000 is the "unset default" fingerprint, not a measurement:
+    // xterm.js reports it when the editor theme sets no terminal background
+    // (observed: pure black reported on a white Cursor terminal), and tmux
+    // answers OSC 11 with its own black fallback regardless of the outer
+    // terminal — and tmux also strips TERM_PROGRAM, so no host allow-list
+    // can catch it. Real dark themes report their actual surface (#1e1e1e,
+    // #282828, …). Distrusting pure black universally is safe: on a truly
+    // pure-black terminal the fall-through detection lands on dark anyway.
+    if (hex === '#000000') {
       return
     }
 

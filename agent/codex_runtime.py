@@ -509,6 +509,14 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
         prior = started.pop(item_id, None)
+        # Codex can omit item/started for fast MCP and dynamic tool calls.
+        # Synthesize the missing start so progress consumers always receive
+        # a lifecycle pair. Keep commandExecution and fileChange completion
+        # behavior unchanged: their existing completed-only handling is
+        # intentionally not broadened here.
+        if prior is None and item.get("type") in {"mcpToolCall", "dynamicToolCall"}:
+            _fire_tool_started(item)
+            prior = started.pop(item_id, None)
         # Prefer codex's own durationMs when present so the bubble shows
         # exact tool wall-time; fall back to our started timestamp; fall
         # back to None if we never saw an item/started (some codex

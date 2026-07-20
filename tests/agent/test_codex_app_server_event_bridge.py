@@ -384,6 +384,65 @@ class TestToolProgressDispatch:
         assert completed.kwargs["is_error"] is False
         assert "results" in completed.kwargs["result"]
 
+    @pytest.mark.parametrize(
+        ("item", "expected_name"),
+        [
+            (
+                {
+                    "type": "mcpToolCall",
+                    "id": "mcp-completed-only",
+                    "server": "fs",
+                    "tool": "read_file",
+                    "arguments": {"path": "/tmp/a.py"},
+                    "result": {"content": "ok"},
+                },
+                "mcp.fs.read_file",
+            ),
+            (
+                {
+                    "type": "dynamicToolCall",
+                    "id": "dynamic-completed-only",
+                    "tool": "web_search",
+                    "arguments": {"query": "hermes"},
+                    "success": True,
+                },
+                "web_search",
+            ),
+        ],
+    )
+    def test_completed_only_native_tool_synthesizes_start(self, item, expected_name):
+        """Fast native calls may arrive as item/completed without a start."""
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge(_item_completed(item))
+
+        calls = agent.tool_progress_callback.call_args_list
+        assert [call.args[:2] for call in calls] == [
+            ("tool.started", expected_name),
+            ("tool.completed", expected_name),
+        ]
+
+    def test_started_native_tool_is_not_synthesized_again_on_completion(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        item = {
+            "type": "mcpToolCall",
+            "id": "mcp-normal-pair",
+            "server": "fs",
+            "tool": "read_file",
+            "arguments": {"path": "/tmp/a.py"},
+            "result": {"content": "ok"},
+        }
+
+        bridge(_item_started(item))
+        bridge(_item_completed(item))
+
+        assert [call.args[0] for call in agent.tool_progress_callback.call_args_list] == [
+            "tool.started",
+            "tool.completed",
+        ]
+
     def test_web_search_builtin_fires_started_and_completed(self):
         """Codex's built-in webSearch produces a start/complete bubble pair
         with the query as preview and args (#26541)."""

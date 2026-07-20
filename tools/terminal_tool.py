@@ -1856,6 +1856,16 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
 def _atexit_cleanup():
     """Stop cleanup thread and shut down all remaining sandboxes on exit."""
     _stop_cleanup_thread()
+    # Kill tracked background processes (vite, playwright, workerd, etc.)
+    # BEFORE tearing down environments — prevents orphan accumulation
+    # in shared Docker containers when the worker exits.
+    try:
+        from tools.process_registry import process_registry
+        killed = process_registry.kill_all()
+        if killed:
+            logger.info("Atexit: killed %d tracked background process(es)", killed)
+    except Exception as e:
+        logger.warning("Atexit: process_registry.kill_all() failed: %s", e)
     if _active_environments:
         count = len(_active_environments)
         logger.info("Shutting down %d remaining sandbox(es)...", count)

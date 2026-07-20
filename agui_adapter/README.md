@@ -126,6 +126,14 @@ determines the auth posture (this mirrors the Hermes API server and dashboard):
 - **CSRF defense.** `POST /` requires `Content-Type: application/json` (else
   `415`), forcing a browser CORS preflight so a hostile page can't silently drive
   even a loopback server.
+- **Server tool names are reserved.** A frontend (`tools[]`) or state-writer
+  declaration whose name matches a registered server tool — e.g. `terminal`,
+  `write_file`, `execute_code` — **fails the run** with `RUN_ERROR` naming the
+  offending declarations. Dispatch resolves purely by name, so accepting one
+  would make the model's call execute that server tool instead of handing off to
+  the client. A name also cannot be declared as both kinds, or switch between
+  frontend and state-writer across runs in the same process (registration is
+  process-global). Rename the client tool.
 - **Dangerous-command approvals** ride AG-UI's native interrupt: the run finishes
   with `outcome:{type:"interrupt"}`, the client renders it (`useInterrupt`) and
   resumes with `resume:[{interruptId, status:"resolved", payload:{approved,
@@ -273,8 +281,22 @@ python -m pytest tests/agui_adapter/ -q
 ```
 
 - `test_translate.py`, `test_events.py` — pure unit tests.
-- `test_auth.py`, `test_approvals.py`, `test_resume_shim.py` — security + lifecycle.
+- `test_auth.py`, `test_approvals.py`, `test_resume_shim.py`,
+  `test_tool_name_collisions.py` — security + lifecycle.
 - `test_e2e_aimock.py` — end-to-end against a real
   [`@copilotkit/aimock`](https://www.npmjs.com/package/@copilotkit/aimock)
-  fixture server (auto-installed under `tests/agui_adapter/.aimock`, gitignored).
-  Requires Node.js.
+  fixture server. Requires Node.js plus a one-time install; these tests **skip**
+  until it is present, so check for skips before trusting a green run:
+
+  ```bash
+  mkdir -p tests/agui_adapter/.aimock && cd tests/agui_adapter/.aimock
+  echo '{"name":"aimock-fixture","private":true}' > package.json
+  npm i @copilotkit/aimock
+  ```
+
+  Write that `package.json` first, and write it by hand — both details matter.
+  Without a local `package.json`, npm walks up and installs into the
+  **repo-root** `package.json` instead, leaving `.aimock/` empty and the tests
+  still skipping. And `npm init -y` can't generate it here: it defaults the
+  package name to the directory name, which npm rejects as invalid because
+  `.aimock` starts with a dot. `.aimock/` is gitignored.

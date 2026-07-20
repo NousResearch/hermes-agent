@@ -722,6 +722,65 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
         conn2.close()
 
 
+def test_complete_goal_mode_rejects_when_judge_raises(monkeypatch, tmp_path):
+    """Fail closed: an exception inside the gate must reject, not approve.
+
+    Reproduces the bug that shipped — a judge_goal returning three values
+    while the gate unpacks four. The ValueError was caught by the defensive
+    handler, which left a pre-initialised verdict = "done", so goal-mode
+    completions were approved without ever being evaluated.
+
+    judge_goal fails open internally for every infrastructure fault it knows
+    about (no auxiliary client, transport/API errors both return "continue"),
+    so anything that escapes it is a programming error at this call site, not
+    an unreachable judge. That must never approve.
+    """
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-test", assignee="test-worker",
+            body="Must achieve X with verified evidence.", goal_mode=True
+        )
+        kb.claim_task(conn, goal_task_id)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+
+    # Deliberately the WRONG arity: three values where the gate unpacks four.
+    # The verdict is "done" so that any swallow-and-continue path approves,
+    # which is exactly what this test must catch.
+    def stale_arity_judge_goal(goal, last_response, **kwargs):
+        return "done", "looks complete", False
+
+    monkeypatch.setattr("tools.kanban_tools.judge_goal", stale_arity_judge_goal)
+    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
+
+    out = kt._handle_complete({"summary": "I did some stuff"})
+    d = json.loads(out)
+    assert "error" in d, "a broken gate must reject, not approve"
+    assert "Goal completion rejected by judge" in d["error"]
+    assert "ValueError" in d["error"]
+
+    conn2 = kb.connect()
+    try:
+        assert kb.get_task(conn2, goal_task_id).status == "running"
+    finally:
+        conn2.close()
+
+
 def test_block_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_block({"reason": "need clarification"})

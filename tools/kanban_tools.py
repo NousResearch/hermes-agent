@@ -599,25 +599,36 @@ def _handle_complete(args: dict, **kw) -> str:
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
             if task and task.goal_mode and _goal_judge_available():
-                verdict = "done"
-                reason = ""
+                # No pre-initialised verdict. Every path below assigns one
+                # explicitly, so a future return-before-assignment raises
+                # UnboundLocalError instead of silently approving. The
+                # pre-init is what turned "failed to evaluate" into
+                # "evaluated and approved" when this gate shipped broken.
                 try:
                     # judge_goal returns (verdict, reason, parse_failed,
                     # wait_directive) — see hermes_cli/goals.py. Unpacking
-                    # fewer raises ValueError, which the defensive handler
-                    # below swallows, leaving verdict="done" and silently
-                    # disabling the gate.
+                    # fewer raises ValueError.
                     verdict, reason, _, _ = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
                 except Exception as judge_exc:
-                    # Defensive: judge_goal swallows its own errors, but if
-                    # it ever raises, fail open rather than wedge the worker.
-                    logger.warning(
-                        "goal judge check failed, allowing completion: %s",
+                    # judge_goal already fails open internally for every
+                    # infrastructure fault it knows about — no auxiliary
+                    # client and transport/API errors both return
+                    # ("continue", ...). So anything escaping it is not an
+                    # unreachable judge; it is a programming error at this
+                    # call site. Reject rather than approve.
+                    logger.exception(
+                        "goal judge check raised, rejecting completion: %s",
                         judge_exc,
-                        exc_info=True,
+                    )
+                    verdict = "error"
+                    reason = (
+                        f"the goal judge raised {type(judge_exc).__name__}: "
+                        f"{judge_exc}. This is a bug in the gate, not a "
+                        f"verdict on your work — report it rather than "
+                        f"retrying."
                     )
                 if verdict != "done":
                     return tool_error(

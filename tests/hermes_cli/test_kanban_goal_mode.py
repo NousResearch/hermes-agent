@@ -311,7 +311,8 @@ class TestCLIJudgeGate:
     """
 
     def _run(self, monkeypatch, *, goal_mode=True, judge_available=True,
-             verdict="done", reason="", complete_ok=True, summary="done"):
+             verdict="done", reason="", complete_ok=True, summary="done",
+             judge_side_effect=None):
         import argparse
         import types
         from unittest.mock import MagicMock
@@ -348,10 +349,8 @@ class TestCLIJudgeGate:
         )
         # Match the real judge_goal contract:
         # (verdict, reason, parse_failed, wait_directive)
-        monkeypatch.setattr(
-            "hermes_cli.goals.judge_goal",
-            lambda **kw: (verdict, reason, False, None),
-        )
+        _judge = judge_side_effect or (lambda **kw: (verdict, reason, False, None))
+        monkeypatch.setattr("hermes_cli.goals.judge_goal", _judge)
 
         args = argparse.Namespace(task_ids=["t1"], summary=summary, result=None, metadata=None)
         return _cmd_complete(args), complete_calls
@@ -381,3 +380,27 @@ class TestCLIJudgeGate:
         rc, complete_calls = self._run(monkeypatch, goal_mode=False)
         assert rc == 0
         assert complete_calls == ["t1"]
+
+    def test_judge_error_fails_closed(self, monkeypatch):
+        """An exception inside the gate must reject, not approve.
+
+        Reproduces the bug that shipped: judge_goal returning three values
+        while the gate unpacks four. The ValueError was caught by the
+        defensive handler, which left a pre-initialised verdict = "done", so
+        completions were approved without ever being evaluated.
+
+        judge_goal fails open internally for every infrastructure fault it
+        knows about, so anything escaping it is a programming error at this
+        call site — not an unreachable judge.
+        """
+        # Deliberately the WRONG arity: three values where the gate unpacks
+        # four. The verdict is "done" so any swallow-and-continue path
+        # approves, which is what this test must catch.
+        rc, complete_calls = self._run(
+            monkeypatch,
+            judge_side_effect=lambda **kw: ("done", "looks complete", False),
+        )
+        assert rc != 0, "a broken gate must reject, not approve"
+        assert complete_calls == [], (
+            "complete_task must NOT be invoked when the judge raises"
+        )

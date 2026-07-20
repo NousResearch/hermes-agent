@@ -974,6 +974,32 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _uses_native_windows_search_paths(self) -> bool:
+        """Whether search commands run through local Git Bash on Windows.
+
+        Native Windows executables such as the winget MSVC ``rg.exe`` need a
+        drive-qualified ``C:/...`` argument when Hermes disables MSYS argv
+        conversion. Remote/container backends must retain their own POSIX path
+        semantics even when the Hermes host itself is Windows.
+        """
+        try:
+            from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+
+            return bool(_IS_WINDOWS and isinstance(self.env, LocalEnvironment))
+        except Exception:
+            return False
+
+    def _escape_search_path(self, path: str) -> str:
+        """Quote a search root in a form understood by native Windows rg.exe."""
+        if self._uses_native_windows_search_paths():
+            from tools.environments.local import _msys_to_windows_path
+
+            native = _msys_to_windows_path(path)
+            if re.match(r"^[A-Za-z]:[\\/]", native):
+                native = native.replace("\\", "/")
+                return "'" + native.replace("'", "'\"'\"'") + "'"
+        return self._escape_shell_arg(path)
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -2210,10 +2236,11 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
+        escaped_search_path = self._escape_search_path(path)
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{escaped_search_path} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2224,7 +2251,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{escaped_search_path} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2278,9 +2305,11 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
+        # Add pattern and path. The search root needs native-drive quoting on
+        # local Windows because Hermes disables MSYS argv conversion;
+        # otherwise native rg.exe receives an unusable literal /c/... path.
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        cmd_parts.append(self._escape_search_path(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,

@@ -1185,6 +1185,15 @@ class TestEnvironmentHints:
         assert "NOT the username" in result
         assert "bash" in result
         assert "PowerShell" in result
+        # Path syntax is execution-bound on native Windows. Git-Bash paths are
+        # valid inside terminal command strings, but must not be advertised as
+        # interchangeable with native paths for Python-backed file tools.
+        assert "inside `terminal` command strings" in result
+        assert "Hermes tool path parameters" in result
+        assert "`C:/Users/<user>/...`" in result
+        assert "`/c/Users/<user>/...`" in result
+        assert "`search_files(path=\".\")`" in result
+        assert "work alongside" not in result
 
     def test_build_environment_hints_on_macos_local(self, monkeypatch):
         import agent.prompt_builder as _pb

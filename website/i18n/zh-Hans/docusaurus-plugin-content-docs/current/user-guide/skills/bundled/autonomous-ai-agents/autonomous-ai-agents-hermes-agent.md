@@ -719,7 +719,7 @@ export PYTHONPATH="$(pwd)"
 
 **行尾。** Git 可能警告 `LF will be replaced by CRLF the next time Git touches it`。这是外观问题——仓库的 `.gitattributes` 会规范化。不要让编辑器自动将已提交的 POSIX 换行文件转换为 CRLF。
 
-**正斜杠几乎在所有地方都有效。** `C:/Users/...` 被每个 Hermes 工具和大多数 Windows API 接受。在代码和日志中优先使用正斜杠——避免在 bash 中转义反斜杠。
+**Windows 路径格式取决于执行边界。** 不要笼统声称 MSYS `/c/...` 与原生 `C:/...` 在所有位置都可互换。`terminal` 的 Git-Bash 命令字符串内可以使用 `/c/Users/...`；Hermes 工具路径参数、原生 Python/subprocess、工具 `workdir` 和 Codex `--cd` 应使用 `C:/Users/...`。旧版、上游未修或尚未重启的 Windows `search_files` 进程仍可能在绝对路径上触发 native `rg.exe` 回归；若绝对路径搜索报错或意外返回 0，先把 terminal cwd 切到目标目录，再用 `search_files(path=".")` 重试，并通过独立方法确认后才能判定文件不存在。
 
 ---
 

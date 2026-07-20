@@ -1444,6 +1444,7 @@ export const zhHant = defineLocale({
     tabImages: '圖片',
     tabFiles: '檔案',
     tabLinks: '連結',
+    tabViews: '檢視',
     noArtifactsTitle: '找不到成品',
     noArtifactsDesc: '當工作階段產生圖片和檔案輸出時，它們會顯示在這裡。',
     failedLoad: '成品載入失敗',
@@ -1467,7 +1468,16 @@ export const zhHant = defineLocale({
     kindLink: '連結',
     chat: '聊天',
     copyUrl: '複製 URL',
-    copyPath: '複製路徑'
+    copyPath: '複製路徑',
+    viewsTitle: '代理程式建立的檢視',
+    viewsDescription: '由 Hermes 代理程式建立的安全持久桌面介面，可作為一般可移動窗格開啟。',
+    viewOpen: '開啟檢視',
+    viewEntry: '進入點',
+    viewInvalid: (id, message) => `${id}：${message}`,
+    viewApprovalTitle: title => `執行 ${title}？`,
+    viewIsolationSummary: '內嵌指令碼會在隔離框架中執行，無法使用網路、表單、彈出視窗、下載或導覽。',
+    viewCapabilities: '功能',
+    viewBindings: '唯讀資料'
   },
 
   sidebar: {
@@ -2158,6 +2168,27 @@ export const zhHant = defineLocale({
     diskChangedBody: '此檔案自開啟以來已變更。用你的版本覆寫，還是放棄你的編輯並重新載入？',
     overwrite: '覆寫',
     discardReload: '放棄並重新載入',
+    sandboxedHtml: {
+      loading: '正在檢查 HTML 預覽...',
+      unavailableTitle: '沙盒預覽不可用',
+      binaryBody: 'Hermes 不會執行疑似包含二進位資料的檔案。',
+      truncatedBody: 'Hermes 不會執行不完整的檔案。請查看原始碼或將檔案縮小至 512 KB 以下。',
+      invalidBody: '檔案讀取器傳回了無效的 HTML 原始碼。',
+      tooLargeBody: 'Hermes 不會執行超過 512 KB 的 HTML 預覽。',
+      readFailedBody: 'Hermes 無法讀取此 HTML 檔案。',
+      tryAgain: '重試',
+      isolationTitle: '預覽隔離不可用',
+      isolationBody: 'Hermes 無法安裝網路防護，因此未載入此 HTML。',
+      approvalTitle: '執行此 HTML 預覽？',
+      approvalBody: 'HTML 可以執行指令碼。核准僅適用於此檔案的目前內容；內容變更後核准即失效。',
+      fileLabel: '檔案',
+      digestLabel: '內容',
+      permissionsLabel: '權限',
+      permissionsBody: '允許行內指令碼和樣式。網路、表單、彈出視窗、下載、導覽、巢狀框架和裝置存取均被封鎖。',
+      runAction: '執行沙盒預覽',
+      showSource: '顯示原始碼',
+      hideSource: '隱藏原始碼'
+    },
     console: {
       deselect: '取消選取項目',
       select: '選取項目',

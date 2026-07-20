@@ -63,6 +63,7 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { watchGeneratedViewPanes } from '../generated-views/panes'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
@@ -395,6 +396,7 @@ watchContributedPanes()
 // main.
 watchSessionTiles()
 watchRouteTiles()
+watchGeneratedViewPanes()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.

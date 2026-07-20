@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "id": "focus-board",
+  "title": "Focus Board",
+  "entry": "index.html",
+  "capabilities": ["theme:read", "state:persist"],
+  "bindings": []
+}

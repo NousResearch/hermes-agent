@@ -1564,6 +1564,7 @@ export const en: Translations = {
     tabImages: 'Images',
     tabFiles: 'Files',
     tabLinks: 'Links',
+    tabViews: 'Views',
     noArtifactsTitle: 'No artifacts found',
     noArtifactsDesc: 'Generated images and file outputs will appear here as sessions produce them.',
     failedLoad: 'Artifacts failed to load',
@@ -1587,7 +1588,16 @@ export const en: Translations = {
     kindLink: 'link',
     chat: 'Chat',
     copyUrl: 'Copy URL',
-    copyPath: 'Copy path'
+    copyPath: 'Copy path',
+    viewsTitle: 'Agent-authored views',
+    viewsDescription: 'Safe, persistent desktop surfaces authored by Hermes agents and opened as normal movable panes.',
+    viewOpen: 'Open view',
+    viewEntry: 'Entry',
+    viewInvalid: (id, message) => `${id}: ${message}`,
+    viewApprovalTitle: title => `Run ${title}?`,
+    viewIsolationSummary: 'Inline scripts run in an isolated frame with no network, forms, popups, downloads, or navigation.',
+    viewCapabilities: 'Capabilities',
+    viewBindings: 'Read-only data'
   },
 
   sidebar: {
@@ -2300,6 +2310,29 @@ export const en: Translations = {
       'This file changed since you opened it. Overwrite it with your version, or discard your edits and reload?',
     overwrite: 'Overwrite',
     discardReload: 'Discard & reload',
+    sandboxedHtml: {
+      loading: 'Checking HTML preview...',
+      unavailableTitle: 'Sandboxed preview unavailable',
+      binaryBody: 'Hermes will not run a file that appears to contain binary data.',
+      truncatedBody: 'Hermes will not run a partial file. Open the source or reduce the file below 512 KB.',
+      invalidBody: 'The file reader returned an invalid HTML source.',
+      tooLargeBody: 'Hermes will not run HTML previews larger than 512 KB.',
+      readFailedBody: 'Hermes could not read this HTML file.',
+      tryAgain: 'Try again',
+      isolationTitle: 'Preview isolation unavailable',
+      isolationBody: 'Hermes could not install the network guard, so the authored HTML was not loaded.',
+      approvalTitle: 'Run this HTML preview?',
+      approvalBody:
+        'HTML can execute scripts. Approval applies only to this exact file content and is revoked when the content changes.',
+      fileLabel: 'File',
+      digestLabel: 'Content',
+      permissionsLabel: 'Permissions',
+      permissionsBody:
+        'Inline scripts and styles may run. Network access, forms, popups, downloads, navigation, nested frames, and device access are blocked.',
+      runAction: 'Run sandboxed preview',
+      showSource: 'Show source',
+      hideSource: 'Hide source'
+    },
     console: {
       deselect: 'Deselect entry',
       select: 'Select entry',

@@ -1294,6 +1294,7 @@ export interface Translations {
     tabImages: string
     tabFiles: string
     tabLinks: string
+    tabViews: string
     noArtifactsTitle: string
     noArtifactsDesc: string
     failedLoad: string
@@ -1318,6 +1319,15 @@ export interface Translations {
     chat: string
     copyUrl: string
     copyPath: string
+    viewsTitle: string
+    viewsDescription: string
+    viewOpen: string
+    viewEntry: string
+    viewInvalid: (id: string, message: string) => string
+    viewApprovalTitle: (title: string) => string
+    viewIsolationSummary: string
+    viewCapabilities: string
+    viewBindings: string
   }
 
   sidebar: {
@@ -1927,6 +1937,27 @@ export interface Translations {
     diskChangedBody: string
     overwrite: string
     discardReload: string
+    sandboxedHtml: {
+      loading: string
+      unavailableTitle: string
+      binaryBody: string
+      truncatedBody: string
+      invalidBody: string
+      tooLargeBody: string
+      readFailedBody: string
+      tryAgain: string
+      isolationTitle: string
+      isolationBody: string
+      approvalTitle: string
+      approvalBody: string
+      fileLabel: string
+      digestLabel: string
+      permissionsLabel: string
+      permissionsBody: string
+      runAction: string
+      showSource: string
+      hideSource: string
+    }
     console: {
       deselect: string
       select: string

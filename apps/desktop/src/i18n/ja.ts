@@ -1493,6 +1493,7 @@ export const ja = defineLocale({
     tabImages: '画像',
     tabFiles: 'ファイル',
     tabLinks: 'リンク',
+    tabViews: 'ビュー',
     noArtifactsTitle: 'アーティファクトが見つかりません',
     noArtifactsDesc: 'セッションで生成された画像やファイルの出力がここに表示されます。',
     failedLoad: 'アーティファクトの読み込みに失敗しました',
@@ -1516,7 +1517,16 @@ export const ja = defineLocale({
     kindLink: 'リンク',
     chat: 'チャット',
     copyUrl: 'URL をコピー',
-    copyPath: 'パスをコピー'
+    copyPath: 'パスをコピー',
+    viewsTitle: 'エージェント作成ビュー',
+    viewsDescription: 'Hermes エージェントが作成した安全で永続的なデスクトップ画面を、通常の移動可能なペインとして開きます。',
+    viewOpen: 'ビューを開く',
+    viewEntry: 'エントリ',
+    viewInvalid: (id, message) => `${id}: ${message}`,
+    viewApprovalTitle: title => `${title} を実行しますか？`,
+    viewIsolationSummary: 'インラインスクリプトは隔離フレーム内で実行され、ネットワーク、フォーム、ポップアップ、ダウンロード、ナビゲーションは使用できません。',
+    viewCapabilities: '機能',
+    viewBindings: '読み取り専用データ'
   },
 
   sidebar: {
@@ -2226,6 +2236,28 @@ export const ja = defineLocale({
       'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
     overwrite: '上書き',
     discardReload: '破棄して再読み込み',
+    sandboxedHtml: {
+      loading: 'HTML プレビューを確認中...',
+      unavailableTitle: 'サンドボックスプレビューを利用できません',
+      binaryBody: 'Hermes はバイナリデータを含む可能性があるファイルを実行しません。',
+      truncatedBody: 'Hermes は不完全なファイルを実行しません。ソースを開くか、512 KB 未満にしてください。',
+      invalidBody: 'ファイルリーダーが無効な HTML ソースを返しました。',
+      tooLargeBody: 'Hermes は 512 KB を超える HTML プレビューを実行しません。',
+      readFailedBody: 'Hermes はこの HTML ファイルを読み取れませんでした。',
+      tryAgain: '再試行',
+      isolationTitle: 'プレビューの隔離を利用できません',
+      isolationBody: 'ネットワークガードを設定できなかったため、HTML は読み込まれませんでした。',
+      approvalTitle: 'この HTML プレビューを実行しますか？',
+      approvalBody: 'HTML はスクリプトを実行できます。承認は現在のファイル内容だけに適用され、内容の変更時に失効します。',
+      fileLabel: 'ファイル',
+      digestLabel: '内容',
+      permissionsLabel: '権限',
+      permissionsBody:
+        'インラインのスクリプトとスタイルは実行できます。ネットワーク、フォーム、ポップアップ、ダウンロード、ナビゲーション、入れ子フレーム、デバイスへのアクセスはブロックされます。',
+      runAction: 'サンドボックスでプレビューを実行',
+      showSource: 'ソースを表示',
+      hideSource: 'ソースを隠す'
+    },
     console: {
       deselect: 'エントリーの選択を解除',
       select: 'エントリーを選択',

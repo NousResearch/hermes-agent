@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "id": "usage-monitor",
+  "title": "Usage Monitor",
+  "entry": "index.html",
+  "capabilities": ["theme:read", "state:persist"],
+  "bindings": ["hermes:status", "hermes:usage-30d"]
+}

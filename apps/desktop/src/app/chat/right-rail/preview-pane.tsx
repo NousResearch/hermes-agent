@@ -22,6 +22,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry, createPreviewConsoleState } from './preview-console-state'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { SandboxedHtmlPreview } from './sandboxed-html-preview'
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
@@ -146,7 +147,11 @@ export function PreviewPane({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
-  const isWebPreview = target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source')
+
+  const isSandboxedHtmlPreview =
+    target.kind === 'file' && target.previewKind === 'html' && target.renderMode !== 'source'
+
+  const isWebPreview = target.kind === 'url'
   const currentLabel = compactUrl(currentUrl)
 
   const previewLabel =
@@ -399,16 +404,12 @@ export function PreviewPane({
 
     lastReloadRequestRef.current = reloadRequest
 
-    if (target.kind !== 'url') {
-      return
-    }
-
     appendConsoleEntry({
       level: 1,
       message: copy.workspaceReloading
     })
     reloadPreview()
-  }, [appendConsoleEntry, copy.workspaceReloading, reloadPreview, reloadRequest, target.kind])
+  }, [appendConsoleEntry, copy.workspaceReloading, reloadPreview, reloadRequest])
 
   useEffect(() => {
     if (
@@ -450,6 +451,16 @@ export function PreviewPane({
 
     const unsubscribe = window.hermesDesktop.onPreviewFileChanged(payload => {
       if (!active || payload.id !== watchId) {
+        return
+      }
+
+      if (isSandboxedHtmlPreview) {
+        appendConsoleEntry({
+          level: 1,
+          message: copy.fileChanged(compactUrl(payload.url))
+        })
+        reloadPreview()
+
         return
       }
 
@@ -496,7 +507,7 @@ export function PreviewPane({
         void window.hermesDesktop?.stopPreviewFileWatch?.(watchId)
       }
     }
-  }, [appendConsoleEntry, copy, reloadPreview, target.kind, target.url])
+  }, [appendConsoleEntry, copy, isSandboxedHtmlPreview, reloadPreview, target.kind, target.url])
 
   useEffect(() => {
     const host = hostRef.current
@@ -639,7 +650,11 @@ export function PreviewPane({
             )}
             ref={hostRef}
           />
-          {!isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />}
+          {isSandboxedHtmlPreview ? (
+            <SandboxedHtmlPreview key={`${target.url}:${localReloadKey}`} reloadKey={localReloadKey} target={target} />
+          ) : (
+            !isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />
+          )}
           {loadError && (
             <PreviewLoadError
               consoleHeight={consoleOpen ? consoleHeight : 0}

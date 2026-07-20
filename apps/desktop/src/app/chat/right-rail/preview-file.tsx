@@ -166,7 +166,7 @@ function isTypableElement(el: Element | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
-function filePathForTarget(target: PreviewTarget) {
+export function filePathForTarget(target: PreviewTarget) {
   if (target.path) {
     return target.path
   }

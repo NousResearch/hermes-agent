@@ -76,6 +76,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   normalizePreviewTarget: (target, baseDir) => ipcRenderer.invoke('hermes:normalizePreviewTarget', target, baseDir),
   watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
+  sandboxedHtml: {
+    registerFrame: frameName => ipcRenderer.invoke('hermes:sandboxed-html:register-frame', frameName),
+    unregisterFrame: frameName => ipcRenderer.invoke('hermes:sandboxed-html:unregister-frame', frameName)
+  },
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),

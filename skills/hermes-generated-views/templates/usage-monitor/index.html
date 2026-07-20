@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Usage Monitor</title>
+    <style>
+      :root { --bg: #0d1012; --fg: #f5f7f6; --accent: #78f0a5; --border: #29312d; --muted: #8e9c95; font-family: ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg); }
+      main { padding: clamp(1rem, 3vw, 1.8rem); }
+      header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+      .eyebrow, .label { color: var(--muted); font: 600 .64rem ui-monospace, monospace; letter-spacing: .13em; text-transform: uppercase; }
+      h1 { margin: .4rem 0 0; font-size: clamp(1.45rem, 5vw, 2.25rem); letter-spacing: -.04em; }
+      .status { display: flex; align-items: center; gap: .45rem; border: 1px solid var(--border); border-radius: 999px; padding: .45rem .7rem; color: var(--muted); font-size: .72rem; }
+      .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 1rem var(--accent); }
+      .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; margin-top: 1.5rem; }
+      .card { min-width: 0; border: 1px solid var(--border); border-radius: .8rem; padding: 1rem; background: color-mix(in srgb, var(--fg) 3%, transparent); }
+      .value { margin-top: .55rem; overflow: hidden; text-overflow: ellipsis; font: 600 clamp(1.15rem, 4vw, 1.7rem) ui-monospace, monospace; }
+      .chart { display: flex; align-items: end; gap: .32rem; height: 9rem; margin-top: 1.25rem; border-bottom: 1px solid var(--border); }
+      .bar { flex: 1; min-width: .25rem; border-radius: .2rem .2rem 0 0; background: color-mix(in srgb, var(--accent) 65%, transparent); }
+      footer { display: flex; justify-content: space-between; gap: 1rem; margin-top: .8rem; color: var(--muted); font-size: .68rem; }
+      @media (max-width: 34rem) { .metrics { grid-template-columns: 1fr; } .chart { height: 6rem; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><div><div class="eyebrow">Hermes · last 30 days</div><h1>Usage monitor</h1></div><div class="status"><span class="dot"></span><span id="gateway">loading</span></div></header>
+      <section class="metrics"><div class="card"><div class="label">Sessions</div><div class="value" id="sessions">—</div></div><div class="card"><div class="label">API calls</div><div class="value" id="calls">—</div></div><div class="card"><div class="label">Estimated cost</div><div class="value" id="cost">—</div></div></section>
+      <div class="chart" id="chart" aria-label="Daily API calls"></div>
+      <footer><span id="version">Hermes</span><span>read-only host data · no network</span></footer>
+    </main>
+    <script>
+      const pending = new Map(); let sequence = 0;
+      function request(type, payload = {}) { const requestId = `usage-${++sequence}`; parent.postMessage({ v: 1, type, requestId, ...payload }, '*'); return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject })); }
+      addEventListener('message', event => { const message = event.data; if (event.source !== parent || message?.v !== 1 || typeof message.requestId !== 'string') return; const job = pending.get(message.requestId); if (!job) return; pending.delete(message.requestId); message.type === 'hermes:error' ? job.reject(new Error(message.message)) : job.resolve(message); });
+      async function boot() {
+        const [theme, statusMessage, usageMessage] = await Promise.all([request('hermes:getTheme'), request('hermes:getData', { bindingId: 'hermes:status' }), request('hermes:getData', { bindingId: 'hermes:usage-30d' })]);
+        const tokens = theme.tokens || {}; const root = document.documentElement;
+        root.style.setProperty('--bg', tokens['--theme-background-seed'] || '#0d1012'); root.style.setProperty('--fg', tokens['--theme-foreground'] || '#f5f7f6'); root.style.setProperty('--accent', tokens['--theme-primary'] || '#78f0a5'); root.style.setProperty('--border', tokens['--dt-border'] || '#29312d'); root.style.setProperty('--muted', tokens['--dt-muted'] || '#8e9c95');
+        const status = statusMessage.data; const usage = usageMessage.data; const totals = usage.totals || {};
+        document.querySelector('#gateway').textContent = status.gateway?.running ? 'gateway online' : 'gateway offline'; document.querySelector('#version').textContent = `Hermes ${status.version || ''}`;
+        document.querySelector('#sessions').textContent = Number(totals.total_sessions || 0).toLocaleString(); document.querySelector('#calls').textContent = Number(totals.total_api_calls || 0).toLocaleString(); document.querySelector('#cost').textContent = `$${Number(totals.total_estimated_cost || 0).toFixed(2)}`;
+        const daily = usage.daily || []; const peak = Math.max(1, ...daily.map(day => Number(day.api_calls || 0))); const chart = document.querySelector('#chart'); daily.slice(-30).forEach(day => { const bar = document.createElement('div'); bar.className = 'bar'; bar.style.height = `${Math.max(3, Number(day.api_calls || 0) / peak * 100)}%`; bar.title = `${day.day}: ${day.api_calls || 0} calls`; chart.appendChild(bar); });
+      }
+      boot().catch(error => { document.querySelector('#gateway').textContent = error.message; document.querySelector('.dot').style.background = '#ef6b62'; });
+    </script>
+  </body>
+</html>

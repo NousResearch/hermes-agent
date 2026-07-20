@@ -1747,6 +1747,7 @@ export const zh: Translations = {
     tabImages: '图片',
     tabFiles: '文件',
     tabLinks: '链接',
+    tabViews: '视图',
     noArtifactsTitle: '未找到产物',
     noArtifactsDesc: '当会话生成图片和文件输出时，它们会显示在这里。',
     failedLoad: '产物加载失败',
@@ -1770,7 +1771,16 @@ export const zh: Translations = {
     kindLink: '链接',
     chat: '对话',
     copyUrl: '复制 URL',
-    copyPath: '复制路径'
+    copyPath: '复制路径',
+    viewsTitle: '智能体创作的视图',
+    viewsDescription: '由 Hermes 智能体创作的安全持久桌面界面，可作为普通可移动窗格打开。',
+    viewOpen: '打开视图',
+    viewEntry: '入口',
+    viewInvalid: (id, message) => `${id}：${message}`,
+    viewApprovalTitle: title => `运行 ${title}？`,
+    viewIsolationSummary: '内联脚本在隔离框架中运行，无法访问网络、表单、弹窗、下载或导航。',
+    viewCapabilities: '能力',
+    viewBindings: '只读数据'
   },
 
   sidebar: {
@@ -2469,6 +2479,27 @@ export const zh: Translations = {
     diskChangedBody: '此文件自打开以来已更改。用你的版本覆盖，还是放弃你的编辑并重新加载？',
     overwrite: '覆盖',
     discardReload: '放弃并重新加载',
+    sandboxedHtml: {
+      loading: '正在检查 HTML 预览...',
+      unavailableTitle: '沙盒预览不可用',
+      binaryBody: 'Hermes 不会运行疑似包含二进制数据的文件。',
+      truncatedBody: 'Hermes 不会运行不完整的文件。请查看源码或将文件缩小到 512 KB 以下。',
+      invalidBody: '文件读取器返回了无效的 HTML 源码。',
+      tooLargeBody: 'Hermes 不会运行超过 512 KB 的 HTML 预览。',
+      readFailedBody: 'Hermes 无法读取此 HTML 文件。',
+      tryAgain: '重试',
+      isolationTitle: '预览隔离不可用',
+      isolationBody: 'Hermes 无法安装网络防护，因此未加载此 HTML。',
+      approvalTitle: '运行此 HTML 预览？',
+      approvalBody: 'HTML 可以执行脚本。批准仅适用于此文件的当前内容；内容一旦更改，批准即失效。',
+      fileLabel: '文件',
+      digestLabel: '内容',
+      permissionsLabel: '权限',
+      permissionsBody: '允许内联脚本和样式。网络、表单、弹窗、下载、导航、嵌套框架和设备访问均被阻止。',
+      runAction: '运行沙盒预览',
+      showSource: '显示源码',
+      hideSource: '隐藏源码'
+    },
     console: {
       deselect: '取消选择条目',
       select: '选择条目',

@@ -1,0 +1,59 @@
+name: Get GitHub App Token
+description: >-
+  Mint a short-lived (1-hour) installation access token from the repo's
+  GitHub App, replacing the long-lived AUTOFIX_BOT_PAT. App tokens get
+  5,000 req/hr per installation (vs 1,000 for the default GITHUB_TOKEN)
+  and are scoped to the App's installation permissions, not a user account.
+
+  Falls back to the built-in GITHUB_TOKEN when APP_ID is not set — this
+  happens on fork PRs where repo secrets are unavailable. The fallback
+  ensures classification, timings, and review comments still work on
+  forks (with the lower GITHUB_TOKEN rate limit).
+
+  Requires two repo secrets (store when creating the App):
+    - APP_ID — the App's numeric ID (Settings → General)
+    - APP_PRIVATE_KEY — the PEM private key (Settings → Private keys)
+
+  The App must be installed on the repository (or org) with the
+  permissions the calling workflow needs.
+
+inputs:
+  owner:
+    description: Repository owner (for cross-org tokens). Defaults to the current repo's owner.
+    required: false
+    default: ${{ github.repository_owner }}
+
+outputs:
+  token:
+    description: A GitHub App installation access token (1-hour TTL), or GITHUB_TOKEN on forks.
+    value: ${{ steps.app-token.outputs.token || steps.fallback.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check if App credentials exist
+      id: check
+      shell: bash
+      env:
+        APP_ID: ${{ secrets.APP_ID }}
+      run: |
+        if [ -n "$APP_ID" ]; then
+          echo "has_app=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_app=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Create GitHub App token
+      id: app-token
+      if: steps.check.outputs.has_app == 'true'
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        app-id: ${{ secrets.APP_ID }}
+        private-key: ${{ secrets.APP_PRIVATE_KEY }}
+        owner: ${{ inputs.owner }}
+
+    - name: Fall back to GITHUB_TOKEN
+      id: fallback
+      if: steps.check.outputs.has_app != 'true'
+      shell: bash
+      run: echo "token=${{ github.token }}" >> "$GITHUB_OUTPUT"

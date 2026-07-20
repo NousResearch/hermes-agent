@@ -49,13 +49,16 @@ jobs:
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
-          # the built-in read-only token so classification still works there.
-          github-token: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
+          # The get-app-token composite action falls back to GITHUB_TOKEN
+          # on fork PRs where APP_ID is unavailable.
+          github-token: ${{ steps.app-token.outputs.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -318,6 +321,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -334,7 +341,9 @@ jobs:
           # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
           # the built-in read-only token so the timings API read still works
           # there instead of hard-failing this advisory job on every fork PR.
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
+          # The get-app-token composite action falls back to GITHUB_TOKEN
+          # on fork PRs where APP_ID is unavailable.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \

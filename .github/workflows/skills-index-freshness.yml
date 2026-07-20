@@ -108,10 +108,15 @@ jobs:
             echo "Summary:      ${{ steps.probe.outputs.summary }}"
           fi
 
+      - name: Get GitHub App token
+        if: steps.probe.outputs.status != 'ok'
+        id: app-token
+        uses: ./.github/actions/get-app-token
+
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
         run: |

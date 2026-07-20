@@ -60,10 +60,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+
       - name: Scan diff for critical patterns
         id: scan
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 

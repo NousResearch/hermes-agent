@@ -24,6 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
@@ -35,7 +39,7 @@ jobs:
 
       - name: Build skills index
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/build_skills_index.py
 
       - name: Upload index artifact
@@ -54,7 +58,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
       - name: Trigger Deploy Site workflow
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: gh workflow run deploy-site.yml --repo ${{ github.repository }} -f skills_index_run_id=${{ github.run_id }}

@@ -127,6 +127,8 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
     "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8":   128_000,
     # Claude 4.7
@@ -247,7 +249,13 @@ def _supports_adaptive_thinking(model: str) -> bool:
     only returns False for the explicit legacy list of older Claude families
     that require manual budget-based thinking. Non-Claude Anthropic-Messages
     models (minimax, qwen3, …) return False so they keep the manual path.
+
+    Kimi / Moonshot models are the exception: their Anthropic-compatible
+    endpoints implement the adaptive contract (``thinking.type="adaptive"``
+    + ``output_config.effort``, including ``xhigh`` and ``display``).
     """
+    if _model_name_is_kimi_family(model):
+        return True
     if not _is_claude_model(model):
         return False
     m = model.lower()
@@ -2624,25 +2632,19 @@ def build_anthropic_kwargs(
     # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
     # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
     #
-    # Kimi's /coding endpoint speaks the Anthropic Messages protocol but has
-    # its own thinking semantics: when ``thinking.enabled`` is sent, Kimi
-    # validates the message history and requires every prior assistant
-    # tool-call message to carry OpenAI-style ``reasoning_content``.  The
-    # Anthropic path never populates that field, and
-    # ``convert_messages_to_anthropic`` strips all Anthropic thinking blocks
-    # on third-party endpoints — so the request fails with HTTP 400
-    # "thinking is enabled but reasoning_content is missing in assistant
-    # tool call message at index N".  Kimi's reasoning is driven server-side
-    # on the /coding route, so skip Anthropic's thinking parameter entirely
-    # for that host.  (Kimi on chat_completions enables thinking via
-    # extra_body in the ChatCompletionsTransport — see #13503.)
+    # Kimi / Moonshot models also use adaptive thinking: their
+    # Anthropic-compatible endpoints (api.moonshot.cn/anthropic,
+    # api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
+    # ``output_config.effort``, and the replay-validation 400s that
+    # originally motivated dropping the parameter (#13848) no longer
+    # occur.  (Kimi on chat_completions enables thinking via extra_body
+    # in the ChatCompletionsTransport — see #13503.)
     #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
-    _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
-    if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
+    if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)

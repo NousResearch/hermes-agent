@@ -1409,6 +1409,20 @@ DEFAULT_CONFIG = {
     # small so a slow/dead server adds little to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
+    # MCP runtime behavior (distinct from the per-server definitions in
+    # mcp_servers: and from the auxiliary.mcp side-LLM task settings).
+    "mcp": {
+        # Auto-reload MCP connections when config.yaml's mcp_servers section
+        # changes at runtime (CLI file watcher, default on).
+        # Set to false to stop the automatic reload: every automatic reload
+        # rebuilds the agent tool surface and INVALIDATES the provider
+        # prompt cache (the next message re-sends the full input prefix),
+        # which is expensive on long-context / high-reasoning models.
+        # When disabled, the watcher still detects the change and prints
+        # guidance to apply it deliberately via /reload-mcp.
+        "auto_reload_on_config_change": True,
+    },
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -3299,10 +3313,13 @@ DEFAULT_CONFIG = {
     # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
     # `hermes tools`. These settings tune the backing Responses API call.
     "x_search": {
-        # xAI model used for the Responses call. grok-4.20-reasoning is
-        # the recommended default; any Grok model with x_search tool
+        # xAI model used for the Responses call. grok-4.5 is the
+        # recommended default; any Grok model with x_search tool
         # access works.
-        "model": "grok-4.20-reasoning",
+        "model": "grok-4.5",
+        # Optional reasoning effort sent to xAI Responses API models that
+        # support it. Leave null to preserve the selected model's default.
+        "reasoning_effort": None,
         # Request timeout in seconds (minimum 30). x_search can take
         # 60-120s for complex queries — the default is generous.
         "timeout_seconds": 180,
@@ -5512,7 +5529,14 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
+    "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
     "session_reset",         # top-level form read by gateway/config.py + setup
+    "group_sessions_per_user",   # top-level form bridged by gateway/config.py
+    "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
+    "stt_echo_transcripts",      # top-level form bridged by gateway/config.py
+    "reset_triggers",            # top-level form bridged by gateway/config.py
+    "always_log_local",          # top-level form bridged by gateway/config.py
+    "filter_silence_narration",  # top-level form bridged by gateway/config.py
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes
     "platforms",             # top-level per-platform map merged by gateway/config.py
@@ -5675,27 +5699,20 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
-    # ── Unknown / misplaced root-level keys ──────────────────────────────
-    # Typos like skillz:/secrity: were previously silent (only provider-like
-    # fields were flagged). Warn on any unknown top-level key so config
-    # hygiene surfaces without breaking startup.
+    # ── Root-level keys that look misplaced ──────────────────────────────
+    # Only provider-like fields (base_url, api_key, …) are flagged. Arbitrary
+    # unknown top-level keys are deliberately NOT warned about: top-level
+    # scalars are bridged into os.environ (gateway/run.py, hermes send) so
+    # users can feed skills and external apps env-style keys from config.yaml
+    # — a closed-world allowlist can never enumerate those.
     for key in config:
         if key.startswith("_"):
             continue
-        if key in _KNOWN_ROOT_KEYS:
-            continue
-        if key in _CUSTOM_PROVIDER_LIKE_FIELDS:
+        if key not in _KNOWN_ROOT_KEYS and key in _CUSTOM_PROVIDER_LIKE_FIELDS:
             issues.append(ConfigIssue(
                 "warning",
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
-            ))
-        else:
-            issues.append(ConfigIssue(
-                "warning",
-                f"Unknown top-level config key '{key}' — it will be ignored",
-                "Check for typos, or remove the key if it is not a supported config root. "
-                "Run 'hermes doctor' for more detail.",
             ))
 
     return issues
@@ -6944,6 +6961,31 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     config["agent"] = agent_config
     config.pop("max_turns", None)
     return config
+
+
+def is_provider_enabled(provider_cfg: Optional[Dict[str, Any]]) -> bool:
+    """Return whether a ``providers.<name>`` config block is enabled.
+
+    A provider is enabled by default. Only an explicit ``enabled: false`` in
+    the block hides it from the model picker, ``/models`` listings, the
+    runtime resolver and the doctor / status output.
+
+    Backward-compat: configs without the ``enabled`` key keep working as
+    before — the default is ``True``.
+
+    Pass any non-dict (None, list, string) and you get ``True`` too, so
+    malformed entries don't disappear silently; they'll still be flagged
+    by the existing validation paths.
+    """
+    if not isinstance(provider_cfg, dict):
+        return True
+    flag = provider_cfg.get("enabled", True)
+    if isinstance(flag, bool):
+        return flag
+    # YAML can produce strings for "true"/"false" depending on quoting.
+    if isinstance(flag, str):
+        return flag.strip().lower() not in {"false", "0", "no", "off"}
+    return bool(flag)
 
 
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:

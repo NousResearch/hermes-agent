@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -486,6 +487,72 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_shipped_template_does_not_enable_auto_reset(self, tmp_path, monkeypatch):
+        """A fresh install seeded from cli-config.yaml.example must not
+        auto-reset sessions.
+
+        Installers (scripts/install.sh, scripts/install.ps1,
+        docker/stage2-hook.sh, hermes doctor) copy the template verbatim to
+        ~/.hermes/config.yaml, so whatever ``session_reset.mode`` the template
+        ships becomes an EXPLICIT user setting that overrides the code
+        default. After #60194 flipped the default to "none", the template
+        still said "both" — every new install kept 24h-idle resets on
+        (Luciano's report, July 2026). This pins the invariant: template
+        seed == no auto-reset.
+        """
+        template = (
+            Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        )
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            template.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+
+    def test_no_config_yaml_means_no_auto_reset(self, tmp_path, monkeypatch):
+        """With no config.yaml at all, sessions must never auto-reset."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+
+    def test_session_reset_without_mode_means_no_auto_reset(self, tmp_path, monkeypatch):
+        """A session_reset block that tunes knobs but omits mode stays off."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session_reset:\n  idle_minutes: 60\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+        assert config.default_reset_policy.idle_minutes == 60
+
+    def test_explicit_session_reset_opt_in_is_honored(self, tmp_path, monkeypatch):
+        """Users who explicitly opt in to auto-reset keep their policy."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session_reset:\n  mode: idle\n  idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "idle"
+        assert config.default_reset_policy.idle_minutes == 30
+
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -594,6 +661,213 @@ class TestLoadGatewayConfig:
         assert extra["websocket_liveness_failure_threshold"] == 4
         assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
         assert extra["websocket_max_latency_seconds"] == 30
+
+    def test_session_reset_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.session_reset`` (nested form) must reach default_reset_policy,
+        mirroring the gateway.multiplex_profiles precedent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  session_reset:\n    mode: idle\n    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "idle"
+        assert config.default_reset_policy.idle_minutes == 30
+
+    def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  quick_commands:\n    limits:\n      type: exec\n      command: echo ok\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_stt_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """Asserts False (not the True default) so the test fails if the
+        nested gateway.stt value never reaches from_dict() and silently
+        falls back to the class default instead."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  stt:\n    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.stt_enabled is False
+
+    def test_stt_echo_transcripts_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  stt_echo_transcripts: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.stt_echo_transcripts is False
+
+    def test_group_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  group_sessions_per_user: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.group_sessions_per_user is False
+
+    def test_thread_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  thread_sessions_per_user: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.thread_sessions_per_user is True
+
+    def test_reset_triggers_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  reset_triggers:\n    - /new\n    - /clear\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.reset_triggers == ["/new", "/clear"]
+
+    def test_always_log_local_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  always_log_local: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is False
+
+    def test_filter_silence_narration_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  filter_silence_narration: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.filter_silence_narration is False
+
+    def test_unauthorized_dm_behavior_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  unauthorized_dm_behavior: ignore\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.unauthorized_dm_behavior == "ignore"
+
+    def test_top_level_still_wins_over_nested_gateway_section(self, tmp_path, monkeypatch):
+        """Top-level keys keep precedence over the nested gateway.* fallback
+        for every key this fix touches (matches the existing
+        gateway.streaming/write_sessions_json precedence contract)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "always_log_local: true\n"
+            "gateway:\n"
+            "  always_log_local: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is True
+
+    def test_present_empty_top_level_session_reset_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence: a present (even empty) top-level
+        session_reset must NOT be replaced by gateway.session_reset —
+        the fallback fires only when the top-level key is absent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset: {}\n"
+            "gateway:\n"
+            "  session_reset:\n"
+            "    mode: idle\n"
+            "    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested value must not leak through the present top-level key.
+        assert config.default_reset_policy.mode != "idle"
+
+    def test_present_top_level_stt_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for stt: a present top-level stt (even
+        mistyped/non-dict) must not be replaced by gateway.stt."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "stt: {}\n"
+            "gateway:\n"
+            "  stt:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # gateway.stt.enabled=false must NOT win over the present top-level stt.
+        assert config.stt_enabled is True
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so

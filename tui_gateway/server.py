@@ -1984,8 +1984,13 @@ def _ensure_session_db_row(session: dict) -> None:
             )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
-    if tier := session.get("create_service_tier_override"):
-        model_config["service_tier"] = tier
+    create_service_tier_override = session.get("create_service_tier_override")
+    if create_service_tier_override is not None:
+        # Empty string is the in-memory sentinel for an explicit normal tier:
+        # it bypasses _make_agent's profile fallback without sending a bogus
+        # service_tier value to the provider. Persist a durable marker so resume
+        # can distinguish that choice from an omitted/inherited tier.
+        model_config["service_tier"] = create_service_tier_override or "normal"
     # Branch lineage: stamp the same ``_branched_from`` marker the TUI /branch
     # uses so list_sessions_rich keeps the branch listed and the desktop sidebar
     # can nest it under its parent.
@@ -2604,7 +2609,11 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
-    if service_tier:
+    if service_tier.lower() == "normal":
+        # None means "inherit the profile" at _make_agent. Empty string is a
+        # real override that means "do not request a priority service tier".
+        overrides["service_tier_override"] = ""
+    elif service_tier:
         overrides["service_tier_override"] = service_tier
 
     return overrides
@@ -2692,6 +2701,12 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             if isinstance(parsed, dict):
                 existing_config = parsed
         model_config = _runtime_model_config(agent, existing_config)
+        create_service_tier_override = session.get("create_service_tier_override")
+        if create_service_tier_override is not None:
+            # _runtime_model_config sees agent.service_tier=None for explicit
+            # normal and would otherwise erase the distinction on every live
+            # metadata persist.
+            model_config["service_tier"] = create_service_tier_override or "normal"
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -3206,6 +3221,7 @@ def _apply_model_switch(
             is_global_flag,
             is_session,
             is_once=one_turn,
+            explicit_provider=explicit_provider,
         )
     )
     if not model_input:
@@ -3686,7 +3702,8 @@ def _current_profile_name() -> str:
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
-DESKTOP_BACKEND_CONTRACT = 3
+# v4: session.create fast=false is an explicit per-session normal-tier override.
+DESKTOP_BACKEND_CONTRACT = 4
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -4748,22 +4765,22 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
-        # Preserve this session's chosen model AND reasoning across /new so a
-        # reset doesn't silently revert to global config (or to a model
-        # another session set). See the cross-session-contamination note in
-        # _apply_model_switch.
-        reset_kw = {"model_override": session.get("model_override")}
-        old_reasoning = getattr(session.get("agent"), "reasoning_config", None)
-        if old_reasoning is None:
-            old_reasoning = session.get("create_reasoning_override")
-        if isinstance(old_reasoning, dict):
-            reset_kw["reasoning_config_override"] = old_reasoning
+        # /new is a full conversation boundary: session-scoped runtime
+        # overrides (/model, /reasoning, /fast) do NOT carry forward — the
+        # fresh agent re-derives model/provider, reasoning, and service tier
+        # from config.yaml (#48055, #23131). Session pins are cleared below so
+        # a rebuild can't resurrect them. (Global process state is still never
+        # touched — see the cross-session-contamination note in
+        # _apply_model_switch.)
+        session.pop("model_override", None)
+        session.pop("create_reasoning_override", None)
+        session.pop("create_service_tier_override", None)
+        session.pop("one_turn_model_restore", None)
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
             platform_override=_session_source(session),
-            **reset_kw,
         )
     finally:
         _clear_session_context(tokens)
@@ -5759,9 +5776,14 @@ def _(rid, params: dict) -> dict:
             create_reasoning_override = parse_reasoning_effort(effort)
         except Exception:
             create_reasoning_override = None
-    # Only pin "fast" when explicitly requested; leaving it None lets the build
-    # fall back to the profile default service tier rather than forcing normal.
-    create_service_tier_override = "priority" if params.get("fast") else None
+    # Presence is part of the contract: omitted means inherit the profile,
+    # true pins priority, and false pins normal. Empty string is the internal
+    # explicit-normal sentinel because _make_agent uses None for inheritance.
+    create_service_tier_override = None
+    if "fast" in params:
+        create_service_tier_override = (
+            "priority" if is_truthy_value(params.get("fast")) else ""
+        )
 
     ready = threading.Event()
     now = time.time()
@@ -11530,6 +11552,8 @@ def _(rid, params: dict) -> dict:
             from hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
+            scope = str(params.get("scope") or "").strip().lower()
+            global_scope = scope == "global"
             if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
@@ -11609,23 +11633,25 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            if session is not None:
+            if global_scope or session is None:
+                _write_config_key("agent.reasoning_effort", arg)
+                if session is not None:
+                    session.pop("create_reasoning_override", None)
+            else:
                 # Session-scoped, like the messaging gateway's `/reasoning
                 # <level>` (global persistence is `--global` / Settings →
                 # Model territory). Writing config.yaml here let every
                 # desktop model-menu selection rewrite the user's global
                 # agent.reasoning_effort to the preset default.
                 session["create_reasoning_override"] = parsed
-                if session.get("agent") is not None:
-                    session["agent"].reasoning_config = parsed
-                    _persist_live_session_runtime(session)
-                    _emit(
-                        "session.info",
-                        params.get("session_id", ""),
-                        _session_info(session["agent"], session),
-                    )
-            else:
-                _write_config_key("agent.reasoning_effort", arg)
+            if session and session.get("agent") is not None:
+                session["agent"].reasoning_config = parsed
+                _persist_live_session_runtime(session)
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(session["agent"], session),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -12320,19 +12346,23 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = ""
-        # Prefer the session's live value — `config.set reasoning` is
-        # session-scoped, so the global key may not reflect this chat.
         session = _sessions.get(params.get("session_id", ""))
-        live = getattr((session or {}).get("agent"), "reasoning_config", None)
-        if live is None and session is not None:
-            live = session.get("create_reasoning_override")
-        if isinstance(live, dict):
-            if live.get("enabled") is False:
+        reasoning_config = None
+        if session is not None:
+            if isinstance(session.get("create_reasoning_override"), dict):
+                reasoning_config = session.get("create_reasoning_override")
+            else:
+                agent = session.get("agent")
+                agent_reasoning = getattr(agent, "reasoning_config", None)
+                if isinstance(agent_reasoning, dict):
+                    reasoning_config = agent_reasoning
+
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
                 effort = "none"
             else:
-                effort = str(live.get("effort", "") or "")
-        if not effort:
+                effort = str(reasoning_config.get("effort") or "medium")
+        else:
             raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
             if raw_effort is False:
                 # YAML `reasoning_effort: false`/`off`/`no` — thinking

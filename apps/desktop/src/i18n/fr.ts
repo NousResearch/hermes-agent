@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import type { Translations } from './types'
+import { defineLocale } from './define-locale'
 
-export const fr: Translations = {
+export const fr = defineLocale({
   common: {
     apply: 'Appliquer',
     back: 'Retour',
@@ -2577,4 +2577,4 @@ export const fr: Translations = {
       }
     }
   }
-}
+})

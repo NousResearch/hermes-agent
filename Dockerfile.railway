@@ -16,7 +16,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the runtime package if present; otherwise fall back to source
-COPY pyproject.toml setup.py setup.cfg README.md ./
+COPY pyproject.toml setup.py README.md ./
 RUN pip install -e . || pip install .
 
 # Copy application code

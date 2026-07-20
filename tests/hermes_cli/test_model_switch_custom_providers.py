@@ -1516,3 +1516,41 @@ def test_save_discovered_models_preserves_dict_form(monkeypatch):
     assert save_calls == [], (
         "Dict-form models must not be replaced with a flat list"
     )
+
+
+def test_save_discovered_models_preserves_list_of_dicts_form(monkeypatch):
+    """``_save_discovered_models_to_config`` must not replace a list-of-dicts
+    ``models`` form (per-model metadata via ``[{id: ...}]``) with a flat list
+    of strings (#67841 sibling site)."""
+    from hermes_cli.model_switch import _save_discovered_models_to_config
+
+    save_calls = []
+
+    def fake_save(config):
+        save_calls.append(dict(config))
+
+    monkeypatch.setattr("hermes_cli.config.save_config", fake_save)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "my-gateway",
+                    "base_url": "https://gateway.example.com/v1",
+                    "models": [
+                        {"id": "configured-model", "context_length": 8192},
+                        {"id": "other-model", "context_length": 4096},
+                    ],
+                }
+            ]
+        },
+    )
+
+    # List-of-dicts models must NOT be overwritten by discovered models
+    _save_discovered_models_to_config(
+        "https://gateway.example.com/v1",
+        ["configured-model", "discovered-model"],
+    )
+    assert save_calls == [], (
+        "List-of-dicts models must not be replaced with a flat list"
+    )

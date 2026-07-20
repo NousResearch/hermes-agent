@@ -44,7 +44,7 @@ jobs:
 
       # ── Python (for the hermes serve backend) ──────────────────────────
       - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # 8.3.2
         with:
           enable-cache: true
           cache-dependency-glob: |

@@ -669,8 +669,8 @@ describe('ToolsetConfigPanel', () => {
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByText('Local Browser')
-      expect(screen.getByText('Installed')).toBeTruthy()
-      expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
+      expect(await screen.findByText('Installed')).toBeTruthy()
+      expect(await screen.findByRole('button', { name: /Re-run setup/ })).toBeTruthy()
       expect(screen.queryByRole('button', { name: /^Run setup$/ })).toBeNull()
     })
 
@@ -734,7 +734,10 @@ describe('ToolsetConfigPanel', () => {
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByText('Local Browser')
-      expect(screen.getByRole('button', { name: /Run setup/ })).toBeTruthy()
+      // The Run setup CTA renders inside the expanded panel, which appears one
+      // effect-driven re-render after the row itself — await it (getByRole
+      // raced the auto-expand effect and flaked under the RQ provider).
+      expect(await screen.findByRole('button', { name: /Run setup/ })).toBeTruthy()
       expect(screen.queryByText('Installed')).toBeNull()
     })
   })

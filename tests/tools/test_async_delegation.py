@@ -829,6 +829,47 @@ def test_gateway_formatter_renders_async_block():
     assert "Investigate flaky test" in txt
 
 
+def test_async_delegation_formatter_includes_no_reply_contract():
+    """The async delegation completion formatter must tell the parent agent
+    to respond exactly NO_REPLY when the result does not materially change
+    or correct an answer already delivered.
+
+    Regression for #66480: without this instruction, a no-news async
+    completion triggers a redundant second user-facing reply.
+    """
+    from tools.process_registry import format_process_notification
+
+    txt = format_process_notification(_make_async_evt())
+    assert txt is not None
+    assert "NO_REPLY" in txt
+
+
+def test_batch_async_delegation_formatter_includes_no_reply_contract():
+    """The batch (fan-out) async delegation completion formatter must also
+    tell the parent agent to respond exactly NO_REPLY when the results do not
+    materially change or correct an answer already delivered.
+
+    Regression for #66480: the issue requires the no-news suppression
+    contract in BOTH the single and the batch completion formatters. A batch
+    fan-out that finishes with no material change must not trigger a
+    redundant follow-up either.
+    """
+    from tools.process_registry import format_process_notification
+
+    batch_evt = _make_async_evt(
+        is_batch=True,
+        results=[
+            {"task_index": 0, "status": "completed", "summary": "no new findings"},
+        ],
+        goals=["Investigate flaky test"],
+        total_duration_seconds=12.0,
+    )
+    txt = format_process_notification(batch_evt)
+    assert txt is not None
+    assert "BATCH COMPLETE" in txt
+    assert "NO_REPLY" in txt
+
+
 def test_gateway_watch_drain_requeues_async_without_looping():
     from gateway.run import _drain_gateway_watch_events
 

@@ -11477,7 +11477,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        if _is_shared_multi_user and source.user_name and not event.internal:
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before

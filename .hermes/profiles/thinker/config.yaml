@@ -1,0 +1,18 @@
+model:
+  default: qwen-agentworld-35b-a3b-mtp-uncensored-apex
+  provider: lm-studio
+  base_url: http://10.0.0.1:8000/v1
+  api_key: lm-studio
+agent:
+  max_turns: 60
+  reasoning_effort: high
+terminal:
+  cwd: ~/Desktop/hermes/hermes-agent
+platforms:
+  telegram:
+    enabled: false
+  discord:
+    enabled: false
+skills:
+  enabled:
+    - frontier-skills/frontier-consolidated

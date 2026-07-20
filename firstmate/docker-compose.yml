@@ -1,0 +1,156 @@
+version: "3.9"
+
+x-base-paths: &base
+  REPO_ROOT: ${HERMES_REPO_ROOT:-/opt/hermes-agent}
+  HERMES_HOME: "${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes"
+  VAULT_PATH: ${OBSIDIAN_VAULT_PATH:-/opt/obsidian-vault}
+
+services:
+  firstmate-liaison:
+    image: hermes-firstmate:latest
+    container_name: firstmate-liaison
+    hostname: firstmate
+    environment:
+      - HERMES_PROFILE=firstmate
+      - OBSIDIAN_VAULT_PATH=${OBSIDIAN_VAULT_PATH:-/opt/obsidian-vault}
+      - LOCAL_SIDEKICK_PORT=3000
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://10.0.0.1:8000/v1}
+      - HERMES_GATEWAY=http://host.docker.internal:8644
+    env_file:
+      - ${NODE4_ENV_FILE:-${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo/nodes/node4/.env}
+    volumes:
+      - ${OBSIDIAN_VAULT_PATH:-/opt/obsidian-vault}:/vault
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo:/repo-ssot
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "3000:3000"
+      - "5679:5678"
+    networks:
+      - firstmate-net
+    depends_on:
+      n8n-webhook:
+        condition: service_healthy
+      openviking:
+        condition: service_started
+    command: >
+      sh -c "hermes gateway --profile firstmate &
+             python3 -m firstmate.liaison --sidekick-port 3000 --vault /vault"
+
+  hermes-orchestrator:
+    image: hermes-firstmate:latest
+    container_name: hermes-orchestrator
+    hostname: hermes-orchestrator
+    profiles:
+      - orchestrator
+    environment:
+      - HERMES_PROFILE=orchestrator
+      - LANGGRAPH_API_URL=http://langgraph:2024
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://10.0.0.1:8000/v1}
+    env_file:
+      - ${NODE4_ENV_FILE:-${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo/nodes/node4/.env}
+    volumes:
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo/profiles:/profiles
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo:/repo-ssot
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - firstmate-net
+    command: >
+      sh -c "hermes gateway --profile orchestrator &
+             python3 -m firstmate.orchestrator"
+
+  opencode-worker:
+    image: hermes-opencode:latest
+    container_name: opencode-worker
+    hostname: opencode
+    environment:
+      - OPENCODE_WORKDIR=/workspace
+      - HERMES_GATEWAY=http://host.docker.internal:8644
+      - GIT_WORKTREE_MODE=1
+    volumes:
+      - firstmate-workspace:/workspace
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo:/repo-ssot:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - firstmate-net
+    command: >
+      sh -c "git config --global user.email 'opencode@hermes.local' &&
+             git config --global user.name 'OpenCode Worker' &&
+             opencode server --port 8080"
+
+  n8n-webhook:
+    image: n8nio/n8n:latest
+    container_name: firstmate-n8n
+    hostname: n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_WEBHOOK_URL=http://host.docker.internal:5678/
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - GENERIC_TIMEZONE=UTC
+      - DB_TYPE=sqlite
+      - DB_SQLITE_VACUUM_ON_STARTUP=1
+    env_file:
+      - ${NODE4_ENV_FILE:-${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo/nodes/node4/.env}
+    ports:
+      - "5678:5678"
+    volumes:
+      - firstmate-n8n:/home/node/.n8n
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo/nodes/node4/n8n/workflows:/backup-workflows:ro
+    networks:
+      - firstmate-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+
+  langgraph:
+    image: langchain/langgraph-api:latest
+    container_name: firstmate-langgraph
+    hostname: langgraph
+    ports:
+      - "2024:2024"
+    environment:
+      - LANGGRAPH_API_KEY=${LANGGRAPH_API_KEY:-unset}
+    volumes:
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/ai_company_router:/graphs:ro
+    networks:
+      - firstmate-net
+
+  openviking:
+    image: volcengine/openviking:latest
+    container_name: firstmate-openviking
+    hostname: openviking
+    ports:
+      - "1933:1933"
+    environment:
+      - OPENVIKING_BIND=0.0.0.0:1933
+    env_file:
+      - ${NODE4_ENV_FILE:-${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo/nodes/node4/.env}
+    volumes:
+      - firstmate-openviking:/data
+    networks:
+      - firstmate-net
+
+  graphify:
+    image: hermes-graphify:latest
+    container_name: firstmate-graphify
+    hostname: graphify
+    ports:
+      - "2410:2410"
+    volumes:
+      - ${HERMES_REPO_ROOT:-/opt/hermes-agent}/.hermes/repo:/repo-ssot:ro
+      - firstmate-graphify:/data
+    networks:
+      - firstmate-net
+
+networks:
+  firstmate-net:
+    driver: bridge
+
+volumes:
+  firstmate-workspace:
+  firstmate-n8n:
+  firstmate-openviking:
+  firstmate-graphify:

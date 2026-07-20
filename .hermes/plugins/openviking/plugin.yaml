@@ -1,0 +1,6 @@
+name: openviking
+display_name: OpenViking
+version: 1.0.0
+description: "OpenViking context database integration for Hermes — semantic memory + RAG over llm-wiki, worklog, and Obsidian via MCP."
+aliases:
+  - openviking-memory

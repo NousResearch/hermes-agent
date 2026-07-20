@@ -416,8 +416,16 @@ def _validate_provider_chain(chain: list[str], tts_config: Dict[str, Any]) -> Op
             _ensure_plugins_discovered()
             if get_provider(name) is not None:
                 continue
-        except Exception:
-            pass
+        except Exception as e:
+            # Import/discovery may legitimately fail on a minimal install (the
+            # registry or plugin machinery isn't present) — that still means
+            # the name isn't a plugin, so fall through to the error. But log
+            # with a traceback so a genuine plugin crash (bad import, syntax
+            # error) isn't masked as a plain "unknown provider".
+            logger.debug(
+                "TTS plugin discovery/validation failed for '%s': %s",
+                name, e, exc_info=True,
+            )
         return (
             f"Unknown TTS provider '{name}' in fallback chain. "
             f"Must be a built-in ({', '.join(sorted(BUILTIN_TTS_PROVIDERS))}), "
@@ -2506,7 +2514,12 @@ def text_to_speech_tool(
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
-    # Determine output path
+    # Determine the base output location. The concrete extension is resolved
+    # PER-PROVIDER inside the chain loop below — providers differ (a command
+    # provider's configured output_format, ``.ogg`` for native-Opus providers
+    # on Telegram, else ``.mp3``). Committing to a single extension here would
+    # write e.g. Opus bytes into an ``.mp3`` file and break the
+    # ``endswith(".ogg")`` voice-delivery check for every fallback provider.
     if output_path:
         # Reject '..' traversal components in the user-supplied path. An
         # explicit absolute path is fine (the agent legitimately writes
@@ -2526,34 +2539,66 @@ def text_to_speech_tool(
                     "to the current directory without '..'."
                 ),
             }, ensure_ascii=False)
-        file_path = Path(output_path).expanduser()
+        base_path = Path(output_path).expanduser()
+        custom_output = True
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
-        file_path = out_dir / f"tts_{timestamp}.mp3"
-
-    # Ensure parent directory exists
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_str = str(file_path)
+        base_path = out_dir / f"tts_{timestamp}"  # extension resolved per-provider
+        custom_output = False
 
     errors: list[str] = []
     for provider in chain:
         try:
+            command_provider_config = _resolve_command_provider_config(provider, tts_config)
+
             # Truncate very long text with a warning. The cap is per-provider
             # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
+            # Truncate into a loop-LOCAL copy so a provider that truncates then
+            # fails doesn't shrink the text seen by the next provider in the
+            # chain (which may allow the full length).
             max_len = _resolve_max_text_length(provider, tts_config)
             if len(text) > max_len:
                 logger.warning(
                     "TTS text too long for provider %s (%d chars), truncating to %d",
                     provider, len(text), max_len,
                 )
-                text = text[:max_len]
+                current_text = text[:max_len]
+            else:
+                current_text = text
 
-            file_str = _synthesize_with_provider(provider, text, file_str, tts_config, want_opus)
+            # Resolve THIS provider's output path/extension from the untouched
+            # base, in a loop-local variable — mirrors the pre-chain
+            # single-provider logic. A failed provider must not pollute the
+            # path handed to the next one.
+            if custom_output:
+                # Respect the caller-supplied path, but align a command
+                # provider's extension with its configured output_format so
+                # the command writes where we then read.
+                if command_provider_config is not None:
+                    current_path = _configured_command_tts_output_path(
+                        base_path, command_provider_config
+                    )
+                else:
+                    current_path = base_path
+            elif command_provider_config is not None:
+                fmt = _get_command_tts_output_format(command_provider_config)
+                current_path = base_path.with_suffix(f".{fmt}")
+            elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+                # Native-Opus providers write .ogg directly for Telegram voice.
+                current_path = base_path.with_suffix(".ogg")
+            else:
+                current_path = base_path.with_suffix(".mp3")
+            current_path.parent.mkdir(parents=True, exist_ok=True)
+            current_file_str = str(current_path)
+
+            current_file_str = _synthesize_with_provider(
+                provider, current_text, current_file_str, tts_config, want_opus
+            )
 
             # Check the file was actually created
-            if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
+            if not os.path.exists(current_file_str) or os.path.getsize(current_file_str) == 0:
                 raise RuntimeError(f"TTS generation produced no output (provider: {provider})")
 
             # Try Opus conversion for Telegram compatibility.
@@ -2561,17 +2606,16 @@ def text_to_speech_tool(
             # formats for local/CLI playback and only convert when the current
             # platform actually needs Opus voice delivery.
             voice_compatible = False
-            command_provider_config = _resolve_command_provider_config(provider, tts_config)
             if command_provider_config is not None:
                 # Command providers are documents by default. Voice-bubble
                 # delivery only kicks in when the user explicitly opts in
                 # via ``voice_compatible: true`` in their provider config.
                 if _is_command_tts_voice_compatible(command_provider_config):
-                    if not file_str.endswith(".ogg"):
-                        opus_path = _convert_to_opus(file_str)
+                    if not current_file_str.endswith(".ogg"):
+                        opus_path = _convert_to_opus(current_file_str)
                         if opus_path:
-                            file_str = opus_path
-                    voice_compatible = file_str.endswith(".ogg")
+                            current_file_str = opus_path
+                    voice_compatible = current_file_str.endswith(".ogg")
             elif provider not in BUILTIN_TTS_PROVIDERS:
                 # Plugin-registered provider (issue #30398). Voice-bubble
                 # delivery opts in via ``TTSProvider.voice_compatible``
@@ -2579,34 +2623,34 @@ def text_to_speech_tool(
                 # already write Opus skip the ffmpeg conversion.
                 plugin_voice_compatible = _plugin_provider_is_voice_compatible(provider)
                 if plugin_voice_compatible:
-                    if not file_str.endswith(".ogg"):
-                        opus_path = _convert_to_opus(file_str)
+                    if not current_file_str.endswith(".ogg"):
+                        opus_path = _convert_to_opus(current_file_str)
                         if opus_path:
-                            file_str = opus_path
-                    voice_compatible = file_str.endswith(".ogg")
+                            current_file_str = opus_path
+                    voice_compatible = current_file_str.endswith(".ogg")
             elif (
                 want_opus
                 and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
-                and not file_str.endswith(".ogg")
+                and not current_file_str.endswith(".ogg")
             ):
-                opus_path = _convert_to_opus(file_str)
+                opus_path = _convert_to_opus(current_file_str)
                 if opus_path:
-                    file_str = opus_path
+                    current_file_str = opus_path
                     voice_compatible = True
             elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
-                voice_compatible = want_opus and file_str.endswith(".ogg")
+                voice_compatible = want_opus and current_file_str.endswith(".ogg")
 
-            file_size = os.path.getsize(file_str)
-            logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
+            file_size = os.path.getsize(current_file_str)
+            logger.info("TTS audio saved: %s (%s bytes, provider: %s)", current_file_str, f"{file_size:,}", provider)
 
             # Build response with MEDIA tag for platform delivery
-            media_tag = f"MEDIA:{file_str}"
+            media_tag = f"MEDIA:{current_file_str}"
             if voice_compatible:
                 media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
             return json.dumps({
                 "success": True,
-                "file_path": file_str,
+                "file_path": current_file_str,
                 "media_tag": media_tag,
                 "provider": provider,
                 "voice_compatible": voice_compatible,
@@ -2615,7 +2659,13 @@ def text_to_speech_tool(
         except Exception as e:
             error_msg = f"{provider}: {e}"
             errors.append(error_msg)
-            logger.debug("TTS provider %s failed, trying next in chain: %s", provider, e)
+            # exc_info=True so a programmatic error in a provider (TypeError,
+            # AttributeError, a crashing plugin) leaves a real traceback rather
+            # than being silently skipped with only its str().
+            logger.debug(
+                "TTS provider %s failed, trying next in chain: %s",
+                provider, e, exc_info=True,
+            )
             continue
 
     # All providers in the chain failed

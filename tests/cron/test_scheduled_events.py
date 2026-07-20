@@ -196,3 +196,23 @@ def test_invalid_outreach_request_is_not_delivered(tmp_path, monkeypatch):
     )
 
     assert delivered == []
+
+
+def test_due_hook_receives_same_subject_batch_without_cross_subject_data(tmp_path, monkeypatch):
+    manager = PluginManager()
+    context = PluginContext(PluginManifest(name="consumer", source="test"), manager)
+    received = []
+    context.register_hook("scheduled_event_due", lambda **event: received.append(event))
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    store = ScheduledEventStore(tmp_path / "scheduled_events.json")
+    store.upsert(**_event(event_id="a"))
+    store.upsert(**_event(event_id="b"))
+    other = _event(event_id="other")
+    other["subject_id"] = "user:other"
+    store.upsert(**other)
+
+    assert dispatch_due_scheduled_events(store=store) == 3
+    local = next(event for event in received if event["event_id"] == "a")
+
+    assert {event["event_id"] for event in local["due_events"]} == {"a", "b"}
+    assert {event["subject_id"] for event in local["due_events"]} == {"user:local"}

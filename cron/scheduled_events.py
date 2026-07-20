@@ -160,6 +160,19 @@ def dispatch_due_scheduled_events(
         return 0
     claimed = (store or ScheduledEventStore()).claim_due()
     for event in claimed:
+        due_events = [
+            {
+                "event_id": candidate["event_id"],
+                "subject_id": candidate["subject_id"],
+                "due_at": candidate["due_at"],
+                "event_type": candidate["event_type"],
+                "correlation_id": candidate["correlation_id"],
+                "generation": candidate["generation"],
+                "claim_id": candidate["claim_id"],
+            }
+            for candidate in claimed
+            if candidate["subject_id"] == event["subject_id"]
+        ]
         results = invoke_hook(
             "scheduled_event_due",
             event_id=event["event_id"],
@@ -169,6 +182,7 @@ def dispatch_due_scheduled_events(
             correlation_id=event["correlation_id"],
             generation=event["generation"],
             claim_id=event["claim_id"],
+            due_events=due_events,
         )
         request = next(
             (

@@ -774,7 +774,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 _READ_ONLY_WORKSPACE_TOOLSETS = frozenset({
-    "web", "search", "x_search", "browser", "vision", "video", "skills",
+    "web", "search", "x_search", "browser", "vision", "video",
     "session_search", "maps",
 })
 
@@ -1822,12 +1822,16 @@ def _run_single_child_impl(
         leased_cred_id = child_pool.acquire_lease()
         if leased_cred_id is not None:
             setattr(child, "_delegate_active_lease", (child_pool, leased_cred_id))
-            try:
-                leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
-            except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
+            get_leased = getattr(child_pool, "get_leased_credential", None)
+            if not callable(get_leased):
+                raise RuntimeError("Credential pool lacks exact leased-entry lookup")
+            leased_entry = get_leased(leased_cred_id)
+            if leased_entry is None:
+                raise RuntimeError("Leased credential could not be resolved by ID")
+            swap_credential = getattr(child, "_swap_credential", None)
+            if not callable(swap_credential):
+                raise RuntimeError("Child cannot bind its leased credential")
+            swap_credential(leased_entry)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.

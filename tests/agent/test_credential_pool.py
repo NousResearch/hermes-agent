@@ -2212,6 +2212,10 @@ def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
     assert second == "cred-2"
     assert pool._active_leases.get("cred-1", 0) == 1
     assert pool._active_leases.get("cred-2", 0) == 1
+    current = pool.current()
+    leased_first = pool.get_leased_credential("cred-1")
+    assert current is not None and current.id == "cred-2"
+    assert leased_first is not None and leased_first.id == "cred-1"
 
 
 
@@ -2245,6 +2249,7 @@ def test_release_lease_decrements_counter(tmp_path, monkeypatch):
 
     pool.release_lease("cred-1")
     assert pool._active_leases.get("cred-1", 0) == 0
+    assert pool.get_leased_credential("cred-1") is None
 
 
 def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):

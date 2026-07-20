@@ -1457,6 +1457,22 @@ class CredentialPool:
             self._current_id = chosen.id
             return chosen.id
 
+    def get_leased_credential(
+        self, credential_id: str
+    ) -> Optional[PooledCredential]:
+        """Return the exact credential currently leased by ID.
+
+        Unlike current(), this lookup is not affected by another thread rotating
+        the pool's shared current pointer. An unleased or missing ID fails closed.
+        """
+        with self._lock:
+            if self._active_leases.get(credential_id, 0) <= 0:
+                return None
+            return next(
+                (entry for entry in self._entries if entry.id == credential_id),
+                None,
+            )
+
     def release_lease(self, credential_id: str) -> None:
         """Release a previously acquired credential lease."""
         with self._lock:

@@ -1671,7 +1671,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-b"
-        child._credential_pool.current.return_value = leased_entry
+        child._credential_pool.get_leased_credential.return_value = leased_entry
         child.run_conversation.return_value = {
             "final_response": "done",
             "completed": True,
@@ -1689,8 +1689,101 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         child._credential_pool.acquire_lease.assert_called_once_with()
+        child._credential_pool.get_leased_credential.assert_called_once_with("cred-b")
+        child._credential_pool.current.assert_not_called()
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
+
+    def test_concurrent_children_bind_their_exact_lease_ids(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from tools.delegate_tool import _run_single_child
+
+        class RacingPool:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._next = 0
+                self._barrier = threading.Barrier(2)
+                self.entries = {
+                    "cred-1": MagicMock(id="cred-1"),
+                    "cred-2": MagicMock(id="cred-2"),
+                }
+                self.released = []
+
+            def acquire_lease(self):
+                with self._lock:
+                    self._next += 1
+                    credential_id = f"cred-{self._next}"
+                self._barrier.wait(timeout=2)
+                return credential_id
+
+            def get_leased_credential(self, credential_id):
+                return self.entries[credential_id]
+
+            def release_lease(self, credential_id):
+                with self._lock:
+                    self.released.append(credential_id)
+
+        pool = RacingPool()
+        children = []
+        for index in range(2):
+            child = MagicMock()
+            child._subagent_id = f"sa-race-{index}"
+            child._delegate_saved_tool_names = []
+            child._delegate_role = "leaf"
+            child.tool_progress_callback = None
+            child._credential_pool = pool
+            child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "interrupted": False, "api_calls": 1, "messages": [],
+            }
+            children.append(child)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(
+                lambda pair: _run_single_child(
+                    task_index=pair[0], goal="race", child=pair[1],
+                    parent_agent=_make_mock_parent(),
+                ),
+                enumerate(children),
+            ))
+
+        self.assertEqual([item["status"] for item in results], ["completed", "completed"])
+        bound_ids = sorted(
+            child._swap_credential.call_args.args[0].id for child in children
+        )
+        self.assertEqual(bound_ids, ["cred-1", "cred-2"])
+        self.assertEqual(sorted(pool.released), ["cred-1", "cred-2"])
+
+    def test_credential_resolution_or_swap_failure_is_fail_closed(self):
+        from tools.delegate_tool import _run_single_child
+
+        for failure_point in ("resolve", "swap"):
+            with self.subTest(failure_point=failure_point):
+                child = MagicMock()
+                child._subagent_id = f"sa-{failure_point}"
+                child._delegate_saved_tool_names = []
+                child._delegate_role = "leaf"
+                child.tool_progress_callback = None
+                child._credential_pool.acquire_lease.return_value = "cred-b"
+                if failure_point == "resolve":
+                    child._credential_pool.get_leased_credential.side_effect = RuntimeError(
+                        "lookup failed"
+                    )
+                else:
+                    child._credential_pool.get_leased_credential.return_value = MagicMock(
+                        id="cred-b"
+                    )
+                    child._swap_credential.side_effect = RuntimeError("swap failed")
+
+                result = _run_single_child(
+                    task_index=0, goal="must not run", child=child,
+                    parent_agent=_make_mock_parent(),
+                )
+
+                self.assertEqual(result["status"], "error")
+                child.run_conversation.assert_not_called()
+                child._credential_pool.release_lease.assert_called_once_with("cred-b")
+                child.close.assert_called_once_with()
 
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
@@ -1698,7 +1791,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-a"
-        child._credential_pool.current.return_value = MagicMock(id="cred-a")
+        child._credential_pool.get_leased_credential.return_value = MagicMock(id="cred-a")
         child.run_conversation.side_effect = RuntimeError("boom")
 
         result = _run_single_child(
@@ -2978,7 +3071,7 @@ class TestDelegationLifecycleIntegration:
         from tools.delegate_tool import _resolve_workspace_mode
 
         assert _resolve_workspace_mode([{"goal": "a"}]) == "write"
-        for toolset in ("terminal", "file", "computer_use", "coding"):
+        for toolset in ("terminal", "file", "computer_use", "coding", "skills"):
             assert _resolve_workspace_mode(
                 [{"goal": "a", "toolsets": [toolset]}]
             ) == "write"

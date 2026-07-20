@@ -38,12 +38,66 @@ auth:
   # scope exactly which account permissions the agent gets.
 
 # Tool selection at install time:
-# The surface is ~3,300 endpoint tools — far too many for a manual
-# checklist, and exactly the case tool_search handles automatically.
-# Leave default_enabled unset: no include filter is written and the full
-# surface stays available behind tool_search's deferral gate. Users who
-# want a hard subset can still write tools.include/exclude in config.yaml
-# by hand (e.g. exclude the server's `docs` documentation-search tool).
+# The surface is ~3,300 endpoint tools. Rather than a manual checklist (or
+# a frozen include list that would block future endpoints), we ship a
+# curated exclude list of glob patterns targeting product families that are
+# enterprise-contract, org-fleet, or read-only-analytics surfaces — dead
+# weight for the personal/dev accounts the catalog serves. Everything else
+# (~1,900 tools: DNS, Workers, R2, KV, D1, Queues, Pages, WAF, rulesets,
+# tunnels, Access, Stream, Images, AI, Vectorize, ...) stays enabled,
+# including endpoints Cloudflare adds later. Users can re-enable any family
+# by deleting its pattern from mcp_servers.cloudflare.tools.exclude.
+tools:
+  default_excluded:
+    # The server's built-in Cloudflare-docs search tool (not an API
+    # endpoint) — redundant with the agent's own web tools.
+    - docs
+    # Radar: public read-only internet trend analytics (~275 tools).
+    # Cloudflare ships a dedicated Radar MCP for this.
+    - "*_radar_*"
+    # Enterprise networking: Magic Transit/WAN, network monitoring,
+    # interconnects, WAN teamnet. (cloudflared tunnels are NOT excluded.)
+    - "*_accounts_magic_*"
+    - "*_accounts_mnm_*"
+    - "*_accounts_cni_*"
+    - "*_accounts_teamnet_*"
+    # Cloudforce One threat-intel analyst platform (enterprise SOC).
+    - "*_accounts_cloudforceone_*"
+    # Zero Trust org-fleet suite: DLP, managed devices, DEX, data-security
+    # posture, email security, SCIM provisioning, SWG gateway policy.
+    # Access (login policies for your own apps) stays enabled.
+    - "*_accounts_dlp_*"
+    - "*_accounts_devices*"
+    - "*_accounts_dex_*"
+    - "*_accounts_datasecurity_*"
+    - "*_accounts_emailsecurity_*"
+    - "*_accounts_scim_*"
+    - "*_accounts_gateway*"
+    - "*_accounts_zerotrust_*"
+    - "*_accounts_one_*"
+    # Security-intel research products: brand protection, threat intel,
+    # URL scanner, CVE scanner, security center.
+    - "*_accounts_brandprotection_*"
+    - "*_accounts_intel_*"
+    - "*_accounts_urlscanner_*"
+    - "*_accounts_vuln_scanner_*"
+    - "*_zones_securitycenter_*"
+    - "*_accounts_securitycenter_*"
+    # Enterprise API Shield cluster + waiting rooms + BYOIP + data shares.
+    - "*_zones_api_gateway_*"
+    - "*_zones_schema_validation*"
+    - "*_zones_token_validation*"
+    - "*_zones_waiting_rooms*"
+    - "*_accounts_addressing_*"
+    - "*_accounts_shares*"
+    # Legacy / migration / niche: S3-migration slurper, Web3 gateways,
+    # secondary-DNS peering, legacy per-user load balancers.
+    - "*_accounts_slurper_*"
+    - "*_zones_web3_*"
+    - "*_accounts_flagship_*"
+    - "*_zones_secondary_dns_*"
+    - "*_accounts_secondary_dns_*"
+    - "*_user_load_balancers*"
 
 post_install: |
   On first connection, Hermes opens a browser to authorize with Cloudflare.
@@ -51,10 +105,18 @@ post_install: |
   what you want the agent to touch. After auth, restart your Hermes session
   so the Cloudflare tools are loaded.
 
-  This entry exposes each Cloudflare API endpoint as an individual tool
-  (~3,300). Hermes's tool_search automatically defers them behind its
-  bridge tools, so your context is not flooded — the agent discovers the
-  right endpoint on demand with full schemas.
+  This entry exposes each Cloudflare API endpoint as an individual tool.
+  A curated exclude list ships in the manifest (enterprise-contract,
+  org-fleet, and read-only-analytics product families are disabled —
+  ~1,400 tools), leaving ~1,900 tools for the products people actually
+  drive from an agent: DNS, Workers, R2, KV, D1, Queues, Pages, WAF,
+  rulesets, tunnels, Access, Stream, Images, AI, Vectorize. Hermes's
+  tool_search defers them all, so your context is not flooded — the agent
+  discovers the right endpoint on demand with full schemas.
+
+  Run a Zero Trust org or want Radar/Magic/API-Shield surfaces back?
+  Delete their patterns from mcp_servers.cloudflare.tools.exclude in
+  ~/.hermes/config.yaml.
 
   Headless / CI alternative: instead of OAuth, create a Cloudflare API token
   at https://dash.cloudflare.com/profile/api-tokens and configure the server

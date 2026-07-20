@@ -1009,6 +1009,44 @@ class LocalEnvironment(BaseEnvironment):
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+
+        # Terminal jail: wrap command in unshare PID namespace when
+        # HERMES_TERMINAL_JAIL_ENABLED is set.  This is the backend-layer
+        # wrapping path (HOOK-GAP-02) — a defense-in-depth complement to the
+        # plugin hook path (HOOK-GAP-01) and systemd sandbox (HOOK-GAP-03).
+        # Login-shell invocations (environment snapshot init) are never jailed
+        # because they run configuration, not user/agent commands.
+        if not login and not _IS_WINDOWS:
+            jail_enabled = os.getenv("HERMES_TERMINAL_JAIL_ENABLED", "").lower()
+            if jail_enabled in ("1", "true", "yes", "on"):
+                unshare_path = os.getenv(
+                    "HERMES_TERMINAL_JAIL_UNSHARE_PATH",
+                    shutil.which("unshare") or "",
+                )
+                if unshare_path and os.access(unshare_path, os.X_OK):
+                    # Wrap: unshare --pid --fork --mount-proc --kill-child=SIGKILL bash -c '...'
+                    args = [
+                        unshare_path, "--pid", "--fork", "--mount-proc",
+                        "--kill-child=SIGKILL",
+                    ] + args
+                    logger.debug(
+                        "terminal-jail: wrapping command in PID namespace via %s",
+                        unshare_path,
+                    )
+                elif unshare_path:
+                    logger.warning(
+                        "terminal-jail: HERMES_TERMINAL_JAIL_ENABLED is set "
+                        "but unshare at %r is not executable — running "
+                        "command without PID namespace jail.",
+                        unshare_path,
+                    )
+                else:
+                    logger.warning(
+                        "terminal-jail: HERMES_TERMINAL_JAIL_ENABLED is set "
+                        "but unshare not found on PATH — running command "
+                        "without PID namespace jail.",
+                    )
+
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

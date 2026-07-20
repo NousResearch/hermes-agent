@@ -106,6 +106,7 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { normalizeRemoteSessionList } from './remote-session-list'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -8210,12 +8211,7 @@ async function remoteSessionList(profile, searchParams) {
   qs.delete('profile') // remote serves its own db; no cross-profile read there
   const data = await fetchJsonForProfile(profile, `/api/sessions?${qs}`)
 
-  for (const s of rowsOf(data)) {
-    s.profile = profile
-    s.is_default_profile = false
-  }
-
-  return { ...(data as any), sessions: rowsOf(data) }
+  return normalizeRemoteSessionList(profile, data)
 }
 
 // Resolve one /api/profiles/sessions slice with remote profiles spliced in —

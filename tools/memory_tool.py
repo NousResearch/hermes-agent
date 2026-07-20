@@ -424,6 +424,31 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def load_on_disk_store() -> "MemoryStore":
+    """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+
+    Use this from any context that has no live agent but still needs to read or
+    mutate memory. Falls back to the built-in defaults if config can't be loaded.
+    """
+    memory_char_limit = 2200
+    user_char_limit = 1375
+    try:
+        from hermes_cli.config import load_config
+
+        mem_cfg = (load_config() or {}).get("memory", {}) or {}
+        memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
+        user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+    except Exception:
+        pass
+
+    store = MemoryStore(
+        memory_char_limit=memory_char_limit,
+        user_char_limit=user_char_limit,
+    )
+    store.load_from_disk()
+    return store
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
@@ -542,7 +567,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

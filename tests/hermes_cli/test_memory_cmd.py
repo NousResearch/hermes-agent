@@ -1,9 +1,12 @@
 """Tests for the ``hermes memory`` CLI subcommand."""
 
 import json
+import os
 import sys
+from pathlib import Path
 
 import pytest
+import yaml
 
 
 # ---------------------------------------------------------------------------
@@ -11,7 +14,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _run_memory_cli(monkeypatch, argv, memory_entries=None, user_entries=None):
-    """Run ``hermes memory ...`` with a fake MemoryStore and return stdout."""
+    """Run ``hermes memory ...`` with a fake on-disk store and return stdout."""
     import hermes_cli.main as main_mod
     import tools.memory_tool as mem_mod
 
@@ -55,7 +58,7 @@ def _run_memory_cli(monkeypatch, argv, memory_entries=None, user_entries=None):
             self._removed.append(old_text)
             return json.dumps({"success": True, "usage": "10% — 100/2,200 chars"})
 
-    monkeypatch.setattr(mem_mod, "MemoryStore", FakeStore)
+    monkeypatch.setattr(mem_mod, "load_on_disk_store", FakeStore)
     monkeypatch.setattr(sys, "argv", ["hermes"] + argv)
     main_mod.main()
 
@@ -95,6 +98,46 @@ def test_memory_list_is_default_action(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "test entry" in out
     assert "MEMORY (agent notes)" in out
+
+
+def test_memory_list_honors_configured_limits(monkeypatch, capsys):
+    """The real on-disk store uses configured limits for reads and mutations."""
+    import hermes_cli.main as main_mod
+    import tools.memory_tool as mem_mod
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    memory_dir = hermes_home / "memories"
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "memory": {
+                    "memory_char_limit": 17,
+                    "user_char_limit": 11,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (memory_dir / "MEMORY.md").write_text("remember me", encoding="utf-8")
+    monkeypatch.setattr(mem_mod, "MEMORY_DIR", memory_dir)
+    monkeypatch.setattr(sys, "argv", ["hermes", "memory", "list"])
+
+    main_mod.main()
+
+    out = capsys.readouterr().out
+    assert "11/17 chars" in out
+    assert "0/11 chars" in out
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "memory", "delete", "memory", "remember", "--yes"],
+    )
+    main_mod.main()
+
+    out = capsys.readouterr().out
+    assert "Deleted. 0% — 0/17 chars" in out
+    assert (memory_dir / "MEMORY.md").read_text(encoding="utf-8") == ""
 
 
 def test_memory_show_memory(monkeypatch, capsys):

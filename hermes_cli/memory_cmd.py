@@ -11,10 +11,9 @@ import sys
 
 def memory_command(args):
     """Entry point for ``hermes memory`` subcommands."""
-    from tools.memory_tool import MemoryStore
+    from tools.memory_tool import load_on_disk_store
 
-    store = MemoryStore()
-    store.load_from_disk()
+    store = load_on_disk_store()
 
     action = getattr(args, "memory_action", None)
 

@@ -147,21 +147,30 @@ function reconcileAuthoritativeMessages(
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
 async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
+  // Treat Send as the linearization point for the visible selector state. The
+  // profile handshake below can yield long enough for background config/model
+  // refreshes to finish; reading atoms afterward would silently create the
+  // session with a different selection than the one the user submitted.
+  const selection = {
+    effort: $currentReasoningEffort.get().trim(),
+    fast: $currentFastMode.get(),
+    model: $currentModel.get().trim(),
+    provider: $currentProvider.get().trim()
+  }
+
   const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
   await ensureGatewayProfile(profile)
-
-  const model = $currentModel.get().trim()
-  const provider = $currentProvider.get().trim()
-  const effort = $currentReasoningEffort.get().trim()
 
   return {
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile } : {}),
-    ...(model ? { model, ...(provider ? { provider } : {}) } : {}),
-    ...(effort ? { reasoning_effort: effort } : {}),
-    ...($currentFastMode.get() ? { fast: true } : {})
+    ...(selection.model
+      ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
+      : {}),
+    ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+    fast: selection.fast
   }
 }
 

@@ -8210,7 +8210,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 if ctx is None:
                     raise RuntimeError("inventory context unavailable")
-                providers = build_models_payload(ctx)["providers"]
+                providers = build_models_payload(
+                    ctx,
+                    probe_custom_providers=force_refresh,
+                    probe_current_custom_provider=not force_refresh,
+                )["providers"]
             except Exception:
                 providers = []
 

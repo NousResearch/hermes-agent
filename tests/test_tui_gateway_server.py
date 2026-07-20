@@ -1757,6 +1757,18 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
+    overrides = server._stored_session_runtime_overrides(
+        {
+            "model": "gpt-5.4",
+            "model_config": {"service_tier": "normal"},
+        }
+    )
+
+    assert "service_tier_override" in overrides
+    assert overrides["service_tier_override"] == ""
+
+
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 
@@ -1794,6 +1806,37 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
         },
         "gpt-5.4",
     )
+
+
+def test_persist_live_session_runtime_preserves_explicit_normal_tier():
+    updates = {}
+
+    class FakeDB:
+        def get_session(self, _session_id):
+            return {"model_config": '{"service_tier":"priority"}'}
+
+        def update_session_meta(self, _session_id, model_config_json, model=None):
+            updates["config"] = json.loads(model_config_json)
+
+    agent = types.SimpleNamespace(
+        model="gpt-5.4",
+        provider="openai-codex",
+        base_url=None,
+        api_mode=None,
+        reasoning_config=None,
+        service_tier="",
+        _session_db=FakeDB(),
+    )
+
+    server._persist_live_session_runtime(
+        {
+            "agent": agent,
+            "session_key": "stored-session",
+            "create_service_tier_override": "",
+        }
+    )
+
+    assert updates["config"]["service_tier"] == "normal"
 
 
 def test_status_callback_emits_kind_and_text():
@@ -10267,8 +10310,16 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         assert resp["result"]["info"]["model"] == "claude-sonnet-4.6"
         assert resp["result"]["info"]["provider"] == "anthropic"
 
+        # Explicit false is not the same as omission: it must suppress a Fast
+        # profile default for this session's first request.
+        normal = server._methods["session.create"](
+            "r2", {"cols": 80, "fast": False}
+        )
+        normal_sess = server._sessions[normal["result"]["session_id"]]
+        assert normal_sess["create_service_tier_override"] == ""
+
         # No knobs → no overrides; the session builds from the profile default.
-        plain = server._methods["session.create"]("r2", {"cols": 80})
+        plain = server._methods["session.create"]("r3", {"cols": 80})
         plain_sess = server._sessions[plain["result"]["session_id"]]
         assert plain_sess["model_override"] is None
         assert plain_sess["create_reasoning_override"] is None
@@ -10277,7 +10328,10 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         server._sessions.clear()
 
 
-def test_start_agent_build_passes_session_model_override(monkeypatch):
+@pytest.mark.parametrize("service_tier_override", ["priority", ""])
+def test_start_agent_build_passes_session_model_override(
+    monkeypatch, service_tier_override
+):
     """A model staged on the session (e.g. by session.create from the desktop
     composer) must reach _make_agent so the first build runs on it directly —
     no global config, no build-then-switch.
@@ -10317,7 +10371,7 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         "profile_home": None,
         "model_override": override,
         "create_reasoning_override": reasoning,
-        "create_service_tier_override": "priority",
+        "create_service_tier_override": service_tier_override,
     }
     server._sessions[sid] = session
     try:
@@ -10325,13 +10379,46 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent_ready"].wait(timeout=3), "agent build did not finish"
         assert captured.get("model_override") == override
         assert captured.get("reasoning_config_override") == reasoning
-        assert captured.get("service_tier_override") == "priority"
+        assert captured.get("service_tier_override") == service_tier_override
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
 
 
 # ── billing/subscription state + error serialization ─────────────────
+
+
+def test_reset_session_agent_preserves_explicit_normal_fast(monkeypatch):
+    captured = {}
+    new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
+    session = _session(
+        agent=types.SimpleNamespace(
+            model="openai/gpt-5.4",
+            reasoning_config=None,
+            service_tier="",
+        ),
+        model_override={"model": "openai/gpt-5.4"},
+        create_service_tier_override="",
+    )
+
+    def make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return new_agent
+
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: True)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+
+    server._reset_session_agent("sid", session)
+
+    assert captured["service_tier_override"] == ""
+    assert session["agent"] is new_agent
 
 
 @pytest.mark.parametrize(

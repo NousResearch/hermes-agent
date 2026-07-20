@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "note": "Median of 5 runs, darwin-arm64, `npm run perf -- --spawn` (dev renderer, gateway waited-for-connected, realistic block-settling stream chunk). Absolute values are dev-build (React dev mode is ~3x prod) so treat them as regression guards, not shipped numbers; re-baseline per device with `npm run perf -- --update-baseline`. Tolerances are loose to absorb cross-machine variance.",
+    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot — no fake-boot). Representative shipped numbers, not dev-inflated. cold-start reuses one profile so the V8 code cache is WARM (what users get after first launch, ~1.0s); a fresh-profile first launch is ~+400ms (measure with `--cold-fresh`). Marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances loose for cross-machine/disk variance.",
     "platform": "darwin-arm64",
     "node": "v24.11.0",
-    "updated": "2026-07-19T21:24:19.047Z"
+    "updated": "2026-07-19T23:16:01.227Z"
   },
   "scenarios": {
     "stream": {
@@ -13,11 +13,11 @@
       },
       "metrics": {
         "longtasks_n": 1,
-        "longtask_max_ms": 145,
-        "frame_p95_ms": 23.5,
-        "frame_p99_ms": 26.9,
+        "longtask_max_ms": 67,
+        "frame_p95_ms": 22,
+        "frame_p99_ms": 23.7,
         "slow_frames_33": 1,
-        "intermut_p95_ms": 48.2
+        "intermut_p95_ms": 36.1
       }
     },
     "keystroke": {
@@ -26,9 +26,9 @@
         "tolAbs": 4
       },
       "metrics": {
-        "keystroke_p50_ms": 2,
-        "keystroke_p95_ms": 8.2,
-        "keystroke_p99_ms": 17.4,
+        "keystroke_p50_ms": 2.1,
+        "keystroke_p95_ms": 8.7,
+        "keystroke_p99_ms": 16.9,
         "keystroke_slow_16": 2
       }
     },
@@ -38,9 +38,22 @@
         "tolAbs": 40
       },
       "metrics": {
-        "transcript_mount_ms": 280.1,
-        "transcript_longtask_ms": 431,
-        "transcript_longtask_max_ms": 221
+        "transcript_mount_ms": 145,
+        "transcript_longtask_ms": 82,
+        "transcript_longtask_max_ms": 82
+      }
+    },
+    "cold-start": {
+      "tolerance": {
+        "tolFrac": 0.6,
+        "tolAbs": 150
+      },
+      "metrics": {
+        "spawn_to_cdp_ms": 606,
+        "spawn_to_driver_ms": 984,
+        "dom_interactive_ms": 324,
+        "dom_content_loaded_ms": 574,
+        "nav_to_read_ms": 721
       }
     }
   }

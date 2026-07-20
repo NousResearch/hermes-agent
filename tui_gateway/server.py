@@ -1984,8 +1984,13 @@ def _ensure_session_db_row(session: dict) -> None:
             )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
-    if tier := session.get("create_service_tier_override"):
-        model_config["service_tier"] = tier
+    create_service_tier_override = session.get("create_service_tier_override")
+    if create_service_tier_override is not None:
+        # Empty string is the in-memory sentinel for an explicit normal tier:
+        # it bypasses _make_agent's profile fallback without sending a bogus
+        # service_tier value to the provider. Persist a durable marker so resume
+        # can distinguish that choice from an omitted/inherited tier.
+        model_config["service_tier"] = create_service_tier_override or "normal"
     # Branch lineage: stamp the same ``_branched_from`` marker the TUI /branch
     # uses so list_sessions_rich keeps the branch listed and the desktop sidebar
     # can nest it under its parent.
@@ -2604,7 +2609,11 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
-    if service_tier:
+    if service_tier.lower() == "normal":
+        # None means "inherit the profile" at _make_agent. Empty string is a
+        # real override that means "do not request a priority service tier".
+        overrides["service_tier_override"] = ""
+    elif service_tier:
         overrides["service_tier_override"] = service_tier
 
     return overrides
@@ -2692,6 +2701,12 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             if isinstance(parsed, dict):
                 existing_config = parsed
         model_config = _runtime_model_config(agent, existing_config)
+        create_service_tier_override = session.get("create_service_tier_override")
+        if create_service_tier_override is not None:
+            # _runtime_model_config sees agent.service_tier=None for explicit
+            # normal and would otherwise erase the distinction on every live
+            # metadata persist.
+            model_config["service_tier"] = create_service_tier_override or "normal"
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -3686,7 +3701,8 @@ def _current_profile_name() -> str:
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
-DESKTOP_BACKEND_CONTRACT = 3
+# v4: session.create fast=false is an explicit per-session normal-tier override.
+DESKTOP_BACKEND_CONTRACT = 4
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -4758,6 +4774,9 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             old_reasoning = session.get("create_reasoning_override")
         if isinstance(old_reasoning, dict):
             reset_kw["reasoning_config_override"] = old_reasoning
+        create_service_tier_override = session.get("create_service_tier_override")
+        if create_service_tier_override is not None:
+            reset_kw["service_tier_override"] = create_service_tier_override
         new_agent = _make_agent(
             sid,
             session["session_key"],
@@ -5759,9 +5778,14 @@ def _(rid, params: dict) -> dict:
             create_reasoning_override = parse_reasoning_effort(effort)
         except Exception:
             create_reasoning_override = None
-    # Only pin "fast" when explicitly requested; leaving it None lets the build
-    # fall back to the profile default service tier rather than forcing normal.
-    create_service_tier_override = "priority" if params.get("fast") else None
+    # Presence is part of the contract: omitted means inherit the profile,
+    # true pins priority, and false pins normal. Empty string is the internal
+    # explicit-normal sentinel because _make_agent uses None for inheritance.
+    create_service_tier_override = None
+    if "fast" in params:
+        create_service_tier_override = (
+            "priority" if is_truthy_value(params.get("fast")) else ""
+        )
 
     ready = threading.Event()
     now = time.time()

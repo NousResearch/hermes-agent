@@ -1170,6 +1170,31 @@ a { color: inherit; }
 .snip-f-body { font-family: ui-monospace, Menlo, monospace; resize: vertical; }
 .snip-form-actions { display: flex; gap: 6px; }
 
+/* ---------- repo radar ---------- */
+.repo-list { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; margin-top: 8px; }
+.repo-item { display: block; text-decoration: none; padding: 8px 6px; border-bottom: 1px solid var(--hairline); border-left: 2px solid transparent; }
+.repo-item:last-child { border-bottom: none; }
+.repo-item:hover { background: var(--surface-2); border-left-color: var(--accent); }
+.repo-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.repo-name { font-weight: 600; font-family: ui-monospace, Menlo, monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-stars { flex: 0 0 auto; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 12px; }
+.repo-desc { margin-top: 2px; }
+.repo-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.repo-lang { font-size: 10px; color: var(--ink-2); }
+.repo-topic { font-size: 9px; letter-spacing: 0.04em; color: var(--muted); border: 1px solid var(--hairline); border-radius: 3px; padding: 0 5px; }
+
+/* ---------- arXiv papers ---------- */
+.paper-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; margin-top: 8px; }
+.paper-item { border-bottom: 1px solid var(--hairline); padding: 6px 2px; }
+.paper-item:last-child { border-bottom: none; }
+.paper-head { width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; background: none; border: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; padding: 0; }
+.paper-title { font-weight: 550; line-height: 1.35; }
+.paper-caret { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.paper-head[aria-expanded="true"] .paper-caret { transform: rotate(180deg); }
+.paper-meta { margin-top: 3px; }
+.paper-abstract { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+.paper-actions { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }
 .pod-add { margin-left: auto; }

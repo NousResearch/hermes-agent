@@ -1485,6 +1485,85 @@ def sample_drug(query: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# AI Lab data — trending GitHub repos + arXiv papers (free, no key)
+# ---------------------------------------------------------------------------
+REPOS_TTL = 60 * 60
+PAPERS_TTL = 3 * 60 * 60
+
+
+def live_repos(window: str) -> dict:
+    # Repositories created in a recent window, ranked by stars — a good proxy
+    # for "trending". GitHub search API needs no key at low volume.
+    days = {"day": 1, "week": 7, "month": 30}.get(window, 7)
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    q = urllib.parse.urlencode({"q": f"created:>{since}", "sort": "stars", "order": "desc", "per_page": 20})
+    raw = json.loads(fetch_url(f"https://api.github.com/search/repositories?{q}", timeout=9))
+    repos = []
+    for r in raw.get("items", [])[:20]:
+        repos.append({
+            "name": r.get("full_name", ""),
+            "desc": strip_html(r.get("description") or "", 160),
+            "stars": r.get("stargazers_count", 0),
+            "language": r.get("language") or "",
+            "url": r.get("html_url", ""),
+            "topics": (r.get("topics") or [])[:4],
+        })
+    if not repos:
+        raise RuntimeError("no repos")
+    return {"source": "live", "window": window, "repos": repos}
+
+
+def sample_repos(window: str) -> dict:
+    demo = [
+        ("anthropics/claude-code", "Agentic coding tool in your terminal", 42000, "TypeScript", ["ai", "agents", "cli"]),
+        ("modelcontextprotocol/servers", "Reference MCP servers", 18500, "Python", ["mcp", "tools"]),
+        ("anthropics/anthropic-cookbook", "Recipes for building with Claude", 12300, "Jupyter Notebook", ["claude", "examples"]),
+        ("anthropics/skills", "Example Agent Skills", 5400, "Python", ["skills", "agents"]),
+        ("openai/openai-cookbook", "Examples and guides for building with LLMs", 61000, "MDX", ["llm"]),
+    ]
+    return {"source": "sample", "window": window, "repos": [
+        {"name": n, "desc": d, "stars": s, "language": lang, "url": f"https://github.com/{n}", "topics": t}
+        for n, d, s, lang, t in demo]}
+
+
+def live_papers(category: str) -> dict:
+    cat = category if category in ("cs.AI", "cs.CL", "cs.LG") else "cs.AI"
+    url = ("http://export.arxiv.org/api/query?"
+           f"search_query=cat:{cat}&sortBy=submittedDate&sortOrder=descending&max_results=15")
+    raw = fetch_url(url, timeout=9).decode("utf-8", "replace")
+    papers = []
+    for entry in re.findall(r"<entry>(.*?)</entry>", raw, re.S)[:15]:
+        def field(tag):
+            m = re.search(rf"<{tag}>(.*?)</{tag}>", entry, re.S)
+            return strip_html(m.group(1), 2000).strip() if m else ""
+        link = re.search(r'<link[^>]*rel="alternate"[^>]*href="([^"]+)"', entry) \
+            or re.search(r"<id>(.*?)</id>", entry)
+        authors = re.findall(r"<name>(.*?)</name>", entry)
+        papers.append({
+            "title": field("title"),
+            "summary": field("summary")[:400],
+            "authors": ", ".join(a.strip() for a in authors[:4]) + (" et al." if len(authors) > 4 else ""),
+            "published": field("published")[:10],
+            "url": (link.group(1).strip() if link else "https://arxiv.org/"),
+        })
+    if not papers:
+        raise RuntimeError("no papers")
+    return {"source": "live", "category": cat, "papers": papers}
+
+
+def sample_papers(category: str) -> dict:
+    now = datetime.now(timezone.utc)
+    demo = [
+        ("Efficient Tool Use in Long-Horizon Agents", "We study how agents plan and call tools over extended tasks…", "A. Researcher, B. Scientist et al."),
+        ("Retrieval-Augmented Reasoning for Clinical QA", "A retrieval approach improving factuality on medical questions…", "C. Author, D. Coauthor"),
+        ("Scaling Laws for Instruction-Tuned Models", "New empirical scaling relationships under instruction tuning…", "E. Lab, F. Group et al."),
+    ]
+    return {"source": "sample", "category": category or "cs.AI", "papers": [
+        {"title": t, "summary": s, "authors": a, "published": (now - timedelta(days=i)).date().isoformat(),
+         "url": "https://arxiv.org/"} for i, (t, s, a) in enumerate(demo)]}
+
+
+# ---------------------------------------------------------------------------
 # Podcasts — parse an RSS feed's audio enclosures into playable episodes
 # ---------------------------------------------------------------------------
 PODCAST_TTL = 30 * 60
@@ -2249,6 +2328,8 @@ SOURCES: dict[str, dict] = {
     "teamnews": {"ttl": TEAM_NEWS_TTL, "live": live_team_news, "sample": sample_team_news},
     "trials": {"ttl": TRIALS_TTL, "live": live_trials, "sample": sample_trials},
     "drug": {"ttl": DRUG_TTL, "live": live_drug, "sample": sample_drug},
+    "repos": {"ttl": REPOS_TTL, "live": live_repos, "sample": sample_repos},
+    "papers": {"ttl": PAPERS_TTL, "live": live_papers, "sample": sample_papers},
 }
 
 
@@ -2680,6 +2761,18 @@ class Api:
         if not query:
             raise ApiError(400, "missing drug name")
         return self.fetch_source("drug", query.lower())
+
+    def repos(self, params: dict) -> dict:
+        window = params.get("window", ["week"])[0].lower()
+        if window not in ("day", "week", "month"):
+            window = "week"
+        return self.fetch_source("repos", window)
+
+    def papers(self, params: dict) -> dict:
+        cat = params.get("cat", ["cs.AI"])[0]
+        if cat not in ("cs.AI", "cs.CL", "cs.LG"):
+            cat = "cs.AI"
+        return self.fetch_source("papers", cat)
 
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
@@ -3198,6 +3291,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/pubmed": "pubmed",
         "/api/trials": "trials",
         "/api/drug": "drug",
+        "/api/repos": "repos",
+        "/api/papers": "papers",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",

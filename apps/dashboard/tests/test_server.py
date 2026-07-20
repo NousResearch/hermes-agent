@@ -861,6 +861,43 @@ class MarketsWatchlistTests(unittest.TestCase):
         with self.assertRaises(server.ApiError):
             self.api.drug({"q": ["  "]})
 
+    def test_repos_sample_and_normalizer(self):
+        d = self.api.repos({"window": ["week"]})
+        self.assertTrue(d["repos"])
+        for r in d["repos"]:
+            self.assertTrue(r["name"] and "url" in r)
+        import unittest.mock as mock
+        raw = json.dumps({"items": [{"full_name": "a/b", "description": "x", "stargazers_count": 12,
+                                     "language": "Python", "html_url": "https://github.com/a/b",
+                                     "topics": ["ai", "x"]}]}).encode()
+        with mock.patch.object(server, "fetch_url", return_value=raw):
+            out = server.live_repos("day")
+        self.assertEqual(out["repos"][0]["name"], "a/b")
+        self.assertEqual(out["repos"][0]["stars"], 12)
+
+    def test_repos_window_validated(self):
+        d = self.api.repos({"window": ["bogus"]})
+        self.assertEqual(d["window"], "week")
+
+    def test_papers_sample_and_normalizer(self):
+        d = self.api.papers({"cat": ["cs.CL"]})
+        self.assertTrue(d["papers"])
+        for p in d["papers"]:
+            self.assertTrue(p["title"] and "url" in p)
+        import unittest.mock as mock
+        atom = (b'<feed><entry><title>A Paper</title><summary>Some abstract.</summary>'
+                b'<published>2026-07-20T00:00:00Z</published>'
+                b'<author><name>Jane Doe</name></author>'
+                b'<link rel="alternate" href="https://arxiv.org/abs/1234"/></entry></feed>')
+        with mock.patch.object(server, "fetch_url", return_value=atom):
+            out = server.live_papers("cs.AI")
+        self.assertEqual(out["papers"][0]["title"], "A Paper")
+        self.assertTrue(out["papers"][0]["url"].endswith("1234"))
+
+    def test_papers_category_validated(self):
+        d = self.api.papers({"cat": ["cs.ZZ"]})
+        self.assertEqual(d["category"], "cs.AI")
+
     def test_pubmed_grounding_normalizer(self):
         import unittest.mock as mock
         esearch = json.dumps({"esearchresult": {"idlist": ["111"]}}).encode()

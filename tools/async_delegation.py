@@ -87,8 +87,14 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
+    # hardening so this writer doesn't create/leave the file (and its WAL
+    # sidecars) at the process umask. See hermes_state._create_owner_only.
+    from hermes_state import _create_owner_only, _secure_wal_files
+    _create_owner_only(path)
     conn = sqlite3.connect(path, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
+    _secure_wal_files(path)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS async_delegations (
             delegation_id TEXT PRIMARY KEY,

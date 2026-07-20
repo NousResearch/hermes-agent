@@ -185,7 +185,12 @@ _RESULT_MAS_KEYS = frozenset({
 _RESULT_NESTED_KEYS = {
     "writer": frozenset({"backend", "model"}),
     "reviewer": frozenset({"backend", "model", "verdict"}),
-    "process": frozenset({"identity", "termination_status", "absence_proven"}),
+    "process": frozenset({
+        "identity",
+        "termination_status",
+        "absence_proven",
+        "absence_proof",
+    }),
     "git": frozenset({
         "base_sha",
         "head_sha",
@@ -836,6 +841,59 @@ def _validate_execution_result(
     absence_proven = _ensure_bool(
         process["absence_proven"], label="mas.process.absence_proven"
     )
+    raw_absence_proof = process["absence_proof"]
+    absence_proof: dict[str, Any] | None
+    if raw_absence_proof is None:
+        absence_proof = None
+    elif identity is None:
+        absence_proof = _ensure_object(
+            raw_absence_proof,
+            label="mas.process.absence_proof",
+            keys=frozenset({"run_id", "task_id", "evidence"}),
+        )
+        proof_run_id = _ensure_int(
+            absence_proof["run_id"], label="mas.process.absence_proof.run_id"
+        )
+        if proof_run_id != expected_run_id:
+            raise SpecParseError(
+                "mas.process.absence_proof.run_id does not match the run"
+            )
+        _ensure_str(absence_proof["task_id"], label="mas.process.absence_proof.task_id")
+        _ensure_str(
+            absence_proof["evidence"], label="mas.process.absence_proof.evidence"
+        )
+    else:
+        absence_proof = _ensure_object(
+            raw_absence_proof,
+            label="mas.process.absence_proof",
+            keys=_RESULT_IDENTITY_KEYS | frozenset({"evidence"}),
+        )
+        _ensure_str(absence_proof["host"], label="mas.process.absence_proof.host")
+        if (
+            _ensure_int(absence_proof["pid"], label="mas.process.absence_proof.pid")
+            <= 0
+        ):
+            raise SpecParseError("mas.process.absence_proof.pid must be positive")
+        if (
+            _ensure_int(absence_proof["pgid"], label="mas.process.absence_proof.pgid")
+            <= 0
+        ):
+            raise SpecParseError("mas.process.absence_proof.pgid must be positive")
+        _ensure_str(
+            absence_proof["start_token"],
+            label="mas.process.absence_proof.start_token",
+        )
+        _ensure_str(
+            absence_proof["evidence"], label="mas.process.absence_proof.evidence"
+        )
+        if any(absence_proof[key] != identity[key] for key in _RESULT_IDENTITY_KEYS):
+            raise SpecParseError(
+                "mas.process.absence_proof identity does not match process.identity"
+            )
+    if absence_proven != (absence_proof is not None):
+        raise SpecParseError(
+            "mas.process.absence_proven must match the presence of absence_proof"
+        )
 
     git = _ensure_object(mas["git"], label="mas.git", keys=_RESULT_NESTED_KEYS["git"])
     _ensure_str(git["base_sha"], label="mas.git.base_sha")
@@ -914,6 +972,7 @@ def _validate_execution_result(
         "process_identity": identity,
         "termination_status": termination_status,
         "absence_proven": absence_proven,
+        "absence_proof": absence_proof,
         "parsed": top,
     }
 
@@ -2106,6 +2165,7 @@ def _require_result_absence_proof(row: sqlite3.Row, facts: dict[str, Any]) -> No
             identity is not None
             or facts["outcome"] != "aborted_before_start"
             or facts["termination_status"] != "not_started"
+            or facts["absence_proof"]["task_id"] != row["task_id"]
         ):
             raise ResultRejected(
                 "unbound run requires aborted_before_start, not_started, "

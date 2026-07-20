@@ -113,6 +113,19 @@ def _result_json(
             "pgid": process.pgid,
             "start_token": process.start_token,
         }
+    if not absence_proven:
+        absence_proof = None
+    elif identity is None:
+        absence_proof = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "evidence": "no start acknowledgement was sent",
+        }
+    else:
+        absence_proof = {
+            **identity,
+            "evidence": "process identity and group are absent",
+        }
     return json.dumps(
         {
             "mas": {
@@ -130,6 +143,7 @@ def _result_json(
                     "identity": identity,
                     "termination_status": "exited" if process else "not_started",
                     "absence_proven": absence_proven,
+                    "absence_proof": absence_proof,
                 },
                 "git": {
                     "base_sha": "a" * 40,
@@ -1202,6 +1216,23 @@ def test_finalize_rejects_result_without_absence_proof(kanban_home, conn):
     with pytest.raises(xw.ResultRejected):
         xw.finalize(conn, lease=lease, disposition="COMPLETE", result_bytes=rb)
     assert xw.get_run(conn, run_id=lease.run_id).lease_state == xw.LEASE_ACTIVE
+
+
+def test_finalize_rejects_absence_proof_for_another_task(kanban_home, conn):
+    tid, _aid, _raw, spec, lease = _submit_and_claim(conn)
+    payload = json.loads(
+        _result_json(
+            run_id=lease.run_id,
+            task_id=tid,
+            spec=spec,
+            disposition="COMPLETE",
+        )
+    )
+    payload["mas"]["process"]["absence_proof"]["task_id"] = "another-task"
+    rb = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(xw.ResultRejected, match="unbound run requires"):
+        xw.finalize(conn, lease=lease, disposition="COMPLETE", result_bytes=rb)
 
 
 def test_finalize_rejects_mismatched_bound_process_identity(kanban_home, conn):

@@ -21475,6 +21475,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.memory_notifications = str(_mem_notif).lower() if _mem_notif else "on"
 
             # ------------------------------------------------------------------
+            # Shared native-stream boundary close.  For platforms with native
+            # streaming (e.g. WeCom msgtype:"stream"), an interaction that
+            # interrupts the stream — a dangerous-command approval prompt OR a
+            # clarify decision prompt — must finalize the current stream and
+            # disable native streaming first.  Otherwise the agent's
+            # post-interaction output keeps flowing into send_stream_frame and
+            # updates the *old* bubble that preceded the prompt, instead of
+            # starting a fresh bubble below it (the "气泡割裂" symptom).  After
+            # the boundary, post-prompt output goes through the reliable send()
+            # path as a new message.  Runs on the agent thread; the consumer
+            # processes the boundary serially via its queue.
+            def _close_native_stream_boundary(_reason: str, _placeholder: str | None = None) -> bool:
+                _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+                if not (_sc and getattr(_sc, "_use_native_streaming", False)):
+                    return True
+                _cancelled_flag = None
+                try:
+                    _boundary_result = _sc.close_for_approval_prompt(
+                        _placeholder, reason=_reason,
+                    )
+                    # Returns (future, cancelled_flag) or just a future.
+                    if isinstance(_boundary_result, tuple):
+                        _boundary_future, _cancelled_flag = _boundary_result
+                    else:
+                        _boundary_future = _boundary_result
+                    if hasattr(_boundary_future, "result"):
+                        _ok = _boundary_future.result(timeout=10)
+                        if not _ok:
+                            logger.warning(
+                                "%s boundary failed to close stream properly — "
+                                "prompt may still appear in typing bubble", _reason,
+                            )
+                        return bool(_ok)
+                    return True
+                except (TimeoutError, Exception) as _boundary_err:
+                    if _cancelled_flag is not None:
+                        _cancelled_flag["cancelled"] = True
+                    logger.warning(
+                        "%s boundary timed out or failed: %s", _reason, _boundary_err,
+                    )
+                    return False
+
+            # ------------------------------------------------------------------
             # Clarify callback: present a clarify prompt and block on a response.
             #
             # Runs on the agent's worker thread (see clarify_tool's synchronous
@@ -21499,6 +21542,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     question=question,
                     choices=list(choices) if choices else None,
                 )
+
+                # For WeCom native streaming: finalize the current stream and
+                # disable native streaming before showing the clarify prompt.
+                # Without this the post-answer output keeps updating the bubble
+                # that preceded the question instead of opening a fresh one
+                # below it — the "气泡割裂" symptom.  Mirrors the approval path.
+                # The placeholder is a clarify-appropriate finalize text used
+                # only in the narrow case where a stream frame was already
+                # pushed but no visible text accumulated; when clarify is the
+                # agent's very first action (stream not yet opened) the boundary
+                # simply disables native and the question stands alone.
+                _close_native_stream_boundary("Clarify", "💬 等待你的选择...")
 
                 # Pause typing — like approval, we don't want a "thinking..."
                 # status to obscure the prompt or block the user from typing
@@ -21662,34 +21717,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # the current stream before showing the approval prompt.
                 # This goes through the consumer's queue for serial processing,
                 # avoiding race conditions with pending deltas.
-                _sc = stream_consumer_holder[0] if stream_consumer_holder else None
-                _boundary_ok = True
-                if _sc and getattr(_sc, "_use_native_streaming", False):
-                    _cancelled_flag = None
-                    try:
-                        _boundary_result = _sc.close_for_approval_prompt()
-                        # close_for_approval_prompt returns (future, cancelled_flag) or just future
-                        if isinstance(_boundary_result, tuple):
-                            _boundary_future, _cancelled_flag = _boundary_result
-                        else:
-                            _boundary_future = _boundary_result
-                        # Wait for consumer to process the boundary
-                        if hasattr(_boundary_future, "result"):
-                            _boundary_ok = _boundary_future.result(timeout=10)
-                            if not _boundary_ok:
-                                logger.warning(
-                                    "Approval boundary failed to close stream properly — "
-                                    "approval prompt may still appear in typing bubble"
-                                )
-                    except (TimeoutError, Exception) as _boundary_err:
-                        _boundary_ok = False
-                        # Mark as cancelled for backward compat (the boundary
-                        # handler no longer reads this flag — it always finalizes).
-                        if _cancelled_flag is not None:
-                            _cancelled_flag["cancelled"] = True
-                        logger.warning(
-                            "Approval boundary timed out or failed: %s", _boundary_err,
-                        )
+                _close_native_stream_boundary("Approval")
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")

@@ -55,9 +55,15 @@ _COMMENTARY = object()
 # last thing on screen, not racing ahead of buffered prose.
 _FLUSH = object()
 
-# Sentinel to signal an approval boundary — finalize the current stream,
-# disable native streaming, and let post-approval output go via send().
+# Sentinel to signal an interaction boundary (approval prompt OR clarify
+# decision prompt) — finalize the current stream, disable native streaming,
+# and let post-interaction output go via send().
 _APPROVAL_BOUNDARY = object()
+
+# Default finalize text shown at an interaction boundary when no content has
+# accumulated yet.  Callers may override per-boundary (e.g. clarify passes its
+# own) via close_for_approval_prompt(placeholder=...).
+_DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
 
 
 def escape_code_fences_for_display(text: str) -> str:
@@ -333,6 +339,15 @@ class GatewayStreamConsumer:
         # accumulated" throttling so we don't spam frames at WeCom's
         # 30 frames/min rate ceiling.
         self._native_last_pushed_len = 0
+        # Finalize text used at an interaction boundary (approval/clarify) when
+        # no content has accumulated yet.  Set by close_for_approval_prompt();
+        # defaults to the approval wording for backward compatibility.
+        self._boundary_placeholder = _DEFAULT_BOUNDARY_PLACEHOLDER
+        # Human-readable label for the current interaction boundary, used only
+        # for log prefixes so a clarify boundary doesn't log as "Approval".
+        # Set by close_for_approval_prompt(); race-free because boundaries are
+        # processed serially.
+        self._boundary_reason = "Approval"
 
 
     def _metadata_for_send(
@@ -442,13 +457,26 @@ class GatewayStreamConsumer:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
 
-    def close_for_approval_prompt(self) -> asyncio.Future:
-        """Signal approval boundary — finalize stream and disable native.
+    def close_for_approval_prompt(
+        self, placeholder: str | None = None, reason: str = "Approval",
+    ) -> asyncio.Future:
+        """Signal an interaction boundary — finalize stream and disable native.
 
-        Queues an approval boundary signal that the consumer processes
-        serially: finalize the current stream with accumulated text
+        Used for any mid-stream interaction that must not keep updating the
+        current native-stream bubble: a dangerous-command approval prompt or a
+        clarify decision prompt.  Queues a boundary signal that the consumer
+        processes serially: finalize the current stream with accumulated text
         (creating a stable message), then disable native streaming so
-        post-approval output goes through reliable send().
+        post-interaction output goes through reliable send().
+
+        ``placeholder`` is the finalize text used only when there is no
+        accumulated content yet (the prompt fired as the agent's first action).
+        Defaults to the approval placeholder; clarify passes its own so the
+        finalized bubble doesn't read "waiting for approval" for a question.
+
+        ``reason`` is a human-readable label ("Approval"/"Clarify") used only
+        for the boundary handler's log prefixes so a clarify boundary doesn't
+        surface as an "Approval boundary" failure during troubleshooting.
 
         Returns a (Future, cancelled_flag) tuple. The Future resolves True
         when the boundary has been processed. cancelled_flag is included
@@ -473,6 +501,12 @@ class GatewayStreamConsumer:
             f = asyncio.Future() if loop else concurrent.futures.Future()
             f.set_result(True)
             return f
+
+        # Stash the empty-content placeholder and log label for the serial
+        # boundary handler.  Boundaries are processed one at a time, so instance
+        # attributes are race-free and keep the queue signal shape unchanged.
+        self._boundary_placeholder = placeholder or _DEFAULT_BOUNDARY_PLACEHOLDER
+        self._boundary_reason = reason or "Approval"
 
         # Create a future that run() will resolve after processing.
         # cancelled_flag is retained for backward compatibility with callers
@@ -596,12 +630,15 @@ class GatewayStreamConsumer:
 
         Post-approval output uses regular send() which is unconditionally reliable.
         """
+        # Log label ("Approval"/"Clarify") so a clarify boundary failure doesn't
+        # surface as an "Approval boundary" error during troubleshooting.
+        _reason = getattr(self, "_boundary_reason", "Approval") or "Approval"
         delivery_failed = False
         try:
             if self._native_stream_opened:
                 # Finalize current stream with accumulated content.
                 # This converts the typing bubble into a stable message.
-                finalize_text = self._accumulated or "⏸ 等待审批中..."
+                finalize_text = self._accumulated or self._boundary_placeholder
                 finalize_ok = False
                 try:
                     result = await self.adapter.send_stream_frame(
@@ -613,16 +650,16 @@ class GatewayStreamConsumer:
                     )
                     finalize_ok = bool(result)
                 except Exception as e:
-                    logger.warning("Approval boundary: finalize failed: %s", e)
+                    logger.warning("%s boundary: finalize failed: %s", _reason, e)
 
                 if not finalize_ok:
                     # Stream finalize didn't land — the typing bubble may still
-                    # be showing partial content. Fallback: deliver the pre-approval
+                    # be showing partial content. Fallback: deliver the pre-prompt
                     # text via reliable send() so the user at least sees it.
                     logger.warning(
-                        "Approval boundary: finalize not confirmed, "
-                        "falling back to send() for pre-approval text (chat=%s)",
-                        self.chat_id,
+                        "%s boundary: finalize not confirmed, "
+                        "falling back to send() for pre-prompt text (chat=%s)",
+                        _reason, self.chat_id,
                     )
                     fallback_ok = False
                     try:
@@ -632,21 +669,22 @@ class GatewayStreamConsumer:
                         fallback_ok = getattr(send_result, "success", False)
                     except Exception as send_err:
                         logger.warning(
-                            "Approval boundary: fallback send also failed: %s", send_err
+                            "%s boundary: fallback send also failed: %s",
+                            _reason, send_err,
                         )
                     if not fallback_ok:
-                        # Both finalize and fallback failed — pre-approval text
+                        # Both finalize and fallback failed — pre-prompt text
                         # may be lost. Mark boundary as failed so the caller knows.
                         logger.error(
-                            "Approval boundary: both finalize and fallback send failed "
-                            "(chat=%s) — pre-approval text may not have been delivered",
-                            self.chat_id,
+                            "%s boundary: both finalize and fallback send failed "
+                            "(chat=%s) — pre-prompt text may not have been delivered",
+                            _reason, self.chat_id,
                         )
                         delivery_failed = True
                 else:
                     logger.debug(
-                        "Approval boundary: finalized stream (chat=%s, turn=%s)",
-                        self.chat_id, self._turn_id,
+                        "%s boundary: finalized stream (chat=%s, turn=%s)",
+                        _reason, self.chat_id, self._turn_id,
                     )
 
             # Disable native streaming for post-approval output.
@@ -667,7 +705,7 @@ class GatewayStreamConsumer:
             boundary_ok = not delivery_failed
 
         except Exception as e:
-            logger.warning("Approval boundary processing failed: %s", e)
+            logger.warning("%s boundary processing failed: %s", _reason, e)
             boundary_ok = False
         finally:
             # Resolve future so approval callback knows the result

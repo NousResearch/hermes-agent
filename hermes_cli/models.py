@@ -2385,6 +2385,24 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 })
 
 
+def _model_dedup_key(model_id: str) -> str:
+    """Case-insensitive dedup key that also folds picker-search aliases.
+
+    Some providers serve the same model under both a curated public slug and
+    a bare live wire id (Kimi Coding Plan lists its flagship as ``k3`` while
+    the curated catalog carries ``kimi-k3``). Folding through the search-alias
+    table keeps the curated-first merge from emitting both as separate rows.
+    The row that survives is the primary list's entry; selection still sends
+    whichever id the surviving row carries.
+    """
+    key = str(model_id).strip().lower()
+    try:
+        from hermes_cli.model_search import model_alias_canonical
+        return model_alias_canonical(key)
+    except Exception:
+        return key
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """Merge curated list with fresh models.dev entries for a preferred provider.
 
@@ -2650,11 +2668,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                         else:
                             primary, secondary = curated, live
                         merged = list(primary)
-                        merged_lower = {m.lower() for m in primary}
+                        merged_lower = {_model_dedup_key(m) for m in primary}
                         for m in secondary:
-                            if m.lower() not in merged_lower:
+                            if _model_dedup_key(m) not in merged_lower:
                                 merged.append(m)
-                                merged_lower.add(m.lower())
+                                merged_lower.add(_model_dedup_key(m))
                         return merged
                     return live
             # Use profile's fallback_models if defined

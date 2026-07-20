@@ -1457,6 +1457,7 @@ def _append_webui_notification(
     cleaned_delivery_content: str,
     media_files: list,
     output_file: str | Path | None = None,
+    success: bool = True,
 ) -> dict:
     """Append one cron notification to the profile-local WebUI inbox."""
     from cron.webui_notifications import append_notification
@@ -1465,13 +1466,18 @@ def _append_webui_notification(
     output_ref = {"job_id": job.get("id")}
     if output_file:
         output_ref["filename"] = Path(output_file).name
+    status = "ok" if success else "failed"
     return append_notification(
         {
             "job_id": job.get("id"),
             "job_name": task_name,
-            "severity": "info",
-            "status": "ok",
-            "title": f"Cronjob Response: {task_name}",
+            "severity": "info" if success else "error",
+            "status": status,
+            "title": (
+                f"Cronjob Response: {task_name}"
+                if success
+                else f"Cronjob Failed: {task_name}"
+            ),
             "body": cleaned_delivery_content or delivery_content,
             "body_format": "markdown",
             "media": media_files,
@@ -1493,6 +1499,7 @@ def _deliver_result(
     adapters=None,
     loop=None,
     output_file: str | Path | None = None,
+    success: bool = True,
 ) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1587,6 +1594,7 @@ def _deliver_result(
                     cleaned_delivery_content,
                     media_files,
                     output_file=output_file,
+                    success=success,
                 )
                 logger.info(
                     "Job '%s': delivered to WebUI notification inbox as %s",
@@ -3918,6 +3926,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                         adapters=adapters,
                         loop=loop,
                         output_file=output_file,
+                        success=success,
                     )
                 except Exception as de:
                     delivery_error = str(de)

@@ -65,6 +65,44 @@ class TestRuntimeProviderUsesScope:
         assert _getenv("HERMES_MAX_ITERATIONS") == "42"
 
 
+class TestFallbackConfigUsesScope:
+    """Fallback `key_env` resolution must stay inside the routed profile."""
+
+    def test_key_env_reads_profile_scope_not_process_environment(self, monkeypatch):
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        monkeypatch.setenv("XAI_API_KEY", "process-global-key")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"XAI_API_KEY": "wolf-profile-key"})
+        try:
+            assert (
+                resolve_entry_api_key(
+                    {
+                        "provider": "xai",
+                        "model": "grok-code-fast-1",
+                        "key_env": "XAI_API_KEY",
+                    }
+                )
+                == "wolf-profile-key"
+            )
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_key_env_fails_closed_without_scope_in_multiplex(self, monkeypatch):
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        monkeypatch.setenv("XAI_API_KEY", "must-not-leak")
+        ss.set_multiplex_active(True)
+        with pytest.raises(ss.UnscopedSecretError):
+            resolve_entry_api_key(
+                {
+                    "provider": "xai",
+                    "model": "grok-code-fast-1",
+                    "key_env": "XAI_API_KEY",
+                }
+            )
+
+
 class TestMcpInterpolationUsesScope:
     """MCP config ${VAR} interpolation resolves through the secret scope."""
 

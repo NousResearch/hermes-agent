@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 
@@ -27,7 +26,9 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
         return inline
     key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
     if key_env:
-        return os.getenv(key_env, "").strip() or None
+        from agent.secret_scope import get_secret
+
+        return (get_secret(key_env) or "").strip() or None
     return None
 
 

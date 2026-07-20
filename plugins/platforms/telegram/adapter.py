@@ -20,7 +20,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Any, ClassVar, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -600,6 +600,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
+    _owner_gate_process_consumer: ClassVar[Optional["TelegramAdapter"]] = None
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
@@ -849,6 +850,20 @@ class TelegramAdapter(BasePlatformAdapter):
             "1", "true", "yes", "on",
         }
 
+    def _owner_gate_profile_selected(self) -> bool:
+        selected = os.getenv("HERMES_OWNER_GATE_BRIDGE_PROFILE", "").strip()
+        profile = str(getattr(self, "_hermes_profile", "") or "").strip()
+        if selected:
+            return bool(profile) and profile == selected
+        try:
+            from agent.secret_scope import is_multiplex_active
+
+            if is_multiplex_active():
+                return False
+        except Exception:
+            pass
+        return True
+
     def _owner_gate_store_dir(self) -> _Path:
         configured = (
             os.getenv("HERMES_OWNER_GATE_PENDING_DIR")
@@ -907,8 +922,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return None
 
     def _owner_gate_bridge_enabled(self) -> bool:
-        return self._owner_gate_flag_requested() and bool(
-            self._owner_gate_owner_chat_id()
+        return (
+            self._owner_gate_flag_requested()
+            and self._owner_gate_profile_selected()
+            and bool(self._owner_gate_owner_chat_id())
         )
 
     @staticmethod
@@ -1070,6 +1087,24 @@ class TelegramAdapter(BasePlatformAdapter):
     def _start_owner_gate_bridge(self) -> None:
         if not self._owner_gate_flag_requested():
             return
+        if not self._owner_gate_profile_selected():
+            try:
+                from agent.secret_scope import is_multiplex_active
+
+                multiplex_active = is_multiplex_active()
+            except Exception:
+                multiplex_active = False
+            if multiplex_active and not os.getenv(
+                "HERMES_OWNER_GATE_BRIDGE_PROFILE", ""
+            ).strip():
+                self._owner_gate_warn_once(
+                    "missing-profile-binding",
+                    "[%s] owner_gate bridge requires "
+                    "HERMES_OWNER_GATE_BRIDGE_PROFILE in multiplex mode",
+                    self.name,
+                )
+            return
+        self._owner_gate_warning_keys.discard("missing-profile-binding")
         if not self._owner_gate_owner_chat_id():
             self._owner_gate_warn_once(
                 "missing-owner-chat",
@@ -1081,10 +1116,28 @@ class TelegramAdapter(BasePlatformAdapter):
         task = self._owner_gate_pending_task
         if task is not None and not task.done():
             return
+        consumer = type(self)._owner_gate_process_consumer
+        if consumer is not None and consumer is not self:
+            consumer_task = getattr(consumer, "_owner_gate_pending_task", None)
+            if consumer_task is not None and not consumer_task.done():
+                logger.info(
+                    "[%s] owner_gate bridge already owned by profile %s; skipping",
+                    self.name,
+                    getattr(consumer, "_hermes_profile", "unknown"),
+                )
+                return
+            type(self)._owner_gate_process_consumer = None
         task = asyncio.ensure_future(self._owner_gate_pending_loop())
         self._owner_gate_pending_task = task
+        type(self)._owner_gate_process_consumer = self
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+        def _release_process_consumer(_task: asyncio.Task) -> None:
+            if type(self)._owner_gate_process_consumer is self:
+                type(self)._owner_gate_process_consumer = None
+
+        task.add_done_callback(_release_process_consumer)
 
     def _owner_gate_is_owner_chat(self, msg: Message) -> bool:
         owner_chat_id = self._owner_gate_owner_chat_id()
@@ -4244,6 +4297,8 @@ class TelegramAdapter(BasePlatformAdapter):
             owner_gate_task.cancel()
             await asyncio.gather(owner_gate_task, return_exceptions=True)
         self._owner_gate_pending_task = None
+        if type(self)._owner_gate_process_consumer is self:
+            type(self)._owner_gate_process_consumer = None
 
         # Recovery can be suspended in stop/drain/start while disconnect begins.
         # Cancel and await both polling lifecycle owners immediately after the

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 from types import SimpleNamespace
@@ -87,6 +88,7 @@ def test_owner_gate_bridge_requires_explicit_flag_and_owner_binding(monkeypatch)
     monkeypatch.delenv("HERMES_OWNER_GATE_BRIDGE_ENABLED", raising=False)
     monkeypatch.delenv("ULTRA_INSTINKT_TELEGRAM_OWNER_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_OWNER_GATE_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_OWNER_GATE_BRIDGE_PROFILE", raising=False)
     monkeypatch.setenv("HERMES_OWNER_GATE_TELEGRAM_ENV_FILE", "/nonexistent")
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
 
@@ -95,6 +97,60 @@ def test_owner_gate_bridge_requires_explicit_flag_and_owner_binding(monkeypatch)
     assert adapter._owner_gate_bridge_enabled() is False
     monkeypatch.setenv("ULTRA_INSTINKT_TELEGRAM_OWNER_CHAT_ID", "12345")
     assert adapter._owner_gate_bridge_enabled() is True
+
+
+def test_owner_gate_bridge_requires_profile_binding_in_multiplex(monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.setenv("HERMES_OWNER_GATE_BRIDGE_ENABLED", "1")
+    monkeypatch.setenv("ULTRA_INSTINKT_TELEGRAM_OWNER_CHAT_ID", "12345")
+    monkeypatch.delenv("HERMES_OWNER_GATE_BRIDGE_PROFILE", raising=False)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._hermes_profile = "wolf-of-hermes"
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert adapter._owner_gate_bridge_enabled() is False
+        monkeypatch.setenv(
+            "HERMES_OWNER_GATE_BRIDGE_PROFILE", "wolf-of-hermes"
+        )
+        assert adapter._owner_gate_bridge_enabled() is True
+        adapter._hermes_profile = "marketing-operator"
+        assert adapter._owner_gate_bridge_enabled() is False
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+
+@pytest.mark.asyncio
+async def test_owner_gate_bridge_has_one_process_consumer(monkeypatch):
+    monkeypatch.setenv("HERMES_OWNER_GATE_BRIDGE_ENABLED", "1")
+    monkeypatch.setenv("ULTRA_INSTINKT_TELEGRAM_OWNER_CHAT_ID", "12345")
+    monkeypatch.setenv("HERMES_OWNER_GATE_BRIDGE_PROFILE", "owner-profile")
+    first = TelegramAdapter(PlatformConfig(enabled=True, token="first-token"))
+    second = TelegramAdapter(PlatformConfig(enabled=True, token="second-token"))
+    first._hermes_profile = "owner-profile"
+    second._hermes_profile = "owner-profile"
+    stop = asyncio.Event()
+
+    async def wait_until_cancelled():
+        await stop.wait()
+
+    first._owner_gate_pending_loop = wait_until_cancelled
+    second._owner_gate_pending_loop = wait_until_cancelled
+    TelegramAdapter._owner_gate_process_consumer = None
+    try:
+        first._start_owner_gate_bridge()
+        second._start_owner_gate_bridge()
+
+        assert first._owner_gate_pending_task is not None
+        assert second._owner_gate_pending_task is None
+        assert TelegramAdapter._owner_gate_process_consumer is first
+    finally:
+        if first._owner_gate_pending_task is not None:
+            first._owner_gate_pending_task.cancel()
+            await asyncio.gather(
+                first._owner_gate_pending_task, return_exceptions=True
+            )
+        TelegramAdapter._owner_gate_process_consumer = None
 
 
 def test_owner_gate_commands_require_private_owner_sender(monkeypatch):

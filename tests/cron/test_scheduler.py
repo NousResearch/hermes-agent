@@ -493,6 +493,8 @@ class TestResolveDeliveryTarget:
         assert len(records) == 1
         assert records[0]["job_id"] == "webui-job"
         assert records[0]["title"] == "Cronjob Response: WebUI Job"
+        assert records[0]["severity"] == "info"
+        assert records[0]["status"] == "ok"
         assert "Report body" in records[0]["body"]
         assert records[0]["output_ref"] == {
             "job_id": "webui-job",
@@ -542,6 +544,33 @@ class TestResolveDeliveryTarget:
             )
 
         assert error == "delivery to webui inbox failed: disk full"
+
+    def test_webui_failed_delivery_records_failure_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        from cron.webui_notifications import list_notifications
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+
+        assert (
+            _deliver_result(
+                {
+                    "id": "failed-webui",
+                    "name": "Failed WebUI",
+                    "deliver": "webui",
+                },
+                "Timed out after all retries.",
+                success=False,
+            )
+            is None
+        )
+
+        records = list_notifications(home=tmp_path)
+        assert len(records) == 1
+        assert records[0]["severity"] == "error"
+        assert records[0]["status"] == "failed"
+        assert records[0]["title"] == "Cronjob Failed: Failed WebUI"
+        assert "Timed out" in records[0]["body"]
 
 
 class TestRoutingIntents:

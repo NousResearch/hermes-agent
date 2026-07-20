@@ -339,14 +339,22 @@ export function useMessageStream({
         return
       }
 
-      // The composer status stack owns todo display now (no inline panel) —
-      // mirror every todo state the tool reports into its session store.
-      if (payload?.name === 'todo') {
-        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+      const todos =
+        payload?.name === 'todo'
+          ? (parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args))
+          : null
 
-        if (todos) {
-          setSessionTodos(sessionId, todos)
-        }
+      mutateStream(
+        sessionId,
+        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase)),
+        () => upsertToolPart([], payload, phase),
+        { pending: m => phase !== 'complete' || (m.pending ?? false) }
+      )
+
+      // Keep visual linger separate from the authoritative turn owner. Reading
+      // after mutateStream ensures a todo-only turn has acquired its stream id.
+      if (todos) {
+        setSessionTodos(sessionId, todos, sessionStateByRuntimeIdRef.current.get(sessionId)?.streamId)
       }
 
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
@@ -359,15 +367,8 @@ export function useMessageStream({
           )
         }
       }
-
-      mutateStream(
-        sessionId,
-        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase)),
-        () => upsertToolPart([], payload, phase),
-        { pending: m => phase !== 'complete' || (m.pending ?? false) }
-      )
     },
-    [flushQueuedDeltas, mutateStream, sessionInterrupted]
+    [flushQueuedDeltas, mutateStream, sessionInterrupted, sessionStateByRuntimeIdRef]
   )
 
   const completeAssistantMessage = useCallback(

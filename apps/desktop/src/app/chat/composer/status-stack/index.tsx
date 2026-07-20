@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import {
   $statusItemsBySession,
@@ -22,10 +23,12 @@ import {
 } from '@/store/composer-status'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $todoHistoryBySession } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
 import { StatusItemRow } from './status-row'
+import { TaskHistoryList } from './task-history-list'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
@@ -70,6 +73,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   const itemsBySession = useStore($statusItemsBySession)
   const previewsBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const taskHistory = useSessionSlice($todoHistoryBySession, sessionId)
 
   const groups = useMemo(
     () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
@@ -123,6 +127,20 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   const sections: { key: string; node: ReactNode }[] = []
 
+  const historySection =
+    taskHistory.length > 0 ? (
+      <StatusSection
+        icon={<Codicon className="text-muted-foreground/70" name="history" size="0.8rem" />}
+        label={t.statusStack.taskHistory}
+      >
+        <TaskHistoryList snapshots={taskHistory} />
+      </StatusSection>
+    ) : null
+
+  if (historySection && !groups.some(group => group.type === 'todo')) {
+    sections.push({ key: 'task-history', node: historySection })
+  }
+
   for (const group of groups) {
     sections.push({
       key: group.type,
@@ -159,6 +177,10 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
         </StatusSection>
       )
     })
+
+    if (group.type === 'todo' && historySection) {
+      sections.push({ key: 'task-history', node: historySection })
+    }
 
     // Preview links belong to the background group (a localhost dev server and
     // its preview are the same thing), but they must stay VISIBLE even when that

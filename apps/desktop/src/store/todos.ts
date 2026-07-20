@@ -1,6 +1,12 @@
 import { atom } from 'nanostores'
 
-import type { TodoItem } from '@/lib/todos'
+import {
+  todoHistoryFromTranscript,
+  type TodoHistoryMessage,
+  type TodoHistorySnapshot,
+  type TodoItem,
+  todoPlanSignature
+} from '@/lib/todos'
 
 /**
  * Live todo list per runtime session, rendered by the composer status stack
@@ -12,6 +18,107 @@ import type { TodoItem } from '@/lib/todos'
  *   above the composer forever.
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
+
+/** Transcript-derived task snapshots keyed by runtime session. This atom is
+ * updated only at known mutation boundaries, never while plain text streams. */
+export const $todoHistoryBySession = atom<Record<string, TodoHistorySnapshot[]>>({})
+
+function sameTodoHistory(a: readonly TodoHistorySnapshot[], b: readonly TodoHistorySnapshot[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((snapshot, index) => {
+      const other = b[index]
+
+      return (
+        other !== undefined &&
+        snapshot.id === other.id &&
+        snapshot.state === other.state &&
+        snapshot.timestamp === other.timestamp &&
+        snapshot.todos.length === other.todos.length &&
+        snapshot.todos.every(
+          (todo, todoIndex) =>
+            todo.id === other.todos[todoIndex]?.id &&
+            todo.content === other.todos[todoIndex]?.content &&
+            todo.status === other.todos[todoIndex]?.status
+        )
+      )
+    })
+  )
+}
+
+export function rebuildSessionTodoHistory(sid: string, messages: readonly TodoHistoryMessage[]) {
+  if (!sid) {
+    return
+  }
+
+  const history = $todoHistoryBySession.get()
+  const next = todoHistoryFromTranscript(messages)
+
+  if (history[sid] && sameTodoHistory(history[sid], next)) {
+    return
+  }
+
+  $todoHistoryBySession.set({ ...history, [sid]: next })
+}
+
+export function rebuildResumedSessionTodoHistory(
+  runtimeId: string,
+  storedSessionId: string,
+  messages: readonly TodoHistoryMessage[]
+) {
+  if (runtimeId !== storedSessionId) {
+    clearSessionTodoHistory(storedSessionId)
+  }
+
+  rebuildSessionTodoHistory(runtimeId, messages)
+}
+
+export function clearSessionTodoHistory(sid: string) {
+  const history = $todoHistoryBySession.get()
+
+  if (!(sid in history)) {
+    return
+  }
+
+  const { [sid]: _drop, ...rest } = history
+  $todoHistoryBySession.set(rest)
+}
+
+/** Finalize directly from the session's authoritative live todo turn. The
+ * separately rendered list may remain during its 4s linger, but only the turn
+ * that produced it may commit a snapshot. */
+interface LiveTodoTurn {
+  ownerId: string
+  todos: TodoItem[]
+}
+
+const liveTodoTurns = new Map<string, LiveTodoTurn>()
+
+export function finalizeSessionTodoSnapshot(sid: string, id: string, timestamp = Math.floor(Date.now() / 1_000)) {
+  const live = liveTodoTurns.get(sid)
+
+  if (!live || live.ownerId !== id) {
+    return
+  }
+
+  liveTodoTurns.delete(sid)
+  const todos = live.todos
+
+  const signature = todoPlanSignature(todos)
+  const previous = $todoHistoryBySession.get()[sid] ?? []
+
+  const snapshot: TodoHistorySnapshot = {
+    id,
+    state: todoListActive(todos) ? 'unfinished' : 'completed',
+    timestamp,
+    todos: [...todos]
+  }
+
+  $todoHistoryBySession.set({
+    ...$todoHistoryBySession.get(),
+    [sid]: [snapshot, ...previous.filter(item => todoPlanSignature(item.todos) !== signature)]
+  })
+}
 
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
@@ -42,28 +149,7 @@ function cancelScheduledClear(sid: string) {
   }
 }
 
-export function setSessionTodos(sid: string, todos: TodoItem[]) {
-  if (!sid) {
-    return
-  }
-
-  cancelScheduledClear(sid)
-  $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
-
-  if (!todoListActive(todos)) {
-    clearTimers.set(
-      sid,
-      setTimeout(() => {
-        clearTimers.delete(sid)
-        clearSessionTodos(sid)
-      }, FINISHED_LINGER_MS)
-    )
-  }
-}
-
-export function clearSessionTodos(sid: string) {
-  cancelScheduledClear(sid)
-
+function dismissSessionTodos(sid: string) {
   const map = $todosBySession.get()
 
   if (!(sid in map)) {
@@ -72,6 +158,54 @@ export function clearSessionTodos(sid: string) {
 
   const { [sid]: _drop, ...rest } = map
   $todosBySession.set(rest)
+}
+
+export function clearAllSessionTodoState() {
+  for (const timer of clearTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  clearTimers.clear()
+  liveTodoTurns.clear()
+  $todosBySession.set({})
+  $todoHistoryBySession.set({})
+}
+
+export function setSessionTodos(sid: string, todos: TodoItem[], ownerId?: string | null) {
+  if (!sid) {
+    return
+  }
+
+  cancelScheduledClear(sid)
+  $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
+
+  if (ownerId) {
+    liveTodoTurns.set(sid, { ownerId, todos: [...todos] })
+  }
+
+  if (!todoListActive(todos)) {
+    clearTimers.set(
+      sid,
+      setTimeout(() => {
+        clearTimers.delete(sid)
+        dismissSessionTodos(sid)
+      }, FINISHED_LINGER_MS)
+    )
+  }
+}
+
+export function clearSessionTodos(sid: string) {
+  cancelScheduledClear(sid)
+  liveTodoTurns.delete(sid)
+  dismissSessionTodos(sid)
+}
+
+export function releaseSessionTodoTurn(sid: string, ownerId: string | null | undefined) {
+  const live = liveTodoTurns.get(sid)
+
+  if (live && live.ownerId === ownerId) {
+    liveTodoTurns.delete(sid)
+  }
 }
 
 // Drop a still-active todo list (any pending/in_progress item) — used at turn

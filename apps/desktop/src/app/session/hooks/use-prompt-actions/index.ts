@@ -32,7 +32,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
-import { clearSessionTodos } from '@/store/todos'
+import { clearSessionTodos, rebuildSessionTodoHistory } from '@/store/todos'
 
 import type {
   ClientSessionState,
@@ -639,14 +639,16 @@ export function usePromptActions({
         return
       }
 
-      const plan = planReload($messages.get(), parentId)
+      const messages = $messages.get()
+      const plan = planReload(messages, parentId)
 
       if (!plan) {
         return
       }
 
       clearNotifications()
-      updateSessionState(activeSessionId, state => applyReloadOptimistic(state, plan))
+      const optimistic = updateSessionState(activeSessionId, state => applyReloadOptimistic(state, plan))
+      rebuildSessionTodoHistory(activeSessionId, optimistic.messages)
 
       try {
         await requestGateway(
@@ -658,8 +660,10 @@ export function usePromptActions({
         updateSessionState(activeSessionId, state => ({
           ...state,
           busy: false,
-          awaitingResponse: false
+          awaitingResponse: false,
+          messages
         }))
+        rebuildSessionTodoHistory(activeSessionId, messages)
         notifyError(err, copy.regenerateFailed)
       }
     },
@@ -703,7 +707,8 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      const optimistic = updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      rebuildSessionTodoHistory(sessionId, optimistic.messages)
 
       try {
         await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
@@ -721,6 +726,7 @@ export function usePromptActions({
           awaitingResponse: false,
           messages
         }))
+        rebuildSessionTodoHistory(sessionId, messages)
         throw err
       }
     },
@@ -749,7 +755,12 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+
+      const optimistic = updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage)
+      )
+
+      rebuildSessionTodoHistory(sessionId, optimistic.messages)
 
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
@@ -777,6 +788,7 @@ export function usePromptActions({
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false, messages }))
+        rebuildSessionTodoHistory(sessionId, messages)
         notifyError(surfaced, copy.editFailed)
       }
     },

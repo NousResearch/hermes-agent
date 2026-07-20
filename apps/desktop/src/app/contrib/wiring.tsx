@@ -56,7 +56,7 @@ import {
   setMessages
 } from '@/store/session'
 import { focusOpenSession } from '@/store/session-states'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { clearSessionTodos, rebuildSessionTodoHistory, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -276,6 +276,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
             storedSessionId
           )
+          rebuildSessionTodoHistory(runtimeSessionId, messages)
 
           const restored = todosForHydration(latestSessionTodos(messages))
 
@@ -332,6 +333,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
         storedSessionId
       )
+      rebuildSessionTodoHistory(runtimeSessionId, messages)
     } catch {
       // Non-fatal: next poll or manual refresh can hydrate.
     }

@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
@@ -24,6 +24,8 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
+import { $sessionStates, clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { $todoHistoryBySession, $todosBySession, clearAllSessionTodoState, setSessionTodos } from '@/store/todos'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
@@ -432,6 +434,7 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    clearAllSessionTodoState()
     vi.restoreAllMocks()
   })
 
@@ -596,6 +599,42 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('newest prompt')
   })
 
+  it('hydrates task history under the resumed runtime id on the cold prefetch path', async () => {
+    const storedMessages = [
+      {
+        content: '',
+        role: 'assistant',
+        timestamp: 2,
+        tool_calls: [
+          {
+            id: 'todo-call',
+            function: {
+              name: 'todo',
+              arguments: JSON.stringify({ todos: [{ content: 'Cold task', id: 'task', status: 'completed' }] })
+            }
+          }
+        ]
+      }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-cold', resumed: 'stored-1', messages: storedMessages, info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect($todoHistoryBySession.get()['runtime-cold']?.[0]?.todos).toEqual([
+      { content: 'Cold task', id: 'task', status: 'completed' }
+    ])
+    expect($todoHistoryBySession.get()['stored-1']).toBeUndefined()
+  })
+
   it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {
     const parentMessages = [
       { content: 'question before compression', role: 'user', timestamp: 1 },
@@ -678,6 +717,45 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('hydrates task history from the REST fallback under the durable id before a runtime id exists', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('request timed out: session.resume')
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        {
+          content: '',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              id: 'todo-fallback',
+              function: {
+                name: 'todo',
+                arguments: JSON.stringify({
+                  todos: [{ content: 'Fallback task', id: 'fallback', status: 'completed' }]
+                })
+              }
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    await runResume(requestGateway)
+
+    expect($activeSessionId.get()).toBeNull()
+    expect($todoHistoryBySession.get()['stored-1']?.[0]?.todos).toEqual([
+      { content: 'Fallback task', id: 'fallback', status: 'completed' }
+    ])
   })
 
   it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {
@@ -786,6 +864,92 @@ describe('resumeSession failure recovery', () => {
     expect(sessionStateByRuntimeIdRef.current.has('runtime-stale')).toBe(false)
     expect($activeSessionId.get()).toBe('runtime-1')
     expect($messages.get().length).toBe(1)
+  })
+})
+
+function DeleteHarness({
+  onReady,
+  sessionStateByRuntimeIdRef
+}: {
+  onReady: (removeSession: (storedSessionId: string) => Promise<void>) => void
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+}) {
+  const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-delete' }
+  const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-delete' }
+
+  const actions = useSessionActions({
+    activeSessionId: 'runtime-delete',
+    activeSessionIdRef,
+    busyRef: { current: false },
+    creatingSessionRef: { current: false },
+    ensureSessionState: () => createClientSessionState('stored-delete'),
+    getRouteToken: () => 'delete-token',
+    getRoutedStoredSessionId: () => 'stored-delete',
+    navigate: vi.fn() as never,
+    requestGateway: async () => ({}) as never,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef: { current: new Map() },
+    selectedStoredSessionId: 'stored-delete',
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef,
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (sessionId, updater) => {
+      const next = updater(sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState())
+      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+
+      return next
+    }
+  })
+
+  useEffect(() => onReady(actions.removeSession), [actions.removeSession, onReady])
+
+  return null
+}
+
+describe('removeSession task-state cleanup', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    setSessions([])
+    vi.restoreAllMocks()
+  })
+
+  it('drops primary runtime and durable REST-fallback task state after delete succeeds', async () => {
+    const state = createClientSessionState('stored-delete')
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-delete', state]])
+    }
+
+    publishSessionState('runtime-delete', state)
+    setSessionTodos('runtime-delete', [{ content: 'live', id: 'live', status: 'in_progress' }])
+    $todoHistoryBySession.set({
+      'runtime-delete': [
+        { id: 'runtime-history', state: 'completed', todos: [{ content: 'runtime', id: 'r', status: 'completed' }] }
+      ],
+      'stored-delete': [
+        { id: 'stored-history', state: 'completed', todos: [{ content: 'stored', id: 's', status: 'completed' }] }
+      ]
+    })
+    setSessions([storedSession({ id: 'stored-delete' })])
+    vi.mocked(deleteSession).mockResolvedValue(undefined as never)
+
+    let removeSession: ((storedSessionId: string) => Promise<void>) | null = null
+    render(
+      <DeleteHarness
+        onReady={remove => (removeSession = remove)}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(removeSession).not.toBeNull())
+    await act(async () => removeSession!('stored-delete'))
+
+    expect(deleteSession).toHaveBeenCalledWith('stored-delete', undefined)
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-delete')).toBe(false)
+    expect($sessionStates.get()['runtime-delete']).toBeUndefined()
+    expect($todosBySession.get()['runtime-delete']).toBeUndefined()
+    expect($todoHistoryBySession.get()['runtime-delete']).toBeUndefined()
+    expect($todoHistoryBySession.get()['stored-delete']).toBeUndefined()
   })
 })
 

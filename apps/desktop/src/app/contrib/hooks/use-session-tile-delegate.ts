@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { getSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
 import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
+import { rebuildResumedSessionTodoHistory } from '@/store/todos'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
@@ -62,6 +63,7 @@ export function useSessionTileDelegate({
 
         if (existing && cached?.storedSessionId === storedSessionId) {
           publishSessionState(existing, cached)
+          rebuildResumedSessionTodoHistory(existing, storedSessionId, cached.messages)
 
           return existing
         }
@@ -77,16 +79,19 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
-        updateSessionState(
+        const hydratedMessages = toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+
+        const effectiveState = updateSessionState(
           runtimeId,
           state => ({
             ...state,
             busy: Boolean(resumed?.info?.running),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+            messages: state.messages.length > 0 ? state.messages : hydratedMessages
           }),
           storedSessionId
         )
+
+        rebuildResumedSessionTodoHistory(runtimeId, storedSessionId, effectiveState.messages)
 
         return runtimeId
       },

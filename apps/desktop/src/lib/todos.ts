@@ -86,3 +86,92 @@ export function latestSessionTodos(messages: readonly { parts?: unknown }[]): nu
 
   return null
 }
+
+export interface TodoHistorySnapshot {
+  id: string
+  state: 'completed' | 'unfinished'
+  timestamp?: number
+  todos: TodoItem[]
+}
+
+export interface TodoHistoryMessage {
+  id?: string
+  parts?: unknown
+  role?: string
+  timestamp?: number
+}
+
+// Runtime status can legitimately advance between otherwise identical todo
+// lists. History represents the task plan, so identity is id + content rather
+// than a transient status value.
+export const todoPlanSignature = (todos: readonly TodoItem[]) =>
+  JSON.stringify(todos.map(({ content, id }) => ({ content, id })))
+
+interface TodoHistoryCandidate {
+  id: string
+  todos: TodoItem[]
+}
+
+/** Full reconstruction used only where the caller has an authoritative
+ * transcript replacement (resume/hydration/rewind). Newest snapshots come
+ * first and repeated plans collapse to their newest occurrence. */
+export function todoHistoryFromTranscript(messages: readonly TodoHistoryMessage[]): TodoHistorySnapshot[] {
+  const seen = new Set<string>()
+  const snapshots: TodoHistorySnapshot[] = []
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+
+    if (!message || message.role !== 'assistant' || !Array.isArray(message.parts)) {
+      continue
+    }
+
+    const candidates: TodoHistoryCandidate[] = []
+    const messageSeen = new Set<string>()
+
+    for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.parts[partIndex]
+
+      if (!isRecord(part) || part.type !== 'tool-call' || part.toolName !== 'todo') {
+        continue
+      }
+
+      const todos = parseTodos(part.todos) ?? parseTodos(part.result) ?? parseTodos(part.args)
+
+      if (!todos?.length) {
+        continue
+      }
+
+      const signature = todoPlanSignature(todos)
+
+      if (messageSeen.has(signature)) {
+        continue
+      }
+
+      messageSeen.add(signature)
+      const toolCallId = typeof part.toolCallId === 'string' && part.toolCallId ? part.toolCallId : `part-${partIndex}`
+      candidates.push({ id: toolCallId, todos })
+    }
+
+    for (const candidate of candidates) {
+      const signature = todoPlanSignature(candidate.todos)
+
+      if (seen.has(signature)) {
+        continue
+      }
+
+      seen.add(signature)
+      const messageId = message.id || `assistant-turn-${index}`
+      snapshots.push({
+        id: candidates.length > 1 ? `${messageId}:${candidate.id}` : messageId,
+        state: candidate.todos.some(todo => todo.status === 'pending' || todo.status === 'in_progress')
+          ? 'unfinished'
+          : 'completed',
+        timestamp: message.timestamp,
+        todos: [...candidate.todos]
+      })
+    }
+  }
+
+  return snapshots
+}

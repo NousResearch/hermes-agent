@@ -2,14 +2,17 @@ import { useSyncExternalStore } from 'react'
 
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
+import { $todoHistoryBySession } from '@/store/todos'
 
 const subscribe = (onChange: () => void) => {
   const offItems = $statusItemsBySession.listen(onChange)
   const offPreviews = $previewStatusBySession.listen(onChange)
+  const offTaskHistory = $todoHistoryBySession.listen(onChange)
 
   return () => {
     offItems()
     offPreviews()
+    offTaskHistory()
   }
 }
 
@@ -30,7 +33,8 @@ export function useSessionStatusPresence(sessionId: string | null): boolean {
 
     return (
       ($statusItemsBySession.get()[sessionId]?.length ?? 0) > 0 ||
-      ($previewStatusBySession.get()[sessionId]?.length ?? 0) > 0
+      ($previewStatusBySession.get()[sessionId]?.length ?? 0) > 0 ||
+      ($todoHistoryBySession.get()[sessionId]?.length ?? 0) > 0
     )
   })
 }

@@ -174,6 +174,25 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_qwen_cloud_alias_prefixes_and_current_models_use_published_context(self):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            cases = (
+                ("qwen3.8-max-preview", 983_616),
+                ("qwen3.7-max", 1_000_000),
+                ("qwen3.7-plus", 1_000_000),
+                ("qwen3.6-plus", 1_000_000),
+                ("qwen3.6-flash", 1_000_000),
+                ("qwen-cloud:qwen3.7-plus", 1_000_000),
+                ("qwencloud:qwen3.6-flash", 1_000_000),
+                ("qwen-dashscope:qwen3.7-max", 1_000_000),
+            )
+            for model, expected in cases:
+                assert get_model_context_length(model) == expected
+
     def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
         """K3's 1 Mi context must not leak to unverified Moonshot endpoints."""
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
@@ -877,13 +896,13 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen3_6_plus_context_length(self, mock_fetch):
-        """qwen3.6-plus has a 1M context window, not the generic 128K Qwen default."""
+        """qwen3.6-plus uses the current Qwen Cloud-published 1M window."""
         mock_fetch.return_value = {}
-        assert get_model_context_length("qwen3.6-plus") == 1048576
+        assert get_model_context_length("qwen3.6-plus") == 1_000_000
         # Provider-prefixed variants must resolve to the same explicit entry
         # via the longest-substring fallback (no portal/OR cache available).
-        assert get_model_context_length("qwen/qwen3.6-plus") == 1048576
-        assert get_model_context_length("dashscope/qwen3.6-plus") == 1048576
+        assert get_model_context_length("qwen/qwen3.6-plus") == 1_000_000
+        assert get_model_context_length("dashscope/qwen3.6-plus") == 1_000_000
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen_generic_context_length(self, mock_fetch):

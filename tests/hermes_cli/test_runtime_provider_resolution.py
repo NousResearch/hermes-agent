@@ -1637,8 +1637,8 @@ def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
-def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
-    """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
+def test_alibaba_default_payg_endpoint_uses_chat_completions(monkeypatch):
+    """Qwen Cloud PAYG's default DashScope URL uses chat_completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
@@ -1649,6 +1649,31 @@ def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch)
     assert resolved["provider"] == "alibaba"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "alibaba",
+        "dashscope",
+        "alibaba-cloud",
+        "qwen-dashscope",
+        "qwen-cloud",
+        "qwencloud",
+    ],
+)
+def test_qwen_cloud_payg_aliases_keep_runtime_credentials(monkeypatch, requested):
+    """PAYG aliases canonicalize without changing the endpoint or key lane."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "payg-key-canary")
+    monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested=requested)
+
+    assert resolved["provider"] == "alibaba"
+    assert resolved["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_key"] == "payg-key-canary"
 
 
 def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch):

@@ -1517,12 +1517,58 @@ def _err(rid, code: int, msg: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
 
 
+_builtin_rpc_names: set[str] = set()
+
+
 def method(name: str):
     def dec(fn):
         _methods[name] = fn
+        _builtin_rpc_names.add(name)
         return fn
 
     return dec
+
+
+# -- Plugin RPC integration --------------------------------------------------
+
+# Set of RPC method names that were injected from the plugin system so we can
+# clean them up on reload without touching built-in gateway methods.
+_plugin_rpc_names: set[str] = set()
+
+
+def _merge_plugin_rpc_methods() -> None:
+    """Merge plugin-registered JSON-RPC methods into _methods.
+
+    Called lazily on the first inbound request so plugins discovered
+    before the gateway started have their RPC methods available.
+    Safe to call multiple times — re-discovers on every invocation so
+    that force-reload or late plugin loads are picked up.
+    """
+    global _plugin_rpc_names
+    try:
+        from hermes_cli.plugins import (
+            discover_plugins,
+            get_plugin_rpc_method_names,
+            get_plugin_rpc_methods,
+        )
+
+        discover_plugins()
+        current = get_plugin_rpc_method_names()
+        stale = _plugin_rpc_names - current
+
+        # Remove stale plugin-owned methods from _methods.
+        for name in stale:
+            _methods.pop(name, None)
+        # Add or refresh current plugin methods without replacing built-ins.
+        for name, handler in get_plugin_rpc_methods().items():
+            if name in _builtin_rpc_names:
+                logger.warning("Ignoring plugin RPC '%s': built-in method takes precedence", name)
+                continue
+            _methods[name] = handler
+
+        _plugin_rpc_names = current - _builtin_rpc_names
+    except Exception as exc:
+        logger.debug("Failed to merge plugin RPC methods: %s", exc)
 
 
 def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:

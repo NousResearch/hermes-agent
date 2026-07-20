@@ -1116,6 +1116,60 @@ a { color: inherit; }
 .meded-topic { width: 100%; margin-bottom: 8px; }
 .meded-ask-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* ---------- code lab ---------- */
+.cl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.cl-picker { flex: 1; min-width: 0; }
+.cl-prompt { white-space: pre-wrap; line-height: 1.45; font-size: 13px; color: var(--ink-2); background: var(--surface-2); border-radius: 5px; padding: 9px 11px; margin-bottom: 8px; }
+.cl-editor { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.5; color: var(--ink); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: 5px; padding: 10px; resize: vertical; tab-size: 2; }
+.cl-editor:focus { outline: none; border-color: var(--accent); }
+.cl-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; align-items: center; }
+.cl-output { display: flex; flex-direction: column; gap: 3px; }
+.cl-summary { font-weight: 650; font-size: 13px; padding: 4px 0; }
+.cl-summary.cl-pass { color: var(--status-stable); }
+.cl-summary.cl-fail { color: var(--status-elevated, orange); }
+.cl-test { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 2px 0; }
+.cl-test-icon { flex: 0 0 auto; }
+.cl-test.cl-ok .cl-test-icon { color: var(--status-stable); }
+.cl-test.cl-no .cl-test-icon { color: var(--status-critical); }
+.cl-test-name { font-family: ui-monospace, Menlo, monospace; }
+.cl-hints { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.cl-hint { font-size: 13px; line-height: 1.45; background: var(--accent-dim); border-radius: 5px; padding: 7px 10px; }
+.cl-solution { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 5px; padding: 10px; overflow-x: auto; white-space: pre; }
+.cl-note { margin-top: 10px; }
+
+/* ---------- Claude & AI hub ---------- */
+.ail-daily { display: block; text-decoration: none; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-dim); border-radius: 7px; padding: 10px 12px; margin-bottom: 10px; }
+.ail-daily-label { font-size: 9px; letter-spacing: 0.14em; color: var(--accent); font-weight: 700; }
+.ail-daily-title { font-weight: 650; margin-top: 3px; line-height: 1.3; }
+.ail-cats { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.ail-chip { font-size: 11px; padding: 3px 9px; border: 1px solid var(--hairline-2); border-radius: 999px; background: var(--surface-2); color: var(--ink-2); cursor: pointer; }
+.ail-chip-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.ail-list { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }
+.ail-item { display: block; text-decoration: none; padding: 8px 6px; border-bottom: 1px solid var(--hairline); border-left: 2px solid transparent; }
+.ail-item:last-child { border-bottom: none; }
+.ail-item:hover { background: var(--surface-2); border-left-color: var(--accent); }
+.ail-item-title { font-weight: 550; }
+.ail-item-desc { margin-top: 2px; }
+
+/* ---------- prompt / snippet library ---------- */
+.snip-head { display: flex; gap: 8px; margin-bottom: 8px; }
+.snip-search { flex: 1; min-width: 0; }
+.snip-add { flex: 0 0 auto; }
+.snip-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
+.snip-item { border: 1px solid var(--hairline); border-radius: 5px; padding: 8px 10px; }
+.snip-item-head { display: flex; align-items: center; gap: 8px; }
+.snip-tag { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 3px; padding: 1px 6px; flex: 0 0 auto; }
+.snip-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snip-item-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+.snip-btn { width: 26px; height: 26px; }
+.snip-body { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink-2); white-space: pre-wrap; margin: 6px 0 0; line-height: 1.45; max-height: 120px; overflow-y: auto; }
+.snip-form { display: flex; flex-direction: column; gap: 8px; }
+.snip-form-row { display: flex; gap: 8px; }
+.snip-f-tag { flex: 0 0 130px; }
+.snip-f-title { flex: 1; }
+.snip-f-body { font-family: ui-monospace, Menlo, monospace; resize: vertical; }
+.snip-form-actions { display: flex; gap: 6px; }
+
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }
 .pod-add { margin-left: auto; }

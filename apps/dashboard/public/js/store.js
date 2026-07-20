@@ -27,6 +27,9 @@ function defaultPages() {
       w("medbot", "l"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"), w("calc", "m"),
       w("meded", "l"),
     ] },
+    { id: uid(), name: "AI Lab", layout: [
+      w("ailearn", "l"), w("codelab", "l"), w("snippets", "m"),
+    ] },
   ];
 }
 
@@ -39,7 +42,7 @@ function defaultState() {
     editMode: false,
     pages,
     activePage: pages[0].id,
-    pagesSeed: 2, // fresh states already have every default page
+    pagesSeed: 3, // fresh states already have every default page
 
     launcher: {
       links: [

@@ -1041,14 +1041,12 @@ class SessionDB:
         self._conn = None
         try:
             if read_only:
-                # Read-only attach for cross-profile aggregation: SELECT-only,
-                # so we skip schema init entirely (no DDL, no FTS probe, no
-                # column reconcile). Crucially this takes NO write lock, so
-                # polling another profile's live DB on every sidebar refresh
-                # never contends with that profile's running backend. The DB
-                # must already exist + be initialised (callers guard on
-                # db_path.exists()); a SELECT against an empty file raises and
-                # the caller degrades per-profile.
+                # Read-only attach for dashboard reads and cross-profile
+                # aggregation. Skip schema init entirely (no DDL or column
+                # reconciliation) so polling a live DB never takes a write
+                # lock. The DB must already exist + be initialised (callers
+                # guard on db_path.exists()); a SELECT against an empty file
+                # raises and the caller degrades per-profile.
                 self._conn = sqlite3.connect(
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
@@ -1057,6 +1055,16 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                # FTS capability flags normally come from the writable schema
+                # initialiser. Probe the existing virtual tables with SELECTs
+                # only so read-only session search keeps its FTS and trigram
+                # paths without creating temp tables or touching the schema.
+                cursor = self._conn.cursor()
+                self._fts_enabled = self._fts_table_probe(cursor, "messages_fts") is True
+                if self._fts_enabled:
+                    self._trigram_available = (
+                        self._fts_table_probe(cursor, "messages_fts_trigram") is True
+                    )
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1448,15 +1456,20 @@ class SessionDB:
     def close(self):
         """Close the database connection.
 
-        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        Writable connections attempt a TRUNCATE WAL checkpoint first so that
+        exiting writer processes help shrink the WAL file. Read-only
+        connections never request a checkpoint because they cannot own WAL
+        durability and may be short-lived dashboard polling connections.
         """
         with self._lock:
             if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
+                if not self.read_only:
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception as exc:
+                        logger.debug(
+                            "WAL checkpoint (TRUNCATE) at close failed: %s", exc
+                        )
                 self._conn.close()
                 self._conn = None
 

@@ -76,6 +76,60 @@ def db(tmp_path):
 
 
 # =========================================================================
+# Connection lifecycle
+# =========================================================================
+
+
+class TestConnectionLifecycle:
+    def test_read_only_close_never_requests_wal_checkpoint(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("s1", source="cli")
+        writable.close()
+
+        executed = []
+        read_only = SessionDB(db_path=db_path, read_only=True)
+        read_only._conn.set_trace_callback(executed.append)
+        read_only.close()
+
+        assert not any("wal_checkpoint" in sql.lower() for sql in executed)
+
+    def test_writable_close_retains_truncate_checkpoint(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        executed = []
+        writable._conn.set_trace_callback(executed.append)
+
+        writable.close()
+
+        assert any(
+            "pragma wal_checkpoint(truncate)" == " ".join(sql.lower().split())
+            for sql in executed
+        )
+
+    def test_read_only_connection_keeps_fts_search_available(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("fts-read-only", source="cli")
+        writable.append_message(
+            "fts-read-only",
+            role="user",
+            content="readonlywoodpecker 大别山项目",
+        )
+        writable.close()
+
+        read_only = SessionDB(db_path=db_path, read_only=True)
+        try:
+            base_matches = read_only.search_messages("readonlywoodpecker")
+            trigram_matches = read_only.search_messages("大别山")
+        finally:
+            read_only.close()
+
+        assert [match["session_id"] for match in base_matches] == ["fts-read-only"]
+        assert [match["session_id"] for match in trigram_matches] == ["fts-read-only"]
+
+
+# =========================================================================
 # Session lifecycle
 # =========================================================================
 
@@ -6307,4 +6361,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

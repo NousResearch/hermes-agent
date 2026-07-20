@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { mix } from '../lib/color.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -231,6 +232,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
+  // Hierarchy: category labels lead in the theme's label tone; member lists
+  // recede in body-text faded toward the surface. Skin-relative on purpose —
+  // `muted` is the STRONG family tone on gold skins but the weak one on blue
+  // skins, so hardcoding it flips the hierarchy per skin (slate/poseidon bug).
+  const listFade = mix(t.color.text, t.color.completionBg, 0.5)
+
   // ── Local collapse state for each section ──
   const [toolsOpen, setToolsOpen] = useState(true)
   const [skillsOpen, setSkillsOpen] = useState(false)
@@ -272,8 +279,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.label}>{strip(k)}: </Text>
+            <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more categories…)</Text>}
@@ -299,8 +306,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.label}>{strip(k)}: </Text>
+            <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}

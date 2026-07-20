@@ -280,14 +280,12 @@ def finalize_turn(
                 _tail = messages[-1] if messages else None
             except Exception:
                 _tail = None
-            _tail_matches_final = (
-                isinstance(_tail, dict)
-                and _tail.get("role") == "assistant"
-                and _tail.get("content") == final_response
-            )
-            if not _tail_matches_final:
+            _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
+            if _tail_role != "assistant":
+                # Tail is not an assistant row — append the final response
+                # so the durable turn closes with the answer (#43849/#44100).
                 messages.append({"role": "assistant", "content": final_response})
-            elif isinstance(_tail, dict) and _is_pure_tool_call_tail(_tail):
+            elif isinstance(_tail, dict) and _tail.get("content") != final_response and _is_pure_tool_call_tail(_tail):
                 # The tail IS an assistant row, but a *pure tool-call turn*:
                 # tool_calls with no text of its own. The role check alone
                 # leaves the #43849/#44100 invariant unmet — the user saw a
@@ -297,6 +295,11 @@ def finalize_turn(
                 # instead of appending, so the durable turn ends with the answer
                 # without disturbing the tool-call structure or creating an
                 # assistant→assistant pair.
+                #
+                # The ``content != final_response`` guard prevents filling when
+                # the tail already carries the final response text (verification
+                # candidate collapse — the provisional answer was persisted and
+                # reused as the terminal response, #65919 §7).
                 _tail["content"] = final_response
                 # The row may have already been flushed to SQLite by the
                 # incremental tool-call persist (conversation_loop.py:4990),

@@ -196,6 +196,23 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer with more detail')
   })
 
+  it('dedupes partial-stream-then-nudge: streamed prefix + interim + previewed final settles to one bubble', async () => {
+    await mountStream()
+    await start()
+
+    // The model streamed part of its answer via message.delta, then the
+    // verify nudge fired. The interim seals the streamed text, then the
+    // final response is the same text plus a trailing delta.
+    await delta('partial streamed')
+    await interim('partial streamed')
+    await completePreviewed('partial streamed answer continued')
+
+    // One bubble, containing the full final text — not two.
+    const texts = assistantMessages()
+    expect(texts.filter(t => t.includes('partial streamed'))).toHaveLength(1)
+    expect(texts[0]).toBe('partial streamed answer continued')
+  })
+
   it('ignores malformed message.interim payload', async () => {
     await mountStream()
     await start()

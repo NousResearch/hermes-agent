@@ -3,7 +3,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SKILL = ROOT / "skills" / "shopify-blog-seo-optimizer"
+SKILL = ROOT / "skills" / "productivity" / "shopify-blog-seo-optimizer"
 
 
 def frontmatter_text():

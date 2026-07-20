@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getHermesConfig } from '@/hermes'
+import { getHermesConfig, setSpeechSynthesisTimeoutSeconds } from '@/hermes'
 import { persistString } from '@/lib/storage'
 import {
   $currentCwd,
@@ -19,7 +19,8 @@ import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
   getHermesConfig: vi.fn(),
-  getHermesConfigDefaults: vi.fn().mockResolvedValue({})
+  getHermesConfigDefaults: vi.fn().mockResolvedValue({}),
+  setSpeechSynthesisTimeoutSeconds: vi.fn()
 }))
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
@@ -44,6 +45,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentFastMode(false)
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
+    vi.mocked(setSpeechSynthesisTimeoutSeconds).mockClear()
     persistString(WORKSPACE_CWD_KEY, null)
   })
 
@@ -105,6 +107,23 @@ describe('useHermesConfig refreshHermesConfig', () => {
     })
 
     expect($currentCwd.get()).toBe('')
+  })
+
+  it('applies the configured speech synthesis timeout', async () => {
+    mockConfig({ voice: { synthesis_timeout_seconds: 300 } })
+
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: null },
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect(setSpeechSynthesisTimeoutSeconds).toHaveBeenCalledWith(300)
   })
 
   it('ignores terminal.cwd when it is "."', async () => {

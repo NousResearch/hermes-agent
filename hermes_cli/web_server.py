@@ -670,6 +670,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Text-to-speech provider",
         "options": ["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper"],
     },
+    "voice.synthesis_timeout_seconds": {
+        "type": "number",
+        "description": "Seconds Desktop waits for speech synthesis (15-1800)",
+    },
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",

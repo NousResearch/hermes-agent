@@ -75,6 +75,10 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+const DEFAULT_SPEECH_SYNTHESIS_TIMEOUT_SECONDS = 180
+const MIN_SPEECH_SYNTHESIS_TIMEOUT_SECONDS = 15
+const MAX_SPEECH_SYNTHESIS_TIMEOUT_SECONDS = 1_800
+let speechSynthesisRequestTimeoutMs = DEFAULT_SPEECH_SYNTHESIS_TIMEOUT_SECONDS * 1_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -185,6 +189,17 @@ export class HermesGateway extends JsonRpcGatewayClient {
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
   }
+}
+
+export function setSpeechSynthesisTimeoutSeconds(value: unknown): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    speechSynthesisRequestTimeoutMs = DEFAULT_SPEECH_SYNTHESIS_TIMEOUT_SECONDS * 1_000
+
+    return
+  }
+
+  const bounded = Math.min(MAX_SPEECH_SYNTHESIS_TIMEOUT_SECONDS, Math.max(MIN_SPEECH_SYNTHESIS_TIMEOUT_SECONDS, value))
+  speechSynthesisRequestTimeoutMs = Math.round(bounded * 1_000)
 }
 
 // Profile that profile-scoped REST settings (config/env/skills/tools/model/…)
@@ -1274,9 +1289,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
 
 export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
+    ...profileScoped(),
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    timeoutMs: speechSynthesisRequestTimeoutMs
   })
 }
 

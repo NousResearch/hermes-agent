@@ -11,7 +11,10 @@ import {
   getStatus,
   listAllProfileSessions,
   listSessions,
-  listSidebarSessions
+  listSidebarSessions,
+  setApiRequestProfile,
+  setSpeechSynthesisTimeoutSeconds,
+  speakText
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -34,6 +37,8 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
+    setSpeechSynthesisTimeoutSeconds(undefined)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -162,6 +167,50 @@ describe('Hermes REST session helpers', () => {
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/status')
     expect(call.timeoutMs).toBeUndefined()
+  })
+
+  it('allows local speech synthesis to outlive the generic REST timeout', async () => {
+    api.mockResolvedValue({ audio_url: 'data:audio/wav;base64,dGVzdA==' })
+
+    await speakText('Read this aloud')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/audio/speak',
+      method: 'POST',
+      body: { text: 'Read this aloud' },
+      timeoutMs: 180_000
+    })
+  })
+
+  it('uses the configured speech synthesis timeout', async () => {
+    setSpeechSynthesisTimeoutSeconds(300)
+
+    await speakText('Read this aloud')
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }))
+  })
+
+  it('routes speech synthesis through the active profile', async () => {
+    setApiRequestProfile('voice-profile')
+
+    await speakText('Read this aloud')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/audio/speak',
+        profile: 'voice-profile'
+      })
+    )
+  })
+
+  it('bounds the configured speech synthesis timeout', async () => {
+    setSpeechSynthesisTimeoutSeconds(1)
+    await speakText('Minimum')
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 15_000 }))
+
+    setSpeechSynthesisTimeoutSeconds(10_000)
+    await speakText('Maximum')
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 1_800_000 }))
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

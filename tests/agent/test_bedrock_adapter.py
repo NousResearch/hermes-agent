@@ -1244,7 +1244,7 @@ class TestBedrockContextLength:
         # still invoke get_bedrock_context_length(model_id) with one arg.
         from agent.bedrock_adapter import get_bedrock_context_length
         with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
-            assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 200_000
+            assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
 
 
@@ -1299,9 +1299,9 @@ class TestBedrockContextProbe:
         err = "AccessDeniedException: nope"
         with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
                    return_value=self._client_raising(err)):
-            # opus-4-6 is in the table at 200K; probe fails → table wins.
+            # opus-4-6 is in the table at 1M; probe fails → table wins.
             assert get_bedrock_context_length(
-                "anthropic.claude-opus-4-6", region="eu-central-1") == 200_000
+                "anthropic.claude-opus-4-6", region="eu-central-1") == 1_000_000
 
 
 # ---------------------------------------------------------------------------

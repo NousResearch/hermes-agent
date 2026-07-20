@@ -76,6 +76,10 @@ platforms:
             pr_number: "{number}"
 ```
 
+The webhook listener binds to `127.0.0.1` by default. This works with local
+tunnels such as ngrok or cloudflared. If you intentionally expose the gateway
+directly on a network interface, set `extra.host: "0.0.0.0"` explicitly.
+
 **Key fields:**
 
 | Field | Description |
@@ -102,7 +106,7 @@ hermes gateway
 You should see:
 
 ```
-[webhook] Listening on 0.0.0.0:8644 — routes: github-pr-review
+[webhook] Listening on 127.0.0.1:8644 — routes: github-pr-review
 ```
 
 Verify it's running:
@@ -311,6 +315,7 @@ platforms:
   webhook:
     enabled: true
     extra:
+      host: "127.0.0.1"       # bind address (default: 127.0.0.1)
       port: 8644               # listen port (default: 8644)
       secret: ""               # optional global fallback secret
       rate_limit: 30           # requests per minute per route

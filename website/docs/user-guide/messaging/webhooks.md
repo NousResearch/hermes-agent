@@ -54,6 +54,10 @@ WEBHOOK_PORT=8644        # default
 WEBHOOK_SECRET=your-global-secret
 ```
 
+The webhook adapter binds to `127.0.0.1` by default. Set
+`platforms.webhook.extra.host: "0.0.0.0"` only when you intentionally expose it
+through a public interface and have route secrets configured.
+
 ### Verify the server
 
 Once the gateway is running:
@@ -95,6 +99,7 @@ platforms:
   webhook:
     enabled: true
     extra:
+      host: "127.0.0.1"
       port: 8644
       secret: "global-fallback-secret"
       routes:

@@ -8,6 +8,7 @@ launch an MCP is mocked.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -351,6 +352,63 @@ class TestInstall:
 
         with pytest.raises(CatalogError):
             install_entry(_entry("demo"), enable=True)
+
+    def test_run_bootstrap_timeout_raises_catalog_error(self, monkeypatch):
+        """subprocess.TimeoutExpired in _run_bootstrap is converted to CatalogError."""
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import CatalogError, _run_bootstrap
+        from pathlib import Path
+
+        def _timeout_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="test-command", timeout=300)
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", _timeout_run)
+
+        with pytest.raises(CatalogError, match="timed out"):
+            _run_bootstrap(Path("/tmp"), ["pip install -r requirements.txt"])
+
+    def test_run_bootstrap_nonzero_exit_raises_catalog_error(self, monkeypatch):
+        """Non-zero exit code from _run_bootstrap raises CatalogError."""
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import CatalogError, _run_bootstrap
+        from pathlib import Path
+
+        class _FakeProc:
+            def __init__(self):
+                self.returncode = 1
+
+        monkeypatch.setattr(
+            mcp_catalog.subprocess, "run",
+            lambda *a, **kw: _FakeProc(),
+        )
+
+        with pytest.raises(CatalogError, match="failed"):
+            _run_bootstrap(Path("/tmp"), ["pip install -r requirements.txt"])
+
+    def test_run_bootstrap_with_timeout_kwarg(self, monkeypatch):
+        """Verify subprocess.run is called with timeout=300 and stdin=DEVNULL."""
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import _run_bootstrap
+        from pathlib import Path
+
+        calls = []
+
+        class _FakeProc:
+            def __init__(self):
+                self.returncode = 0
+
+        def fake_run(*args, **kwargs):
+            calls.append(kwargs)
+            return _FakeProc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+
+        _run_bootstrap(Path("/tmp"), ["echo done"])
+
+        assert len(calls) == 1
+        assert calls[0].get("timeout") == 300
+        assert calls[0].get("stdin") == subprocess.DEVNULL
+        assert calls[0].get("shell") is True
 
 
 # ---------------------------------------------------------------------------

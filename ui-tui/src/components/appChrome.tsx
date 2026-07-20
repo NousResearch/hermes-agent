@@ -11,12 +11,13 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
-import { mix } from '../lib/color.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+
+import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -754,14 +755,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  // Thumb rides in the theme's BASE color (primary), brightening to accent
-  // while hovered/dragged. The track recedes via an EXPLICIT blend toward the
-  // theme surface — never the SGR dim attribute: dim is terminal-interpreted,
-  // and on transparent profiles (terminal.background #00000000) xterm renders
-  // dim cells as half-bright glyphs on an opaque BLACK cell background. That
-  // was the "black bar / black thumb" on the right edge.
-  const thumbColor = grab !== null || hover ? t.color.accent : t.color.primary
-  const trackColor = mix(hover ? t.color.border : t.color.muted, t.color.completionBg, hover ? 0.25 : 0.55)
+  const { thumb: thumbColor, track: trackColor } = scrollbarColors(t, hover, grab !== null)
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
@@ -793,15 +787,10 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
       }}
       width={1}
     >
-      {!scrollable ? null : ( // Nothing to scroll → draw nothing. The outer
-        // width={1} Box still reserves the column so the transcript width
-        // doesn't jump when content grows scrollable. Previously this drew a
-        // full-height column of SPACES; on a transparent terminal
-        // (terminal.background #00000000) those drawn-blank cells composite to
-        // a black bar (the "big black area" by the scrollbar) — same class as
-        // the banner's removed opaque fill. A `│` track only appears when
-        // there's actually something to scroll, which is what reads as "makes
-        // sense."
+      {/* Nothing to scroll → draw nothing (the width={1} Box still reserves
+          the column). Drawn-blank cells composite to a black bar on
+          transparent terminals — same class as the removed opaque fills. */}
+      {!scrollable ? null : (
         <>
           {thumbTop > 0 ? (
             <Text color={trackColor}>{`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}</Text>

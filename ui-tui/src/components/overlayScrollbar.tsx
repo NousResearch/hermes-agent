@@ -1,8 +1,9 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { type RefObject, useState } from 'react'
 
-import { mix } from '../lib/color.js'
 import type { Theme } from '../theme.js'
+
+import { scrollbarColors } from './overlayPrimitives.js'
 
 /**
  * Mouse-draggable scrollbar bound to a `ScrollBox` ref. Re-renders off the
@@ -40,11 +41,7 @@ export function OverlayScrollbar({
 
   const vBar = (n: number) => (n > 0 ? `${'│\n'.repeat(n - 1)}│` : '')
   const thumbBody = `${'┃\n'.repeat(Math.max(0, thumb - 1))}┃`
-  // Same scheme as TranscriptScrollbar: base-color thumb, accent on interact,
-  // track receded via explicit blend (SGR dim renders as a black slab on
-  // transparent terminals — see TranscriptScrollbar).
-  const thumbColor = grab !== null || hover ? t.color.accent : t.color.primary
-  const trackColor = mix(hover ? t.color.border : t.color.muted, t.color.completionBg, hover ? 0.25 : 0.55)
+  const { thumb: thumbColor, track: trackColor } = scrollbarColors(t, hover, grab !== null)
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {

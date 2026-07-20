@@ -232,12 +232,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
-  // Hierarchy: category labels lead in the theme's label tone; member lists
-  // recede in the midpoint of muted and text. Anchoring on MUTED (a
-  // mid-luminance family tone) keeps the fade readable on both poles even
-  // when polarity detection is wrong — blending toward the SURFACE instead
-  // made the fade invisible whenever text was already pale (light-rendered
-  // default: cream toward white = nothing).
+  // Hierarchy: labels lead in the label tone; member lists recede in the
+  // muted/text midpoint. Anchoring on MUTED (mid-luminance by construction)
+  // keeps the fade readable on both poles even when polarity detection is
+  // wrong — surface-relative blends go invisible when text is already pale.
   const listFade = mix(t.color.muted, t.color.text, 0.5)
 
   // ── Local collapse state for each section ──

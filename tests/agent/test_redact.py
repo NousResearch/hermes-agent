@@ -151,10 +151,28 @@ class TestEnvAssignments:
         result = redact_sensitive_text(text)
         assert result == text  # unchanged — `...` is not a secret
 
+    def test_quoted_shell_substitutions_not_matched(self):
+        texts = [
+            'TOKEN="$(grep HASS_TOKEN ~/.hermes/.env)"',
+            "SECRET='`cat /run/secrets/db_password`'",
+        ]
+        for text in texts:
+            assert redact_sensitive_text(text) == text
+
     def test_literal_secret_still_matched_after_shell_substitution_carveout(self):
         text = "TOKEN=ordinary-literal-secret"
         result = redact_sensitive_text(text)
         assert "ordinary-literal-secret" not in result
+
+    def test_literal_secret_containing_dollar_still_matched(self):
+        text = "TOKEN=ordinary$literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary$literal-secret" not in result
+
+    def test_literal_secret_containing_backtick_still_matched(self):
+        text = "TOKEN=ordinary`literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary`literal-secret" not in result
 
 
 class TestEnvLookupPreserved:

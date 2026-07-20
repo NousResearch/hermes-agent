@@ -230,6 +230,47 @@ def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     assert shell.requested_provider == "custom"
 
 
+def test_cli_init_wires_moa_preset_model_to_moa_provider(monkeypatch):
+    # #56828: constructing the CLI with `-m moa:<preset>` (the -Q one-shot
+    # path) must strip the prefix off self.model AND force
+    # requested_provider="moa", so the existing resolve_runtime_provider /
+    # agent_init MoA route runs non-interactively. The unit tests cover
+    # _normalize_moa_model() in isolation; this asserts the __init__ wiring
+    # the sweeper flagged as untested.
+    cli = _import_cli()
+
+    # Neutralize any config/env provider so a failure here can only come from
+    # the moa override, not an ambient default.
+    config_copy = dict(cli.CLI_CONFIG)
+    model_copy = dict(config_copy.get("model", {}))
+    model_copy["provider"] = None
+    config_copy["model"] = model_copy
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    shell = cli.HermesCLI(model="moa:strategy", compact=True, max_turns=1)
+
+    assert shell.requested_provider == "moa"
+    assert shell.model == "strategy"
+
+
+def test_cli_init_moa_prefix_overrides_explicit_provider(monkeypatch):
+    # The #56828 regression case: `--provider deepseek -m moa:strategy`
+    # silently dropped MoA because the explicit provider won. __init__ resolves
+    # requested_provider as `_moa_provider_override or provider or ...`, so the
+    # moa: prefix must win over the explicit --provider.
+    cli = _import_cli()
+
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    shell = cli.HermesCLI(
+        model="moa:strategy", provider="deepseek", compact=True, max_turns=1
+    )
+
+    assert shell.requested_provider == "moa"
+    assert shell.model == "strategy"
+
+
 def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     """When provider resolves to openai-codex and no model was explicitly
     chosen, the global config default (e.g. anthropic/claude-opus-4.6) must

@@ -20,7 +20,7 @@ def test_authentication_contract_is_explicit_and_scope_gated():
     docs = (SKILL / "references" / "translation-api.md").read_text(encoding="utf-8")
     assert "assertRequiredScopes" in script
     assert "READ_SCOPES" in script and "REQUIRED_SCOPES" in script
-    assert "shopify_cli_oauth" in docs and "Dev Dashboard" in docs
+    assert "Shopify CLI" in docs and "Dev Dashboard" in docs
 
 
 def test_writes_remain_review_first():

@@ -29,10 +29,17 @@ def relay_turn(tmp_path, monkeypatch):
 
 def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
     attempts = []
+    logical_completions = []
+    responses = iter([
+        SimpleNamespace(choices=[]),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        ),
+    ])
     client = SimpleNamespace(
         chat=SimpleNamespace(
             completions=SimpleNamespace(
-                create=lambda **kwargs: {"request": kwargs},
+                create=lambda **_kwargs: next(responses),
             )
         )
     )
@@ -42,6 +49,13 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
         return callback(request)
 
     monkeypatch.setattr(relay_llm, "execute_current", execute_current)
+    monkeypatch.setattr(
+        relay_llm,
+        "complete_logical_call",
+        lambda request_id, *, outcome: logical_completions.append(
+            (request_id, outcome)
+        ),
+    )
 
     @auxiliary_client._relay_auxiliary_call
     def run(task):
@@ -50,33 +64,46 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
             "test-model",
             "chat_completions",
         )
-        first = auxiliary_client._relay_sync_completion(
-            client,
-            {"model": "test-model", "messages": []},
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "test-model", "messages": []},
+                ),
+                task,
+            )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "test-model", "messages": []},
+            ),
+            task,
         )
-        second = auxiliary_client._relay_sync_completion(
-            client,
-            {"model": "test-model", "messages": []},
-        )
-        return first, second
 
-    first, second = run("compression")
+    result = run("compression")
 
-    assert first["request"]["model"] == "test-model"
-    assert second["request"]["model"] == "test-model"
+    assert result.choices[0].message.content == "ok"
     assert attempts[0]["metadata"]["api_request_id"] == (
         attempts[1]["metadata"]["api_request_id"]
     )
     assert [attempt["metadata"]["retry_count"] for attempt in attempts] == [0, 1]
     assert attempts[0]["metadata"]["call_role"] == "auxiliary:compression"
+    assert all(attempt["defer_logical_completion"] is True for attempt in attempts)
+    assert logical_completions == [
+        (attempts[0]["metadata"]["api_request_id"], "success")
+    ]
 
 
 @pytest.mark.asyncio
 async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch):
     captured = {}
+    logical_completions = []
 
     async def create(**kwargs):
-        return {"request": kwargs}
+        return SimpleNamespace(
+            request=kwargs,
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        )
 
     client = SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))
@@ -91,6 +118,13 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
         "execute_current_async",
         execute_current_async,
     )
+    monkeypatch.setattr(
+        relay_llm,
+        "complete_logical_call",
+        lambda request_id, *, outcome: logical_completions.append(
+            (request_id, outcome)
+        ),
+    )
 
     @auxiliary_client._relay_auxiliary_call_async
     async def run(task):
@@ -99,16 +133,23 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
             "claude-test",
             "chat_completions",
         )
-        return await auxiliary_client._relay_async_completion(
-            client,
-            {"model": "claude-test", "messages": []},
+        return auxiliary_client._validate_llm_response(
+            await auxiliary_client._relay_async_completion(
+                client,
+                {"model": "claude-test", "messages": []},
+            ),
+            task,
         )
 
     result = await run("title_generation")
 
-    assert result["request"]["model"] == "claude-test"
+    assert result.request["model"] == "claude-test"
     assert captured["name"] == "anthropic"
     assert captured["metadata"]["call_role"] == "auxiliary:title_generation"
+    assert captured["defer_logical_completion"] is True
+    assert logical_completions == [
+        (captured["metadata"]["api_request_id"], "success")
+    ]
 
 
 def test_auxiliary_stream_uses_streaming_relay_primitive(monkeypatch):
@@ -149,7 +190,11 @@ def test_auxiliary_attempt_uses_real_relay_request_intercepts(relay_turn):
         chat=SimpleNamespace(
             completions=SimpleNamespace(
                 create=lambda **kwargs: captured_requests.append(kwargs)
-                or {"content": "ok"},
+                or SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(message=SimpleNamespace(content="ok"))
+                    ]
+                ),
             )
         )
     )
@@ -172,15 +217,18 @@ def test_auxiliary_attempt_uses_real_relay_request_intercepts(relay_turn):
                 "test-model",
                 "chat_completions",
             )
-            return auxiliary_client._relay_sync_completion(
-                client,
-                {"model": "test-model", "messages": []},
+            return auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "test-model", "messages": []},
+                ),
+                task,
             )
 
         result = run("compression")
     finally:
         relay.intercepts.deregister_llm_request("hermes-auxiliary-request")
 
-    assert result == {"content": "ok"}
+    assert result.choices[0].message.content == "ok"
     assert captured_requests[0]["temperature"] == 0.25
     assert turn.logical_llm_calls == {}

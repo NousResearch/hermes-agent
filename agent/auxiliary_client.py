@@ -2440,6 +2440,7 @@ def _relay_sync_completion(
         name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata,
+        defer_logical_completion=True,
     )
 
 
@@ -2462,6 +2463,7 @@ async def _relay_async_completion(
         name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata,
+        defer_logical_completion=True,
     )
 
 
@@ -7017,6 +7019,7 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is not None:
+            _complete_relay_auxiliary_call()
             return recovered
         response_type = type(response).__name__
         response_preview = str(response)[:120]
@@ -7026,7 +7029,21 @@ def _validate_llm_response(
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
+    _complete_relay_auxiliary_call()
     return response
+
+
+def _complete_relay_auxiliary_call() -> None:
+    """Close one auxiliary logical call only after Hermes accepts its response."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    from agent import relay_llm
+
+    relay_llm.complete_logical_call(
+        str(context.get("request_id") or ""),
+        outcome="success",
+    )
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:

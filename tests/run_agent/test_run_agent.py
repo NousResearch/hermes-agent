@@ -4245,6 +4245,7 @@ class TestRunConversation:
             usage=None,
         )
         hook_events = []
+        logical_completions = []
 
         def _fake_activate(reason=None):
             agent._fallback_index = len(agent._fallback_chain)
@@ -4256,6 +4257,12 @@ class TestRunConversation:
             patch.object(agent, "_run_codex_stream", side_effect=[content_filter_response, fallback_response]) as mock_run_codex_stream,
             patch.object(agent, "_try_activate_fallback", side_effect=_fake_activate) as mock_try_activate_fallback,
             patch.object(agent, "_invoke_api_request_error_hook", side_effect=lambda **kw: hook_events.append(kw)),
+            patch(
+                "agent.relay_llm.complete_logical_call",
+                side_effect=lambda request_id, *, outcome: logical_completions.append(
+                    (request_id, outcome)
+                ),
+            ),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4269,6 +4276,9 @@ class TestRunConversation:
         assert hook_events[0]["error_type"] == "ContentPolicyBlocked"
         assert hook_events[0]["retryable"] is False
         assert hook_events[0]["reason"] == FailoverReason.content_policy_blocked.value
+        assert logical_completions == [
+            (hook_events[0]["api_request_id"], "success")
+        ]
 
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)

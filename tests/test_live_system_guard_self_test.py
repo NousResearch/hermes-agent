@@ -18,6 +18,7 @@ the guard? Add a test here too.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 
@@ -26,6 +27,10 @@ import pytest
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
 FOREIGN_PID = 1
+SYSTEMCTL_UNAVAILABLE = pytest.mark.skipif(
+    shutil.which("systemctl") is None,
+    reason="systemctl is unavailable on this platform",
+)
 
 
 def test_voice_tts_is_disabled_for_every_test_process():
@@ -209,6 +214,7 @@ def test_subprocess_killall_hermes_blocked():
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
+@SYSTEMCTL_UNAVAILABLE
 def test_systemctl_status_passes_through():
     """Read-only systemctl probes (status/show/list-units) are fine."""
     # Run with check=False so we don't fail on the gateway's exit code.
@@ -221,6 +227,7 @@ def test_systemctl_status_passes_through():
     assert r is not None  # Did not raise — the guard let it through.
 
 
+@SYSTEMCTL_UNAVAILABLE
 def test_systemctl_show_passes_through():
     r = subprocess.run(
         ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
@@ -231,6 +238,7 @@ def test_systemctl_show_passes_through():
     assert r is not None
 
 
+@SYSTEMCTL_UNAVAILABLE
 def test_systemctl_list_units_passes_through():
     r = subprocess.run(
         ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
@@ -241,6 +249,7 @@ def test_systemctl_list_units_passes_through():
     assert r is not None
 
 
+@SYSTEMCTL_UNAVAILABLE
 def test_systemctl_unrelated_unit_passes_through():
     """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
     # Use --dry-run so we don't actually try to restart anything; just

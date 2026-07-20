@@ -149,9 +149,13 @@ _ENV_LOOKUP_VALUE_RE = re.compile(
     r"^(?:os\.(?:getenv|environ)|process\.env|\$ENV\{)"
 )
 # Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
+# NOTE(perf): possessive quantifiers (py3.11+) replace the nested quantifier
+# ``(?:[A-Za-z0-9_\-]+\.)+`` (exponential backtracking on long dotted runs).
+# The ``*`` runs bordering {_SECRET_CFG_NAMES} must stay backtrackable
+# (secret words are matchable by the class, e.g. ``app.api.key=…``).
 _CFG_DOTTED_RE = re.compile(
-    rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
-    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]+)"
+    rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
+    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
     rf"={_CFG_VALUE}",
     re.IGNORECASE,
 )
@@ -170,8 +174,10 @@ _CFG_ANCHORED_RE = re.compile(
 # is masked by _AUTH_HEADER_RE); ``auth_token``/``auth-token`` still match via
 # the ``token`` keyword. Quoted values defer to _JSON_FIELD_RE via the lookahead.
 _YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
+# NOTE(perf): possessive quantifiers wherever the successor is disjoint; the
+# leading ``[A-Za-z0-9_.\-]*`` stays backtrackable (see _CFG_DOTTED_RE note).
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
+    rf"(^[ \t]*+[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
 )
 

@@ -2542,34 +2542,38 @@ export const fr: Translations = {
 
   uninstall: {
     dangerZone: 'Zone dangereuse',
-    checking: 'Vérification de ce qui est installé…',
-    confirmTitle: 'Confirmer la désinstallation',
-    confirmBody: consequence => `Cela supprimera ${consequence}. Cette action est irréversible.`,
-    uninstalling: 'Désinstallation…',
+    checkingInstall: 'Vérification de ce qui est installé…',
+    confirmUninstall: 'Confirmer la désinstallation',
+    removesThis: (consequence: string) => `Cela supprimera ${consequence}. Cette action est irréversible.`,
+    undoWarning: 'Cette action est irréversible.',
     yesUninstall: 'Oui, désinstaller',
-    couldNotStart: 'La désinstallation n\'a pas pu démarrer.',
+    uninstalling: 'Désinstallation…',
     cancel: 'Annuler',
     uninstallHermes: 'Désinstaller Hermes',
-    uninstallDescription:
-      'Choisissez ce que vous voulez supprimer. L\'application se fermera pour terminer ; rouvrez l\'installateur à tout moment pour revenir.',
+    chooseDescription:
+      'Choisissez ce que vous voulez supprimer. L\u2019application se fermera pour terminer ; rouvrez l\u2019installateur à tout moment pour revenir.',
+    couldNotStart: 'La désinstallation n\u2019a pas pu démarrer.',
+    appLabel: 'App\u00a0:',
     options: {
       gui: {
-        title: 'Désinstaller l\'interface seulement',
-        description: 'Supprime cette application de bureau. L\'agent Hermes, votre configuration et vos conversations sont conservés.',
-        consequence: 'l\'interface de chat (cette application et ses données)'
+        title: 'Désinstaller l\u2019interface seulement',
+        description:
+          'Supprime cette application de bureau. L\u2019agent Hermes, votre configuration et vos conversations sont conservés.',
+        consequence: 'l\u2019interface de chat (cette application et ses données)'
       },
       lite: {
-        title: 'Désinstaller l\'interface + l\'agent, garder mes données',
+        title: 'Désinstaller l\u2019interface + l\u2019agent, garder mes données',
         description:
-          'Supprime l\'application et l\'agent Hermes, mais conserve la configuration, les conversations et les secrets pour une réinstallation future.',
-        consequence: 'l\'interface de chat et l\'agent Hermes (la config, les conversations et les secrets sont conservés)'
+          'Supprime l\u2019application et l\u2019agent Hermes, mais conserve la configuration, les conversations et les secrets pour une réinstallation future.',
+        consequence:
+          'l\u2019interface de chat et l\u2019agent Hermes (la config, les conversations et les secrets sont conservés)'
       },
       full: {
         title: 'Tout désinstaller',
         description:
-          'Supprime l\'application, l\'agent et toutes les données utilisateur — config, conversations, tâches planifiées, secrets, logs.',
+          'Supprime l\u2019application, l\u2019agent et toutes les données utilisateur — config, conversations, tâches planifiées, secrets, logs.',
         consequence:
-          'TOUT — l\'interface de chat, l\'agent Hermes, et toute votre configuration, conversations, secrets et logs'
+          'TOUT — l\u2019interface de chat, l\u2019agent Hermes, et toute votre configuration, conversations, secrets et logs'
       }
     }
   }

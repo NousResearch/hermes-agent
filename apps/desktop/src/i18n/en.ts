@@ -2710,6 +2710,37 @@ export const en: Translations = {
       title: 'Sidebar',
       description: 'Displays the mobile sidebar.',
       toggle: 'Toggle Sidebar'
+    },
+    uninstall: {
+      dangerZone: 'Danger zone',
+      checkingInstall: "Checking what's installed\u2026",
+      confirmUninstall: 'Confirm uninstall',
+      removesThis: consequence => `This removes ${consequence}. This can't be undone.`,
+      undoWarning: "This can't be undone.",
+      yesUninstall: 'Yes, uninstall',
+      uninstalling: 'Uninstalling\u2026',
+      cancel: 'Cancel',
+      uninstallHermes: 'Uninstall Hermes',
+      chooseDescription: 'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      couldNotStart: 'Uninstall could not start.',
+      appLabel: 'App:',
+      options: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data \u2014 config, chats, scheduled jobs, secrets, logs.',
+          consequence: 'EVERYTHING \u2014 the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
+      }
     }
   }
 }

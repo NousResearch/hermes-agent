@@ -2288,5 +2288,36 @@ export interface Translations {
       description: string
       toggle: string
     }
+    uninstall: {
+      dangerZone: string
+      checkingInstall: string
+      confirmUninstall: string
+      removesThis: (consequence: string) => string
+      undoWarning: string
+      yesUninstall: string
+      uninstalling: string
+      cancel: string
+      uninstallHermes: string
+      chooseDescription: string
+      couldNotStart: string
+      appLabel: string
+      options: {
+        gui: {
+          title: string
+          description: string
+          consequence: string
+        }
+        lite: {
+          title: string
+          description: string
+          consequence: string
+        }
+        full: {
+          title: string
+          description: string
+          consequence: string
+        }
+      }
+    }
   }
 }

@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
+
 logger = logging.getLogger(__name__)
 
 
@@ -2593,6 +2595,7 @@ class SessionStore:
             platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
+            turn_memory_disposition=message.get(TURN_MEMORY_DISPOSITION_KEY),
             # api_content sidecar: the exact bytes sent to the API for
             # this message (prompt-cache-stable replay). Must survive
             # any gateway-side persistence path or the next turn's

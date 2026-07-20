@@ -1237,6 +1237,17 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._cancel_bot_task()
             self._release_platform_lock()
             return False
+        except discord.LoginFailure as e:
+            # Discord rejected the token. Retrying cannot fix that, and the
+            # generic handler below would leave the failure retryable, so the
+            # supervisor re-attempts on the reconnect backoff indefinitely --
+            # each attempt another failed identify that Discord penalizes.
+            logger.error("[%s] Discord rejected the bot token: %s", self.name, e)
+            self._set_fatal_error("discord_auth_failed", str(e), retryable=False)
+            # Same zombie-client hazard as the timeout branch (see below).
+            await self._cancel_bot_task()
+            self._release_platform_lock()
+            return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
             # Same zombie-client hazard as the timeout branch: the background

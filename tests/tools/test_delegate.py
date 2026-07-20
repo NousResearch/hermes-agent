@@ -3147,6 +3147,82 @@ class TestDelegationLifecycleIntegration:
         with pytest.raises(RuntimeError, match="Failed to interrupt 1/1"):
             captured["interrupt_fn"]()
 
+    def test_sync_batch_business_submit_failure_runs_every_child_once(self, tmp_path):
+        import tools.delegate_tool as dt
+
+        class FailNthSubmitExecutor:
+            def __init__(self, fail_at):
+                self.fail_at = fail_at
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def submit(self, fn, /, *args, **kwargs):
+                from concurrent.futures import Future
+
+                self.calls += 1
+                if self.calls == self.fail_at:
+                    raise RuntimeError("business submit failed")
+                future = Future()
+                try:
+                    future.set_result(fn(*args, **kwargs))
+                except BaseException as exc:
+                    future.set_exception(exc)
+                return future
+
+        creds = {
+            "model": "m", "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "command": None, "args": None,
+        }
+        for fail_at in (1, 2):
+            parent = _make_mock_parent()
+            parent._active_children = []
+            parent._active_children_lock = threading.Lock()
+            built = []
+
+            def build(**kwargs):
+                child = MagicMock()
+                child._subagent_id = f"sa-submit-{fail_at}-{len(built)}"
+                child._delegate_saved_tool_names = []
+                child._delegate_role = "leaf"
+                child.tool_progress_callback = None
+                child._credential_pool = None
+                child.model = "m"
+                child.session_id = child._subagent_id
+                child.get_activity_summary.return_value = {"api_call_count": 0}
+                child.run_conversation.return_value = {
+                    "final_response": "done", "completed": True,
+                    "interrupted": False, "api_calls": 1, "messages": [],
+                }
+                built.append(child)
+                parent._active_children.append(child)
+                return child
+
+            with (
+                patch.object(dt, "_resolve_workspace_hint", return_value=str(tmp_path)),
+                patch.object(dt, "_build_child_agent", side_effect=build),
+                patch.object(dt, "_resolve_delegation_credentials", return_value=creds),
+                patch.object(
+                    dt, "_create_resilient_batch_executor",
+                    return_value=FailNthSubmitExecutor(fail_at),
+                ),
+            ):
+                result = json.loads(dt.delegate_task(
+                    tasks=[{"goal": "one"}, {"goal": "two"}, {"goal": "three"}],
+                    background=False, parent_agent=parent,
+                ))
+
+            assert [item["status"] for item in result["results"]] == [
+                "completed", "completed", "completed",
+            ]
+            assert parent._active_children == []
+            assert all(child.run_conversation.call_count == 1 for child in built)
+            assert all(child.close.call_count == 1 for child in built)
+
     def test_sync_batch_executor_failure_falls_back_without_child_leaks(self, tmp_path):
         import tools.delegate_tool as dt
 

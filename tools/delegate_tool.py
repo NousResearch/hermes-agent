@@ -2694,13 +2694,24 @@ def delegate_task(
             ) as executor:
                 futures = {}
                 for i, t, child in children:
-                    future = executor.submit(
-                        _run_single_child,
-                        task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
-                    )
+                    run_kwargs = {
+                        "task_index": i,
+                        "goal": t["goal"],
+                        "child": child,
+                        "parent_agent": parent_agent,
+                    }
+                    try:
+                        future = executor.submit(_run_single_child, **run_kwargs)
+                    except Exception:
+                        logger.warning(
+                            "Batch child submit failed; executing child inline",
+                            exc_info=True,
+                        )
+                        future = Future()
+                        try:
+                            future.set_result(_run_single_child(**run_kwargs))
+                        except BaseException as exc:
+                            future.set_exception(exc)
                     futures[future] = i
 
                 # Poll futures with interrupt checking.  as_completed() blocks

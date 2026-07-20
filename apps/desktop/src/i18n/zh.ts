@@ -2100,6 +2100,7 @@ export const zh: Translations = {
       done: '更新完成',
       manual: '从终端更新',
       guiSkew: '请更新桌面应用',
+      blocked: '请先等当前工作结束',
       error: '更新已暂停'
     },
     checking: '正在检查更新…',
@@ -2125,6 +2126,8 @@ export const zh: Translations = {
     guiSkewTitle: '请更新桌面应用',
     guiSkewBody:
       '后端已更新，但此桌面应用包未更改。请更新或重新安装 Hermes 桌面应用（你的 AppImage / .deb / .rpm）以保持一致。',
+    activeWorkTitle: '请先完成当前工作',
+    activeWorkBody: 'Hermes 仍在运行对话或后台子代理。请等这些工作完成后，再从应用内更新。',
     copy: '复制',
     copied: '已复制',
     done: '完成',

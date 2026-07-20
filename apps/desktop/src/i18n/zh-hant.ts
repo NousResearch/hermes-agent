@@ -1790,6 +1790,7 @@ export const zhHant = defineLocale({
       done: '更新完成',
       manual: '從終端機更新',
       guiSkew: '請更新桌面應用程式',
+      blocked: '請先等目前工作結束',
       error: '更新已暫停'
     },
     checking: '正在檢查更新…',
@@ -1815,6 +1816,8 @@ export const zhHant = defineLocale({
     guiSkewTitle: '請更新桌面應用程式',
     guiSkewBody:
       '後端已更新，但此桌面應用程式套件未變更。請更新或重新安裝 Hermes 桌面應用程式（你的 AppImage / .deb / .rpm）以保持一致。',
+    activeWorkTitle: '請先完成目前工作',
+    activeWorkBody: 'Hermes 仍在執行聊天或背景子代理。請等這些工作完成後，再從應用程式內更新。',
     copy: '複製',
     copied: '已複製',
     done: '完成',

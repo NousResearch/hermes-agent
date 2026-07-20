@@ -68,11 +68,13 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
+  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'blocked' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
       : apply.stage === 'guiSkew'
         ? 'guiSkew'
+        : apply.stage === 'blocked'
+          ? 'blocked'
         : apply.applying || apply.stage === 'restart'
           ? 'applying'
           : apply.stage === 'error'
@@ -88,7 +90,13 @@ export function UpdatesOverlay() {
 
     if (
       !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+      (
+        apply.stage === 'blocked' ||
+        apply.stage === 'error' ||
+        apply.stage === 'restart' ||
+        apply.stage === 'manual' ||
+        apply.stage === 'guiSkew'
+      )
     ) {
       resetUpdateApplyState()
     }
@@ -114,6 +122,10 @@ export function UpdatesOverlay() {
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
+
+        {phase === 'blocked' && (
+          <BlockedView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
+        )}
 
         {phase === 'error' && (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
@@ -366,6 +378,33 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
       </Button>
+    </div>
+  )
+}
+
+function BlockedView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="size-8 text-amber-500" />
+
+        <DialogTitle className="text-center text-xl">{u.activeWorkTitle}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {message || u.activeWorkBody}
+        </DialogDescription>
+      </div>
+
+      <div className="grid gap-2">
+        <Button className="font-semibold" onClick={onRetry} size="lg">
+          {u.tryAgain}
+        </Button>
+        <Button className="font-medium" onClick={onDismiss} type="button" variant="text">
+          {u.notNow}
+        </Button>
+      </div>
     </div>
   )
 }

@@ -2992,6 +2992,15 @@ async def get_status(profile: Optional[str] = None):
             status_scope.__exit__(*sys.exc_info())
 
 
+@app.get("/api/runtime/active-work")
+async def get_runtime_active_work(request: Request):
+    """Authenticated active-work probe for destructive desktop handoffs."""
+    _require_token(request)
+    from tui_gateway.server import active_work_snapshot
+
+    return active_work_snapshot()
+
+
 _WINDOWS_11_MIN_BUILD = 22000
 
 

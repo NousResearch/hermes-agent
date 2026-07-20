@@ -6540,6 +6540,54 @@ def _session_live_status(sid: str, session: dict) -> str:
     return "idle"
 
 
+def active_work_snapshot() -> dict:
+    """Return the backend-authoritative active-work state for update guards."""
+    with _sessions_lock:
+        running_sessions = [
+            sid for sid, session in _sessions.items() if bool(session.get("running"))
+        ]
+        waiting_sessions = [
+            sid for sid, _session in _sessions.items() if _session_pending_kind(sid)
+        ]
+        starting_sessions = [
+            sid
+            for sid, session in _sessions.items()
+            if (ready := session.get("agent_ready")) is not None
+            and not ready.is_set()
+            and session.get("agent_build_started")
+        ]
+
+    delegate_subagents = 0
+    async_subagents = 0
+    try:
+        from tools.delegate_tool import list_active_subagents
+
+        delegate_subagents = len(list_active_subagents())
+    except Exception:
+        delegate_subagents = 0
+    try:
+        from tools.async_delegation import active_count
+
+        async_subagents = int(active_count())
+    except Exception:
+        async_subagents = 0
+
+    active_subagents = delegate_subagents + async_subagents
+    active = bool(
+        running_sessions
+        or waiting_sessions
+        or starting_sessions
+        or active_subagents > 0
+    )
+    return {
+        "active": active,
+        "running_sessions": len(running_sessions),
+        "waiting_sessions": len(waiting_sessions),
+        "starting_sessions": len(starting_sessions),
+        "active_subagents": active_subagents,
+    }
+
+
 def _message_preview(history: list) -> str:
     for msg in reversed(history or []):
         text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()

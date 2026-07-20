@@ -348,6 +348,15 @@ export interface DesktopUpdateApplyResult {
   /** True when the auto-relaunch was skipped specifically because the rebuilt
    *  chrome-sandbox helper is not launchable (not root:root + setuid). */
   sandboxBlocked?: boolean
+  /** Backend-authoritative active-work details when the Electron handoff blocks
+   *  an update after the renderer's optimistic preflight missed it. */
+  activeWork?: {
+    active?: boolean
+    running_sessions?: number
+    waiting_sessions?: number
+    starting_sessions?: number
+    active_subagents?: number
+  } | null
   /** True when a detached relauncher took over (macOS bundle swap / Linux
    *  re-exec): the app is about to quit and reopen itself. */
   handedOff?: boolean
@@ -368,6 +377,9 @@ export type DesktopUpdateStage =
    *  changed — the user must update/reinstall the desktop app. Terminal,
    *  closeable; never claims the GUI was updated. (#45205) */
   | 'guiSkew'
+  /** Local work is still running, so the desktop updater must wait until the
+   *  active session and background workers settle. */
+  | 'blocked'
   | 'error'
 
 export interface DesktopUpdateProgress {

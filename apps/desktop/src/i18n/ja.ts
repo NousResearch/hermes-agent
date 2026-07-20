@@ -1844,6 +1844,7 @@ export const ja = defineLocale({
       done: '更新が完了しました',
       manual: 'ターミナルから更新',
       guiSkew: 'デスクトップアプリを更新してください',
+      blocked: '実行中の作業が終わるまで待ってください',
       error: '更新が一時停止中'
     },
     checking: '更新を確認中…',
@@ -1871,6 +1872,9 @@ export const ja = defineLocale({
     guiSkewTitle: 'デスクトップアプリを更新してください',
     guiSkewBody:
       'バックエンドは更新されましたが、このデスクトップアプリのパッケージは変更されていません。一致させるために Hermes デスクトップアプリ（AppImage / .deb / .rpm）を更新または再インストールしてください。',
+    activeWorkTitle: '現在の作業を先に完了してください',
+    activeWorkBody:
+      'Hermes はまだチャットまたはバックグラウンドのサブエージェントを実行中です。アプリ内から更新する前に、その作業が終わるまで待ってください。',
     copy: 'コピー',
     copied: 'コピーしました',
     done: '完了',

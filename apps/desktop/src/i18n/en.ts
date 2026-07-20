@@ -1920,6 +1920,7 @@ export const en: Translations = {
       done: 'Update complete',
       manual: 'Update from your terminal',
       guiSkew: 'Update the desktop app',
+      blocked: 'Finish running work first',
       error: 'Update paused'
     },
     checking: 'Looking for updates…',
@@ -1945,6 +1946,9 @@ export const en: Translations = {
     guiSkewTitle: 'Update the desktop app',
     guiSkewBody:
       'The backend was updated, but this desktop app package wasn’t changed. Update or reinstall the Hermes desktop app (your AppImage / .deb / .rpm) to match.',
+    activeWorkTitle: 'Finish current work first',
+    activeWorkBody:
+      'Hermes is still running a chat or background worker. Let that work finish before updating from inside the app.',
     copy: 'Copy',
     copied: 'Copied',
     done: 'Done',

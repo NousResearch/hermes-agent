@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
+import type { SubagentProgress } from '@/store/subagents'
 
 const storage = new Map<string, string>()
 
@@ -20,7 +21,37 @@ vi.mock('@/lib/storage', () => ({
 
     return value === undefined ? fallback : value === 'true'
   },
-  storedString: (key: string) => storage.get(key) ?? null
+  storedString: (key: string) => storage.get(key) ?? null,
+  persistStringArray: (key: string, value: readonly string[]) => storage.set(key, JSON.stringify(value)),
+  storedStringArray: (key: string) => {
+    try {
+      const parsed = JSON.parse(storage.get(key) ?? '[]')
+
+      return Array.isArray(parsed) ? parsed.filter(value => typeof value === 'string') : []
+    } catch {
+      return []
+    }
+  },
+  persistStringRecord: (key: string, value: Record<string, string>) => storage.set(key, JSON.stringify(value)),
+  storedStringRecord: (key: string) => {
+    try {
+      const parsed = JSON.parse(storage.get(key) ?? '{}')
+
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  },
+  readKey: (key: string, fallback: string | null = null) => storage.get(key) ?? fallback,
+  readJson: (_key: string, fallback: unknown) => fallback,
+  writeJson: (key: string, value: unknown) => storage.set(key, JSON.stringify(value)),
+  writeKey: (key: string, value: null | string) => {
+    if (value === null) {
+      storage.delete(key)
+    } else {
+      storage.set(key, value)
+    }
+  }
 }))
 
 const notifySpy = vi.fn()
@@ -38,7 +69,8 @@ const getActionStatusSpy = vi.fn()
 vi.mock('@/hermes', () => ({
   checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
   updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
-  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
+  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args),
+  setApiRequestProfile: vi.fn()
 }))
 
 const {
@@ -58,6 +90,8 @@ const {
 } = await import('./updates')
 
 const { setConnection } = await import('./session')
+const { $subagentsBySession } = await import('./subagents')
+const { clearAllSessionStates, publishSessionState } = await import('./session-states')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
   supported: true,
@@ -68,6 +102,11 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
 })
 
 const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { onDismiss: () => void }
+const publishWorkingSession = (runtimeId: string, storedSessionId: string) =>
+  publishSessionState(runtimeId, {
+    busy: true,
+    storedSessionId
+  } as Parameters<typeof publishSessionState>[1])
 
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
@@ -257,12 +296,29 @@ describe('checkBackendUpdates', () => {
 describe('applyUpdates terminal state', () => {
   const applyMock = vi.fn()
 
+  const runningSubagent = (over: Partial<SubagentProgress> = {}): SubagentProgress => ({
+    id: 'subagent-1',
+    parentId: null,
+    goal: 'Investigate',
+    status: 'running',
+    taskCount: 1,
+    taskIndex: 0,
+    startedAt: 1,
+    updatedAt: 1,
+    filesRead: [],
+    filesWritten: [],
+    stream: [],
+    ...over
+  })
+
   beforeEach(() => {
     storage.clear()
     notifySpy.mockClear()
     dismissSpy.mockClear()
     applyMock.mockReset()
     resetUpdateApplyState()
+    clearAllSessionStates()
+    $subagentsBySession.set({})
     $updateOverlayOpen.set(true)
     ;(globalThis as unknown as { window: unknown }).window = {
       hermesDesktop: { updates: { apply: applyMock } }
@@ -272,6 +328,7 @@ describe('applyUpdates terminal state', () => {
 
   afterEach(() => {
     delete (globalThis as unknown as { window?: unknown }).window
+    clearAllSessionStates()
   })
 
   it('holds the restart view when a relauncher hands off (no close, no toast)', async () => {
@@ -284,6 +341,45 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().applying).toBe(true)
     expect($updateOverlayOpen.get()).toBe(true)
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('refuses to start the desktop updater while a local session is still running', async () => {
+    publishWorkingSession('runtime-1', 'session-1')
+
+    const result = await applyUpdates()
+
+    expect(result).toMatchObject({ ok: false, error: 'active-work' })
+    expect(applyMock).not.toHaveBeenCalled()
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('blocked')
+    expect($updateApply.get().message).toMatch(/still running a chat/i)
+  })
+
+  it('refuses to start the desktop updater while background subagents are still running', async () => {
+    $subagentsBySession.set({ 'session-1': [runningSubagent()] })
+
+    const result = await applyUpdates()
+
+    expect(result).toMatchObject({ ok: false, error: 'active-work' })
+    expect(applyMock).not.toHaveBeenCalled()
+    expect($updateApply.get().stage).toBe('blocked')
+  })
+
+  it('maps Electron active-work rejection when renderer-side activity went stale', async () => {
+    applyMock.mockResolvedValue({
+      ok: false,
+      error: 'active-work',
+      message: 'Hermes is still running a chat or background task.',
+      activeWork: { active: true, running_sessions: 1, active_subagents: 0 }
+    })
+
+    const result = await applyUpdates()
+
+    expect(applyMock).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({ ok: false, error: 'active-work' })
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('blocked')
+    expect($updateApply.get().message).toMatch(/still running/i)
   })
 
   it('closes the overlay + toasts when updated but not relaunched in place', async () => {

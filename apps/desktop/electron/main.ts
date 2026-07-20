@@ -2558,6 +2558,71 @@ async function releaseBackendLock(updateRoot, tag) {
   return { unlocked: false }
 }
 
+const ACTIVE_WORK_UPDATE_MESSAGE =
+  'Hermes is still running a chat or background task. Finish or stop active work before updating.'
+
+interface ActiveWorkSnapshot {
+  active: boolean
+  running_sessions: number
+  waiting_sessions: number
+  starting_sessions: number
+  active_subagents: number
+}
+
+function numericSnapshotField(value: unknown): number {
+  return Number.isFinite(Number(value)) ? Number(value) : 0
+}
+
+function normalizeActiveWorkSnapshot(value: unknown): ActiveWorkSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+
+  return {
+    active: Boolean(record.active),
+    running_sessions: numericSnapshotField(record.running_sessions),
+    waiting_sessions: numericSnapshotField(record.waiting_sessions),
+    starting_sessions: numericSnapshotField(record.starting_sessions),
+    active_subagents: numericSnapshotField(record.active_subagents)
+  }
+}
+
+function activeWorkUpdateResult(snapshot: ActiveWorkSnapshot) {
+  return {
+    ok: false,
+    error: 'active-work',
+    message: ACTIVE_WORK_UPDATE_MESSAGE,
+    activeWork: snapshot
+  }
+}
+
+async function probeLocalBackendActiveWork(): Promise<ActiveWorkSnapshot | null> {
+  const connection = await ensureBackend(null)
+  if (connection.mode !== 'local') return null
+
+  try {
+    const snapshot = await fetchJson(`${connection.baseUrl}/api/runtime/active-work`, connection.token, {
+      timeoutMs: 5000
+    })
+    return normalizeActiveWorkSnapshot(snapshot)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    rememberLog(`[updates] active-work probe unavailable; falling back to renderer preflight: ${message}`)
+    return null
+  }
+}
+
+async function blockIfLocalBackendHasActiveWork() {
+  const snapshot = await probeLocalBackendActiveWork()
+  if (!snapshot?.active) return null
+
+  rememberLog(
+    `[updates] blocked apply while backend reports active work: ` +
+      `sessions=${snapshot.running_sessions || 0}, waiting=${snapshot.waiting_sessions || 0}, ` +
+      `starting=${snapshot.starting_sessions || 0}, subagents=${snapshot.active_subagents || 0}`
+  )
+  return activeWorkUpdateResult(snapshot)
+}
+
 // applyUpdates — hand off to the installer's --update flow, then exit.
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
@@ -2579,6 +2644,8 @@ async function applyUpdates(opts = {}) {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
+      const blocked = await blockIfLocalBackendHasActiveWork()
+      if (blocked) return blocked
       // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
       // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
       // there's no mandatory file locking here, so the desktop can drive the
@@ -2621,6 +2688,9 @@ async function applyUpdates(opts = {}) {
 
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
     }
+
+    const blocked = await blockIfLocalBackendHasActiveWork()
+    if (blocked) return blocked
 
     emitUpdateProgress({
       stage: 'restart',

@@ -8998,6 +8998,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_paste_command()
         elif canonical == "image":
             self._handle_image_command(cmd_original)
+        elif canonical == "openmd":
+            self._handle_openmd_command(cmd_original)
         elif canonical == "reload":
             from hermes_cli.config import reload_env
             count = reload_env()

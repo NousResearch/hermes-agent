@@ -4891,8 +4891,9 @@ def run_conversation(
                             })
                         continue
                 
-                # Reset retry counter on successful JSON validation
+                # Reset retry counters on successful JSON validation
                 agent._invalid_json_retries = 0
+                agent._ghost_tool_call_retries = 0
 
                 # ── Post-call guardrails ──────────────────────────
                 assistant_message.tool_calls = agent._cap_delegate_task_calls(
@@ -5187,6 +5188,9 @@ def run_conversation(
                             "finish_reason=tool_calls with empty tool_calls "
                             "persisted after 3 retries — treating as partial response"
                         )
+
+                # Reset ghost retry counter on normal (non-ghost) text completion
+                agent._ghost_tool_call_retries = 0
 
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""

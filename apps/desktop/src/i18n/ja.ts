@@ -1628,7 +1628,7 @@ export const ja = defineLocale({
       continueOnPhoneQrAlt: 'この Hermes セッションの QR コード',
       continueOnPhoneUnavailableTitle: 'リモートでの続行を利用できません',
       continueOnPhoneUnavailableDesc:
-        '認証付きの HTTPS ダッシュボード公開 URL を設定してから、もう一度お試しください。',
+        'OAuth によるブラウザサインインに対応した HTTPS ダッシュボード公開 URL を設定してから、もう一度お試しください。トークン認証のダッシュボードはスマートフォンのブラウザから開けません。',
       continueOnPhoneCopyLink: 'リンクをコピー',
       continueOnPhoneOpenBrowser: 'ブラウザで開く',
       continueOnPhoneOpenFailed: '続行リンクを開けませんでした',

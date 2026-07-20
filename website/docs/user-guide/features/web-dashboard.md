@@ -542,6 +542,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
 | `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Create / remove a shell hook (consent-gated) |
 | `GET /api/system/stats` | Host stats — OS, CPU, memory, disk, uptime |
+| `GET /api/dashboard/remote-access` | The configured dashboard public URL (for [Continue on phone](#continue-a-session-on-your-phone)); empty when unset |
 | `GET /api/hermes/update/check` | Report update availability (commits behind, install method) without applying. For git/pip installs that are behind, also returns a `commits` list (`sha`, `summary`, `author`, `at`) of what's changed. `?force=1` busts the 6h cache |
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
@@ -1055,6 +1056,20 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 - **No "Sign in" button — it asks for a session token instead** — the username/password provider isn't active (`/api/status` won't list `"basic"`). Make sure the username and a password (or password hash) are set and the dashboard process loaded them.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value; otherwise the signing key is regenerated per boot.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
+
+## Continue a session on your phone
+
+Hermes Desktop can hand the conversation you're looking at to your phone: **session menu → Continue on phone** shows a QR code that opens the same session in this dashboard's Chat tab (`/chat?resume=<session-id>`, plus `&profile=<name>` when the session lives on a named profile). Scan it, sign in on the phone, and the conversation resumes where you left off.
+
+Prerequisites — Desktop checks all of these and won't render a QR code until they pass:
+
+- **A public dashboard URL** — `dashboard.public_url` in `config.yaml` or `HERMES_DASHBOARD_PUBLIC_URL` (see [Public URL override](#public-url-override)).
+- **HTTPS** — plain `http://` public URLs are refused; this link is meant to leave your machine.
+- **Browser sign-in** — the URL must serve a dashboard with its [auth gate](#authentication-gated-mode) engaged (OAuth browser sign-in), so the phone gets a login page on arrival. Token-proxy topologies — where Desktop authenticates against a bare backend with a session token — are not supported: there is no sign-in page a phone browser can load.
+
+The QR code encodes only that URL — **no credentials, tokens, or cookies**. Whoever scans it still signs in on the phone before the dashboard serves anything.
+
+Desktop resolves the URL via `GET /api/dashboard/remote-access`, which returns the operator-configured public URL (`{"public_url": "…"}`, empty string when unset) and sits behind the same auth gate as the rest of `/api/`.
 
 ## CORS
 

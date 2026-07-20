@@ -1704,7 +1704,7 @@ export const en: Translations = {
       continueOnPhoneQrAlt: 'QR code for this Hermes session',
       continueOnPhoneUnavailableTitle: 'Remote continuation is not ready',
       continueOnPhoneUnavailableDesc:
-        'Configure an HTTPS dashboard public URL with authentication, then try again.',
+        'Configure an HTTPS dashboard public URL with OAuth browser sign-in, then try again. Token-authenticated dashboards cannot be opened from a phone browser.',
       continueOnPhoneCopyLink: 'Copy link',
       continueOnPhoneOpenBrowser: 'Open in browser',
       continueOnPhoneOpenFailed: 'Could not open the continuation link',

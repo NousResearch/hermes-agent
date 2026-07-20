@@ -1575,7 +1575,7 @@ export const zhHant = defineLocale({
       continueOnPhonePreparing: '正在檢查安全遠端存取…',
       continueOnPhoneQrAlt: '此 Hermes 工作階段的 QR 碼',
       continueOnPhoneUnavailableTitle: '遠端繼續尚未就緒',
-      continueOnPhoneUnavailableDesc: '請設定具備驗證的 HTTPS 儀表板公開 URL，然後重試。',
+      continueOnPhoneUnavailableDesc: '請設定支援瀏覽器登入（OAuth）的 HTTPS 儀表板公開 URL，然後重試。Token 驗證的儀表板無法在手機瀏覽器中開啟。',
       continueOnPhoneCopyLink: '複製連結',
       continueOnPhoneOpenBrowser: '在瀏覽器中開啟',
       continueOnPhoneOpenFailed: '無法開啟繼續連結',

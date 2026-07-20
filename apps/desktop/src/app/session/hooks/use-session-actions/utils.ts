@@ -434,6 +434,17 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   try {
     const session = await getSession(storedSessionId)
 
+    // The by-id endpoint only tags `profile` when one is passed, and this
+    // lookup ran on the active profile — stamp it (like upsertOptimisticSession)
+    // so profile-scoped consumers (e.g. the continue-on-phone URL) resume
+    // against the owner, not whichever profile the gateway is on later.
+    if (!session.profile) {
+      const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+
+      session.profile = profileKey
+      session.is_default_profile = profileKey === 'default'
+    }
+
     upsertResolvedSession(session, storedSessionId)
 
     return session

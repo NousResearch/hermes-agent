@@ -1884,7 +1884,7 @@ export const zh: Translations = {
       continueOnPhonePreparing: '正在检查安全远程访问…',
       continueOnPhoneQrAlt: '此 Hermes 会话的二维码',
       continueOnPhoneUnavailableTitle: '远程继续尚未就绪',
-      continueOnPhoneUnavailableDesc: '请配置带身份验证的 HTTPS 仪表板公共 URL，然后重试。',
+      continueOnPhoneUnavailableDesc: '请配置支持浏览器登录（OAuth）的 HTTPS 仪表板公共 URL，然后重试。令牌认证的仪表板无法在手机浏览器中打开。',
       continueOnPhoneCopyLink: '复制链接',
       continueOnPhoneOpenBrowser: '在浏览器中打开',
       continueOnPhoneOpenFailed: '无法打开继续链接',

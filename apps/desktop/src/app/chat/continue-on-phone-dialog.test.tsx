@@ -89,7 +89,7 @@ describe('ContinueOnPhoneDialog', () => {
     renderDialog({ resolveUrl })
 
     expect(await screen.findByText('Remote continuation is not ready')).toBeTruthy()
-    expect(screen.getByText('Configure an HTTPS dashboard public URL with authentication, then try again.')).toBeTruthy()
+    expect(screen.getByText('Configure an HTTPS dashboard public URL with OAuth browser sign-in, then try again. Token-authenticated dashboards cannot be opened from a phone browser.')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 

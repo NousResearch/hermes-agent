@@ -129,6 +129,46 @@ def _bash_safe_path(path: str) -> str:
     return path
 
 
+
+
+def _native_windows_path_for_exe(path: str) -> str:
+    r"""Return *path* in forward-slash native Windows form for native EXEs.
+
+    Git Bash is still the process launcher, but tools like ripgrep that ship
+    as Win32 binaries do **not** understand MSYS drive paths (``/d/...``).
+    They *do* accept ``D:/...``.
+
+    - Native ``D:\foo`` / ``D:/foo`` -> ``D:/foo``
+    - MSYS ``/d/foo`` / ``/cygdrive/d/foo`` / ``/mnt/d/foo`` -> ``D:/foo``
+    - Otherwise leave unchanged (relative paths, pure POSIX strings)
+
+    No-op off Windows and for empty input. Pair with
+    ``MSYS_NO_PATHCONV`` / ``MSYS2_ARG_CONV_EXCL`` (already applied to bash
+    env defaults) so Git Bash does not re-mangle the ``D:/`` form.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+
+    # Already native drive-qualified -> normalize separators only.
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', path)
+    if m:
+        drive = m.group(1).upper()
+        tail = (m.group(2) or "").replace("\\", "/").lstrip("/")
+        return f"{drive}:/{tail}" if tail else f"{drive}:/"
+
+    # MSYS / Cygwin / WSL drive forms -> native forward-slash.
+    win = _msys_to_windows_path(path)
+    if win != path:
+        m2 = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', win)
+        if m2:
+            drive = m2.group(1).upper()
+            tail = (m2.group(2) or "").replace("\\", "/").lstrip("/")
+            return f"{drive}:/{tail}" if tail else f"{drive}:/"
+
+    if "\\" in path:
+        return path.replace("\\", "/")
+    return path
+
 def _quote_bash_path(path: str) -> str:
     """Quote *path* for safe interpolation into a Git Bash script on Windows."""
     import shlex

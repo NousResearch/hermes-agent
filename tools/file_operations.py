@@ -975,6 +975,22 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _escape_native_exe_arg(self, arg: str) -> str:
+        """Escape a path/arg for a *native Windows* executable launched via bash.
+
+        Unlike :meth:`_escape_shell_arg` (which rewrites drives to MSYS
+        ``/c/...`` for bash builtins / path consumers), this keeps
+        drive-qualified paths in forward-slash native form (``C:/...``)
+        so Win32 tools such as ripgrep can resolve them (#67629).
+        Relative / non-Windows paths still go through plain quoting.
+        """
+        from tools.environments.local import _IS_WINDOWS, _native_windows_path_for_exe
+
+        if _IS_WINDOWS:
+            arg = _native_windows_path_for_exe(arg)
+        return "'" + arg.replace("'", '\'"\'"\'') + "'"
+
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -2218,7 +2234,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._escape_native_exe_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2229,7 +2245,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._escape_native_exe_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2285,7 +2301,7 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        cmd_parts.append(self._escape_native_exe_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,

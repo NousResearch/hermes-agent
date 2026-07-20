@@ -494,6 +494,35 @@ class TestShellFileOpsHelpers:
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
+    def test_escape_native_exe_arg_keeps_windows_drive_forward_slash(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_native_exe_arg(r"D:\Ivo\ai-costs.json") == "'D:/Ivo/ai-costs.json'"
+        assert file_ops._escape_native_exe_arg("D:/Ivo/ai-costs.json") == "'D:/Ivo/ai-costs.json'"
+        assert file_ops._escape_native_exe_arg("/d/Ivo/ai-costs.json") == "'D:/Ivo/ai-costs.json'"
+
+    def test_search_with_rg_uses_native_windows_path(self, mock_env, monkeypatch):
+        """Absolute Windows paths must not be MSYS-rewritten for native rg (#67629)."""
+        import tools.environments.local as local_mod
+        from tools.file_operations import ShellFileOperations
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = ShellFileOperations(mock_env)
+        ops._has_command = lambda cmd: cmd == "rg"
+        captured = {}
+
+        def _capture(command, cwd=None, timeout=None, stdin_data=None):
+            captured["cmd"] = command
+            from tools.file_operations import ExecuteResult
+            return ExecuteResult(stdout="", exit_code=1)
+
+        ops._exec = _capture
+        ops._search_with_rg("subscription", r"D:\Ivo\ai-costs.json", None, 10, 0, "content", 0)
+        assert "D:/Ivo/ai-costs.json" in captured["cmd"]
+        assert "/d/Ivo/ai-costs.json" not in captured["cmd"]
+
+
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
 

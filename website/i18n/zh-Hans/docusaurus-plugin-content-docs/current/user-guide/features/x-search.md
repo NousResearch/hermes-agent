@@ -52,7 +52,7 @@ x_search:
 
   # 可选推理强度：low、medium、high 或 xhigh。省略时使用所选模型的默认值。
   # xhigh 仅适用于明确支持它的模型，例如 grok-4.20-multi-agent。
-  reasoning_effort: low
+  # reasoning_effort: low
 
   # 请求超时时间（秒）。复杂查询的 x_search 可能需要 60–120 秒，
   # 默认值较为宽松。最小值：30。

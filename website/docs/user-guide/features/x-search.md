@@ -57,7 +57,7 @@ x_search:
   # Optional reasoning effort: low, medium, high, or xhigh. When omitted,
   # the selected model's default applies. xhigh is supported only by
   # models that document it, such as grok-4.20-multi-agent.
-  reasoning_effort: low
+  # reasoning_effort: low
 
   # Request timeout in seconds. x_search can take 60–120s for
   # complex queries — the default is generous. Minimum: 30.

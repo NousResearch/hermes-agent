@@ -625,50 +625,45 @@ export function FileDiffPanel({
     )
   }
 
-  // Windowed but no gutter (the review panel): a fixed-row scroller so only the
-  // visible rows render, killing the full-Shiki-of-every-line freeze on large
-  // diffs. The gutter variant (below) adds line numbers on top of the same window.
-  if (!showLineNumbers) {
-    return (
-      <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
-        <div className="absolute inset-0 overflow-auto" onScroll={onScroll} ref={scrollerRef}>
-          <div className="min-w-0">{windowedBody}</div>
-        </div>
-        <DiffOverviewRuler lines={lines} />
-      </div>
-    )
-  }
-
-  // A single line-number gutter (VS Code's inline-diff style): each row shows its
-  // own file's number — the new number for context/adds, the old number for
-  // removals — with an overview ruler pinned to the right edge. The inner div
-  // owns the scroll so the ruler (an absolute sibling) stays viewport-fixed.
+  // Windowed: a fixed-row scroller renders only the visible rows (killing the
+  // full-Shiki-of-every-line freeze on large diffs). With `showLineNumbers` a
+  // VS Code-style gutter (new number for context/adds, old for removals) sits in
+  // a left column; the scroller owns scroll so the overview ruler (an absolute
+  // sibling) stays viewport-fixed.
   return (
     <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
-      <div className="absolute inset-0 overflow-auto pr-2.5" onScroll={onScroll} ref={scrollerRef}>
-        <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
-          <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
-            {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
-            {visibleLineChunks.map(chunk => (
-              <div className="block" key={chunk.start}>
-                {chunk.lines.map((line, offset) => {
-                  const index = chunk.start + offset
+      <div
+        className={cn('absolute inset-0 overflow-auto', showLineNumbers && 'pr-2.5')}
+        onScroll={onScroll}
+        ref={scrollerRef}
+      >
+        {showLineNumbers ? (
+          <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
+            <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
+              {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
+              {visibleLineChunks.map(chunk => (
+                <div className="block" key={chunk.start}>
+                  {chunk.lines.map((line, offset) => {
+                    const index = chunk.start + offset
 
-                  return (
-                    <div
-                      className="h-5 w-9 pr-2 text-right leading-5 tabular-nums"
-                      key={`${index}-${line.oldNo}-${line.newNo}`}
-                    >
-                      {line.newNo ?? ''}
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-            {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
+                    return (
+                      <div
+                        className="h-5 w-9 pr-2 text-right leading-5 tabular-nums"
+                        key={`${index}-${line.oldNo}-${line.newNo}`}
+                      >
+                        {line.newNo ?? ''}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+              {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
+            </div>
+            <div className="min-w-0">{windowedBody}</div>
           </div>
+        ) : (
           <div className="min-w-0">{windowedBody}</div>
-        </div>
+        )}
       </div>
       <DiffOverviewRuler lines={lines} />
     </div>

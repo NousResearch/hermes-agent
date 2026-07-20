@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -486,6 +487,72 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_shipped_template_does_not_enable_auto_reset(self, tmp_path, monkeypatch):
+        """A fresh install seeded from cli-config.yaml.example must not
+        auto-reset sessions.
+
+        Installers (scripts/install.sh, scripts/install.ps1,
+        docker/stage2-hook.sh, hermes doctor) copy the template verbatim to
+        ~/.hermes/config.yaml, so whatever ``session_reset.mode`` the template
+        ships becomes an EXPLICIT user setting that overrides the code
+        default. After #60194 flipped the default to "none", the template
+        still said "both" — every new install kept 24h-idle resets on
+        (Luciano's report, July 2026). This pins the invariant: template
+        seed == no auto-reset.
+        """
+        template = (
+            Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        )
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            template.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+
+    def test_no_config_yaml_means_no_auto_reset(self, tmp_path, monkeypatch):
+        """With no config.yaml at all, sessions must never auto-reset."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+
+    def test_session_reset_without_mode_means_no_auto_reset(self, tmp_path, monkeypatch):
+        """A session_reset block that tunes knobs but omits mode stays off."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session_reset:\n  idle_minutes: 60\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+        assert config.default_reset_policy.idle_minutes == 60
+
+    def test_explicit_session_reset_opt_in_is_honored(self, tmp_path, monkeypatch):
+        """Users who explicitly opt in to auto-reset keep their policy."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session_reset:\n  mode: idle\n  idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "idle"
+        assert config.default_reset_policy.idle_minutes == 30
+
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

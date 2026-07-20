@@ -74,6 +74,86 @@ def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> lis
     return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
+_APPROVAL_PREVIEW_COPY = {
+    "terminal_command": (
+        "Terminal command approval",
+        "Hermes stopped a terminal command that matched a protected action.",
+    ),
+    "code_execution": (
+        "Code execution approval",
+        "Hermes stopped generated code that can change files or start processes.",
+    ),
+    "tool_policy": (
+        "Tool policy approval",
+        "A Hermes policy stopped a tool action for explicit approval.",
+    ),
+    "external_consent": (
+        "External consent request",
+        "An external tool requested explicit consent through Hermes.",
+    ),
+    "security_scan": (
+        "Security review approval",
+        "A Hermes security check stopped an action for explicit approval.",
+    ),
+    "protected_action": (
+        "Protected action approval",
+        "Hermes stopped an action that requires explicit approval.",
+    ),
+}
+
+
+def _safe_approval_preview(approval_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a bounded preview without echoing approval payload text.
+
+    Commands, descriptions, plugin reasons, and scanner findings are untrusted
+    and may contain credentials or private paths. Only labels that originate in
+    Hermes' built-in dangerous-command catalog are eligible for ``risk_labels``;
+    every other field comes from the fixed copy table above.
+    """
+    raw_keys = approval_data.get("pattern_keys")
+    if not isinstance(raw_keys, (list, tuple)):
+        raw_keys = [approval_data.get("pattern_key")]
+    keys = {
+        value
+        for value in raw_keys[:32]
+        if isinstance(value, str) and 0 < len(value) <= 160
+    }
+
+    try:
+        from tools.approval import DANGEROUS_PATTERNS
+
+        safe_reason_labels = {
+            description
+            for _, description in DANGEROUS_PATTERNS
+            if isinstance(description, str)
+        }
+    except Exception:
+        safe_reason_labels = set()
+
+    risk_labels = sorted(keys & safe_reason_labels)[:4]
+    if "execute_code" in keys:
+        category = "code_execution"
+    elif "mcp_elicitation" in keys:
+        category = "external_consent"
+    elif risk_labels:
+        category = "terminal_command"
+    elif any(key.startswith("plugin_rule:") for key in keys):
+        category = "tool_policy"
+    elif any(key.startswith("tirith:") for key in keys):
+        category = "security_scan"
+    else:
+        category = "protected_action"
+
+    title, summary = _APPROVAL_PREVIEW_COPY[category]
+    return {
+        "version": 1,
+        "category": category,
+        "title": title,
+        "summary": summary,
+        "risk_labels": risk_labels,
+    }
+
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
@@ -2029,6 +2109,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "run_approval_request_binding": True,
+                "run_approval_structured_preview": True,
+                "run_approval_preview_version": 1,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -4927,6 +5010,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
+                    event["preview"] = _safe_approval_preview(event)
                     # Redact credentials from the command before it enters the
                     # SSE/API event stream — same egress bug as #48456, second
                     # transport: API/desktop clients would otherwise receive the
@@ -5219,6 +5303,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        request_id = body.get("request_id") if "request_id" in body else None
+        if request_id is not None:
+            from tools.approval import is_valid_approval_request_id
+
+        if request_id is not None and not is_valid_approval_request_id(request_id):
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval request_id",
+                    code="invalid_approval_request_id",
+                ),
+                status=400,
+            )
+
         approval_session_key = self._run_approval_sessions.get(run_id)
         if not approval_session_key:
             return web.json_response(
@@ -5233,47 +5330,74 @@ class APIServerAdapter(BasePlatformAdapter):
             _coerce_request_bool(body.get("all"), default=False)
             or _coerce_request_bool(body.get("resolve_all"), default=False)
         )
-        try:
-            from tools.approval import resolve_gateway_approval
-
-            resolved = resolve_gateway_approval(
-                approval_session_key,
-                choice,
-                resolve_all=resolve_all,
+        if request_id is not None and resolve_all:
+            return web.json_response(
+                _openai_error(
+                    "Exact approval request binding cannot be combined with resolve_all",
+                    code="invalid_approval_scope",
+                ),
+                status=400,
             )
+        try:
+            from tools.approval import has_blocking_approval, resolve_gateway_approval
+
+            resolve_kwargs = {"resolve_all": resolve_all}
+            if request_id is not None:
+                resolve_kwargs["request_id"] = request_id
+            resolved = resolve_gateway_approval(
+                approval_session_key, choice, **resolve_kwargs,
+            )
+            still_pending = has_blocking_approval(approval_session_key)
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)
             return web.json_response(_openai_error(str(exc)), status=500)
 
         if resolved <= 0:
+            error_code = (
+                "approval_request_not_pending"
+                if request_id is not None
+                else "approval_not_pending"
+            )
+            message = (
+                f"Run has no pending approval matching request_id: {run_id}"
+                if request_id is not None
+                else f"Run has no pending approval: {run_id}"
+            )
             return web.json_response(
                 _openai_error(
-                    f"Run has no pending approval: {run_id}",
-                    code="approval_not_pending",
+                    message,
+                    code=error_code,
                 ),
                 status=409,
             )
 
-        self._set_run_status(run_id, "running", last_event="approval.responded")
+        next_status = "waiting_for_approval" if still_pending else "running"
+        self._set_run_status(run_id, next_status, last_event="approval.responded")
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
-                q.put_nowait({
+                responded_event = {
                     "event": "approval.responded",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "choice": choice,
                     "resolved": resolved,
-                })
+                }
+                if request_id is not None:
+                    responded_event["request_id"] = request_id
+                q.put_nowait(responded_event)
             except Exception:
                 pass
 
-        return web.json_response({
+        response_data = {
             "object": "hermes.run.approval_response",
             "run_id": run_id,
             "choice": choice,
             "resolved": resolved,
-        })
+        }
+        if request_id is not None:
+            response_data["request_id"] = request_id
+        return web.json_response(response_data)
 
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""

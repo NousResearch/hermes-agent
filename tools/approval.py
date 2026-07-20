@@ -2028,13 +2028,25 @@ _permanent_approved: set = set()
 # resolves every pending approval in the session.
 
 
+_APPROVAL_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def is_valid_approval_request_id(value: object) -> bool:
+    """Return whether *value* is safe for approval transports and APIs."""
+    return (
+        isinstance(value, str)
+        and _APPROVAL_REQUEST_ID_RE.fullmatch(value) is not None
+    )
+
+
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = ("event", "data", "request_id", "result", "reason")
 
     def __init__(self, data: dict):
         self.data = dict(data or {})
-        self.request_id = str(self.data.get("request_id") or uuid.uuid4().hex)
+        candidate = self.data.get("request_id")
+        self.request_id = candidate if is_valid_approval_request_id(candidate) else uuid.uuid4().hex
         self.data["request_id"] = self.request_id
         self.event = threading.Event()
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"

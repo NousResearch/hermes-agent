@@ -173,6 +173,16 @@ class TestBlockingGatewayApproval:
         assert e2.result == "deny"
         assert pending_approval_count(session_key) == 1
 
+    def test_invalid_request_id_is_replaced_with_transport_safe_id(self):
+        from tools.approval import _ApprovalEntry, is_valid_approval_request_id
+
+        unsafe = "bad/request/" + ("x" * 200)
+        entry = _ApprovalEntry({"command": "first", "request_id": unsafe})
+
+        assert entry.request_id != unsafe
+        assert entry.data["request_id"] == entry.request_id
+        assert is_valid_approval_request_id(entry.request_id)
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

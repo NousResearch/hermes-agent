@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _approval_event_choices,
+    _safe_approval_preview,
     cors_middleware,
     security_headers_middleware,
 )
@@ -48,6 +50,50 @@ def test_approval_event_choices_follow_backend_capabilities(
         smart_denied=smart_denied,
         allow_permanent=allow_permanent,
     ) == expected
+
+
+def test_safe_approval_preview_uses_only_server_owned_labels():
+    private_path = "/Users/alice/private-project"
+    credential = "sk-super-secret"
+    preview = _safe_approval_preview({
+        "command": f"rm -rf {private_path} --token {credential}",
+        "description": f"Delete {private_path} with {credential}",
+        "pattern_key": "recursive delete",
+        "pattern_keys": [
+            "recursive delete",
+            f"plugin_rule:untrusted:{private_path}:{credential}",
+        ],
+    })
+
+    assert preview == {
+        "version": 1,
+        "category": "terminal_command",
+        "title": "Terminal command approval",
+        "summary": "Hermes stopped a terminal command that matched a protected action.",
+        "risk_labels": ["recursive delete"],
+    }
+    encoded = json.dumps(preview)
+    assert private_path not in encoded
+    assert credential not in encoded
+
+
+def test_safe_approval_preview_falls_back_without_echoing_unknown_input():
+    attacker_text = "unknown policy /private/customer-data token-123"
+    preview = _safe_approval_preview({
+        "command": attacker_text,
+        "description": attacker_text,
+        "pattern_key": attacker_text,
+        "pattern_keys": [attacker_text],
+    })
+
+    assert preview == {
+        "version": 1,
+        "category": "protected_action",
+        "title": "Protected action approval",
+        "summary": "Hermes stopped an action that requires explicit approval.",
+        "risk_labels": [],
+    }
+    assert attacker_text not in json.dumps(preview)
 
 
 def _make_adapter(api_key: str = "") -> APIServerAdapter:
@@ -325,6 +371,65 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_approval_event_includes_request_id_and_safe_preview(self, adapter):
+        app = _create_runs_app(adapter)
+        private_path = "/Users/alice/private-project"
+        credential = "sk-event-secret"
+        finish_run = threading.Event()
+
+        def _run_with_approval_event(**_kwargs):
+            session_key = approval_mod.get_current_session_key()
+            with approval_mod._lock:
+                notify = approval_mod._gateway_notify_cbs[session_key]
+            entry = approval_mod._ApprovalEntry({
+                "command": f"rm -rf {private_path} --token {credential}",
+                "description": f"Delete {private_path} using {credential}",
+                "pattern_key": "recursive delete",
+                "pattern_keys": ["recursive delete"],
+            })
+            notify(entry.data)
+            finish_run.wait(timeout=5)
+            return {"final_response": "stopped for review"}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.side_effect = _run_with_approval_event
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                response = await cli.post("/v1/runs", json={"input": "do it"})
+                run_id = (await response.json())["run_id"]
+                for _ in range(100):
+                    if adapter._run_statuses[run_id]["status"] == "waiting_for_approval":
+                        break
+                    await asyncio.sleep(0.01)
+                assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
+                await asyncio.sleep(0)
+                finish_run.set()
+                events_response = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_response.text()
+
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        approval_event = next(event for event in events if event["event"] == "approval.request")
+        assert approval_event["request_id"]
+        assert approval_event["preview"] == {
+            "version": 1,
+            "category": "terminal_command",
+            "title": "Terminal command approval",
+            "summary": "Hermes stopped a terminal command that matched a protected action.",
+            "risk_labels": ["recursive delete"],
+        }
+        assert private_path not in json.dumps(approval_event["preview"])
+        assert credential not in json.dumps(approval_event["preview"])
+
 
 
     @pytest.mark.asyncio
@@ -375,6 +480,100 @@ class TestRunEvents:
             "once",
             resolve_all=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_approval_request_id_resolves_only_the_matching_entry(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_exact_approval"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+        adapter._run_streams[run_id] = asyncio.Queue()
+        first = approval_mod._ApprovalEntry({"request_id": "req-first"})
+        second = approval_mod._ApprovalEntry({"request_id": "req-second"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [first, second]
+
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "deny", "request_id": "req-second"},
+                )
+                data = await response.json()
+
+                assert response.status == 200
+                assert data["request_id"] == "req-second"
+                assert second.result == "deny"
+                assert second.event.is_set()
+                assert first.result is None
+                assert not first.event.is_set()
+                assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
+                responded_event = await adapter._run_streams[run_id].get()
+                assert responded_event["event"] == "approval.responded"
+                assert responded_event["request_id"] == "req-second"
+
+                stale = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once", "request_id": "req-second"},
+                )
+                stale_data = await stale.json()
+                assert stale.status == 409
+                assert stale_data["error"]["code"] == "approval_request_not_pending"
+                assert first.result is None
+                assert not first.event.is_set()
+        finally:
+            with approval_mod._lock:
+                approval_mod._gateway_queues.pop(run_id, None)
+            adapter._run_streams.pop(run_id, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fanout_field", ["all", "resolve_all"])
+    async def test_exact_approval_rejects_resolve_all(self, adapter, fanout_field):
+        app = _create_runs_app(adapter)
+        run_id = "run_exact_no_fanout"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+        pending = approval_mod._ApprovalEntry({"request_id": "req-only"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [pending]
+
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={
+                        "choice": "once",
+                        "request_id": "req-only",
+                        fanout_field: True,
+                    },
+                )
+                data = await response.json()
+
+            assert response.status == 400
+            assert data["error"]["code"] == "invalid_approval_scope"
+            assert pending.result is None
+            assert not pending.event.is_set()
+        finally:
+            with approval_mod._lock:
+                approval_mod._gateway_queues.pop(run_id, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("request_id", ["", 123, "bad/request", "x" * 129])
+    async def test_exact_approval_rejects_invalid_request_id(self, adapter, request_id):
+        app = _create_runs_app(adapter)
+        run_id = "run_invalid_exact_id"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json={"choice": "deny", "request_id": request_id},
+            )
+            data = await response.json()
+
+        assert response.status == 400
+        assert data["error"]["code"] == "invalid_approval_request_id"
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

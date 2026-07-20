@@ -214,7 +214,10 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "run_approval_request_binding": true,
+    "run_approval_structured_preview": true,
+    "run_approval_preview_version": 1
   }
 }
 ```
@@ -292,6 +295,27 @@ running.
 ### POST /v1/runs/\{run_id\}/approval
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
+
+Approval events include a stable `request_id` and a versioned `preview`. The
+preview contains fixed Hermes-owned categories and labels; it does not copy the
+command, description, plugin reason, credentials, or paths. Clients that show
+approval controls should require the request-binding and structured-preview
+capabilities, render only `preview`, and send the same ID back:
+
+```json
+{
+  "choice": "once",
+  "request_id": "7db61e705f29476a8456efcc4ec03f08"
+}
+```
+
+Hermes resolves only the matching queued request. A stale or unknown ID returns
+`409` without resolving a newer request. Exact request binding cannot be
+combined with `all` or `resolve_all`.
+
+For compatibility, callers that omit `request_id` retain the older FIFO
+behavior. New external UIs should not use that legacy mode for an approval they
+displayed because another responder may have changed the queue first.
 
 ## Jobs API (background scheduled work)
 

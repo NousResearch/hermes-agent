@@ -251,18 +251,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ),
     (
         "anthropic",
-        "claude-sonnet-5",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-06",
-    ),
-    (
-        "anthropic",
         "claude-sonnet-4-6",
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),

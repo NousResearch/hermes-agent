@@ -143,8 +143,8 @@ class TestSlashCommands:
         self, adapter, runner, platform
     ):
         """Alias targets with args must reach the built-in command handler."""
-        runner.config.quick_commands = {
-            "s": {"type": "alias", "target": "/status extra-arg"}
+        runner.config.commands = {
+            "custom": {"s": {"type": "alias", "command": "/status extra-arg"}}
         }
         async def _handle_status(event):
             assert event.get_command_args() == "extra-arg"

@@ -11244,13 +11244,17 @@ def _(rid, params: dict) -> dict:
 
         warning = ""
         try:
-            qcmds = _load_cfg().get("quick_commands", {}) or {}
-            if isinstance(qcmds, dict) and qcmds:
+            cfg = _load_cfg()
+            cmd_section = cfg.get("commands", {}) or {}
+            custom_cmds = cmd_section.get("custom", {}) if isinstance(cmd_section, dict) else {}
+            if not isinstance(custom_cmds, dict):
+                custom_cmds = {}
+            if custom_cmds:
                 bucket = "User commands"
                 if bucket not in cat_map:
                     cat_map[bucket] = []
                     cat_order.append(bucket)
-                for qname, qc in sorted(qcmds.items()):
+                for qname, qc in sorted(custom_cmds.items()):
                     if not isinstance(qc, dict):
                         continue
                     key = f"/{qname}"
@@ -11259,9 +11263,9 @@ def _(rid, params: dict) -> dict:
                     if qtype == "exec":
                         default_desc = f"exec: {qc.get('command', '')}"
                     elif qtype == "alias":
-                        default_desc = f"alias → {qc.get('target', '')}"
+                        default_desc = f"alias → {qc.get('command', '')}"
                     else:
-                        default_desc = qtype or "quick command"
+                        default_desc = qtype or "custom command"
                     qdesc = str(qc.get("description") or default_desc)
                     qdesc = qdesc[:120] + ("…" if len(qdesc) > 120 else "")
                     all_pairs.append([key, qdesc])
@@ -11386,13 +11390,16 @@ def _(rid, params: dict) -> dict:
         name = resolved
     session = _sessions.get(params.get("session_id", ""))
 
-    qcmds = _load_cfg().get("quick_commands", {})
-    if name in qcmds:
-        qc = qcmds[name]
+    cfg = _load_cfg()
+    cmd_section = cfg.get("commands", {}) or {}
+    custom_cmds = cmd_section.get("custom", {}) if isinstance(cmd_section, dict) else {}
+    if not isinstance(custom_cmds, dict):
+        custom_cmds = {}
+    qc = custom_cmds.get(name)
+    if qc is not None and isinstance(qc, dict):
+        if not qc.get("enabled", True):
+            return _err(rid, 4017, f"Command '/{name}' is disabled.")
         if qc.get("type") == "exec":
-            # Sanitize env to prevent credential leakage —
-            # quick commands run in the TUI server process which
-            # has all API keys in os.environ.
             from tools.environments.local import _sanitize_subprocess_env
             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
@@ -11416,11 +11423,11 @@ def _(rid, params: dict) -> dict:
                 return _err(
                     rid,
                     4018,
-                    output or f"quick command failed with exit code {r.returncode}",
+                    output or f"custom command failed with exit code {r.returncode}",
                 )
             return _ok(rid, {"type": "exec", "output": output})
         if qc.get("type") == "alias":
-            return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
+            return _ok(rid, {"type": "alias", "target": qc.get("command", "")})
 
     try:
         from hermes_cli.plugins import (

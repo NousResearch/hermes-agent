@@ -4193,19 +4193,21 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
         server._sessions.pop("sid", None)
 
 
-def test_commands_catalog_surfaces_quick_commands(monkeypatch):
+def test_commands_catalog_surfaces_custom_commands(monkeypatch):
     monkeypatch.setattr(
         server,
         "_load_cfg",
         lambda: {
-            "quick_commands": {
-                "build": {"type": "exec", "command": "npm run build"},
-                "git": {"type": "alias", "target": "/shell git"},
-                "notes": {
-                    "type": "exec",
-                    "command": "cat NOTES.md",
-                    "description": "Open design notes",
-                },
+            "commands": {
+                "custom": {
+                    "build": {"type": "exec", "command": "npm run build"},
+                    "git": {"type": "alias", "command": "/shell git"},
+                    "notes": {
+                        "type": "exec",
+                        "command": "cat NOTES.md",
+                        "description": "Open design notes",
+                    },
+                }
             }
         },
     )

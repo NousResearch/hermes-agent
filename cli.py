@@ -6597,11 +6597,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     f"{_escape(desc)} [dim]({skill_count} skills)[/]"
                 )
 
-        quick_commands = self.config.get("quick_commands", {})
-        if quick_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Quick Commands{_RST} ({len(quick_commands)} configured):")
-            for name, qcmd in sorted(quick_commands.items()):
-                desc = qcmd.get("description", qcmd.get("type", ""))
+        cmd_config = self.config.get("commands", {}) or {}
+        custom_cmds = cmd_config.get("custom", {}) if isinstance(cmd_config, dict) else {}
+        if not isinstance(custom_cmds, dict):
+            custom_cmds = {}
+        if custom_cmds:
+            _cprint(f"\n  ⚡ {_BOLD}Quick Commands{_RST} ({len(custom_cmds)} configured):")
+            for name, qcmd in sorted(custom_cmds.items()):
+                if isinstance(qcmd, dict):
+                    desc = qcmd.get("description", qcmd.get("type", ""))
+                else:
+                    desc = "exec"
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
                 )
@@ -8800,13 +8806,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
         else:
-            # Check for user-defined quick commands (bypass agent loop, no LLM call)
+            # Check for user-defined custom commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
             skill_commands = _ensure_skill_commands()
             skill_bundles = get_skill_bundles()
-            quick_commands = self.config.get("quick_commands", {})
-            if base_cmd.lstrip("/") in quick_commands:
-                qcmd = quick_commands[base_cmd.lstrip("/")]
+            cmd_name = base_cmd.lstrip("/")
+            # Read custom commands from the new commands.custom structure
+            cmd_config = self.config.get("commands", {}) or {}
+            custom_cmds = cmd_config.get("custom", {}) if isinstance(cmd_config, dict) else {}
+            if not isinstance(custom_cmds, dict):
+                custom_cmds = {}
+            if cmd_name in custom_cmds:
+                qcmd = custom_cmds[cmd_name]
+                if not isinstance(qcmd, dict) or not qcmd.get("enabled", True):
+                    self._console_print(f"[bold red]Command '/{cmd_name}' is disabled[/]")
+                    return True
+                # Check CLI visibility gate
+                visible_map = qcmd.get("visible", {}) if isinstance(qcmd, dict) else {}
+                if visible_map.get("cli", True) is False:
+                    self._console_print(f"[bold red]Command '/{cmd_name}' is not available on the CLI[/]")
+                    return True
                 if qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
@@ -8837,7 +8856,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
+                    target = qcmd.get("command", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         user_args = cmd_original[len(base_cmd):].strip()

@@ -327,8 +327,10 @@ async def test_non_admin_denied_for_unlisted_quick_command_exec():
             "user_allowed_commands": [],
         }
     )
-    runner.config.quick_commands = {
-        "limits": {"type": "exec", "command": "printf quick-command-bypass-confirmed"}
+    runner.config.commands = {
+        "custom": {
+            "limits": {"type": "exec", "command": "printf quick-command-bypass-confirmed"}
+        }
     }
 
     result = await runner._handle_message(
@@ -342,8 +344,8 @@ async def test_non_admin_denied_for_unlisted_quick_command_exec():
 
 
 @pytest.mark.asyncio
-async def test_listed_quick_command_runs_for_non_admin():
-    """When the operator lists the quick command in user_allowed_commands, a
+async def test_listed_custom_command_runs_for_non_admin():
+    """When the operator lists the custom command in user_allowed_commands, a
     non-admin can run it — the gate must allow, not blanket-deny."""
     runner = _make_runner(
         platform_extra={
@@ -351,8 +353,10 @@ async def test_listed_quick_command_runs_for_non_admin():
             "user_allowed_commands": ["limits"],
         }
     )
-    runner.config.quick_commands = {
-        "limits": {"type": "exec", "command": "printf quick-command-allowed"}
+    runner.config.commands = {
+        "custom": {
+            "limits": {"type": "exec", "command": "printf quick-command-allowed"}
+        }
     }
 
     result = await runner._handle_message(
@@ -363,8 +367,8 @@ async def test_listed_quick_command_runs_for_non_admin():
 
 
 @pytest.mark.asyncio
-async def test_admin_runs_quick_command_when_gating_enabled():
-    """An admin runs the quick command even under an enabled gate with an
+async def test_admin_runs_custom_command_when_gating_enabled():
+    """An admin runs the custom command even under an enabled gate with an
     empty user_allowed_commands list."""
     runner = _make_runner(
         platform_extra={
@@ -372,8 +376,10 @@ async def test_admin_runs_quick_command_when_gating_enabled():
             "user_allowed_commands": [],
         }
     )
-    runner.config.quick_commands = {
-        "limits": {"type": "exec", "command": "printf quick-command-admin"}
+    runner.config.commands = {
+        "custom": {
+            "limits": {"type": "exec", "command": "printf quick-command-admin"}
+        }
     }
 
     result = await runner._handle_message(

@@ -9811,18 +9811,13 @@ async def list_commands(profile: Optional[str] = None):
     builtin_overrides = cmd_config.get("builtin", {}) or {}
     custom_cmds = cmd_config.get("custom", {}) or {}
 
-    # Backward compat: also include quick_commands
-    quick_cmds = cfg.get("quick_commands", {}) or {}
-
-    # 1. Collect all custom commands (both custom section and quick_commands)
+    # 1. Collect custom commands from commands.custom
     custom_list = []
-    processed_custom = set()
 
     if isinstance(custom_cmds, dict):
         for name, cmd in custom_cmds.items():
             if not isinstance(cmd, dict):
                 continue
-            processed_custom.add(name)
             custom_list.append({
                 "name": name,
                 "description": cmd.get("description", ""),
@@ -9833,33 +9828,6 @@ async def list_commands(profile: Optional[str] = None):
                 "silent_empty": cmd.get("silent_empty", False),
                 "source": "custom"
             })
-
-    if isinstance(quick_cmds, dict):
-        for name, cmd in quick_cmds.items():
-            if name in processed_custom:
-                continue
-            if isinstance(cmd, dict):
-                custom_list.append({
-                    "name": name,
-                    "description": cmd.get("description", f"Quick command: {name}"),
-                    "type": cmd.get("type", "exec"),
-                    "command": cmd.get("command", ""),
-                    "enabled": cmd.get("enabled", True),
-                    "visible": cmd.get("visible", {"telegram": True, "discord": True, "cli": True}),
-                    "silent_empty": cmd.get("silent_empty", False),
-                    "source": "custom"
-                })
-            else:
-                custom_list.append({
-                    "name": name,
-                    "description": f"Quick command: {name}",
-                    "type": "exec",
-                    "command": str(cmd),
-                    "enabled": True,
-                    "visible": {"telegram": True, "discord": True, "cli": True},
-                    "silent_empty": True,
-                    "source": "custom"
-                })
 
     # 2. Collect all built-in commands (filtering out cli_only=True)
     builtin_list = []
@@ -9915,9 +9883,6 @@ async def upsert_custom_command(body: CustomCommandInput, profile: Optional[str]
 
         cmds["custom"] = custom
         cfg["commands"] = cmds
-
-        if "quick_commands" in cfg and isinstance(cfg["quick_commands"], dict):
-            cfg["quick_commands"].pop(body.name, None)
 
         save_config(cfg)
     return {"ok": True}

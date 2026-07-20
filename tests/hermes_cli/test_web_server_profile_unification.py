@@ -587,3 +587,238 @@ class TestProfileScopedChatPty:
         with pytest.raises(web_server.HTTPException) as exc:
             web_server._resolve_chat_argv(profile="ghost")
         assert exc.value.status_code == 404
+
+
+class TestProfileScopedCommands:
+    """Regression tests for /api/commands management endpoints — profile routing,
+    config key alignment, visibility gates."""
+
+    # ── Profile routing: query param (not JSON body) ─────────────────────
+
+    def test_custom_command_create_scoped_to_profile(self, client, isolated_profiles):
+        """POST /api/commands/custom?profile=... writes to the correct profile."""
+        payload = {
+            "name": "my-test-cmd",
+            "description": "A test command",
+            "type": "exec",
+            "command": "echo hello",
+            "enabled": True,
+            "visible": {"telegram": True, "discord": True, "cli": True},
+        }
+        resp = client.post(
+            "/api/commands/custom?profile=worker_beta",
+            json=payload,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        # Worker beta's config should contain the command
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        worker_custom = worker_cfg.get("commands", {}).get("custom", {})
+        assert "my-test-cmd" in worker_custom
+        assert worker_custom["my-test-cmd"]["command"] == "echo hello"
+
+        # Default must NOT contain the command
+        default_cfg = _cfg(isolated_profiles["default"])
+        default_custom = default_cfg.get("commands", {}).get("custom", {})
+        assert "my-test-cmd" not in default_custom
+
+    def test_custom_command_create_without_profile_uses_default(self, client, isolated_profiles):
+        """POST /api/commands/custom without profile writes to default."""
+        payload = {
+            "name": "default-only",
+            "description": "Default profile command",
+            "type": "exec",
+            "command": "echo default",
+            "enabled": True,
+            "visible": {"telegram": True, "discord": True, "cli": True},
+        }
+        resp = client.post("/api/commands/custom", json=payload)
+        assert resp.status_code == 200
+
+        default_cfg = _cfg(isolated_profiles["default"])
+        default_custom = default_cfg.get("commands", {}).get("custom", {})
+        assert "default-only" in default_custom
+
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        worker_custom = worker_cfg.get("commands", {}).get("custom", {})
+        assert "default-only" not in worker_custom
+
+    def test_custom_command_delete_scoped_to_profile(self, client, isolated_profiles):
+        """DELETE /api/commands/custom/{name}?profile=... deletes from right profile."""
+        # Pre-seed worker_beta config
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        worker_cfg.setdefault("commands", {})["custom"] = {
+            "delete-me": {
+                "description": "To be deleted",
+                "type": "exec",
+                "command": "echo delete",
+                "enabled": True,
+                "visible": {"telegram": True, "discord": True, "cli": True},
+            }
+        }
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(yaml.dump(worker_cfg))
+
+        resp = client.delete("/api/commands/custom/delete-me?profile=worker_beta")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        assert "delete-me" not in worker_cfg.get("commands", {}).get("custom", {})
+
+    def test_builtin_command_update_scoped_to_profile(self, client, isolated_profiles):
+        """POST /api/commands/builtin/{name}?profile=... updates right profile."""
+        resp = client.post(
+            "/api/commands/builtin/status?profile=worker_beta",
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        worker_builtin = worker_cfg.get("commands", {}).get("builtin", {})
+        assert worker_builtin.get("status", {}).get("enabled") is False
+
+        # Default config must not have the override
+        default_cfg = _cfg(isolated_profiles["default"])
+        default_builtin = default_cfg.get("commands", {}).get("builtin", {})
+        assert "status" not in default_builtin
+
+    def test_list_commands_scoped_to_profile(self, client, isolated_profiles):
+        """GET /api/commands?profile=... reads from the correct profile."""
+        # Seed a custom command in worker_beta only
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        worker_cfg.setdefault("commands", {})["custom"] = {
+            "scope-check": {
+                "description": "Scoped command",
+                "type": "exec",
+                "command": "echo scoped",
+                "enabled": True,
+                "visible": {"telegram": True, "discord": True, "cli": True},
+            }
+        }
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(yaml.dump(worker_cfg))
+
+        resp = client.get("/api/commands?profile=worker_beta")
+        assert resp.status_code == 200
+        cmds = resp.json()
+        names = [c["name"] for c in cmds]
+        assert "scope-check" in names
+
+        # Without profile, scope-check should NOT appear
+        resp_default = client.get("/api/commands")
+        assert resp_default.status_code == 200
+        names_default = [c["name"] for c in resp_default.json()]
+        assert "scope-check" not in names_default
+
+    # ── Config key alignment ────────────────────────────────────────────
+
+    def test_custom_command_config_key_alignment(self, client, isolated_profiles):
+        """Custom commands land under commands.custom (not commands.builtin)."""
+        payload = {
+            "name": "key-test",
+            "description": "Config key test",
+            "type": "exec",
+            "command": "echo keytest",
+            "enabled": True,
+            "visible": {"telegram": True, "discord": True, "cli": True},
+        }
+        resp = client.post("/api/commands/custom?profile=worker_beta", json=payload)
+        assert resp.status_code == 200
+
+        cfg = _cfg(isolated_profiles["worker_beta"])
+        assert "key-test" in cfg.get("commands", {}).get("custom", {})
+        assert "key-test" not in cfg.get("commands", {}).get("builtin", {})
+        assert "commands" in cfg
+        assert "custom" in cfg["commands"]
+
+    def test_builtin_override_config_key_alignment(self, client, isolated_profiles):
+        """Builtin command overrides land under commands.builtin (not commands.custom)."""
+        resp = client.post(
+            "/api/commands/builtin/new?profile=worker_beta",
+            json={"visible": {"telegram": False}},
+        )
+        assert resp.status_code == 200
+
+        cfg = _cfg(isolated_profiles["worker_beta"])
+        assert "new" in cfg.get("commands", {}).get("builtin", {})
+        assert "new" not in cfg.get("commands", {}).get("custom", {})
+
+    def test_custom_command_round_trip(self, client, isolated_profiles):
+        """POST then GET returns the correct custom command attributes."""
+        payload = {
+            "name": "round-trip",
+            "description": "Round trip test",
+            "type": "exec",
+            "command": "echo roundtrip",
+            "enabled": True,
+            "visible": {"telegram": True, "discord": False, "cli": True},
+        }
+        resp = client.post("/api/commands/custom?profile=worker_beta", json=payload)
+        assert resp.status_code == 200
+
+        resp_get = client.get("/api/commands?profile=worker_beta")
+        assert resp_get.status_code == 200
+        cmds = resp_get.json()
+        match = [c for c in cmds if c["name"] == "round-trip"]
+        assert len(match) == 1
+        assert match[0]["description"] == "Round trip test"
+        assert match[0]["command"] == "echo roundtrip"
+        assert match[0]["source"] == "custom"
+        assert match[0]["type"] == "exec"
+
+    # ── Visibility gates ─────────────────────────────────────────────────
+
+    def test_custom_command_visibility_stored_and_returned(self, client, isolated_profiles):
+        """Custom command visibility settings persist and are returned correctly."""
+        payload = {
+            "name": "vis-test",
+            "description": "Visibility test",
+            "type": "exec",
+            "command": "echo vis",
+            "enabled": True,
+            "visible": {"telegram": True, "discord": False, "cli": False},
+        }
+        resp = client.post("/api/commands/custom?profile=worker_beta", json=payload)
+        assert resp.status_code == 200
+
+        # Check via GET
+        resp_get = client.get("/api/commands?profile=worker_beta")
+        cmds = resp_get.json()
+        match = [c for c in cmds if c["name"] == "vis-test"]
+        assert len(match) == 1
+        assert match[0]["visible"]["telegram"] is True
+        assert match[0]["visible"]["discord"] is False
+        assert match[0]["visible"]["cli"] is False
+
+    def test_builtin_command_visibility_stored_and_returned(self, client, isolated_profiles):
+        """Builtin command visibility override persists and returns correctly."""
+        resp = client.post(
+            "/api/commands/builtin/help?profile=worker_beta",
+            json={"visible": {"telegram": False, "discord": True}},
+        )
+        assert resp.status_code == 200
+
+        resp_get = client.get("/api/commands?profile=worker_beta")
+        cmds = resp_get.json()
+        match = [c for c in cmds if c["name"] == "help"]
+        assert len(match) >= 1
+        assert match[0]["visible"]["telegram"] is False
+        assert match[0]["visible"]["discord"] is True
+
+    def test_visibility_defaults_for_unspecified_platforms(self, client, isolated_profiles):
+        """When only some platforms specified, unspecified ones keep defaults."""
+        resp = client.post(
+            "/api/commands/builtin/stop?profile=worker_beta",
+            json={"visible": {"telegram": False}},
+        )
+        assert resp.status_code == 200
+
+        resp_get = client.get("/api/commands?profile=worker_beta")
+        cmds = resp_get.json()
+        match = [c for c in cmds if c["name"] == "stop"]
+        assert len(match) >= 1
+        assert match[0]["visible"]["telegram"] is False
+        # unspecified platforms default to True
+        assert match[0]["visible"]["discord"] is True
+        assert match[0]["visible"]["cli"] is True

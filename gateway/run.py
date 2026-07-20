@@ -8868,7 +8868,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 active_cfg = self.config
 
-            cmd_config = active_cfg.get("commands", {}) or {}
+            if isinstance(active_cfg, dict):
+                cmd_config = active_cfg.get("commands", {}) or {}
+            else:
+                cmd_config = getattr(active_cfg, "commands", {}) or {}
             if not isinstance(cmd_config, dict):
                 cmd_config = {}
 
@@ -8882,19 +8885,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 # Check custom commands
                 custom_cfg = cmd_config.get("custom", {}) or {}
-                # Backward compat: also check quick_commands
-                quick_cfg = active_cfg.get("quick_commands", {}) or {}
-                if not isinstance(quick_cfg, dict):
-                    quick_cfg = {}
 
                 if isinstance(custom_cfg, dict) and command in custom_cfg:
                     c_cmd = custom_cfg[command]
                     if isinstance(c_cmd, dict) and not c_cmd.get("enabled", True):
                         return f"Command '/{command}' is disabled."
-                elif command in quick_cfg:
-                    # quick_commands alias/exec - check if we can execute
-                    # quick_commands don't have disabled flags unless migrated, which is handled above
-                    pass
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -9341,19 +9336,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
 
-        # Expand alias quick commands before built-in dispatch so targets like
+        # Expand alias custom commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
         # Preserve built-in precedence; aliases only need early handling when
         # the typed command is not already known.
         if command and _cmd_def is None:
             if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
+                cmd_config = self.config.get("commands", {}) or {}
             else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if isinstance(quick_commands, dict) and command in quick_commands:
-                qcmd = quick_commands[command]
+                cmd_config = getattr(self.config, "commands", {}) or {}
+            custom_cmds = cmd_config.get("custom", {}) if isinstance(cmd_config, dict) else {}
+            if not isinstance(custom_cmds, dict):
+                custom_cmds = {}
+            if isinstance(custom_cmds, dict) and command in custom_cmds:
+                qcmd = custom_cmds[command]
                 if qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
+                    target = qcmd.get("command", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         target_command = target.lstrip("/")
@@ -9727,14 +9725,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 active_cfg = self.config
 
-            cmd_config = active_cfg.get("commands", {}) or {}
+            if isinstance(active_cfg, dict):
+                cmd_config = active_cfg.get("commands", {}) or {}
+            else:
+                cmd_config = getattr(active_cfg, "commands", {}) or {}
             custom_cmds = cmd_config.get("custom", {}) if isinstance(cmd_config, dict) else {}
             if not isinstance(custom_cmds, dict):
                 custom_cmds = {}
-            # Backward compat: also check quick_commands
-            quick_commands = active_cfg.get("quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
 
             if command in custom_cmds:
                 # Quick commands are slash capabilities too — and type:exec
@@ -9750,6 +9747,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 qcmd = custom_cmds[command]
                 if not isinstance(qcmd, dict) or not qcmd.get("enabled", True):
                     return f"Command '/{command}' is disabled."
+                # Check platform visibility gate
+                plat = source.platform.value if hasattr(source.platform, 'value') else str(source.platform)
+                visible_map = qcmd.get("visible", {}) if isinstance(qcmd, dict) else {}
+                if visible_map.get(plat, True) is False:
+                    return f"Command '/{command}' is not available on {plat}."
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
@@ -9781,7 +9783,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         return f"Quick command '/{command}' has no command defined."
                 elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
+                    target = qcmd.get("command", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         target_command = target.lstrip("/")
@@ -9789,48 +9791,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event.text = f"{target} {user_args}".strip()
                         command = target_command.split()[0] if target_command else target_command
                         # Fall through to normal command dispatch below
-                    else:
-                        return f"Quick command '/{command}' has no target defined."
-                else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
-
-            elif command in quick_commands:
-                _denied = self._check_slash_access(source, command)
-                if _denied is not None:
-                    return _denied
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            from tools.environments.local import _sanitize_subprocess_env
-                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                env=sanitized_env,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            if output:
-                                from agent.redact import redact_sensitive_text
-                                output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command.split()[0] if target_command else target_command
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:

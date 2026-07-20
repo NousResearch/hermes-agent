@@ -214,7 +214,7 @@ def cron_list(show_all: bool = False):
 
         latest_execution = job.get("latest_execution")
         if latest_execution:
-            print(
+            rich.print(
                 f"    Execution: {latest_execution.get('status', '?')}  "
                 f"{latest_execution.get('id', '?')}"
             )

@@ -6421,16 +6421,7 @@ def _apply_model_assignment_sync(
         model_cfg = _apply_main_model_assignment(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
-        # Fall back to the provider entry's stored key only when the request
-        # didn't carry one — same precedence as the base_url fill above. An
-        # unconditional overwrite silently discards a key the caller is
-        # rotating in, and model.api_key outranks the environment at client
-        # construction (#62269), so the stale key keeps authenticating.
-        if (
-            not api_key
-            and isinstance(provider_entry, dict)
-            and provider_entry.get("api_key")
-        ):
+        if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
             model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
@@ -17583,7 +17574,10 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
-    await session.attach(ws)
+    # A fresh xterm cannot reliably reconstruct the TUI from an arbitrary
+    # bounded tail of alternate-screen, differential ANSI output. Reused PTYs
+    # emit a complete frame after replay so reconnects never reopen blank.
+    await session.attach(ws, force_redraw=not _created)
 
     # --- writer loop: WebSocket → PTY master ----------------------------
     # No reader task here: the session's drain task (spawned once per PTY,

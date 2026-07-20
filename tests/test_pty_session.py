@@ -83,6 +83,25 @@ async def test_attach_replays_buffer_then_streams_live():
 
 
 @pytest.mark.asyncio
+async def test_reattach_can_force_complete_tui_redraw_after_replay():
+    """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"partial differential frame", b""])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)
+
+    ws = FakeWS()
+    await s.attach(ws, force_redraw=True)
+
+    replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    assert replay == b"partial differential frame"
+    assert bytes(bridge.written) == b"\x0c"
+    await s.close()
+
+
+@pytest.mark.asyncio
 async def test_detach_keeps_draining_into_buffer():
     from hermes_cli.pty_session import PtySession
     bridge = FakeBridge([b"one", b"", b"two"])

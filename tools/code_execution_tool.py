@@ -748,7 +748,7 @@ def _get_or_create_env(task_id: str):
             }
 
         ssh_config = None
-        if env_type == "ssh":
+        if env_type in ("ssh", "ssh_pwsh"):
             ssh_config = {
                 "host": config.get("ssh_host", ""),
                 "user": config.get("ssh_user", ""),

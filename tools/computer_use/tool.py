@@ -155,6 +155,7 @@ _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}
 _backend: Optional[ComputerUseBackend] = None
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
+_backend_permission_modes: Dict[str, str] = {}
 # Approval state, scoped per conversation/run (keyed by session_id) so a
 # gateway serving concurrent sessions can't leak one run's "always approve"
 # unlock into another. Falls back to a shared "" bucket for callers that
@@ -167,45 +168,97 @@ _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
 
 
+def _cua_permission_mode(session_id: str) -> str:
+    """Map Hermes's explicit approval bypass onto Cua's immutable mode."""
+    try:
+        from tools.approval import (
+            is_approval_bypass_active_for_session,
+        )
+
+        if is_approval_bypass_active_for_session(session_id):
+            return "unrestricted"
+    except Exception:
+        # Approval state must fail closed if it cannot be resolved.
+        pass
+    return "standard"
+
+
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
     sid = str(session_id or "")
-    with _backend_lock:
-        if sid == "" and _backend is not None:
-            return _backend
-        cached = _backends.get(sid)
-        if cached is not None:
-            return cached
-        backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-        if backend_name in {"cua", "cua-driver", ""}:
-            from tools.computer_use.cua_backend import CuaDriverBackend
+    while True:
+        stale_backend: Optional[ComputerUseBackend] = None
+        stale_lock: Optional[threading.RLock] = None
+        with _backend_lock:
+            # Resolve the mode while holding the cache lock. Session YOLO
+            # mutation never holds the approval lock while releasing this
+            # cache, so the lock order cannot cycle.
+            permission_mode = _cua_permission_mode(sid)
+            if sid == "" and _backend is not None and sid not in _backends:
+                # Preserve the long-standing empty-session injection hook used
+                # by integrations and tests while normalizing it into the
+                # session-owned cache/lifecycle path.
+                _backends[sid] = _backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+            cached = _backends.get(sid)
+            if cached is not None:
+                if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                    return cached
+                # Cua's permission mode cannot change after daemon startup. A
+                # /yolo toggle replaces only this session's backend.
+                stale_backend = _backends.pop(sid)
+                stale_lock = _backend_call_locks.pop(sid, None)
+                _backend_permission_modes.pop(sid, None)
+                if sid == "":
+                    _backend = None
+            else:
+                backend_name = os.environ.get(
+                    "HERMES_COMPUTER_USE_BACKEND", "cua"
+                ).lower()
+                if backend_name in {"cua", "cua-driver", ""}:
+                    from tools.computer_use.cua_backend import CuaDriverBackend
 
-            backend = CuaDriverBackend()
-        elif backend_name == "noop":  # pragma: no cover
-            backend = _NoopBackend()
-        else:
-            raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
+                    backend = CuaDriverBackend(permission_mode=permission_mode)
+                elif backend_name == "noop":  # pragma: no cover
+                    backend = _NoopBackend()
+                else:
+                    raise RuntimeError(
+                        f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}"
+                    )
+                # Starting under the cache lock preserves the existing
+                # one-backend-per-session invariant. A concurrent mode toggle
+                # releases this backend before returning to its caller.
+                backend.start()
+                _backends[sid] = backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+                if sid == "":
+                    _backend = backend
+                return backend
+
+        # Stop a mismatched backend outside the global cache lock. Another
+        # session can continue creating or releasing its own backend, and the
+        # loop re-reads the authoritative mode before installing a replacement.
         try:
-            backend.start()
+            if stale_lock is not None:
+                with stale_lock:
+                    stale_backend.stop()
+            elif stale_backend is not None:
+                stale_backend.stop()
         except Exception:
-            # Don't cache a backend whose start() failed (e.g. a lazy
-            # dependency install was declined / failed). The next call
-            # retries cleanly instead of returning a half-initialised backend.
-            raise
-        _backends[sid] = backend
-        _backend_call_locks[sid] = threading.RLock()
-        if sid == "":
-            _backend = backend
-        return backend
+            pass
 
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned computer-use backend.
 
     This is the production lifecycle seam for hosts and policy plugins. It
-    removes the exact session backend and its call lock before stopping the
-    backend, so new lookups cannot retain the stale target/ref namespace.
-    Approval state is cleared even when no backend was started.
+    removes the exact session backend, its call lock, and its recorded
+    permission mode before stopping the backend, so new lookups cannot retain
+    the stale target/ref namespace — and stops a private embedded daemon when
+    Hermes YOLO selected unrestricted mode. Approval state is cleared even
+    when no backend was started.
 
     Returns ``True`` when a backend was found and released, ``False`` when the
     session was already absent. Safe to call repeatedly.
@@ -215,6 +268,7 @@ def release_computer_use_session(session_id: str) -> bool:
     with _backend_lock:
         backend = _backends.pop(sid, None)
         call_lock = _backend_call_locks.pop(sid, None)
+        _backend_permission_modes.pop(sid, None)
         # Preserve the backward-compatible empty-session injection hook:
         # older callers/tests may populate only `_backend`.
         if sid == "" and backend is None:
@@ -276,6 +330,7 @@ def _shutdown_backend_atexit() -> None:
         _backend = None
         _backends.clear()
         _backend_call_locks.clear()
+        _backend_permission_modes.clear()
 
     with _approval_lock:
         _session_auto_approve.clear()
@@ -299,9 +354,6 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
     _shutdown_backend_atexit()
     _AUX_VISION_ROUTE_CACHE.clear()
-    with _approval_lock:
-        _session_auto_approve.clear()
-        _always_allow.clear()
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -379,7 +431,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
-    # Per-run key for approval-state isolation across concurrent sessions.
+    # Per-run key for approval-state and daemon-mode isolation across
+    # concurrent sessions.
     session_id = str(kwargs.get("session_id") or "")
 
     # Safety: validate actions before approval prompt.

@@ -290,8 +290,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["isolated_new", "isolated_named", "existing_profile"],
                 "description": (
-                    "Browser preparation mode. existing_profile always requires "
-                    "the driver's separate interactive grant."
+                    "Browser preparation mode. existing_profile is decided by "
+                    "cua-driver's immutable permission mode: standard requires a "
+                    "certified protected host; explicit Hermes YOLO uses a private "
+                    "unrestricted daemon."
                 ),
             },
             "profile_name": {"type": "string", "description": "Name for isolated_named setup."},

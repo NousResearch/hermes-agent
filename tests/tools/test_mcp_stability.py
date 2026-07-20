@@ -736,3 +736,190 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ---------------------------------------------------------------------------
+# Configurable per-server reconnect retry limit
+#
+# Salvage of PR #12128 against current main's park-and-self-probe design.
+# `max_reconnect_retries` is read from per-server config; the default still
+# falls back to the `_MAX_RECONNECT_RETRIES` module constant. `0` is a
+# sentinel meaning "retry forever" — the server never parks.
+# ---------------------------------------------------------------------------
+
+class TestMCPReconnectRetryConfig:
+    """Per-server `max_reconnect_retries` is configurable; `0` means retry forever.
+
+    Behavior contract:
+      - No config                    → falls back to `_MAX_RECONNECT_RETRIES`.
+      - `max_reconnect_retries = N`  → park after N reconnect failures.
+      - `max_reconnect_retries = 0`  → never park (retry indefinitely).
+    """
+
+    def test_init_default_matches_module_constant(self):
+        """__init__ seeds `max_reconnect_retries` from the module constant so
+        the slot is populated (and the attribute is usable) before `run()`
+        applies any per-server config."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        server = MCPServerTask("test-init-default")
+        assert server.max_reconnect_retries == _MAX_RECONNECT_RETRIES
+
+    def test_run_reads_max_reconnect_retries_from_config(self):
+        """`run()` reads `max_reconnect_retries` from per-server config and
+        overrides the `__init__` default before the first transport attempt."""
+        from tools.mcp_tool import MCPServerTask
+
+        captured: dict = {}
+
+        async def fake_run_stdio(self_inner, config):
+            captured["value"] = self_inner.max_reconnect_retries
+            self_inner._ready.set()
+            raise ConnectionError("bail out of run loop")
+
+        async def _run():
+            server = MCPServerTask("test-config-read")
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio):
+                task = asyncio.ensure_future(
+                    server.run({"command": "x", "max_reconnect_retries": 11})
+                )
+                await server._ready.wait()
+                server._shutdown_event.set()
+                server._reconnect_event.set()
+                await asyncio.wait_for(task, timeout=5)
+            assert captured.get("value") == 11
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_parks_after_configured_limit(self):
+        """`max_reconnect_retries=N` parks the server once `_reconnect_retries`
+        exceeds N. The parking log message records the configured limit,
+        distinguishing it from the default constant."""
+        import logging
+        import re
+
+        from tools.mcp_tool import MCPServerTask
+
+        CONFIGURED = 2
+
+        async def fake_run_stdio(self_inner, config):
+            if not self_inner._ready.is_set():
+                self_inner._ready.set()
+            raise ConnectionError("post-ready drop")
+
+        # Capture the real asyncio.sleep before patching so fast_sleep can
+        # yield without recursing into itself.
+        real_asyncio_sleep = asyncio.sleep
+
+        async def fast_sleep(_d):
+            await real_asyncio_sleep(0)
+
+        captured_logs: list = []
+
+        class _Sink(logging.Handler):
+            def emit(self, record):
+                captured_logs.append(record.getMessage())
+
+        sink = _Sink()
+        mcp_logger = logging.getLogger("tools.mcp_tool")
+        mcp_logger.addHandler(sink)
+        try:
+            async def _run():
+                server = MCPServerTask("test-park-limit")
+                with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio), \
+                     patch("tools.mcp_tool.asyncio.sleep", fast_sleep), \
+                     patch("tools.mcp_tool._PARKED_RETRY_INTERVAL", 0.01), \
+                     patch("tools.mcp_tool._MAX_BACKOFF_SECONDS", 0.0):
+                    task = asyncio.ensure_future(
+                        server.run({
+                            "command": "x",
+                            "max_reconnect_retries": CONFIGURED,
+                        })
+                    )
+                    # Let at least one park-revive cycle complete.
+                    await real_asyncio_sleep(0.2)
+                    server._shutdown_event.set()
+                    server._reconnect_event.set()
+                    await asyncio.wait_for(task, timeout=5)
+
+            asyncio.get_event_loop().run_until_complete(_run())
+        finally:
+            mcp_logger.removeHandler(sink)
+
+        park_msgs = [
+            m for m in captured_logs
+            if "parking" in m and "failed after" in m
+        ]
+        assert park_msgs, "expected at least one parking log message"
+        # Format: "MCP server 'X' failed after N reconnection attempts, parking; ..."
+        match = re.search(r"failed after (\d+) reconnection", park_msgs[0])
+        assert match is not None, f"unexpected log format: {park_msgs[0]!r}"
+        assert int(match.group(1)) == CONFIGURED, (
+            f"parking limit should honor config ({CONFIGURED}), "
+            f"got {match.group(1)}"
+        )
+
+    def test_zero_disables_parking(self):
+        """`max_reconnect_retries=0` disables parking: the server reconnects
+        indefinitely even after the default cap would have parked it."""
+        import logging
+
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        call_count = 0
+
+        async def fake_run_stdio(self_inner, config):
+            nonlocal call_count
+            call_count += 1
+            if not self_inner._ready.is_set():
+                self_inner._ready.set()
+            raise ConnectionError("post-ready drop")
+
+        real_asyncio_sleep = asyncio.sleep
+
+        async def fast_sleep(_d):
+            await real_asyncio_sleep(0)
+
+        captured_logs: list = []
+
+        class _Sink(logging.Handler):
+            def emit(self, record):
+                captured_logs.append(record.getMessage())
+
+        sink = _Sink()
+        mcp_logger = logging.getLogger("tools.mcp_tool")
+        mcp_logger.addHandler(sink)
+        try:
+            async def _run():
+                server = MCPServerTask("test-zero-forever")
+                with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio), \
+                     patch("tools.mcp_tool.asyncio.sleep", fast_sleep), \
+                     patch("tools.mcp_tool._PARKED_RETRY_INTERVAL", 0.01), \
+                     patch("tools.mcp_tool._MAX_BACKOFF_SECONDS", 0.0):
+                    task = asyncio.ensure_future(
+                        server.run({
+                            "command": "x",
+                            "max_reconnect_retries": 0,
+                        })
+                    )
+                    # Run long enough that the default cap (5) would have
+                    # parked the server many times over.
+                    await real_asyncio_sleep(0.3)
+                    server._shutdown_event.set()
+                    server._reconnect_event.set()
+                    await asyncio.wait_for(task, timeout=5)
+
+            asyncio.get_event_loop().run_until_complete(_run())
+        finally:
+            mcp_logger.removeHandler(sink)
+
+        # Must have attempted far more reconnects than the default cap allows
+        # without parking.
+        assert call_count > _MAX_RECONNECT_RETRIES + 5, (
+            f"only {call_count} calls — 0=forever not honored"
+        )
+        # No parking log should have fired.
+        assert not any("parking" in m for m in captured_logs), (
+            f"max_reconnect_retries=0 should never park, but got: "
+            f"{[m for m in captured_logs if 'parking' in m]}"
+        )

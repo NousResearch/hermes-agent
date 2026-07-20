@@ -805,6 +805,7 @@ def test_run_and_exit_oneshot_routes_system_exit_to_hard_exit(monkeypatch, main_
         "hermes_cli.oneshot",
         types.SimpleNamespace(run_oneshot=fake_run_oneshot),
     )
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
     monkeypatch.setattr(main_mod, "_exit_after_oneshot", lambda rc: exits.append(rc))
 
     main_mod._run_and_exit_oneshot("hello")
@@ -844,6 +845,7 @@ def test_run_and_exit_oneshot_prints_system_exit_message(
         "hermes_cli.oneshot",
         types.SimpleNamespace(run_oneshot=fake_run_oneshot),
     )
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
     monkeypatch.setattr(main_mod, "_exit_after_oneshot", lambda rc: exits.append(rc))
 
     main_mod._run_and_exit_oneshot("hello")
@@ -986,6 +988,7 @@ def test_run_and_exit_oneshot_routes_keyboard_interrupt_to_130(
         "hermes_cli.oneshot",
         types.SimpleNamespace(run_oneshot=fake_run_oneshot),
     )
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
     monkeypatch.setattr(main_mod, "_exit_after_oneshot", lambda rc: exits.append(rc))
 
     main_mod._run_and_exit_oneshot("hello")

@@ -6846,12 +6846,11 @@ def _validate_llm_response(
     See #7264.
 
     Also the single accounting chokepoint for auxiliary usage: every
-    non-streaming aux response passes through here exactly once, so token usage
-    is recorded against the ambient session context published by the agent
-    loop (``agent.aux_accounting``, issue #23270). Recording remains
-    best-effort and happens before shape validation so a provider response
-    that consumed tokens is not lost when its payload is unusable.
-    *provider*/*base_url* identify the physical route that served the response.
+    successful non-streaming aux response passes through here exactly once,
+    so token usage is recorded against the ambient session context published
+    by the agent loop (``agent.aux_accounting``, issue #23270). Recording is
+    best-effort and never affects validation. *provider*/*base_url* identify
+    the physical route that served the response.
     """
     if response is None:
         raise RuntimeError(
@@ -6859,22 +6858,24 @@ def _validate_llm_response(
         )
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
+    # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
+    # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
         choices = response.choices
         if not choices or not hasattr(choices[0], "message"):
             raise AttributeError("missing choices[0].message")
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
-        if recovered is None:
-            response_type = type(response).__name__
-            response_preview = str(response)[:120]
-            raise RuntimeError(
-                f"Auxiliary {task or 'call'}: LLM returned invalid response "
-                f"(type={response_type}): {response_preview!r}. "
-                f"Expected object with .choices[0].message — check provider "
-                f"adapter or custom endpoint compatibility."
-            ) from exc
-        response = recovered
+        if recovered is not None:
+            return recovered
+        response_type = type(response).__name__
+        response_preview = str(response)[:120]
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: LLM returned invalid response "
+            f"(type={response_type}): {response_preview!r}. "
+            f"Expected object with .choices[0].message — check provider "
+            f"adapter or custom endpoint compatibility."
+        ) from exc
     return response
 
 

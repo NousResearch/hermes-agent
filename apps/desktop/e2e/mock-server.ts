@@ -74,10 +74,89 @@ const INTERIM_SCRIPT: ScriptedTurn[] = [
 /** Per-server request counter so we can walk through the script turns. */
 let _scriptIndex = 0
 
-/** Reset the script index (called between tests via restartMockServer). */
+/** Per-server counter for the sidebar-states script (independent from _scriptIndex). */
+let _sidebarScriptIndex = 0
+
+/** Per-server counter for the cross-session sidebar script. */
+let _sidebarCrossIndex = 0
+
+/** Reset the script indices (called between tests via restartMockServer). */
 function resetScriptIndex(): void {
   _scriptIndex = 0
+  _sidebarScriptIndex = 0
+  _sidebarCrossIndex = 0
 }
+
+// ─── Sidebar-states script ─────────────────────────────────────────────
+//
+// A separate trigger (E2E_SIDEBAR_TRIGGER) exercises the desktop sidebar's
+// background-process and subagent states. The mock returns tool_calls that
+// the agent executes for real — `terminal(background=true)` spawns a real
+// (but trivial) background process, and `delegate_task` spawns a real
+// subagent that calls the mock server and gets the canned reply.
+//
+// Turn 1: text + terminal(bg=true) + delegate_task → tools execute
+// Turn 2: final answer → message.complete, dot transitions
+
+const SIDEBAR_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Let me run a background task and delegate some work.',
+    toolCalls: [
+      {
+        name: 'terminal',
+        args: {
+          command: 'echo "background process output" && sleep 1 && echo "done"',
+          background: true,
+          notify_on_complete: true,
+        },
+      },
+      {
+        name: 'delegate_task',
+        args: {
+          goal: 'Summarize the test results',
+          context: 'This is a test subagent for the sidebar states E2E test.',
+        },
+      },
+    ],
+  },
+  {
+    text: 'All tasks complete. The background process finished and the subagent returned its summary.',
+  },
+]
+
+// ─── Sidebar cross-session script ──────────────────────────────────────
+//
+// E2E_SIDEBAR_CROSS trigger uses a longer background process (sleep 5) so
+// the "background running" dot is visible long enough for the test to:
+//   1. See the background dot while the subagent runs.
+//   2. Open a different session and see session A's dot transition to
+//      "finished unread" when the background process completes.
+
+const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Starting a long background task and delegating work.',
+    toolCalls: [
+      {
+        name: 'terminal',
+        args: {
+          command: 'echo "long bg output" && sleep 5 && echo "finished"',
+          background: true,
+          notify_on_complete: true,
+        },
+      },
+      {
+        name: 'delegate_task',
+        args: {
+          goal: 'Analyze cross-session state',
+          context: 'Testing that the background dot updates across sessions.',
+        },
+      },
+    ],
+  },
+  {
+    text: 'Both tasks are running in the background now.',
+  },
+]
 
 /**
  * Start the mock server on an ephemeral port.
@@ -148,6 +227,32 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
           const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
           const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
+          const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
+          const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
+
+          if (isSidebarCrossTrigger) {
+            const turn = SIDEBAR_CROSS_SCRIPT[_sidebarCrossIndex] ?? SIDEBAR_CROSS_SCRIPT[SIDEBAR_CROSS_SCRIPT.length - 1]
+            _sidebarCrossIndex++
+
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (isSidebarTrigger) {
+            const turn = SIDEBAR_SCRIPT[_sidebarScriptIndex] ?? SIDEBAR_SCRIPT[SIDEBAR_SCRIPT.length - 1]
+            _sidebarScriptIndex++
+
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
 
           if (isInterimTrigger) {
             const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
@@ -410,4 +515,28 @@ export const INTERIM_TEXTS = {
   finalText: INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1].text,
   /** Text that should NOT produce an interim (empty-text tool turn). */
   silentTurnIndex: INTERIM_SCRIPT.findIndex((t) => !t.text && t.toolCalls),
+} as const
+
+/** The sidebar-states script's text constants, exported for test assertions. */
+export const SIDEBAR_TEXTS = {
+  /** The interim text from turn 1 (alongside tool calls). */
+  interimText: SIDEBAR_SCRIPT[0].text,
+  /** The final answer text. */
+  finalText: SIDEBAR_SCRIPT[SIDEBAR_SCRIPT.length - 1].text,
+  /** The background process command (for asserting process.list entries). */
+  bgCommand: 'echo "background process output" && sleep 1 && echo "done"',
+  /** The subagent's goal (for asserting subagent panel state). */
+  subagentGoal: 'Summarize the test results',
+} as const
+
+/** The cross-session sidebar script's text constants. */
+export const SIDEBAR_CROSS_TEXTS = {
+  /** The interim text from turn 1. */
+  interimText: SIDEBAR_CROSS_SCRIPT[0].text,
+  /** The final answer text. */
+  finalText: SIDEBAR_CROSS_SCRIPT[SIDEBAR_CROSS_SCRIPT.length - 1].text,
+  /** The longer background process command (sleep 5). */
+  bgCommand: 'echo "long bg output" && sleep 5 && echo "finished"',
+  /** The subagent's goal. */
+  subagentGoal: 'Analyze cross-session state',
 } as const

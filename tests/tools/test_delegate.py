@@ -2886,6 +2886,23 @@ class TestDelegationLifecycleIntegration:
             clear_task_env_overrides("session:b")
             ad._reset_for_tests()
 
+    def test_child_workspace_override_matches_lock_and_cleans_up(self, tmp_path):
+        import tools.delegate_tool as dt
+        from tools.file_tools import _resolve_base_dir
+        from tools.terminal_tool import resolve_task_overrides
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        child = MagicMock()
+        child._subagent_id = "sa-workspace-test"
+
+        dt._register_child_workspace_override(child, str(workspace))
+        assert _resolve_base_dir("sa-workspace-test") == workspace.resolve()
+        assert resolve_task_overrides("sa-workspace-test")["cwd"] == str(workspace)
+
+        dt._clear_child_workspace_override(child)
+        assert "cwd" not in resolve_task_overrides("sa-workspace-test")
+
     def test_workspace_mode_is_read_only_for_explicit_read_toolsets(self):
         from tools.delegate_tool import _resolve_workspace_mode
 

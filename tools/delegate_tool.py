@@ -825,6 +825,30 @@ def _build_delegation_activity_fn(children: List[Any]) -> Callable[[], Dict[str,
     return _activity
 
 
+def _register_child_workspace_override(child: Any, workspace_path: Optional[str]) -> None:
+    """Bind a child task id to the exact workspace protected by the lock."""
+    child_task_id = getattr(child, "_subagent_id", None)
+    if not workspace_path or not isinstance(child_task_id, str) or not child_task_id:
+        return
+    from tools.terminal_tool import register_task_env_overrides
+
+    register_task_env_overrides(child_task_id, {"cwd": workspace_path})
+    child._delegate_workspace_task_id = child_task_id
+
+
+def _clear_child_workspace_override(child: Any) -> None:
+    """Idempotently release a child workspace override on every exit path."""
+    child_task_id = getattr(child, "_delegate_workspace_task_id", None)
+    if not isinstance(child_task_id, str) or not child_task_id:
+        return
+    try:
+        from tools.terminal_tool import clear_task_env_overrides
+
+        clear_task_env_overrides(child_task_id)
+    finally:
+        child._delegate_workspace_task_id = None
+
+
 def _teardown_rejected_children(
     children: List[Any], parent_agent: Any, *, reason: str
 ) -> None:
@@ -866,6 +890,7 @@ def _teardown_rejected_children(
             except Exception:
                 logger.warning("Rejected subagent_stop hook failed", exc_info=True)
 
+        _clear_child_workspace_override(child)
         close = getattr(child, "close", None)
         if not callable(close):
             logger.warning(
@@ -2124,6 +2149,7 @@ def _run_single_child(
         # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
             _unregister_subagent(_subagent_id)
+        _clear_child_workspace_override(child)
 
         if child_pool is not None and leased_cred_id is not None:
             try:
@@ -2373,6 +2399,21 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
+
+    # Child file/terminal tools use the stable subagent id as their task id.
+    # Register the parent's authoritative workspace under every child id so the
+    # path protected by the async lock is exactly the path children resolve.
+    _workspace_path = _resolve_workspace_hint(parent_agent)
+    try:
+        for _, _, child in children:
+            _register_child_workspace_override(child, _workspace_path)
+    except Exception:
+        _teardown_rejected_children(
+            [child for _, _, child in children],
+            parent_agent,
+            reason="Failed to inherit parent workspace.",
+        )
+        raise
 
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
@@ -2649,7 +2690,6 @@ def delegate_task(
 
         _session_key = caller_session_key
         _child_agents = [c for (_, _, c) in children]
-        _workspace_path = _resolve_workspace_hint(parent_agent)
         _workspace_mode = _resolve_workspace_mode(
             task_list, default_toolsets=toolsets
         )

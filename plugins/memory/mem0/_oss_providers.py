@@ -11,14 +11,12 @@ LLM_PROVIDERS: dict[str, dict[str, Any]] = {
         "needs_key": True,
         "env_var": "OPENAI_API_KEY",
         "default_model": "gpt-5-mini",
-        "base_url_key": "openai_base_url",
     },
     "ollama": {
         "label": "Ollama (local)",
         "needs_key": False,
         "default_model": "llama3.1:8b",
         "default_url": "http://localhost:11434",
-        "base_url_key": "ollama_base_url",
         "pip_dep": "ollama",
     },
 }
@@ -29,7 +27,6 @@ EMBEDDER_PROVIDERS: dict[str, dict[str, Any]] = {
         "needs_key": True,
         "env_var": "OPENAI_API_KEY",
         "default_model": "text-embedding-3-small",
-        "base_url_key": "openai_base_url",
         "dims": 1536,
     },
     "ollama": {
@@ -37,7 +34,6 @@ EMBEDDER_PROVIDERS: dict[str, dict[str, Any]] = {
         "needs_key": False,
         "default_model": "nomic-embed-text",
         "default_url": "http://localhost:11434",
-        "base_url_key": "ollama_base_url",
         "dims": 768,
         "pip_dep": "ollama",
     },

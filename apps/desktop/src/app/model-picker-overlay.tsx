@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
+import type * as React from 'react'
 
-import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { ModelPickerDialog } from '@/components/model-picker'
 import type { HermesGateway } from '@/hermes'
 import {
@@ -11,27 +11,18 @@ import {
   $modelPickerOpen,
   setModelPickerOpen
 } from '@/store/session'
-import { $focusedRuntimeId, $focusedSessionState } from '@/store/session-states'
 
 interface ModelPickerOverlayProps {
   gateway?: HermesGateway
-  onSelect: (selection: ModelSelection) => void
+  onSelect: React.ComponentProps<typeof ModelPickerDialog>['onSelect']
 }
 
 export function ModelPickerOverlay({ gateway, onSelect }: ModelPickerOverlayProps) {
-  const primarySessionId = useStore($activeSessionId)
-  const primaryModel = useStore($currentModel)
-  const primaryProvider = useStore($currentProvider)
-  const focusedRuntimeId = useStore($focusedRuntimeId)
-  const focusedState = useStore($focusedSessionState)
+  const activeSessionId = useStore($activeSessionId)
+  const currentModel = useStore($currentModel)
+  const currentProvider = useStore($currentProvider)
   const gatewayOpen = useStore($gatewayState) === 'open'
   const open = useStore($modelPickerOpen)
-
-  // Prefer the focused tile's runtime when the overlay opens from a tile that
-  // lacked a live menu (gateway closed → fallback path).
-  const sessionId = focusedRuntimeId ?? primarySessionId
-  const currentModel = focusedRuntimeId && focusedState ? focusedState.model : primaryModel
-  const currentProvider = focusedRuntimeId && focusedState ? focusedState.provider : primaryProvider
 
   if (!gatewayOpen) {
     return null
@@ -43,9 +34,9 @@ export function ModelPickerOverlay({ gateway, onSelect }: ModelPickerOverlayProp
       currentProvider={currentProvider}
       gw={gateway}
       onOpenChange={setModelPickerOpen}
-      onSelect={selection => onSelect({ ...selection, sessionId })}
+      onSelect={onSelect}
       open={open}
-      sessionId={sessionId}
+      sessionId={activeSessionId}
     />
   )
 }

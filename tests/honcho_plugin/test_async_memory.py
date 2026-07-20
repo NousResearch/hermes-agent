@@ -10,7 +10,7 @@ Covers:
 """
 
 import json
-import threading
+import time
 from unittest.mock import MagicMock, patch
 
 
@@ -312,16 +312,17 @@ class TestAsyncWriterThread:
         sess.add_message("user", "async msg")
 
         flushed = []
-        flushed_event = threading.Event()
 
-        def capture(session):
-            flushed.append(session)
-            flushed_event.set()
+        def capture(s):
+            flushed.append(s)
             return True
 
         mgr._flush_session = capture
         mgr._async_queue.put(sess)
-        assert flushed_event.wait(timeout=10), "async writer never flushed"
+        # Give the daemon thread time to process
+        deadline = time.time() + 2.0
+        while not flushed and time.time() < deadline:
+            time.sleep(0.05)
 
         mgr.shutdown()
         assert len(flushed) == 1
@@ -331,7 +332,7 @@ class TestAsyncWriterThread:
         mgr = _make_manager(write_frequency="async")
         thread = mgr._async_thread
         mgr.shutdown()
-        thread.join(timeout=10)
+        thread.join(timeout=3)
         assert not thread.is_alive()
 
 
@@ -346,20 +347,20 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
-        retry_done = threading.Event()
 
-        def flaky_flush(session):
+        def flaky_flush(s):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("network blip")
-            retry_done.set()
-            return True
+            # second call succeeds silently
 
         mgr._flush_session = flaky_flush
 
         with patch("time.sleep"):  # skip the 2s sleep in retry
             mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
+            deadline = time.time() + 3.0
+            while call_count[0] < 2 and time.time() < deadline:
+                time.sleep(0.05)
 
         mgr.shutdown()
         assert call_count[0] == 2
@@ -370,19 +371,18 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
-        retry_done = threading.Event()
 
-        def always_fail(session):
+        def always_fail(s):
             call_count[0] += 1
-            if call_count[0] >= 2:
-                retry_done.set()
             raise RuntimeError("always broken")
 
         mgr._flush_session = always_fail
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
+            deadline = time.time() + 3.0
+            while call_count[0] < 2 and time.time() < deadline:
+                time.sleep(0.05)
 
         mgr.shutdown()
         # Should have tried exactly twice (initial + one retry) and not crashed
@@ -395,19 +395,18 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
-        retry_done = threading.Event()
 
-        def fail_then_succeed(session):
+        def fail_then_succeed(_session):
             call_count[0] += 1
-            if call_count[0] >= 2:
-                retry_done.set()
             return call_count[0] > 1
 
         mgr._flush_session = fail_then_succeed
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
+            deadline = time.time() + 3.0
+            while call_count[0] < 2 and time.time() < deadline:
+                time.sleep(0.05)
 
         mgr.shutdown()
         assert call_count[0] == 2

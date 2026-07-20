@@ -44,10 +44,6 @@ const EMPTY_STATE: GatewaySettingsState = {
   cloudOrg: ''
 }
 
-export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
-  return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
-}
-
 function ModeCard({
   active,
   description,
@@ -128,12 +124,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
-  const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
-
-  const acceptSavedConfig = (config: GatewaySettingsState) => {
-    setState(config)
-    setConnectedCloudUrl(savedCloudConnectionUrl(config))
-  }
 
   // --- Hermes Cloud (cloud mode) state ---
   // One portal session powers discovery + the silent per-agent cascade. These
@@ -201,7 +191,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           return
         }
 
-        acceptSavedConfig(config)
+        setState(config)
       })
       .catch(err => notifyError(err, g.failedLoad))
       .finally(() => {
@@ -230,6 +220,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // (trim, drop trailing slash, lowercase) or a host-casing difference would
   // silently break the connected-highlight.
   const normalizeCloudUrl = (url: string) => url.trim().replace(/\/+$/, '').toLowerCase()
+  const connectedCloudUrl = state.mode === 'cloud' ? normalizeCloudUrl(state.remoteUrl) : ''
 
   const isConnectedAgent = (agent: DesktopCloudAgent) =>
     Boolean(connectedCloudUrl && agent.dashboardUrl && normalizeCloudUrl(agent.dashboardUrl) === connectedCloudUrl)
@@ -377,7 +368,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         ? await window.hermesDesktop.applyConnectionConfig(payload())
         : await window.hermesDesktop.saveConnectionConfig(payload())
 
-      acceptSavedConfig(next)
+      setState(next)
       setRemoteToken('')
       notify({
         kind: 'success',
@@ -413,13 +404,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         remoteUrl: trimmedUrl
       })
 
-      acceptSavedConfig(saved)
+      setState(saved)
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
       if (result.connected) {
         const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
-        acceptSavedConfig(refreshed)
+        setState(refreshed)
         notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
       } else {
         notify({
@@ -441,7 +432,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     try {
       await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
       const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
-      acceptSavedConfig(refreshed)
+      setState(refreshed)
       notify({ kind: 'success', title: g.signedOutTitle, message: g.signedOutMessage })
     } catch (err) {
       notifyError(err, g.signOutFailed)
@@ -653,10 +644,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         return
       }
 
-      // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
-      // Include the selected org so Settings reopens into the same org + instance.
-      // Read the REF (not the cloudOrg state) so a just-resolved org from
-      // discovery in this same render tick is captured, not a stale null.
+  // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
+  // Include the selected org so Settings reopens into the same org + instance.
+  // Read the REF (not the cloudOrg state) so a just-resolved org from
+  // discovery in this same render tick is captured, not a stale null.
       const next = await desktop.applyConnectionConfig({
         mode: 'cloud',
         profile: scope ?? undefined,
@@ -665,7 +656,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         cloudOrg: cloudOrgRef.current ?? undefined
       })
 
-      acceptSavedConfig(next)
+      setState(next)
       notify({ kind: 'success', title: g.cloudConnectedTitle, message: g.cloudConnectedTo(agent.name) })
     } catch (err) {
       if (err && typeof err === 'object' && 'needsCloudLogin' in err) {

@@ -123,8 +123,8 @@ def show_status(args):
 
     env_path = get_env_path()
     rich.print(Text.assemble(
-        "  .env file:    ", check_mark(env_path.exists()),
-        f" {'exists' if env_path.exists() else 'not found'}"
+        "  .env file:    ", check_mark(env_path.exists(), " "),
+        f"{'exists' if env_path.exists() else 'not found'}"
     ))
 
     try:
@@ -155,7 +155,6 @@ def show_status(args):
         "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
-        "DeepInfra": "DEEPINFRA_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
         "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
@@ -380,7 +379,6 @@ def show_status(args):
         "StepFun Step Plan": ("STEPFUN_API_KEY",),
         "MiniMax":          ("MINIMAX_API_KEY",),
         "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
-        "DeepInfra":        ("DEEPINFRA_API_KEY",),
     }
     for pname, env_vars in apikey_providers.items():
         key_val = ""
@@ -540,9 +538,7 @@ def show_status(args):
     if jobs_file.exists():
         import json
         try:
-            # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
-            # may leave a UTF-8 BOM that plain utf-8 json.load rejects.
-            with open(jobs_file, encoding="utf-8-sig") as f:
+            with open(jobs_file, encoding="utf-8") as f:
                 data = json.load(f)
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]

@@ -493,9 +493,6 @@ class TestTextToSpeechToolWithCommandProvider:
 
 class TestCheckTtsRequirements:
     def test_configured_command_provider_satisfies_requirement(self):
-        cfg = {
-            "provider": "x",
-            "providers": {"x": {"type": "command", "command": "echo x"}},
-        }
+        cfg = {"providers": {"x": {"type": "command", "command": "echo x"}}}
         with patch("tools.tts_tool._load_tts_config", return_value=cfg):
             assert check_tts_requirements() is True

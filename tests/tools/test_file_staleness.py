@@ -150,8 +150,8 @@ class TestStalenessCheck(unittest.TestCase):
         self.assertNotIn("_warning", result)
 
     @patch("tools.file_tools._get_file_ops")
-    def test_relative_path_uses_recorded_session_cwd_for_staleness_tracking(self, mock_ops):
-        """Relative-path stale tracking must follow the session's recorded cwd."""
+    def test_relative_path_uses_live_cwd_for_staleness_tracking(self, mock_ops):
+        """Relative-path stale tracking must follow the live terminal cwd."""
         start_dir = os.path.join(self._tmpdir, "start")
         live_dir = os.path.join(self._tmpdir, "worktree")
         os.makedirs(start_dir, exist_ok=True)
@@ -165,12 +165,15 @@ class TestStalenessCheck(unittest.TestCase):
             f.write("live copy\n")
 
         fake_ops = _make_fake_ops("live copy\n", 10)
+        fake_ops.env = SimpleNamespace(cwd=live_dir)
+        fake_ops.cwd = start_dir
         mock_ops.return_value = fake_ops
 
-        from tools import terminal_tool
+        from tools import file_tools
 
-        # The session cd'd into the worktree (recorded by the completed command).
-        terminal_tool.record_session_cwd("live_task", live_dir)
+        with file_tools._file_ops_lock:
+            previous = file_tools._file_ops_cache.get("live_task")
+            file_tools._file_ops_cache["live_task"] = fake_ops
 
         try:
             with patch.dict(os.environ, {"TERMINAL_CWD": start_dir}, clear=False):
@@ -184,7 +187,11 @@ class TestStalenessCheck(unittest.TestCase):
                     write_file_tool("shared.txt", "replacement", task_id="live_task")
                 )
         finally:
-            terminal_tool.clear_session_cwd("live_task")
+            with file_tools._file_ops_lock:
+                if previous is None:
+                    file_tools._file_ops_cache.pop("live_task", None)
+                else:
+                    file_tools._file_ops_cache["live_task"] = previous
 
         self.assertIn("_warning", result)
         self.assertIn("modified since you last read", result["_warning"])

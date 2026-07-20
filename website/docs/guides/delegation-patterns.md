@@ -25,7 +25,7 @@ For the full feature reference, see [Subagent Delegation](/user-guide/features/d
 - Mechanical multi-step work with logic between steps → `execute_code`
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
-- Durable long-running work that must survive session closure or process restart → `cronjob` or `terminal(background=True, notify_on_complete=True)`. Top-level delegation is asynchronous but still process-local.
+- Durable long-running work that must outlive the current turn → `cronjob` or `terminal(background=True, notify_on_complete=True)`. `delegate_task` is **synchronous**: if the parent turn is interrupted, active children are cancelled and their work is discarded.
 
 ---
 
@@ -48,15 +48,18 @@ Behind the scenes, Hermes uses:
 delegate_task(tasks=[
     {
         "goal": "Research WebAssembly outside the browser in 2025",
-        "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress"
+        "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress",
+        "toolsets": ["web"]
     },
     {
         "goal": "Research RISC-V server chip adoption",
-        "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem"
+        "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem",
+        "toolsets": ["web"]
     },
     {
         "goal": "Research practical quantum computing applications",
-        "context": "Focus on: error correction breakthroughs, real-world use cases, key companies"
+        "context": "Focus on: error correction breakthroughs, real-world use cases, key companies",
+        "toolsets": ["web"]
     }
 ])
 ```
@@ -84,7 +87,8 @@ delegate_task(
     Auth files: src/auth/login.py, src/auth/jwt.py, src/auth/middleware.py
     Test command: pytest tests/auth/ -v
     Focus on: SQL injection, JWT validation, password hashing, session management.
-    Fix issues found and verify tests pass."""
+    Fix issues found and verify tests pass.""",
+    toolsets=["terminal", "file"]
 )
 ```
 
@@ -126,7 +130,8 @@ delegate_task(tasks=[
         Old format: return {"data": result, "status": "ok"}
         New format: return APIResponse(data=result, status=200).to_dict()
         Import: from src.responses import APIResponse
-        Run tests after: pytest tests/handlers/ -v"""
+        Run tests after: pytest tests/handlers/ -v""",
+        "toolsets": ["terminal", "file"]
     },
     {
         "goal": "Update all client SDK methods to handle the new response format",
@@ -134,14 +139,16 @@ delegate_task(tasks=[
         Files: sdk/python/client.py, sdk/python/models.py
         Old parsing: result = response.json()["data"]
         New parsing: result = response.json()["data"] (same key, but add status code checking)
-        Also update sdk/python/tests/test_client.py"""
+        Also update sdk/python/tests/test_client.py""",
+        "toolsets": ["terminal", "file"]
     },
     {
         "goal": "Update API documentation to reflect the new response format",
         "context": """Project at /home/user/api-server.
         Docs at: docs/api/. Format: Markdown with code examples.
         Update all response examples from old format to new format.
-        Add a 'Response Format' section to docs/api/overview.md explaining the schema."""
+        Add a 'Response Format' section to docs/api/overview.md explaining the schema.""",
+        "toolsets": ["terminal", "file"]
     }
 ])
 ```
@@ -184,7 +191,8 @@ delegate_task(
     context="""Raw data at /tmp/ai-funding-data.json contains search results and
     extracted web pages about AI funding, acquisitions, and IPOs in Q1 2026.
     Write a structured market report: key deals, trends, notable players,
-    and outlook. Focus on deals over $100M."""
+    and outlook. Focus on deals over $100M.""",
+    toolsets=["terminal", "file"]
 )
 ```
 
@@ -192,9 +200,18 @@ This is often the most efficient pattern: `execute_code` handles the 10+ sequent
 
 ---
 
-## Inherited Tool Access
+## Toolset Selection
 
-Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept a model-facing `toolsets` parameter, so delegated work cannot grant itself capabilities that the parent does not have. Configure the parent's tools before starting the conversation when a delegated task needs web, terminal, file, or other access. Hermes still strips child-blocked tools such as `clarify`, `memory`, and `execute_code`.
+Choose toolsets based on what the subagent needs:
+
+| Task type | Toolsets | Why |
+|-----------|----------|-----|
+| Web research | `["web"]` | web_search + web_extract only |
+| Code work | `["terminal", "file"]` | Shell access + file operations |
+| Full-stack | `["terminal", "file", "web"]` | Everything except messaging |
+| Read-only analysis | `["file"]` | Can only read files, no shell |
+
+Restricting toolsets keeps the subagent focused and prevents accidental side effects (like a research subagent running shell commands).
 
 ---
 
@@ -221,7 +238,7 @@ delegation:
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
 - **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
-- **Not durable** — top-level delegation runs in the background and posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
+- **Not durable** — `delegate_task` is synchronous and runs inside the parent turn. If the parent is interrupted (new user message, `/stop`, `/new`), all active children are cancelled (`status="interrupted"`) and their work is discarded. For work that must outlive the current turn, use `cronjob` or `terminal(background=True, notify_on_complete=True)`.
 
 ---
 

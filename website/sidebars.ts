@@ -465,7 +465,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/mcp/mcp-fastmcp',
-                    'user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway',
                     'user-guide/skills/optional/mcp/mcp-mcporter',
                   ],
                 },
@@ -716,7 +715,6 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'developer-guide/contributing',
-        'developer-guide/worktree-ui-dev',
         {
           type: 'category',
           label: 'Architecture',
@@ -744,7 +742,6 @@ const sidebars: SidebarsConfig = {
               link: {type: 'doc', id: 'developer-guide/plugins/index'},
               items: [
                 'developer-guide/plugin-llm-access',
-                'developer-guide/desktop-plugin-sdk',
                 'developer-guide/memory-provider-plugin',
                 'developer-guide/context-engine-plugin',
                 'developer-guide/secret-source-plugin',

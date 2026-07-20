@@ -1,0 +1,51 @@
+# .github/workflows/typecheck.yml
+name: Typecheck
+
+on:
+  workflow_call:
+
+jobs:
+  typecheck:
+    name: Check TypeScript
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          [ui-tui, web, apps/bootstrap-installer, apps/desktop, apps/shared]
+      fail-fast: false # report all failures, not just the first one
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      # --ignore-scripts: typecheck only needs the TS sources + type defs, not
+      # native builds. Skipping install scripts drops node-pty's node-gyp
+      # header fetch — the transient flake that killed this job pre-`tsc` — and
+      # is faster. retry covers the remaining registry blips.
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts
+      - run: npm run --prefix ${{ matrix.package }} typecheck
+
+  # Production build of the desktop renderer. `typecheck` runs `tsc` only,
+  # which does NOT exercise Vite/Rolldown module resolution — so an
+  # unresolvable package export (e.g. a transitive @assistant-ui/tap that no
+  # longer exports "./react-shim") slips past typecheck and only explodes when
+  # users build apps/desktop from source on install/update. Run the real
+  # `vite build` here so that class of break fails in CI instead.
+  desktop-build:
+    name: Build desktop app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      # Keep install scripts here: the production build may need node-pty's
+      # native binary. retry handles the transient install-time fetch flakes.
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci
+      - run: npm run --prefix apps/desktop build

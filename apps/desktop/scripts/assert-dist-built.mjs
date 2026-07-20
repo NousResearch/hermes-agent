@@ -1,3 +1,5 @@
+"use strict"
+
 // Build-time guard: refuse to hand a half-built renderer to electron-builder.
 //
 // `npm run pack` / `npm run dist*` are `npm run build && npm run builder`.

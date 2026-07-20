@@ -106,7 +106,6 @@ function resolveRemovableAppPath(execPath, platform, env: any = {}) {
   if (env.APPIMAGE) {
     return env.APPIMAGE
   }
-
   // Unpacked electron-builder tree: …/linux-unpacked/hermes
   const dir = p.dirname(exe)
 

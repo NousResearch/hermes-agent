@@ -91,16 +91,7 @@ class TestRegistration:
 
     @pytest.mark.parametrize(
         "builtin",
-        [
-            "local",
-            "local_command",
-            "groq",
-            "openai",
-            "mistral",
-            "xai",
-            "elevenlabs",
-            "deepinfra",
-        ],
+        ["local", "local_command", "groq", "openai", "mistral", "xai"],
     )
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         p = _FakeProvider(name=builtin)

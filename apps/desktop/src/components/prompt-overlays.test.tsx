@@ -12,10 +12,10 @@ import { PromptOverlays } from './prompt-overlays'
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 
-function renderPrompts(sessionId: string | null = 's1') {
+function renderPrompts() {
   render(
     <I18nProvider configClient={null}>
-      <PromptOverlays sessionId={sessionId} />
+      <PromptOverlays />
     </I18nProvider>
   )
 }

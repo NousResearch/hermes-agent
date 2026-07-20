@@ -1,7 +1,6 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import type { UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -126,14 +125,11 @@ export type CommandDispatchResponse =
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
-  /** Built-in view id, or a contributed row's namespaced contribution id. */
-  id: SidebarNavId | (string & {})
+  id: SidebarNavId
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
-  /** Keybind action id — when set, the tooltip shows the keybind hint. */
-  keybindActionId?: string
 }
 
 export interface ClientSessionState {
@@ -162,8 +158,4 @@ export interface ClientSessionState {
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
-  /** Cumulative token usage, updated per completed turn. Per-session twin of
-   *  the primary-only $currentUsage — the statusbar reads it for a focused
-   *  tile's context count. Null until the first turn reports. */
-  usage: null | UsageStats
 }

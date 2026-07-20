@@ -79,11 +79,11 @@ def _fake_aux_response(content: str):
 
 
 def _patch_aux_client(content: str):
-    # describe_profile now routes through call_llm (#35566) — mock it at the
-    # source module.
+    client = MagicMock()
+    client.chat.completions.create = MagicMock(return_value=_fake_aux_response(content))
     return patch(
-        "agent.auxiliary_client.call_llm",
-        return_value=_fake_aux_response(content),
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(client, "test-model"),
     )
 
 

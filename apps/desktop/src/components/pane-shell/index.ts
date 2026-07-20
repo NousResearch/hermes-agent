@@ -1,7 +1,4 @@
-/**
- * Cross-surface event: toggle-reveal a collapsed pane. Dispatched by the
- * keybinds (⌘B / ⌘G / titlebar toggles on narrow viewports) with the pane id
- * in `detail`; the layout tree's narrow overlays (tree/renderer.tsx) listen
- * and slide the pane over the grid.
- */
-export const PANE_TOGGLE_REVEAL_EVENT = 'hermes:pane-toggle-reveal'
+export type { PaneShellContextValue, PaneSlot } from './context'
+export { PaneShellContext } from './context'
+export { Pane, PANE_TOGGLE_REVEAL_EVENT, PaneMain, PaneShell } from './pane-shell'
+export type { PaneMainProps, PaneProps, PaneShellProps } from './pane-shell'

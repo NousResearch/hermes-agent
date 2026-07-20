@@ -13,7 +13,6 @@ import {
   useState
 } from 'react'
 
-import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
@@ -22,7 +21,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { clearClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
+import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
@@ -185,11 +184,7 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  // The tool row is in whichever session's transcript rendered it — read THAT
-  // session's clarify (primary or tile), not the globally-active one.
-  const sessionId = useStore(useSessionView().$runtimeId)
-  const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
-  const request = useStore($request)
+  const request = useStore($clarifyRequest)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
 

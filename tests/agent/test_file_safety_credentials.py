@@ -144,7 +144,6 @@ def test_read_file_tool_blocks_relative_path_under_terminal_cwd(
     import json
 
     import tools.file_tools as ft
-    import tools.terminal_tool as terminal_tool
 
     _create(fake_home, "auth.json")
     # Force the file_tools resolver to anchor relative paths at HERMES_HOME
@@ -152,7 +151,7 @@ def test_read_file_tool_blocks_relative_path_under_terminal_cwd(
     monkeypatch.setenv("TERMINAL_CWD", str(fake_home))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        terminal_tool, "_session_cwd", {}
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
     )
 
     out = json.loads(ft.read_file_tool("auth.json"))
@@ -167,7 +166,6 @@ def test_read_file_tool_blocks_nested_google_oauth_path(
     import json
 
     import tools.file_tools as ft
-    import tools.terminal_tool as terminal_tool
 
     oauth = _create(fake_home, Path("auth") / "google_oauth.json")
     oauth.write_text(
@@ -182,7 +180,7 @@ def test_read_file_tool_blocks_nested_google_oauth_path(
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        terminal_tool, "_session_cwd", {}
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
     )
 
     out = json.loads(ft.read_file_tool(str(oauth), task_id="google-oauth-test"))
@@ -197,7 +195,6 @@ def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):
     import json
 
     import tools.file_tools as ft
-    import tools.terminal_tool as terminal_tool
 
     auth = _create(fake_home, "auth.json")
     auth.write_text("SEARCH_DIRECT_AUTH_SECRET", encoding="utf-8")
@@ -226,7 +223,6 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
 
     from tools.file_operations import SearchMatch, SearchResult
     import tools.file_tools as ft
-    import tools.terminal_tool as terminal_tool
 
     auth = _create(fake_home, "auth.json")
     token = _create(fake_home, Path("mcp-tokens") / "provider.json")
@@ -260,7 +256,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": FakeFileOps())
     monkeypatch.setattr(
-        terminal_tool, "_session_cwd", {}
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
     )
 
     search_response = ft.search_tool(

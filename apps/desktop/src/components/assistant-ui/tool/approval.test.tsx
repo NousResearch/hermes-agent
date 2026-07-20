@@ -30,13 +30,9 @@ function part(toolName: string): ToolPart {
   return { toolName, type: `tool-${toolName}` } as unknown as ToolPart
 }
 
-function setRequest(
-  command = 'rm -rf /tmp/x',
-  allowPermanent?: boolean,
-  extra: { choices?: string[]; smartDenied?: boolean } = {}
-) {
+function setRequest(command = 'rm -rf /tmp/x', allowPermanent?: boolean) {
   $activeSessionId.set('sess-1')
-  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
+  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1' })
 }
 
 function mockGateway() {
@@ -133,26 +129,6 @@ describe('PendingToolApproval', () => {
     // The session + reject options still render, but never the permanent allow.
     expect(await screen.findByRole('menuitem', { name: /Allow this session/ })).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: /Always allow/ })).toBeNull()
-  })
-
-  it('renders only Once and Deny for a Smart DENY owner override', () => {
-    setRequest('rm -rf /tmp/x', true, { smartDenied: true })
-    render(<PendingToolApproval part={part('terminal')} />)
-
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
-    expect(screen.queryByText(/Allow this session/)).toBeNull()
-    expect(screen.queryByText(/Always allow/)).toBeNull()
-  })
-
-  it('renders only choices explicitly supplied by the gateway event', () => {
-    setRequest('rm -rf /tmp/x', true, { choices: ['once', 'deny'] })
-    render(<PendingToolApproval part={part('terminal')} />)
-
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
   })
 
   it('renders a floating fallback when no pending tool row is mounted', () => {

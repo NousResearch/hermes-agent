@@ -169,16 +169,7 @@ export default function ConfigPage() {
     api
       .getSchema()
       .then((resp) => {
-        // memory.provider has a dedicated management UI on the Plugins page
-        // (provider cards + guided setup/switch flow). Hide it from the
-        // generic config form so the two surfaces don't fight; the schema
-        // keeps the field for other consumers (Desktop settings).
-        const fields = { ...resp.fields } as Record<
-          string,
-          Record<string, unknown>
-        >;
-        delete fields["memory.provider"];
-        setSchema(fields);
+        setSchema(resp.fields as Record<string, Record<string, unknown>>);
         setCategoryOrder(resp.category_order ?? []);
       })
       .catch(() => {});

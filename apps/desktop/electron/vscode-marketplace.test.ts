@@ -1,6 +1,5 @@
 import assert from 'node:assert'
-
-import { test } from 'vitest'
+import test from 'node:test'
 
 import { __testing, extractThemes, readCentralDirectory } from './vscode-marketplace'
 

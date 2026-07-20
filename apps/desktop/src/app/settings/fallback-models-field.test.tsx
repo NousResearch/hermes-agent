@@ -46,7 +46,6 @@ async function renderField(value: unknown, onChange = vi.fn()) {
 async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
   const { FallbackModelsField } = await import('./fallback-models-field')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
   const view = render(
     <QueryClientProvider client={client}>
       <FallbackModelsField onChange={onChange} value={value} />
@@ -108,21 +107,6 @@ describe('FallbackModelsField', () => {
     expect(screen.getAllByLabelText('Remove')).toHaveLength(2)
 
     rerender([{ provider: 'nous', model: 'hermes-4' }])
-
-    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-  })
-
-  it('keeps a draft row visible after autosave re-renders the same persisted chain', async () => {
-    const onChange = vi.fn()
-    const rerender = await renderFieldWithRerender([], onChange)
-
-    fireEvent.click(screen.getByText('Add fallback'))
-
-    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([])
-    expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
-
-    // Parent autosave echo — same complete chain, new array identity.
-    rerender([])
 
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
   })

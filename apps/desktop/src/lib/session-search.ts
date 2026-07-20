@@ -17,7 +17,6 @@ export function sessionMatchesSearch(session: SessionInfo, query: string): boole
     sessionTitle(session),
     session.preview ?? '',
     session.cwd ?? '',
-    session.git_branch ?? '',
     ...sessionSourceSearchTerms(session.source)
   ].some(value => value.toLowerCase().includes(needle))
 }

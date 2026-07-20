@@ -16,8 +16,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-
-import { test } from 'vitest'
+import test from 'node:test'
 
 import {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,

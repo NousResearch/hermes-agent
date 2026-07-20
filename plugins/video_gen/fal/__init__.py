@@ -180,11 +180,7 @@ def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional
     if not durations:
         return duration
     if duration is None:
-        # Range families (e.g. pixverse-v6 (1,15)) should omit the field so
-        # the FAL endpoint applies its own default rather than receiving the
-        # minimum value.  Enum families (e.g. veo3.1 (4,6,8)) keep sending
-        # their first entry as the default.
-        return None if _is_duration_range(durations) else durations[0]
+        return durations[0]
     if _is_duration_range(durations):
         lo, hi = durations
         return max(lo, min(hi, duration))

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-
-import { test } from 'vitest'
+import test from 'node:test'
 
 import {
   appendUniquePathEntries,

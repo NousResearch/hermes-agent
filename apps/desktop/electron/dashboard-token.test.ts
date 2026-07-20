@@ -6,8 +6,7 @@
  */
 
 import assert from 'node:assert/strict'
-
-import { test } from 'vitest'
+import test from 'node:test'
 
 import {
   adoptServedDashboardToken,

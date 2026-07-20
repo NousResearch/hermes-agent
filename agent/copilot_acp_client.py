@@ -26,7 +26,7 @@ from openai.types.chat.chat_completion_message_tool_call import (
     Function,
 )
 
-from agent.file_safety import get_read_block_error, get_write_denied_error
+from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
@@ -727,9 +727,10 @@ class CopilotACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
-                denied = get_write_denied_error(str(path))
-                if denied:
-                    raise PermissionError(denied)
+                if is_write_denied(str(path)):
+                    raise PermissionError(
+                        f"Write denied: '{path}' is a protected system/credential file."
+                    )
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))
                 response = {

@@ -94,7 +94,6 @@ function normalizeBasePath(basePath: string | undefined): string {
   }
 
   const withLead = basePath.startsWith('/') ? basePath : `/${basePath}`
-
   return withLead.replace(/\/+$/, '')
 }
 

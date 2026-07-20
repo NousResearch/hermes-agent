@@ -10459,16 +10459,20 @@ def test_start_agent_build_passes_session_model_override(
 # ── billing/subscription state + error serialization ─────────────────
 
 
-def test_reset_session_agent_preserves_explicit_normal_fast(monkeypatch):
+def test_reset_session_agent_clears_session_overrides(monkeypatch):
+    """/new is a full conversation boundary: session-scoped /model, /reasoning,
+    and /fast overrides do NOT carry into the fresh agent — it re-derives
+    everything from config.yaml (#48055, #23131)."""
     captured = {}
     new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
     session = _session(
         agent=types.SimpleNamespace(
             model="openai/gpt-5.4",
-            reasoning_config=None,
+            reasoning_config={"enabled": True, "effort": "high"},
             service_tier="",
         ),
         model_override={"model": "openai/gpt-5.4"},
+        create_reasoning_override={"enabled": True, "effort": "high"},
         create_service_tier_override="",
     )
 
@@ -10488,7 +10492,14 @@ def test_reset_session_agent_preserves_explicit_normal_fast(monkeypatch):
 
     server._reset_session_agent("sid", session)
 
-    assert captured["service_tier_override"] == ""
+    # No session overrides forwarded — fresh agent builds from config.
+    assert "model_override" not in captured
+    assert "reasoning_config_override" not in captured
+    assert "service_tier_override" not in captured
+    # And the session pins are gone so a later rebuild can't resurrect them.
+    assert "model_override" not in session
+    assert "create_reasoning_override" not in session
+    assert "create_service_tier_override" not in session
     assert session["agent"] is new_agent
 
 

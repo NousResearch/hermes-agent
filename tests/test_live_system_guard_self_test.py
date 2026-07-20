@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 
 import pytest
 
@@ -204,51 +205,42 @@ def test_subprocess_killall_hermes_blocked():
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
+def _systemctl_pass_through(cmd):
+    """Exercise the real guard without requiring a ``systemctl`` binary.
+
+    The Python child ignores the trailing arguments, while the guard still
+    inspects their complete command string. This verifies the allowlist rather
+    than replacing the guarded ``subprocess.run`` wrapper with a mock.
+    """
+    probe = [sys.executable, "-c", "pass", "--", *cmd]
+    result = subprocess.run(probe, capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+
+
 def test_systemctl_status_passes_through():
     """Read-only systemctl probes (status/show/list-units) are fine."""
-    # Run with check=False so we don't fail on the gateway's exit code.
-    r = subprocess.run(
-        ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+    _systemctl_pass_through(
+        ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"]
     )
-    assert r is not None  # Did not raise — the guard let it through.
 
 
 def test_systemctl_show_passes_through():
-    r = subprocess.run(
-        ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+    _systemctl_pass_through(
+        ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"]
     )
-    assert r is not None
 
 
 def test_systemctl_list_units_passes_through():
-    r = subprocess.run(
-        ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+    _systemctl_pass_through(
+        ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"]
     )
-    assert r is not None
 
 
 def test_systemctl_unrelated_unit_passes_through():
-    """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
-    # Use --dry-run so we don't actually try to restart anything; just
-    # verify the guard doesn't block the call. systemctl supports
-    # --dry-run via the privileged API; on user scope it usually fails
-    # quickly without side effects.
-    r = subprocess.run(
-        ["systemctl", "--user", "show", "fake-not-real-unit"],
-        capture_output=True,
-        text=True,
-        check=False,
+    """Read-only probes of unrelated units are also allowed."""
+    _systemctl_pass_through(
+        ["systemctl", "--user", "show", "fake-not-real-unit"]
     )
-    assert r is not None
 
 
 def test_kill_own_subtree_passes_through():

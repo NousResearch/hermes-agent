@@ -524,6 +524,34 @@ def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_mess
     return None
 
 
+def _adapter_supports_streaming_edits(adapter: Any) -> bool:
+    """Return whether adapter edits are safe for high-frequency streaming.
+
+    SUPPORTS_MESSAGE_EDITING means explicit user/operator edits are possible.
+    Streaming is a narrower capability: some platforms expose an edit API but
+    make every edit a visible high-frequency event, so they should opt out of
+    response-stream editing while keeping explicit edit_message().
+    """
+    streaming_capability = getattr(adapter, "SUPPORTS_STREAMING_EDITS", None)
+    if streaming_capability is not None:
+        return bool(streaming_capability)
+    return bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
+
+
+def _adapter_supports_progress_edits(adapter: Any) -> bool:
+    """Return whether adapter edits are safe for tool/thinking progress.
+
+    Progress bubbles are throttled and lower-frequency than token streaming,
+    but they are still automatic edits. Platforms may expose explicit
+    edit_message() for deliberate user/operator edits while choosing a separate
+    policy for automatic progress edits.
+    """
+    progress_capability = getattr(adapter, "SUPPORTS_PROGRESS_EDITS", None)
+    if progress_capability is not None:
+        return bool(progress_capability)
+    return _adapter_supports_streaming_edits(adapter)
+
+
 def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
     """Return True when display.platforms.<platform> explicitly sets setting."""
     display = user_config.get("display") if isinstance(user_config, dict) else None
@@ -1933,6 +1961,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    next_edit_target_message_id,
     utf16_len,
 )
 from gateway.shutdown_watchdog import (
@@ -18477,8 +18506,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _chat_id=source.chat_id,
                         ) -> None:
                             _adapter.pause_typing_for_chat(_chat_id)
-                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                    _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                    _adapter_supports_edit = _adapter_supports_streaming_edits(_adapter)
+                    if not _adapter_supports_edit:
+                        raise RuntimeError("skip streaming for non-editable platform")
+                    _effective_cursor = _scfg.cursor
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""
@@ -19404,10 +19435,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # Skip tool/thinking progress for platforms that cannot safely edit
+            # progress bubbles. An adapter may support explicit edits while
+            # independently opting out of automatic progress cadence.
+            if (
+                not _adapter_supports_progress_edits(adapter)
+                or type(adapter).edit_message is BasePlatformAdapter.edit_message
+            ):
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -19454,6 +19488,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _edit_accepts_metadata = False
 
             async def _edit_progress_message(message_id: str, content: str):
+                nonlocal progress_msg_id
                 kwargs = {
                     "chat_id": source.chat_id,
                     "message_id": message_id,
@@ -19463,7 +19498,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     kwargs["finalize"] = True
                 if _edit_accepts_metadata:
                     kwargs["metadata"] = _progress_metadata
-                return await adapter.edit_message(**kwargs)
+                result = await adapter.edit_message(**kwargs)
+                progress_msg_id = next_edit_target_message_id(
+                    adapter,
+                    message_id,
+                    result,
+                )
+                return result
 
             def _progress_text(lines: list) -> str:
                 return "\n".join(str(line) for line in lines)
@@ -19673,6 +19714,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                        elif result.success and can_edit:
+                            # The message was delivered but cannot be addressed
+                            # for a later edit. Degrade to one new line per update
+                            # instead of replaying the accumulated transcript.
+                            can_edit = False
 
                     _last_edit_ts = time.monotonic()
 
@@ -19936,7 +19982,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # without edit support, the consumer sends a partial
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
-                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _adapter_supports_edit = _adapter_supports_streaming_edits(_adapter)
                         if not _adapter_supports_edit:
                             raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor
@@ -21336,7 +21382,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as _ee:
                             logger.debug("Heartbeat edit failed: %s", _ee)
                             _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
+                    if _notify_res and getattr(_notify_res, "success", False):
+                        _heartbeat_msg_id = next_edit_target_message_id(
+                            _notify_adapter,
+                            _heartbeat_msg_id,
+                            _notify_res,
+                        )
+                    else:
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,

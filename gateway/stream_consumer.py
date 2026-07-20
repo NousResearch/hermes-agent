@@ -27,6 +27,7 @@ from typing import Any, Callable, Optional
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+from gateway.platforms.base import next_edit_target_message_id
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -1777,9 +1778,11 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
+                        _current_message_id = self._message_id
                         # Record any continuation fragments an oversized edit
                         # split off, so fresh-final can clean them all up.
                         self._track_preview_ids_from_result(result)
+                        _new_message_id = getattr(result, "message_id", None)
                         # Adapter may have split-and-delivered an oversized
                         # edit across the original message + N continuations.
                         # When that happens, ``message_id`` is the LAST visible
@@ -1794,15 +1797,26 @@ class GatewayStreamConsumer:
                         _continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
                         if (
                             _continuation_ids
-                            and result.message_id
-                            and result.message_id != self._message_id
+                            and _new_message_id
+                            and str(_new_message_id) != str(_current_message_id)
                         ):
                             self._last_edit_overflowed = True
-                            self._message_id = str(result.message_id)
+                            self._message_id = str(_new_message_id)
                             self._message_created_ts = time.monotonic()
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
+                            # Only timestamp-chained adapters may replace the
+                            # next edit target. Replacement-event APIs (Matrix)
+                            # can return a fresh id while still requiring future
+                            # edits to target the original event.
+                            self._message_id = next_edit_target_message_id(
+                                self.adapter,
+                                _current_message_id,
+                                result,
+                            )
+                            if self._message_id != _current_message_id:
+                                self._message_created_ts = time.monotonic()
                             self._last_sent_text = text
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0

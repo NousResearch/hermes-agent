@@ -122,6 +122,136 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class NoProgressEditCaptureAdapter(ProgressCaptureAdapter):
+    """Adapter that supports explicit edits but opts out of progress edits."""
+
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = False
+
+    def __init__(self):
+        super().__init__(platform=Platform.SIGNAL)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="progress-1")
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id="progress-2")
+
+
+class TimestampChainProgressAdapter(ProgressCaptureAdapter):
+    """Signal-style adapter whose progress edits mint the next target."""
+
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = True
+    EDIT_RESULT_ID_IS_NEXT_TARGET = True
+
+    def __init__(self):
+        super().__init__(platform=Platform.SIGNAL)
+        self._next_id = 0
+
+    def _mint_id(self):
+        self._next_id += 1
+        return f"progress-{self._next_id}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+
+class MissingIdProgressAdapter(ProgressCaptureAdapter):
+    """Editable adapter whose first send cannot provide an edit handle."""
+
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = True
+
+    def __init__(self):
+        super().__init__(platform=Platform.SIGNAL)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=None)
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        raise AssertionError("progress without an edit handle must not attempt edits")
+
+
+class ChainedHeartbeatAdapter(ProgressCaptureAdapter):
+    """Timestamp-style adapter whose edit result becomes the next target."""
+
+    EDIT_RESULT_ID_IS_NEXT_TARGET = True
+
+    def __init__(self, platform=Platform.SIGNAL):
+        super().__init__(platform=platform)
+        self._next_id = 0
+
+    def _mint_id(self):
+        self._next_id += 1
+        return f"heartbeat-{self._next_id}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -138,6 +268,44 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class TimestampChainProgressAgent:
+    """Emit three spaced tool events so two progress edits are observable."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "terminal", "first", {})
+        time.sleep(1.7)
+        cb("tool.started", "browser_navigate", "https://example.com/second", {})
+        time.sleep(1.7)
+        cb("tool.started", "terminal", "third", {})
+        time.sleep(0.4)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SlowHeartbeatAgent:
+    """Keep a turn alive long enough for three heartbeat intervals."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.35)
         return {
             "final_response": "done",
             "messages": [],
@@ -268,6 +436,125 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_respects_explicit_progress_opt_out(monkeypatch, tmp_path):
+    """An adapter can allow explicit edits while keeping progress disabled."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = NoProgressEditCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(platform=Platform.SIGNAL, chat_id="+15551234567", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-signal-no-progress-edits",
+        session_key="agent:main:signal:dm:+15551234567",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_adopts_timestamp_chain_targets(monkeypatch, tmp_path):
+    """Opted-in Signal progress edits must target each freshly minted timestamp."""
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", TimestampChainProgressAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = TimestampChainProgressAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    (tmp_path / "config.yaml").write_text(
+        "display:\n"
+        "  platforms:\n"
+        "    signal:\n"
+        "      tool_progress: all\n",
+        encoding="utf-8",
+    )
+    source = SessionSource(platform=Platform.SIGNAL, chat_id="+155****4567", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-signal-progress-chain",
+        session_key="agent:main:signal:dm:+155****4567",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert len(adapter.edits) >= 2
+    assert [call["message_id"] for call in adapter.edits[:2]] == [
+        "progress-1",
+        "progress-2",
+    ]
+    assert [len(call["content"].splitlines()) for call in adapter.edits[:2]] == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_degrades_to_separate_lines_without_message_id(
+    monkeypatch,
+    tmp_path,
+):
+    """Missing edit handles must not replay the accumulated progress transcript."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", TimestampChainProgressAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = MissingIdProgressAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(platform=Platform.SIGNAL, chat_id="+155****4567", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-signal-progress-no-id",
+        session_key="agent:main:signal:dm:+155****4567",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 3
+    assert [len(call["content"].splitlines()) for call in adapter.sent] == [1, 1, 1]
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio
@@ -746,6 +1033,7 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    configure_runner=None,
 ):
     if config_data:
         import yaml
@@ -762,6 +1050,8 @@ async def _run_with_agent(
 
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
+    if configure_runner is not None:
+        configure_runner(runner)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
@@ -793,6 +1083,44 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_long_running_heartbeat_adopts_timestamp_chain_targets(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowHeartbeatAgent,
+        session_id="sess-signal-heartbeat-chain",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "long_running_notifications": True,
+            }
+        },
+        platform=Platform.SIGNAL,
+        chat_id="+155****4567",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=ChainedHeartbeatAdapter,
+        configure_runner=lambda runner: setattr(
+            runner,
+            "_should_emit_long_running_notification",
+            lambda _session_key, agent, executor: (
+                agent is not None and (executor is None or not executor.done())
+            ),
+        ),
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert len(adapter.edits) >= 2
+    assert [call["message_id"] for call in adapter.edits[:2]] == [
+        "heartbeat-1",
+        "heartbeat-2",
+    ]
 
 
 @pytest.mark.asyncio

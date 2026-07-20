@@ -1928,6 +1928,28 @@ class SendResult:
     error_kind: Optional[str] = None
 
 
+def next_edit_target_message_id(
+    adapter: Any,
+    current_message_id: Optional[str],
+    result: Any,
+) -> Optional[str]:
+    """Return the platform handle that a subsequent edit must target.
+
+    Most adapters keep editing the original message id even when an edit API
+    returns a fresh replacement/event id (Matrix is the important example).
+    Timestamp-chained platforms opt in explicitly so shared callers never
+    infer this contract from ``SendResult.message_id`` alone.
+    """
+    if getattr(adapter, "EDIT_RESULT_ID_IS_NEXT_TARGET", False) is not True:
+        return current_message_id
+    if not (result and getattr(result, "success", False)):
+        return current_message_id
+    next_message_id = getattr(result, "message_id", None)
+    if next_message_id is None or next_message_id == "":
+        return current_message_id
+    return str(next_message_id)
+
+
 # Machine-readable send-failure categories.  Kept platform-neutral so every
 # adapter can populate ``SendResult.error_kind`` from the same vocabulary and
 # the gateway can decide — once, in one place — whether a failure is worth
@@ -2376,6 +2398,31 @@ class BasePlatformAdapter(ABC):
     # a delivery promise they can't keep. A new stateless adapter only needs to
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
+
+    # Whether this adapter supports explicit ``edit_message`` calls for
+    # previously sent messages.  Most chat platforms support this; non-editable
+    # adapters override to False so callers can avoid pretending a message can
+    # be mutated later.
+    SUPPORTS_MESSAGE_EDITING: bool = True
+
+    # Whether edit-based high-frequency response streaming is safe.  Defaults
+    # to SUPPORTS_MESSAGE_EDITING via gateway.run's helper; set explicitly when
+    # a platform can handle operator/user-requested edits but should not be
+    # driven by the stream consumer cadence.
+    SUPPORTS_STREAMING_EDITS: Optional[bool] = None
+
+    # Whether edit-based tool/thinking progress bubbles are safe.  Defaults to
+    # the streaming-edit capability via gateway.run's helper; adapters can set
+    # this separately if token streaming and progress bubbles have different
+    # platform costs.
+    SUPPORTS_PROGRESS_EDITS: Optional[bool] = None
+
+    # Whether a successful edit's SendResult.message_id becomes the required
+    # target for the NEXT edit. False by default: replacement-event APIs such
+    # as Matrix return a fresh event id while subsequent m.replace operations
+    # must continue targeting the original event. Signal timestamp chains set
+    # this True because each edit mints the next editTimestamp anchor.
+    EDIT_RESULT_ID_IS_NEXT_TARGET: bool = False
 
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router

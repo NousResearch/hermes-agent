@@ -436,43 +436,133 @@ class TestMarkdownStripPatch:
 
 
 # ===========================================================================
-# signal-streaming-patch: SUPPORTS_MESSAGE_EDITING and send() behavior
+# Signal explicit edit support / streaming capability split
 # ===========================================================================
 
 class TestSignalStreamingPatch:
-    """Tests for signal-streaming-patch: cursor suppression and edit support.
-    
-    These verify the adapter-level properties that prevent the streaming
-    cursor from leaking into Signal messages.
-    """
+    """Tests for Signal send/edit behavior and streaming guardrails."""
 
-    def test_signal_does_not_support_editing(self, monkeypatch):
-        """SignalAdapter.SUPPORTS_MESSAGE_EDITING must be False."""
+    def _adapter(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
-        assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
-
-    @pytest.mark.asyncio
-    async def test_send_returns_no_message_id(self, monkeypatch):
-        """send() returns message_id=None so stream consumer uses no-edit path."""
-        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
-
         config = PlatformConfig(enabled=True)
         config.extra = {
             "http_url": "http://localhost:8080",
-            "account": "+15551234567",
+            "account": "+155****4567",
         }
-        adapter = SignalAdapter(config)
+        return SignalAdapter(config)
 
-        # Mock the RPC call
+    def test_signal_supports_explicit_and_opt_in_progress_edits(self, monkeypatch):
+        """Signal edits tool progress only when display settings opt in."""
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is True
+        assert SignalAdapter.SUPPORTS_STREAMING_EDITS is False
+        assert SignalAdapter.SUPPORTS_PROGRESS_EDITS is True
+
+    @pytest.mark.asyncio
+    async def test_send_returns_signal_timestamp_as_message_id(self, monkeypatch):
+        """send() returns signal-cli's send timestamp so later edits can target it."""
+        adapter = self._adapter(monkeypatch)
+        calls = []
+
         async def mock_rpc(method, params, rpc_id=None):
+            calls.append((method, params))
             return {"timestamp": 1234567890}
 
         adapter._rpc = mock_rpc
 
         result = await adapter.send(
-            chat_id="+15559876543",
+            chat_id="recipient-service-id",
             content="Hello",
         )
-        assert result.message_id is None
+
+        assert result.success is True
+        assert result.message_id == "1234567890"
+        assert calls == [(
+            "send",
+            {
+                "account": "+155****4567",
+                "message": "Hello",
+                "recipient": ["recipient-service-id"],
+            },
+        )]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_sends_dm_edit_timestamp_and_returns_new_ts(self, monkeypatch):
+        """DM edits use JSON-RPC send + editTimestamp and propagate the fresh ts."""
+        adapter = self._adapter(monkeypatch)
+        calls = []
+
+        async def mock_rpc(method, params, rpc_id=None):
+            calls.append((method, params))
+            return {"timestamp": 1234567999}
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.edit_message(
+            chat_id="recipient-service-id",
+            message_id="1234567890",
+            content="Hello **world**",
+            finalize=True,
+        )
+
+        assert result.success is True
+        assert result.message_id == "1234567999"
+        method, params = calls[0]
+        assert method == "send"
+        assert params["account"] == "+155****4567"
+        assert params["message"] == "Hello world"
+        assert params["recipient"] == ["recipient-service-id"]
+        assert params["editTimestamp"] == 1234567890
+        assert params["textStyle"].endswith(":BOLD")
+
+    @pytest.mark.asyncio
+    async def test_edit_message_sends_group_edit_timestamp(self, monkeypatch):
+        """Group edits route by groupId and never include a DM recipient."""
+        adapter = self._adapter(monkeypatch)
+        calls = []
+
+        async def mock_rpc(method, params, rpc_id=None):
+            calls.append((method, params))
+            return {"timestamp": 1234567999}
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.edit_message(
+            chat_id="group:BASE64_GROUP_ID",
+            message_id="1234567890",
+            content="group update",
+        )
+
+        assert result.success is True
+        assert result.message_id == "1234567999"
+        assert calls == [(
+            "send",
+            {
+                "account": "+155****4567",
+                "message": "group update",
+                "editTimestamp": 1234567890,
+                "groupId": "BASE64_GROUP_ID",
+            },
+        )]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_requires_message_id(self, monkeypatch):
+        """Signal edits need the current send/edit timestamp as message_id."""
+        adapter = self._adapter(monkeypatch)
+        calls = []
+
+        async def mock_rpc(method, params, rpc_id=None):
+            calls.append((method, params))
+            return {"timestamp": 1234567999}
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.edit_message(
+            chat_id="recipient-service-id",
+            message_id="",
+            content="cannot edit",
+        )
+
+        assert result.success is False
+        assert "message_id" in result.error
+        assert calls == []

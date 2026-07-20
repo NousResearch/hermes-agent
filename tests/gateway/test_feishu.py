@@ -1,7 +1,9 @@
 """Tests for the Feishu gateway integration."""
 
 import asyncio
+import io
 import json
+import logging
 import os
 import tempfile
 import time
@@ -170,6 +172,491 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             normalized.text_content,
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
+
+
+class TestFeishuSdkLogRedaction(unittest.TestCase):
+    _WS_URL = (
+        "wss://open.feishu.invalid/ws?access_key=ak_fixture_value_9f3a"
+        "&device_id=device_fixture&service_id=service_fixture"
+    )
+
+    def setUp(self):
+        self.sdk_logger = logging.getLogger("Lark")
+        self.root_logger = logging.getLogger()
+        self._sdk_state = (
+            list(self.sdk_logger.handlers),
+            list(self.sdk_logger.filters),
+            self.sdk_logger.level,
+            self.sdk_logger.propagate,
+            self.sdk_logger.disabled,
+        )
+        self._root_state = (list(self.root_logger.handlers), self.root_logger.level)
+        self.sdk_logger.handlers = []
+        self.sdk_logger.filters = []
+        self.sdk_logger.setLevel(logging.INFO)
+        self.sdk_logger.propagate = True
+        self.sdk_logger.disabled = False
+        self.root_logger.handlers = []
+        self.root_logger.setLevel(logging.INFO)
+
+    def tearDown(self):
+        handlers, filters, level, propagate, disabled = self._sdk_state
+        self.sdk_logger.handlers = handlers
+        self.sdk_logger.filters = filters
+        self.sdk_logger.setLevel(level)
+        self.sdk_logger.propagate = propagate
+        self.sdk_logger.disabled = disabled
+        root_handlers, root_level = self._root_state
+        self.root_logger.handlers = root_handlers
+        self.root_logger.setLevel(root_level)
+
+    def _capture_own_and_propagated_output(self):
+        own_stream = io.StringIO()
+        propagated_stream = io.StringIO()
+        self.sdk_logger.addHandler(logging.StreamHandler(own_stream))
+        self.root_logger.addHandler(logging.StreamHandler(propagated_stream))
+        return own_stream, propagated_stream
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_websocket_client_installation_redacts_constructor_logs(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = SimpleNamespace(
+            is_closed=lambda: False,
+            run_in_executor=lambda *_args: SimpleNamespace(),
+        )
+
+        def _create_ws_client(**_kwargs):
+            self.sdk_logger.info("connected to %s", self._WS_URL)
+            return SimpleNamespace()
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", side_effect=_create_ws_client),
+            patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+            patch.object(adapter, "_build_event_handler", return_value=SimpleNamespace()),
+            patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+        ):
+            asyncio.run(adapter._connect_websocket())
+
+        expected = (
+            "connected to wss://open.feishu.invalid/ws?access_key=***"
+            "&device_id=***&service_id=***\n"
+        )
+        self.assertEqual(own_stream.getvalue(), expected)
+        self.assertEqual(propagated_stream.getvalue(), expected)
+        self.assertNotIn("ak_fixture_value_9f3a", own_stream.getvalue())
+
+    def test_filter_redacts_parameterized_records_at_handler_boundaries(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        insecure_url = self._WS_URL.replace("wss://", "ws://") + "#retry)."
+
+        self.sdk_logger.info(
+            "connected to %s, retry via %s; conn_id=%s %s handlers=on_error,on_connect",
+            self._WS_URL,
+            insecure_url,
+            "device_fixture",
+            "handler on_message failed status=500",
+        )
+
+        expected = (
+            "connected to wss://open.feishu.invalid/ws?access_key=***"
+            "&device_id=***&service_id=***, retry via "
+            "ws://open.feishu.invalid/ws?access_key=***&device_id=***"
+            "&service_id=***#retry).; conn_id=*** "
+            "handler on_message failed status=500 handlers=on_error,on_connect\n"
+        )
+        self.assertEqual(own_stream.getvalue(), expected)
+        self.assertEqual(propagated_stream.getvalue(), expected)
+        combined_output = own_stream.getvalue() + propagated_stream.getvalue()
+        self.assertNotIn("ak_fixture_value_9f3a", combined_output)
+        self.assertNotIn("device_fixture", combined_output)
+        self.assertNotIn("service_fixture", combined_output)
+
+    def test_exception_redaction_sanitizes_logger_exception(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        exception_text = (
+            "transport failed for "
+            "wss://exception_user:exception_password@errors.invalid/ws"
+            "?access_key=exception_query_fixture; retry "
+            "ws://exception_bare_token@errors.invalid/retry"
+            "?ticket=exception_ticket_fixture "
+            "[conn_id=exception:conn;[fixture]\ncontinued]"
+        )
+
+        try:
+            raise RuntimeError(exception_text)
+        except RuntimeError:
+            self.sdk_logger.exception("websocket worker failed")
+
+        self.assertEqual(own_stream.getvalue(), propagated_stream.getvalue())
+        output = own_stream.getvalue()
+        self.assertIn("websocket worker failed", output)
+        self.assertIn("wss://errors.invalid/ws?access_key=***", output)
+        self.assertIn("ws://errors.invalid/retry?ticket=***", output)
+        self.assertIn("[conn_id=***]", output)
+        for sensitive_value in (
+            "exception_user",
+            "exception_password",
+            "exception_query_fixture",
+            "exception_bare_token",
+            "exception_ticket_fixture",
+            "exception:conn",
+            "continued",
+        ):
+            self.assertNotIn(sensitive_value, output)
+
+    def test_chained_exception_redaction_omits_residual_sdk_conn_id_tail(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        inner_exception_text = (
+            "inner transport failed status=502 for "
+            "wss://chain_user:chain_password@errors.invalid/ws"
+            "?access_key=chain_query_fixture "
+            "[conn_id=chain:conn;[fixture]\ncontinued]chain_secret_tail_fixture]"
+        )
+
+        try:
+            try:
+                raise RuntimeError(inner_exception_text)
+            except RuntimeError as inner_error:
+                raise LookupError("outer callback failed status=503") from inner_error
+        except LookupError:
+            self.sdk_logger.exception("websocket chain failed")
+
+        self.assertEqual(own_stream.getvalue(), propagated_stream.getvalue())
+        output = own_stream.getvalue()
+        self.assertIn("websocket chain failed", output)
+        self.assertIn("inner transport failed status=502", output)
+        self.assertIn("wss://errors.invalid/ws?access_key=***", output)
+        self.assertIn("[conn_id=***]", output)
+        for sensitive_value in (
+            "chain_user",
+            "chain_password",
+            "chain_query_fixture",
+            "chain:conn",
+            "fixture",
+            "continued",
+            "chain_secret_tail_fixture",
+        ):
+            self.assertNotIn(sensitive_value, output)
+
+    def test_prepopulated_chained_exc_text_omits_residual_sdk_conn_id_tail(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        record = self.sdk_logger.makeRecord(
+            self.sdk_logger.name,
+            logging.ERROR,
+            __file__,
+            0,
+            "cached chained exception failed",
+            (),
+            None,
+        )
+        record.exc_text = (
+            "Traceback (most recent call last):\n"
+            "RuntimeError: cached inner transport status=502 for "
+            "wss://cached_chain_user:cached_chain_password@errors.invalid/ws"
+            "?ticket=cached_chain_query_fixture "
+            "[conn_id=cached:conn;[fixture]\ncontinued]cached_chain_secret_tail]\n\n"
+            "The above exception was the direct cause of the following exception:\n\n"
+            "LookupError: cached outer callback failed status=503"
+        )
+
+        self.sdk_logger.handle(record)
+
+        self.assertEqual(own_stream.getvalue(), propagated_stream.getvalue())
+        output = own_stream.getvalue()
+        self.assertIn("cached chained exception failed", output)
+        self.assertIn("cached inner transport status=502", output)
+        self.assertIn("wss://errors.invalid/ws?ticket=***", output)
+        self.assertIn("[conn_id=***]", output)
+        for sensitive_value in (
+            "cached_chain_user",
+            "cached_chain_password",
+            "cached_chain_query_fixture",
+            "cached:conn",
+            "fixture",
+            "continued",
+            "cached_chain_secret_tail",
+        ):
+            self.assertNotIn(sensitive_value, output)
+
+    def test_exception_note_redaction_omits_residual_sdk_conn_id_tail(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        inner_error = RuntimeError("inner note transport failed status=502")
+        inner_error.add_note(
+            "SDK note for "
+            "wss://note_user:note_password@errors.invalid/ws"
+            "?access_key=note_query_fixture "
+            "[conn_id=note:conn;[fixture]\ncontinued]note_secret_tail]"
+        )
+
+        try:
+            try:
+                raise inner_error
+            except RuntimeError as caught_inner_error:
+                raise LookupError("outer note callback failed status=503") from caught_inner_error
+        except LookupError:
+            self.sdk_logger.exception("websocket note chain failed")
+
+        self.assertEqual(own_stream.getvalue(), propagated_stream.getvalue())
+        output = own_stream.getvalue()
+        self.assertIn("websocket note chain failed", output)
+        self.assertIn("inner note transport failed status=502", output)
+        self.assertIn("wss://errors.invalid/ws?access_key=***", output)
+        self.assertIn("[conn_id=***]", output)
+        for sensitive_value in (
+            "note_user",
+            "note_password",
+            "note_query_fixture",
+            "note:conn",
+            "fixture",
+            "continued",
+            "note_secret_tail",
+        ):
+            self.assertNotIn(sensitive_value, output)
+
+    def test_nonterminal_sdk_conn_id_redaction_is_idempotent(self):
+        from plugins.platforms.feishu.adapter import _sanitize_lark_log_message
+
+        unsafe_message = (
+            "inner transport status=502 "
+            "[conn_id=idempotent:conn;[fixture]\ncontinued]idempotent_secret_tail]\n\n"
+            "LookupError: outer callback failed status=503"
+        )
+
+        sanitized_once = _sanitize_lark_log_message(unsafe_message)
+        sanitized_twice = _sanitize_lark_log_message(sanitized_once)
+
+        self.assertEqual(sanitized_once, sanitized_twice)
+        self.assertEqual(sanitized_once, "inner transport status=502 [conn_id=***]")
+        for sensitive_value in (
+            "idempotent:conn",
+            "fixture",
+            "continued",
+            "idempotent_secret_tail",
+        ):
+            self.assertNotIn(sensitive_value, sanitized_once)
+
+    def test_nonterminal_sdk_conn_id_does_not_trust_mask_prefix(self):
+        from plugins.platforms.feishu.adapter import _sanitize_lark_log_message
+
+        unsafe_message = (
+            "inner transport status=502 "
+            "[conn_id=***]mask_prefix_secret]\n\n"
+            "LookupError: outer callback failed status=503"
+        )
+
+        sanitized_once = _sanitize_lark_log_message(unsafe_message)
+        sanitized_twice = _sanitize_lark_log_message(sanitized_once)
+
+        self.assertEqual(sanitized_once, sanitized_twice)
+        self.assertEqual(sanitized_once, "inner transport status=502 [conn_id=***]")
+        self.assertNotIn("mask_prefix_secret", sanitized_once)
+
+    def test_exception_redaction_sanitizes_explicit_exc_info(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        exception_text = (
+            "explicit exc_info exposed "
+            "ws://exc_user:exc_password@errors.invalid/ws"
+            "?ticket=explicit_query_fixture "
+            "[conn_id=explicit,conn\tfixture]"
+        )
+
+        try:
+            raise ValueError(exception_text)
+        except ValueError:
+            self.sdk_logger.error("websocket callback failed", exc_info=True)
+
+        self.assertEqual(own_stream.getvalue(), propagated_stream.getvalue())
+        output = own_stream.getvalue()
+        self.assertIn("websocket callback failed", output)
+        self.assertIn("ws://errors.invalid/ws?ticket=***", output)
+        self.assertIn("[conn_id=***]", output)
+        for sensitive_value in (
+            "exc_user",
+            "exc_password",
+            "explicit_query_fixture",
+            "explicit,conn",
+            "fixture",
+        ):
+            self.assertNotIn(sensitive_value, output)
+
+    def test_exception_redaction_sanitizes_prepopulated_cached_exc_text(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+        record = self.sdk_logger.makeRecord(
+            self.sdk_logger.name,
+            logging.ERROR,
+            __file__,
+            0,
+            "cached exception failed",
+            (),
+            None,
+        )
+        record.exc_text = (
+            "RuntimeError: "
+            "wss://cached_user:cached_password@errors.invalid/ws"
+            "?access_key=cached_query_fixture "
+            "[conn_id=cached]conn;fixture]"
+        )
+
+        self.sdk_logger.handle(record)
+
+        self.assertEqual(own_stream.getvalue(), propagated_stream.getvalue())
+        output = own_stream.getvalue()
+        self.assertIn("cached exception failed", output)
+        self.assertIn("wss://errors.invalid/ws?access_key=***", output)
+        self.assertIn("[conn_id=***]", output)
+        for sensitive_value in (
+            "cached_user",
+            "cached_password",
+            "cached_query_fixture",
+            "cached]conn;fixture",
+        ):
+            self.assertNotIn(sensitive_value, output)
+
+    def test_sdk_suffix_conn_id_masks_complete_adversarial_values(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        conn_id_values = (
+            "colon:value",
+            "semicolon;value",
+            "comma,value",
+            "space value",
+            "tab\tvalue",
+            "line\nvalue",
+            "bracket[value]tail",
+            "closing]bracket[value",
+            "slash/value?x=1&y=2",
+            "pipes|angles<value>",
+        )
+
+        for conn_id in conn_id_values:
+            with self.subTest(conn_id=repr(conn_id)):
+                own_stream, propagated_stream = self._capture_own_and_propagated_output()
+                _install_lark_log_redaction_filter()
+
+                try:
+                    self.sdk_logger.warning(
+                        "websocket heartbeat failed status=500 [conn_id=%s]",
+                        conn_id,
+                    )
+
+                    expected = "websocket heartbeat failed status=500 [conn_id=***]\n"
+                    self.assertEqual(own_stream.getvalue(), expected)
+                    self.assertEqual(propagated_stream.getvalue(), expected)
+                finally:
+                    self.sdk_logger.handlers.clear()
+                    self.root_logger.handlers.clear()
+
+    def test_websocket_userinfo_is_removed_at_handler_boundaries(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        cases = (
+            ("ws", "userinfo_user:userinfo_password", ""),
+            ("ws", "userinfo_user:userinfo_password", "?access_key=userinfo_query_fixture"),
+            ("wss", "userinfo_user:userinfo_password", ""),
+            ("wss", "userinfo_user:userinfo_password", "?access_key=userinfo_query_fixture"),
+            ("ws", "userinfo_bare_token", ""),
+            ("ws", "userinfo_bare_token", "?access_key=userinfo_query_fixture"),
+            ("wss", "userinfo_bare_token", ""),
+            ("wss", "userinfo_bare_token", "?access_key=userinfo_query_fixture"),
+        )
+
+        for scheme, userinfo, query in cases:
+            with self.subTest(scheme=scheme, userinfo=userinfo, query=bool(query)):
+                own_stream, propagated_stream = self._capture_own_and_propagated_output()
+                _install_lark_log_redaction_filter()
+                url = f"{scheme}://{userinfo}@socket.invalid/ws{query}"
+
+                try:
+                    self.sdk_logger.info("connected to %s status=101", url)
+
+                    expected_query = "?access_key=***" if query else ""
+                    expected = (
+                        f"connected to {scheme}://socket.invalid/ws"
+                        f"{expected_query} status=101\n"
+                    )
+                    self.assertEqual(own_stream.getvalue(), expected)
+                    self.assertEqual(propagated_stream.getvalue(), expected)
+                    self.assertNotIn(userinfo, own_stream.getvalue())
+                    self.assertNotIn("userinfo_query_fixture", own_stream.getvalue())
+                finally:
+                    self.sdk_logger.handlers.clear()
+                    self.root_logger.handlers.clear()
+
+    def test_filter_installation_is_idempotent(self):
+        from plugins.platforms.feishu.adapter import (
+            _LarkLogRedactionFilter,
+            _install_lark_log_redaction_filter,
+        )
+
+        foreign_filter = logging.Filter()
+        self.sdk_logger.addFilter(foreign_filter)
+
+        _install_lark_log_redaction_filter()
+        _install_lark_log_redaction_filter()
+
+        redactors = [
+            candidate
+            for candidate in self.sdk_logger.filters
+            if isinstance(candidate, _LarkLogRedactionFilter)
+        ]
+        self.assertEqual(len(redactors), 1)
+        self.assertIn(foreign_filter, self.sdk_logger.filters)
+
+    def test_filter_drops_record_if_sanitizing_raises(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+
+        with patch(
+            "plugins.platforms.feishu.adapter._sanitize_lark_log_message",
+            side_effect=RuntimeError(self._WS_URL),
+        ):
+            self.sdk_logger.info("connected to %s", self._WS_URL)
+
+        self.assertEqual(own_stream.getvalue(), "")
+        self.assertEqual(propagated_stream.getvalue(), "")
+
+    def test_filter_drops_record_if_parameter_formatting_raises(self):
+        from plugins.platforms.feishu.adapter import _install_lark_log_redaction_filter
+
+        own_stream, propagated_stream = self._capture_own_and_propagated_output()
+        _install_lark_log_redaction_filter()
+
+        class _UnsafeValue:
+            def __str__(self):
+                raise RuntimeError(TestFeishuSdkLogRedaction._WS_URL)
+
+        self.sdk_logger.info("connected to %s", _UnsafeValue())
+
+        self.assertEqual(own_stream.getvalue(), "")
+        self.assertEqual(propagated_stream.getvalue(), "")
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):

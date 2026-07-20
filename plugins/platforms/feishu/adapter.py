@@ -164,6 +164,76 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_LARK_WS_URL_RE = re.compile(r"\bwss?://[^\s<>\"']+", re.IGNORECASE)
+_LARK_SDK_CONN_ID_SUFFIX_RE = re.compile(r" \[conn_id=.*\]\Z", re.DOTALL)
+_LARK_SDK_CONN_ID_MARKER_RE = re.compile(r" \[conn_id=")
+_LARK_CONN_ID_RE = re.compile(r"\bconn_id=[^\s,;:!?)}\]]+")
+_LARK_URL_TRAILING_PUNCTUATION = ".,:!?)]}"
+
+
+def _redact_lark_ws_url(match: re.Match[str]) -> str:
+    raw_url = match.group(0)
+    url = raw_url.rstrip(_LARK_URL_TRAILING_PUNCTUATION)
+    trailing_punctuation = raw_url[len(url):]
+
+    scheme_end = url.find("://") + 3
+    authority_end = min(
+        (position for delimiter in "/?#" if (position := url.find(delimiter, scheme_end)) >= 0),
+        default=len(url),
+    )
+    authority = url[scheme_end:authority_end]
+    if "@" in authority:
+        url = f"{url[:scheme_end]}{authority.rsplit('@', 1)[1]}{url[authority_end:]}"
+
+    query_start = url.find("?")
+    if query_start < 0:
+        return f"{url}{trailing_punctuation}"
+
+    fragment_start = url.find("#", query_start)
+    if fragment_start < 0:
+        query_end = len(url)
+    else:
+        query_end = fragment_start
+    query = re.sub(r"(?<==)[^&;]*", "***", url[query_start + 1:query_end])
+    return f"{url[:query_start + 1]}{query}{url[query_end:]}{trailing_punctuation}"
+
+
+def _sanitize_lark_log_message(message: str) -> str:
+    message = _LARK_SDK_CONN_ID_SUFFIX_RE.sub(" [conn_id=***]", message)
+    if residual_conn_id := _LARK_SDK_CONN_ID_MARKER_RE.search(message):
+        # SDK values may contain delimiters, brackets, and newlines, so a
+        # nonterminal marker has no safe closing boundary. Drop its remainder.
+        message = f"{message[:residual_conn_id.start()]} [conn_id=***]"
+    message = _LARK_WS_URL_RE.sub(_redact_lark_ws_url, message)
+    return _LARK_CONN_ID_RE.sub("conn_id=***", message)
+
+
+class _LarkLogRedactionFilter(logging.Filter):
+    """Redact transport identifiers before any Lark log handler sees them."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = _sanitize_lark_log_message(record.getMessage())
+            record.args = ()
+            if record.exc_info is not None:
+                record.exc_text = _sanitize_lark_log_message(
+                    logging.Formatter().formatException(record.exc_info)
+                )
+                record.exc_info = None
+            elif record.exc_text is not None:
+                record.exc_text = _sanitize_lark_log_message(record.exc_text)
+            return True
+        except Exception:
+            return False
+
+
+_LARK_LOG_REDACTION_FILTER = _LarkLogRedactionFilter()
+
+
+def _install_lark_log_redaction_filter() -> None:
+    logging.getLogger("Lark").addFilter(_LARK_LOG_REDACTION_FILTER)
+
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -4726,6 +4796,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
+        _install_lark_log_redaction_filter()
         domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()

@@ -584,8 +584,24 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     suffix = suffix_buf.lower().strip("-_.")
     suffix = suffix.strip()
 
+    # Split out YYYYMMDD date stamps (e.g. claude-opus-4-20250514): they are
+    # snapshot markers, not version components, and would otherwise dwarf
+    # real point versions (20250514 > 8).  Kept as a trailing tiebreaker so
+    # bare IDs sort before their dated snapshots, and newer snapshots before
+    # older ones.  The 19_000_101 threshold reclassifies only 8-digit stamps,
+    # so shorter numeric components (mistral-large-2411, gpt-4-0613) keep
+    # their current behavior.
+    version_nums: list[float] = []
+    date_stamp = 0.0
+    for n in nums:
+        if n >= 19_000_101:
+            date_stamp = max(date_stamp, n)
+        else:
+            version_nums.append(n)
+
     # Negate versions so higher → sorts first
-    version_key = tuple(-n for n in nums)
+    version_key = tuple(-n for n in version_nums)
+    date_key = (0.0, 0.0) if date_stamp == 0.0 else (1.0, -date_stamp)
 
     # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
     # Lower number = preferred
@@ -597,7 +613,7 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0, "sol": 0}
     suffix_rank = _SUFFIX_RANK.get(suffix, 1)
 
-    return version_key + (suffix_rank, suffix)
+    return version_key + (suffix_rank, suffix) + date_key
 
 
 def resolve_alias(

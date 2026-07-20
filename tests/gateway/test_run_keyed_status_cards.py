@@ -1,0 +1,626 @@
+"""Gateway seam coverage for Discord's retained task-run status card."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.run import (
+    _discord_task_run_status_key,
+    _edit_streamed_transformed_final,
+    _send_or_update_status_coro,
+)
+from gateway.session import SessionSource, build_session_key
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+
+@pytest.mark.asyncio
+async def test_status_callback_prefers_routed_metadata_status_key():
+    adapter = SimpleNamespace(
+        send_or_update_status=AsyncMock(
+            return_value=SendResult(success=True, message_id="7001")
+        ),
+        send=AsyncMock(),
+    )
+
+    result = await _send_or_update_status_coro(
+        adapter,
+        "555",
+        "compression",
+        "Still working",
+        {"thread_id": "777", "status_key": "task_run"},
+    )
+
+    assert result.message_id == "7001"
+    adapter.send_or_update_status.assert_awaited_once_with(
+        "555",
+        "task_run",
+        "Still working",
+        metadata={"thread_id": "777", "status_key": "task_run"},
+    )
+    adapter.send.assert_not_awaited()
+
+
+def test_discord_task_run_key_is_stable_within_run_and_distinct_across_runs():
+    first = _discord_task_run_status_key(
+        Platform.DISCORD,
+        event_message_id="42",
+        session_key="discord:555:thread:777",
+        run_generation=1,
+    )
+    same_first = _discord_task_run_status_key(
+        Platform.DISCORD,
+        event_message_id="42",
+        session_key="discord:555:thread:777",
+        run_generation=1,
+    )
+    second = _discord_task_run_status_key(
+        Platform.DISCORD,
+        event_message_id="43",
+        session_key="discord:555:thread:777",
+        run_generation=2,
+    )
+
+    assert first == same_first == "task_run:message:42"
+    assert second == "task_run:message:43"
+    assert first != second
+
+
+def test_discord_task_run_key_fallback_is_generation_scoped():
+    first = _discord_task_run_status_key(
+        Platform.DISCORD,
+        session_key="discord:555:thread:777",
+        run_generation=1,
+    )
+    second = _discord_task_run_status_key(
+        Platform.DISCORD,
+        session_key="discord:555:thread:777",
+        run_generation=2,
+    )
+
+    assert first.startswith("task_run:generation:")
+    assert second.startswith("task_run:generation:")
+    assert first != second
+    assert _discord_task_run_status_key(Platform.TELEGRAM) is None
+
+
+@pytest.mark.asyncio
+async def test_stream_terminal_metadata_is_copied_not_shared_with_heartbeat():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append(metadata)
+            return SendResult(success=True, message_id=message_id)
+
+    shared = {"thread_id": "777", "status_key": "task_run:message:42"}
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(),
+        metadata=shared,
+    )
+
+    final_send_metadata = consumer._metadata_for_send(final=True)
+    await consumer._edit_message(
+        message_id="7001",
+        content="Complete",
+        finalize=True,
+    )
+
+    assert shared == {
+        "thread_id": "777",
+        "status_key": "task_run:message:42",
+    }
+    assert final_send_metadata["status_terminal"] is True
+    assert calls == [
+        {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_segment_break_finalize_keeps_keyed_card_running():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append({"finalize": finalize, "metadata": metadata})
+            return SendResult(success=True, message_id=message_id)
+
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer._message_id = "7001"
+    consumer._last_sent_text = "Earlier text"
+
+    await consumer._send_or_edit(
+        "Segment complete",
+        finalize=True,
+        is_turn_final=False,
+    )
+
+    assert calls == [
+        {
+            "finalize": True,
+            "metadata": {
+                "thread_id": "777",
+                "status_key": "task_run:message:42",
+                "status_terminal": False,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transformed_stream_edit_keeps_routing_and_requires_success():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                    "finalize": finalize,
+                    "metadata": metadata,
+                }
+            )
+            return SendResult(success=len(calls) == 2, message_id=message_id)
+
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+
+    failed = await _edit_streamed_transformed_final(
+        consumer,
+        message_id="7001",
+        content="Transformed final",
+    )
+    delivered = await _edit_streamed_transformed_final(
+        consumer,
+        message_id="7001",
+        content="Transformed final",
+    )
+
+    assert failed is False
+    assert delivered is True
+    assert calls[0] == calls[1] == {
+        "chat_id": "555",
+        "message_id": "7001",
+        "content": "Transformed final",
+        "finalize": True,
+        "metadata": {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_identical_empty_cursor_final_still_terminalizes_keyed_card():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                    "finalize": finalize,
+                    "metadata": metadata,
+                }
+            )
+            return SendResult(success=True, message_id=message_id)
+
+    final_text = "Complete final result " * 40
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer._message_id = "7001"
+    consumer._last_sent_text = final_text
+
+    delivered = await consumer._send_or_edit(
+        final_text,
+        finalize=True,
+        is_turn_final=True,
+    )
+
+    assert delivered is True
+    assert calls == [
+        {
+            "chat_id": "555",
+            "message_id": "7001",
+            "content": final_text,
+            "finalize": True,
+            "metadata": {
+                "thread_id": "777",
+                "status_key": "task_run:message:42",
+                "status_terminal": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovered_done_send_keeps_terminal_metadata():
+    calls = []
+
+    class _Adapter:
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            calls.append(metadata)
+            if len(calls) == 1:
+                return SendResult(success=False, error="temporary")
+            return SendResult(success=True, message_id="7001")
+
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(cursor="", buffer_only=True),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer.on_delta("Complete final result")
+    consumer.finish()
+
+    await consumer.run()
+
+    assert consumer.final_response_sent is True
+    assert calls == [
+        {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "expect_edits": True,
+            "notify": True,
+            "status_terminal": True,
+        },
+        {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "expect_edits": True,
+            "notify": True,
+            "status_terminal": True,
+        },
+    ]
+
+
+class _FinalDeliveryAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(
+            PlatformConfig(enabled=True, token="fake-token"),
+            Platform.DISCORD,
+        )
+        self.sent = []
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="7001")
+
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        return None
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        return None
+
+    async def get_chat_info(self, chat_id: str):
+        return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+async def test_base_final_delivery_carries_terminal_status_identity():
+    adapter = _FinalDeliveryAdapter()
+
+    async def handler(event):
+        event._status_key = "task_run"
+        return "Complete final result"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Do the work",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    assert adapter.sent == [
+        {
+            "chat_id": "555",
+            "content": "Complete final result",
+            "reply_to": "42",
+            "metadata": {
+                "thread_id": "777",
+                "notify": True,
+                "status_key": "task_run",
+                "status_terminal": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_attachment_only_final_explicitly_terminalizes_status_card():
+    adapter = _FinalDeliveryAdapter()
+    adapter.extract_media = lambda _response: ([('/tmp/report.pdf', False)], "")
+    adapter.filter_media_delivery_paths = lambda media: media
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="attachment-1",
+            delivered_attachment_count=1,
+        )
+    )
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "MEDIA:/tmp/report.pdf"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="555",
+        file_path="/tmp/report.pdf",
+        metadata={
+            "thread_id": "777",
+            "notify": True,
+        },
+    )
+    assert adapter.sent == [
+        {
+            "chat_id": "555",
+            "content": "Attachment delivered.",
+            "reply_to": "42",
+            "metadata": {
+                "thread_id": "777",
+                "notify": True,
+                "status_key": "task_run:message:42",
+                "status_terminal": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("media_path", "is_voice", "warning"),
+    [
+        pytest.param(
+            "/tmp/report.pdf",
+            False,
+            "⚠️ Couldn't deliver the file attachment.",
+            id="document",
+        ),
+        pytest.param(
+            "/tmp/clip.mp4",
+            False,
+            "⚠️ Couldn't deliver the video attachment.",
+            id="video",
+        ),
+        pytest.param(
+            "/tmp/voice.ogg",
+            True,
+            "⚠️ Couldn't deliver the audio attachment.",
+            id="voice",
+        ),
+    ],
+)
+async def test_warning_fallback_does_not_claim_attachment_delivery(
+    media_path,
+    is_voice,
+    warning,
+):
+    adapter = _FinalDeliveryAdapter()
+    adapter.extract_media = lambda _response: ([(media_path, is_voice)], "")
+    adapter.filter_media_delivery_paths = lambda media: media
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return f"MEDIA:{media_path}"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    assert [item["content"] for item in adapter.sent] == [warning]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "batch_result",
+    [
+        pytest.param(None, id="legacy-none"),
+        pytest.param(
+            SendResult(success=True, delivered_attachment_count=0),
+            id="explicit-zero",
+        ),
+    ],
+)
+async def test_unconfirmed_image_only_final_does_not_terminalize_status_card(
+    batch_result,
+):
+    adapter = _FinalDeliveryAdapter()
+    adapter.send_multiple_images = AsyncMock(return_value=batch_result)
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "![report](https://example.com/report.png)"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_partial_image_only_final_uses_confirmed_delivery_count():
+    adapter = _FinalDeliveryAdapter()
+    adapter.send_multiple_images = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="attachment-1",
+            delivered_attachment_count=1,
+        )
+    )
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "\n".join(
+            [
+                "![first](https://example.com/first.png)",
+                "![second](https://example.com/second.png)",
+            ]
+        )
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the reports",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    assert adapter.sent[0]["content"] == "Attachment delivered."

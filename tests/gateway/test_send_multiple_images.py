@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _run(coro):
@@ -48,26 +48,34 @@ class _StubAdapter(BasePlatformAdapter):
         return None
 
     async def send(self, chat_id, content, reply_to=None, **kwargs):
-        from gateway.platforms.base import SendResult
         return SendResult(success=True)
 
     async def get_chat_info(self, chat_id):
         return {}
 
     async def send_image(self, chat_id, image_url, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
         self.sent_images.append((chat_id, image_url, caption))
-        return SendResult(success=True, message_id=str(len(self.sent_images)))
+        return SendResult(
+            success=True,
+            message_id=str(len(self.sent_images)),
+            delivered_attachment_count=1,
+        )
 
     async def send_animation(self, chat_id, animation_url, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
         self.sent_animations.append((chat_id, animation_url, caption))
-        return SendResult(success=True, message_id=str(len(self.sent_animations)))
+        return SendResult(
+            success=True,
+            message_id=str(len(self.sent_animations)),
+            delivered_attachment_count=1,
+        )
 
     async def send_image_file(self, chat_id, image_path, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
         self.sent_files.append((chat_id, image_path, caption))
-        return SendResult(success=True, message_id=str(len(self.sent_files)))
+        return SendResult(
+            success=True,
+            message_id=str(len(self.sent_files)),
+            delivered_attachment_count=1,
+        )
 
 
 class TestBaseDefaultLoop:
@@ -79,12 +87,14 @@ class TestBaseDefaultLoop:
             ("file:///tmp/foo.png", "local"),
             ("https://x.com/c.gif", ""),
         ]
-        _run(a.send_multiple_images("chat1", images))
+        result = _run(a.send_multiple_images("chat1", images))
         # 2 URL images + 1 animation + 1 local file
         assert len(a.sent_images) == 2
         assert len(a.sent_animations) == 1
         assert len(a.sent_files) == 1
         assert a.sent_files[0][1] == "/tmp/foo.png"
+        assert result.success is True
+        assert result.delivered_attachment_count == 4
 
     def test_empty_batch_is_noop(self):
         a = _StubAdapter()
@@ -235,10 +245,321 @@ class TestDiscordMultiImage:
         adapter._is_forum_parent = MagicMock(return_value=False)
 
         images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("67890", images))
+        result = _run(adapter.send_multiple_images("67890", images))
 
         mock_channel.send.assert_awaited_once()
         assert len(mock_channel.send.call_args.kwargs["files"]) == 3
+        assert result.success is True
+        assert result.delivered_attachment_count == 3
+
+    def test_batch_routes_to_metadata_thread_instead_of_parent(
+        self, adapter, tmp_path
+    ):
+        image = tmp_path / "thread-report.png"
+        image.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        parent = MagicMock(id=67890)
+        parent.send = AsyncMock()
+        thread = MagicMock(id=777)
+        thread.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(
+            side_effect=lambda channel_id: {67890: parent, 777: thread}.get(
+                channel_id
+            )
+        )
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        result = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [(f"file://{image}", "")],
+                metadata={"thread_id": "777"},
+            )
+        )
+
+        assert result.delivered_attachment_count == 1
+        thread.send.assert_awaited_once()
+        parent.send.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "method_name,path_kwarg",
+        [
+            ("send_image_file", "image_path"),
+            ("send_video", "video_path"),
+            ("send_document", "file_path"),
+            ("send_voice", "audio_path"),
+        ],
+    )
+    def test_local_attachment_transport_routes_to_metadata_thread(
+        self,
+        adapter,
+        tmp_path,
+        method_name,
+        path_kwarg,
+    ):
+        attachment_path = tmp_path / f"{method_name}.bin"
+        attachment_path.write_bytes(b"attachment")
+        parent = MagicMock(id=67890)
+        parent.send = AsyncMock()
+        thread = MagicMock(id=777)
+        thread.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(
+            side_effect=lambda channel_id: {67890: parent, 777: thread}.get(
+                channel_id
+            )
+        )
+        adapter._client.http.request = AsyncMock(
+            side_effect=RuntimeError("use regular file transport")
+        )
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        result = _run(
+            getattr(adapter, method_name)(
+                chat_id="67890",
+                **{path_kwarg: str(attachment_path)},
+                metadata={"thread_id": "777"},
+            )
+        )
+
+        assert result.delivered_attachment_count == 1
+        thread.send.assert_awaited_once()
+        parent.send.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "method_name,url_kwarg",
+        [
+            ("send_image", "image_url"),
+            ("send_animation", "animation_url"),
+        ],
+    )
+    def test_remote_attachment_transport_routes_to_metadata_thread(
+        self,
+        adapter,
+        method_name,
+        url_kwarg,
+    ):
+        parent = MagicMock(id=67890)
+        parent.send = AsyncMock()
+        thread = MagicMock(id=777)
+        thread.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(
+            side_effect=lambda channel_id: {67890: parent, 777: thread}.get(
+                channel_id
+            )
+        )
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        response = MagicMock(
+            status=200,
+            headers={"content-type": "image/gif"},
+        )
+        response.read = AsyncMock(return_value=b"GIF89a")
+        response_context = MagicMock()
+        response_context.__aenter__ = AsyncMock(return_value=response)
+        response_context.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.get.return_value = response_context
+        session_context = MagicMock()
+        session_context.__aenter__ = AsyncMock(return_value=session)
+        session_context.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "plugins.platforms.discord.adapter.is_safe_url",
+                return_value=True,
+            ),
+            patch("aiohttp.ClientSession", return_value=session_context),
+        ):
+            result = _run(
+                getattr(adapter, method_name)(
+                    chat_id="67890",
+                    **{url_kwarg: "https://example.com/report.gif"},
+                    metadata={"thread_id": "777"},
+                )
+            )
+
+        assert result.delivered_attachment_count == 1
+        thread.send.assert_awaited_once()
+        parent.send.assert_not_awaited()
+
+    def test_all_missing_images_report_zero_deliveries(self, adapter, tmp_path):
+        """A skipped batch must not claim that any attachment reached Discord."""
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        missing = tmp_path / "missing.png"
+        result = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [(f"file://{missing}", "")],
+            )
+        )
+
+        assert result.success is False
+        assert result.delivered_attachment_count == 0
+        mock_channel.send.assert_not_awaited()
+
+    def test_all_unsafe_images_report_zero_deliveries(self, adapter):
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+
+        with patch(
+            "plugins.platforms.discord.adapter.is_safe_url",
+            return_value=False,
+        ):
+            result = _run(
+                adapter.send_multiple_images(
+                    "67890",
+                    [("https://example.com/blocked.png", "")],
+                )
+            )
+
+        assert result.success is False
+        assert result.delivered_attachment_count == 0
+        mock_channel.send.assert_not_awaited()
+
+    def test_all_failed_downloads_report_zero_deliveries(self, adapter):
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        response = MagicMock(status=503)
+        response_context = MagicMock()
+        response_context.__aenter__ = AsyncMock(return_value=response)
+        response_context.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.get.return_value = response_context
+        session.close = AsyncMock()
+
+        with (
+            patch(
+                "plugins.platforms.discord.adapter.is_safe_url",
+                return_value=True,
+            ),
+            patch("aiohttp.ClientSession", return_value=session),
+        ):
+            result = _run(
+                adapter.send_multiple_images(
+                    "67890",
+                    [("https://example.com/unavailable.png", "")],
+                )
+            )
+
+        assert result.success is False
+        assert result.delivered_attachment_count == 0
+        mock_channel.send.assert_not_awaited()
+
+    def test_missing_client_or_channel_reports_zero_deliveries(self, adapter):
+        adapter._client = None
+        disconnected = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [("https://example.com/report.png", "")],
+            )
+        )
+
+        adapter._client = MagicMock()
+        adapter._client.get_channel.return_value = None
+        adapter._client.fetch_channel = AsyncMock(return_value=None)
+        missing_channel = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [("https://example.com/report.png", "")],
+            )
+        )
+
+        assert disconnected.success is False
+        assert disconnected.delivered_attachment_count == 0
+        assert missing_channel.success is False
+        assert missing_channel.delivered_attachment_count == 0
+
+    def test_failed_batch_preserves_successful_per_image_fallback(
+        self, adapter, tmp_path
+    ):
+        image = tmp_path / "report.png"
+        image.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(side_effect=RuntimeError("batch unavailable"))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        adapter.send_image_file = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                message_id="fallback-1",
+                error=None,
+                delivered_attachment_count=1,
+            )
+        )
+
+        result = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [(f"file://{image}", "")],
+            )
+        )
+
+        assert result.success is True
+        assert result.message_id == "fallback-1"
+        assert result.delivered_attachment_count == 1
+
+    def test_failed_batch_and_fallback_report_zero_deliveries(
+        self, adapter, tmp_path
+    ):
+        image = tmp_path / "report.png"
+        image.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(side_effect=RuntimeError("batch unavailable"))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        adapter.send_image_file = AsyncMock(
+            return_value=MagicMock(
+                success=False,
+                message_id=None,
+                error="fallback unavailable",
+            )
+        )
+
+        result = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [(f"file://{image}", "")],
+            )
+        )
+
+        assert result.success is False
+        assert result.delivered_attachment_count == 0
+
+    def test_failed_batch_and_text_only_per_image_fallback_report_zero_deliveries(
+        self, adapter, tmp_path
+    ):
+        image = tmp_path / "report.png"
+        image.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(side_effect=RuntimeError("native unavailable"))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="warning-text")
+        )
+
+        result = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [(f"file://{image}", "")],
+            )
+        )
+
+        adapter.send.assert_awaited_once_with(
+            chat_id="67890",
+            content="⚠️ Couldn't deliver the image attachment.",
+            reply_to=None,
+            metadata=None,
+        )
+        assert result.success is False
+        assert result.delivered_attachment_count == 0
 
     def test_batch_over_10_chunks_into_two_messages(self, adapter, tmp_path):
         """15 local images → two channel.send calls (10 + 5)."""
@@ -254,11 +575,13 @@ class TestDiscordMultiImage:
         adapter._is_forum_parent = MagicMock(return_value=False)
 
         images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("67890", images))
+        result = _run(adapter.send_multiple_images("67890", images))
 
         assert mock_channel.send.await_count == 2
         sizes = [len(c.kwargs["files"]) for c in mock_channel.send.await_args_list]
         assert sizes == [10, 5]
+        assert result.success is True
+        assert result.delivered_attachment_count == 15
 
     def test_empty_noop(self, adapter):
         adapter._client = MagicMock()

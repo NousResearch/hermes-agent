@@ -166,7 +166,13 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(
+    monkeypatch,
+    agent_cls,
+    *,
+    cleanup_on: bool,
+    platform_key: str = "telegram",
+):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -187,7 +193,7 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     cfg = {
         "display": {
             "platforms": {
-                "telegram": {"cleanup_progress": True},
+                platform_key: {"cleanup_progress": True},
             }
         }
     } if cleanup_on else {}
@@ -272,6 +278,48 @@ async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tm
     assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
     for entry in adapter.deleted:
         assert entry["chat_id"] == "-1001"
+
+
+@pytest.mark.asyncio
+async def test_discord_keyed_card_is_never_registered_for_progress_cleanup(
+    monkeypatch,
+    tmp_path,
+):
+    """The retained Discord progress identity becomes the final answer."""
+    adapter = CleanupCaptureAdapter(Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        ProgressAgent,
+        cleanup_on=True,
+        platform_key="discord",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="555", thread_id="777")
+    session_key = "agent:main:discord:channel:555:thread:777"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+        event_message_id="42",
+    )
+
+    assert result["final_response"] == "done"
+    assert any(
+        (entry["metadata"] or {}).get("status_key") == "task_run:message:42"
+        for entry in adapter.sent
+    )
+    callback = adapter.pop_post_delivery_callback(session_key)
+    if callback is not None:
+        await _fire_post_delivery_cb(callback)
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+    assert adapter.deleted == []
 
 
 @pytest.mark.asyncio

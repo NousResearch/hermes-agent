@@ -92,6 +92,30 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
     return notify_metadata
 
 
+def status_terminal_metadata(
+    metadata: dict | None,
+    status_key: object,
+    reply_to_message_id: object = None,
+) -> dict:
+    """Clone routing metadata and mark one keyed status as terminal."""
+    terminal_metadata = dict(metadata) if metadata else {}
+    terminal_metadata["notify"] = True
+    terminal_metadata["status_key"] = str(status_key)
+    terminal_metadata["status_terminal"] = True
+    if reply_to_message_id is not None:
+        terminal_metadata["reply_to_message_id"] = str(reply_to_message_id)
+    return terminal_metadata
+
+
+def attachment_delivery_status(delivered_attachment_count: int) -> str:
+    """Return the terminal card text for confirmed attachment delivery."""
+    return (
+        "Attachment delivered."
+        if delivered_attachment_count == 1
+        else "Attachments delivered."
+    )
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -1926,6 +1950,30 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # Native attachment transports set this to the number of attachments they
+    # can confirm reached the platform.  Keeping the field
+    # after all pre-existing fields preserves positional construction, while
+    # the default keeps older/custom adapters source-compatible.
+    delivered_attachment_count: int = 0
+
+
+def confirmed_attachment_delivery_count(result: Any) -> int:
+    """Return the number of attachments a result confirms as delivered.
+
+    ``send_multiple_images`` historically returned ``None``.  Keep that call
+    shape harmless for third-party adapters, but never promote an ambiguous
+    legacy return into terminal status.  Migrated attachment transports expose
+    an explicit positive count on ``SendResult``.
+    """
+    if not getattr(result, "success", False):
+        return 0
+    count = getattr(result, "delivered_attachment_count", 0)
+    if isinstance(count, bool):
+        return 0
+    try:
+        return max(0, int(count))
+    except (TypeError, ValueError):
+        return 0
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -3329,7 +3377,7 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images.
 
         Accepts ``http(s)://``, ``file://`` URIs in the first tuple
@@ -3344,6 +3392,9 @@ class BasePlatformAdapter(ABC):
         """
         from urllib.parse import unquote as _unquote
 
+        delivered_attachment_count = 0
+        last_message_id: Optional[str] = None
+        delivery_errors: List[str] = []
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -3375,10 +3426,33 @@ class BasePlatformAdapter(ABC):
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
-                if not img_result.success:
+                confirmed_count = min(
+                    1,
+                    confirmed_attachment_delivery_count(img_result),
+                )
+                if confirmed_count:
+                    delivered_attachment_count += confirmed_count
+                    last_message_id = img_result.message_id or last_message_id
+                else:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    if img_result.error:
+                        delivery_errors.append(img_result.error)
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                delivery_errors.append(str(img_err))
+
+        success = delivered_attachment_count > 0
+        return SendResult(
+            success=success,
+            message_id=last_message_id,
+            error=(
+                None
+                if success
+                else "; ".join(delivery_errors)
+                or "No image attachments were delivered"
+            ),
+            delivered_attachment_count=delivered_attachment_count,
+        )
 
     async def send_image(
         self,
@@ -5126,6 +5200,16 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _attachment_deliveries = 0
+                _status_key = getattr(event, "_status_key", None)
+                _terminal_thread_metadata = (
+                    status_terminal_metadata(
+                        _final_thread_metadata,
+                        _status_key,
+                    )
+                    if _status_key
+                    else _final_thread_metadata
+                )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5171,6 +5255,8 @@ class BasePlatformAdapter(ABC):
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
+                        if getattr(tts_result, "success", False):
+                            _attachment_deliveries += 1
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -5235,7 +5321,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
+                        metadata=_terminal_thread_metadata,
                     )
                     _record_delivery(result)
                     if _obligation_id is not None:
@@ -5278,11 +5364,14 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        batch_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
+                        )
+                        _attachment_deliveries += (
+                            confirmed_attachment_delivery_count(batch_result)
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
@@ -5320,11 +5409,14 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        batch_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
+                        )
+                        _attachment_deliveries += (
+                            confirmed_attachment_delivery_count(batch_result)
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
@@ -5353,8 +5445,14 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
 
-                        if not media_result.success:
+                        confirmed_count = min(
+                            1,
+                            confirmed_attachment_delivery_count(media_result),
+                        )
+                        if not confirmed_count:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                        else:
+                            _attachment_deliveries += confirmed_count
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
@@ -5365,19 +5463,40 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        _attachment_deliveries += min(
+                            1,
+                            confirmed_attachment_delivery_count(file_result),
+                        )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                if _status_key and not text_content and _attachment_deliveries:
+                    # Discord attachment transports do not own the keyed text
+                    # lifecycle. Once at least one no-text attachment lands,
+                    # explicitly replace the retained running card so it cannot
+                    # remain stuck indefinitely.
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    terminal_result = await delivery_adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=attachment_delivery_status(_attachment_deliveries),
+                        reply_to=_reply_anchor_for_event(event),
+                        metadata=status_terminal_metadata(
+                            _final_thread_metadata,
+                            _status_key,
+                        ),
+                    )
+                    _record_delivery(terminal_result)
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.

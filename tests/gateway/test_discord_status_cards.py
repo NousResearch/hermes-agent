@@ -1,0 +1,1422 @@
+"""Behavior contracts for keyed Discord task-run status cards (OE-180)."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, SendResult
+from gateway.session import SessionSource, build_session_key
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from plugins.platforms.discord.adapter import DiscordAdapter
+
+
+@pytest.fixture
+def adapter(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    instance.send = AsyncMock()
+    instance.edit_message = AsyncMock()
+    return instance
+
+
+@pytest.mark.asyncio
+async def test_status_card_first_send_caches_then_same_key_edits(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="7001")
+
+    first = await adapter.send_or_update_status(
+        "555", "run-1", "Starting", metadata={"thread_id": "777"}
+    )
+    second = await adapter.send_or_update_status(
+        "555", "run-1", "Checking files", metadata={"thread_id": "777"}
+    )
+
+    assert first.message_id == second.message_id == "7001"
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once()
+    assert adapter.send.await_args.kwargs["metadata"]["operator_card"]["card_type"] == "task_run"
+    edit_kwargs = adapter.edit_message.await_args.kwargs
+    assert edit_kwargs["chat_id"] == "555"
+    assert edit_kwargs["message_id"] == "7001"
+    assert edit_kwargs["content"] == "Checking files"
+    assert edit_kwargs["finalize"] is False
+    assert edit_kwargs["metadata"]["thread_id"] == "777"
+    assert edit_kwargs["metadata"]["operator_card"]["card_type"] == "task_run"
+
+
+@pytest.mark.asyncio
+async def test_status_card_first_creation_uses_metadata_reply_anchor(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+
+    await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Starting",
+        metadata={
+            "thread_id": "777",
+            "reply_to_message_id": "42",
+        },
+    )
+
+    assert adapter.send.await_args.kwargs["reply_to"] == "42"
+    assert "reply_to_message_id" not in adapter.send.await_args.kwargs["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_status_card_identity_isolated_by_thread_and_status_key(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="7001"),
+        SendResult(success=True, message_id="7002"),
+        SendResult(success=True, message_id="7003"),
+    ]
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Thread A", metadata={"thread_id": "777"}
+    )
+    await adapter.send_or_update_status(
+        "555", "run-1", "Thread B", metadata={"thread_id": "778"}
+    )
+    await adapter.send_or_update_status(
+        "555", "run-2", "Other run", metadata={"thread_id": "777"}
+    )
+
+    assert adapter.send.await_count == 3
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids == {
+        ("555", "777", "run-1"): "7001",
+        ("555", "778", "run-1"): "7002",
+        ("555", "777", "run-2"): "7003",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sequential_runs_in_one_thread_keep_distinct_final_messages(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="7001"),
+        SendResult(success=True, message_id="7002"),
+    ]
+
+    async def edit_same_message(*, message_id, **_kwargs):
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.edit_message.side_effect = edit_same_message
+
+    await adapter.send_or_update_status(
+        "555", "task_run:message:42", "Run one working", metadata={"thread_id": "777"}
+    )
+    first_final = await adapter.send_or_update_status(
+        "555",
+        "task_run:message:42",
+        "Run one complete",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+    await adapter.send_or_update_status(
+        "555", "task_run:message:43", "Run two working", metadata={"thread_id": "777"}
+    )
+    second_final = await adapter.send_or_update_status(
+        "555",
+        "task_run:message:43",
+        "Run two complete",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert first_final.message_id == "7001"
+    assert second_final.message_id == "7002"
+    assert adapter.send.await_count == 2
+    assert adapter.edit_message.await_count == 2
+    assert adapter._status_message_ids[("555", "777", "task_run:message:42")] == "7001"
+    assert adapter._status_message_ids[("555", "777", "task_run:message:43")] == "7002"
+
+
+@pytest.mark.asyncio
+async def test_terminal_result_replaces_retained_card_as_plaintext(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="7001")
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+    result = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Done. Here is the complete final result.",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert result.success is True
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once_with(
+        chat_id="555",
+        message_id="7001",
+        content="Done. Here is the complete final result.",
+        finalize=True,
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_running_update_cannot_downgrade_terminal_card(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="7001")
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+    terminal = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Complete final result",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+    late = await adapter.send_or_update_status(
+        "555", "run-1", "Still working", metadata={"thread_id": "777"}
+    )
+
+    assert terminal.message_id == late.message_id == "7001"
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once()
+    assert adapter._status_message_terminal == {
+        ("555", "777", "run-1"): True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_edit_failure_sends_exactly_one_fresh_plaintext_final_and_recaches(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="7001"),
+        SendResult(success=True, message_id="7002"),
+    ]
+    adapter.edit_message.return_value = SendResult(success=False, error="Unknown Message")
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+    result = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Final result",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert result.message_id == "7002"
+    assert adapter.send.await_count == 2
+    assert adapter.send.await_args.kwargs == {
+        "chat_id": "555",
+        "content": "Final result",
+        "metadata": {"thread_id": "777", "status_terminal": True},
+    }
+    assert adapter._status_message_ids[("555", "777", "run-1")] == "7002"
+
+
+@pytest.mark.asyncio
+async def test_partial_terminal_overflow_falls_back_once_before_latching(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="7001"),
+        SendResult(
+            success=True,
+            message_id="8001",
+            raw_response={"message_ids": ["8001", "8002"]},
+        ),
+    ]
+    adapter.edit_message.return_value = SendResult(
+        success=True,
+        message_id="7002",
+        continuation_message_ids=("7002",),
+        raw_response={
+            "partial_overflow": True,
+            "delivered_chunks": 2,
+            "total_chunks": 3,
+            "last_message_id": "7002",
+            "continuation_message_ids": ("7002",),
+        },
+    )
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+    result = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Complete final result " * 300,
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert result.message_id == "8001"
+    assert adapter.edit_message.await_count == 1
+    assert adapter.send.await_count == 2
+    fallback = adapter.send.await_args_list[1].kwargs
+    assert fallback["chat_id"] == "555"
+    assert fallback["content"] == "Complete final result " * 300
+    assert fallback["metadata"] == {
+        "thread_id": "777",
+        "status_terminal": True,
+    }
+    key = ("555", "777", "run-1")
+    assert adapter._status_message_ids[key] == "8001"
+    assert adapter._status_message_terminal[key] is True
+    assert adapter._last_self_message_id["777"] == "8002"
+
+
+@pytest.mark.asyncio
+async def test_embed_send_failure_falls_back_once_to_plaintext_and_recaches(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=False, error="Invalid Form Body: embed"),
+        SendResult(success=True, message_id="7002"),
+    ]
+
+    result = await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+
+    assert result.message_id == "7002"
+    assert adapter.send.await_count == 2
+    assert "operator_card" in adapter.send.await_args_list[0].kwargs["metadata"]
+    assert adapter.send.await_args_list[1].kwargs == {
+        "chat_id": "555",
+        "content": "Working",
+        "metadata": {
+            "thread_id": "777",
+            "non_conversational": True,
+        },
+    }
+    assert adapter._status_message_ids[("555", "777", "run-1")] == "7002"
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_heartbeat_does_not_send_or_edit_again(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+
+    first = await adapter.send_or_update_status(
+        "555", "run-1", "Still working", metadata={"thread_id": "777"}
+    )
+    second = await adapter.send_or_update_status(
+        "555", "run-1", "Still working", metadata={"thread_id": "777"}
+    )
+
+    assert first.message_id == second.message_id == "7001"
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_status_fingerprint_is_fixed_size_digest(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+    content = "x" * 100_000
+
+    await adapter.send_or_update_status(
+        "555", "run-1", content, metadata={"thread_id": "777"}
+    )
+
+    fingerprint = adapter._status_message_fingerprints[("555", "777", "run-1")]
+    assert len(fingerprint) == 64
+    assert set(fingerprint) <= set("0123456789abcdef")
+    assert content not in fingerprint
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identical_first_updates_create_only_one_message(adapter):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_send(**_kwargs):
+        entered.set()
+        await release.wait()
+        return SendResult(success=True, message_id="7001")
+
+    adapter.send.side_effect = delayed_send
+    first = asyncio.create_task(
+        adapter.send_or_update_status(
+            "555", "run-1", "Starting", metadata={"thread_id": "777"}
+        )
+    )
+    await entered.wait()
+    second = asyncio.create_task(
+        adapter.send_or_update_status(
+            "555", "run-1", "Starting", metadata={"thread_id": "777"}
+        )
+    )
+    release.set()
+
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result.message_id == second_result.message_id == "7001"
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_status_identity_cache_evicts_oldest_inactive_runs(adapter):
+    adapter._STATUS_MESSAGE_CACHE_LIMIT = 3
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id=str(7000 + index))
+        for index in range(1, 6)
+    ]
+
+    for index in range(1, 6):
+        await adapter.send_or_update_status(
+            "555",
+            f"run-{index}",
+            f"Run {index}",
+            metadata={"thread_id": "777", "status_terminal": True},
+        )
+
+    expected_keys = {
+        ("555", "777", "run-3"),
+        ("555", "777", "run-4"),
+        ("555", "777", "run-5"),
+    }
+    assert set(adapter._status_message_ids) == expected_keys
+    assert set(adapter._status_message_groups) == expected_keys
+    assert set(adapter._status_message_fingerprints) == expected_keys
+    assert set(adapter._status_message_locks) == expected_keys
+    assert set(adapter._status_message_terminal) == expected_keys
+    assert adapter._status_message_users == {}
+
+
+@pytest.mark.asyncio
+async def test_status_identity_cache_never_evicts_locked_inflight_run(adapter):
+    adapter._STATUS_MESSAGE_CACHE_LIMIT = 2
+    locked_key = ("555", "777", "run-1")
+    locked = asyncio.Lock()
+    await locked.acquire()
+    adapter._status_message_ids[locked_key] = "7001"
+    adapter._status_message_fingerprints[locked_key] = "old"
+    adapter._status_message_locks[locked_key] = locked
+    adapter._status_message_users[locked_key] = 1
+    adapter._status_message_ids[("555", "777", "run-2")] = "7002"
+    adapter._status_message_fingerprints[("555", "777", "run-2")] = "old"
+    adapter._status_message_locks[("555", "777", "run-2")] = asyncio.Lock()
+    adapter.send.return_value = SendResult(success=True, message_id="7003")
+
+    await adapter.send_or_update_status(
+        "555",
+        "run-3",
+        "Run 3",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert locked_key in adapter._status_message_ids
+    assert ("555", "777", "run-2") not in adapter._status_message_ids
+    assert ("555", "777", "run-3") in adapter._status_message_ids
+    locked.release()
+
+
+@pytest.mark.asyncio
+async def test_failed_new_status_does_not_retain_an_orphan_lock(adapter):
+    adapter.send.return_value = SendResult(success=False, error="offline")
+
+    result = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Final",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert result.success is False
+    assert adapter._status_message_ids == {}
+    assert adapter._status_message_groups == {}
+    assert adapter._status_message_fingerprints == {}
+    assert adapter._status_message_locks == {}
+    assert adapter._status_message_terminal == {}
+    assert adapter._status_message_users == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_first_send_keeps_lock_while_same_key_caller_is_queued(adapter):
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    second_entered = asyncio.Event()
+    release_second = asyncio.Event()
+    third_started = asyncio.Event()
+    send_count = 0
+
+    async def controlled_send(**_kwargs):
+        nonlocal send_count
+        send_count += 1
+        if send_count == 1:
+            first_entered.set()
+            await release_first.wait()
+            return SendResult(success=False, error="offline")
+        if send_count == 2:
+            second_entered.set()
+            await release_second.wait()
+            return SendResult(success=True, message_id="7002")
+        raise AssertionError("same-key caller escaped the retained lock")
+
+    adapter.send.side_effect = controlled_send
+    async def call(started=None):
+        if started is not None:
+            started.set()
+        return await adapter.send_or_update_status(
+            "555",
+            "run-1",
+            "Final",
+            metadata={"thread_id": "777", "status_terminal": True},
+        )
+    key = ("555", "777", "run-1")
+
+    first = asyncio.create_task(call())
+    await first_entered.wait()
+    retained_lock = adapter._status_message_locks[key]
+    second = asyncio.create_task(call(second_started))
+    await second_started.wait()
+    release_first.set()
+    await second_entered.wait()
+
+    assert adapter._status_message_locks[key] is retained_lock
+    third = asyncio.create_task(call(third_started))
+    await third_started.wait()
+    assert send_count == 2
+    assert third.done() is False
+
+    release_second.set()
+    first_result, second_result, third_result = await asyncio.gather(
+        first,
+        second,
+        third,
+    )
+    assert first_result.success is False
+    assert second_result.message_id == third_result.message_id == "7002"
+    assert send_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_edit_and_base_final_share_one_real_discord_message(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type, "summary": card.summary},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(
+        send=AsyncMock(return_value=retained),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    running = await instance.send(
+        "555",
+        "Checking files",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "reply_to_message_id": "42",
+        },
+    )
+    assert "7001" in instance._nonconversational_messages
+    stream_final = await instance.edit_message(
+        "555",
+        "7001",
+        "Complete final result",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "status_terminal": True,
+            "expect_edits": True,
+            "notify": True,
+            "reply_to_message_id": "42",
+        },
+    )
+    base_final = await instance.send(
+        "555",
+        "Complete final result",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "status_terminal": True,
+            "notify": True,
+        },
+    )
+
+    assert (
+        running.message_id
+        == stream_final.message_id
+        == base_final.message_id
+        == "7001"
+    )
+    assert thread.send.await_count == 1
+    assert "7001" not in instance._nonconversational_messages
+    assert instance._last_self_message_id["777"] == "7001"
+    assert thread.send.await_args.kwargs["embed"] == {
+        "kind": "task_run",
+        "summary": "Checking files",
+    }
+    assert thread.fetch_message.await_count == 2
+    assert thread.fetch_message.await_args_list[0].args == (42,)
+    assert thread.fetch_message.await_args_list[1].args == (7001,)
+    retained.edit.assert_awaited_once_with(
+        content="Complete final result",
+        embed=None,
+    )
+    terminal_receipts = [
+        call.kwargs
+        for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ]
+    assert terminal_receipts == [
+        {
+            "reply_to": "42",
+            "result": SendResult(success=True, message_id="7001"),
+            "content": "Complete final result",
+            "final": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_attachment_reaches_thread_before_retained_card_terminalizes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    image_path = tmp_path / "report.png"
+    image_path.write_bytes(b"\x89PNG" + b"\x00" * 20)
+
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    attachment = SimpleNamespace(id=7002)
+    delivery_order = []
+
+    async def send_to_thread(**kwargs):
+        if kwargs.get("embed") is not None:
+            delivery_order.append("status")
+            return retained
+        if kwargs.get("file") is not None:
+            delivery_order.append("attachment")
+            return attachment
+        raise AssertionError(f"unexpected thread send: {kwargs}")
+
+    parent = SimpleNamespace(id=555, send=AsyncMock())
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_to_thread),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: {555: parent, 777: thread}.get(channel_id),
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    attachment_result = await instance.send_image_file(
+        "555",
+        str(image_path),
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+    await instance.send(
+        "555",
+        "Attachment delivered.",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    assert attachment_result.delivered_attachment_count == 1
+    assert delivery_order == ["status", "attachment"]
+    parent.send.assert_not_awaited()
+    retained.edit.assert_awaited_once_with(
+        content="Attachment delivered.",
+        embed=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_attachment_warning_fallback_stays_in_thread_without_terminal_receipt(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    image_path = tmp_path / "report.png"
+    image_path.write_bytes(b"\x89PNG" + b"\x00" * 20)
+
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    warning = SimpleNamespace(id=7002)
+
+    async def send_to_thread(**kwargs):
+        if kwargs.get("embed") is not None:
+            return retained
+        if kwargs.get("file") is not None:
+            raise RuntimeError("native attachment unavailable")
+        if kwargs.get("content") == "⚠️ Couldn't deliver the image attachment.":
+            return warning
+        raise AssertionError(f"unexpected thread send: {kwargs}")
+
+    parent = SimpleNamespace(id=555, send=AsyncMock())
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_to_thread),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: {555: parent, 777: thread}.get(channel_id),
+        fetch_channel=AsyncMock(),
+    )
+    await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    record_response.reset_mock()
+    retained.edit.reset_mock()
+
+    fallback_result = await instance.send_image_file(
+        "555",
+        str(image_path),
+        reply_to="42",
+        metadata={
+            "thread_id": "777",
+            "reply_to_message_id": "42",
+            "notify": True,
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    assert fallback_result.success is True
+    assert fallback_result.delivered_attachment_count == 0
+    parent.send.assert_not_awaited()
+    retained.edit.assert_not_awaited()
+    text_sends = [
+        call.kwargs.get("content")
+        for call in thread.send.await_args_list
+        if call.kwargs.get("file") is None
+    ]
+    assert text_sends[-1] == "⚠️ Couldn't deliver the image attachment."
+    assert [
+        call.kwargs for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_image_only_final_keeps_real_card_and_receipt_nonterminal(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter.is_safe_url",
+        lambda _url: False,
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(
+        send=AsyncMock(return_value=retained),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id in {555, 777} else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+        },
+    )
+    record_response.reset_mock()
+    retained.edit.reset_mock()
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "![report](https://example.com/blocked.png)"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    instance.set_message_handler(handler)
+    instance._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await instance._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    retained.edit.assert_not_awaited()
+    terminal_receipts = [
+        call.kwargs
+        for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ]
+    assert terminal_receipts == []
+
+
+@pytest.mark.asyncio
+async def test_double_native_image_failure_text_fallback_keeps_card_nonterminal(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter.is_safe_url",
+        lambda _url: True,
+    )
+
+    class _ImageResponse:
+        status = 200
+        headers = {"content-type": "image/png"}
+
+        async def read(self):
+            return b"\x89PNG" + b"\x00" * 20
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _ImageSession:
+        def get(self, *_args, **_kwargs):
+            return _ImageResponse()
+
+        async def close(self):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("aiohttp.ClientSession", lambda **_kwargs: _ImageSession())
+
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    incoming = SimpleNamespace(
+        id=42,
+        channel=SimpleNamespace(id=777, parent_id=555),
+        author=SimpleNamespace(id=99),
+        created_at=None,
+        to_reference=lambda **_kwargs: object(),
+    )
+    instance._record_discord_message_seen(incoming, status="processing")
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    fallback_text = SimpleNamespace(id=7002)
+
+    async def send_message(**kwargs):
+        if kwargs.get("embed") is not None:
+            return retained
+        if "files" in kwargs or "file" in kwargs:
+            raise RuntimeError("native attachment unavailable")
+        return fallback_text
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(return_value=incoming),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id in {555, 777} else None,
+        fetch_channel=AsyncMock(),
+    )
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "reply_to_message_id": "42",
+        },
+    )
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "![report](https://example.com/report.png)"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    instance.set_message_handler(handler)
+    instance._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await instance._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    receipt = instance._with_discord_recovery_db(
+        lambda conn: conn.execute(
+            "SELECT status, replied FROM discord_messages WHERE message_id='42'"
+        ).fetchone()
+    )
+    sent_text = [
+        call.kwargs.get("content")
+        for call in thread.send.await_args_list
+        if "file" not in call.kwargs and "files" not in call.kwargs
+    ]
+    assert len(sent_text) == 2
+    assert sent_text[0].endswith("\nWorking")
+    assert sent_text[1] == "report\nhttps://example.com/report.png"
+    assert receipt == ("failed", 0)
+    retained.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oversized_cached_terminal_edit_records_durable_completion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(
+        id=7001,
+        edit=AsyncMock(),
+        to_reference=lambda **_kwargs: object(),
+    )
+    next_message_id = 7002
+
+    async def send_message(**_kwargs):
+        nonlocal next_message_id
+        if next_message_id == 7002:
+            next_message_id += 1
+            return retained
+        message = SimpleNamespace(
+            id=next_message_id,
+            to_reference=lambda **_kwargs: object(),
+        )
+        next_message_id += 1
+        return message
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(
+            side_effect=lambda message_id: retained
+            if int(message_id) in {42, 7001}
+            else None
+        ),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "reply_to_message_id": "42",
+        },
+    )
+    final_text = "Complete final result " * 300
+    result = await instance.send(
+        "555",
+        final_text,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "status_terminal": True,
+            "notify": True,
+            "reply_to_message_id": "42",
+        },
+    )
+
+    assert result.success is True
+    assert result.continuation_message_ids
+    terminal_receipts = [
+        call.kwargs
+        for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ]
+    assert terminal_receipts == [
+        {
+            "reply_to": "42",
+            "result": result,
+            "content": final_text,
+            "final": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cached_terminal_edit_plaintext_recovery_records_durable_completion(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    incoming = SimpleNamespace(
+        id=42,
+        channel=SimpleNamespace(id=777, parent_id=555),
+        author=SimpleNamespace(id=99),
+        created_at=None,
+        to_reference=lambda **_kwargs: object(),
+    )
+    instance._record_discord_message_seen(incoming, status="processing")
+    sent_ids = iter((7001, 7002))
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(
+            side_effect=lambda **_kwargs: SimpleNamespace(id=next(sent_ids))
+        ),
+        fetch_message=AsyncMock(return_value=incoming),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "reply_to_message_id": "42",
+        },
+    )
+    instance.edit_message = AsyncMock(
+        return_value=SendResult(success=False, error="stale message")
+    )
+
+    result = await instance.send(
+        "555",
+        "Complete final result",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+            "reply_to_message_id": "42",
+        },
+    )
+
+    receipt = instance._with_discord_recovery_db(
+        lambda conn: conn.execute(
+            "SELECT status, replied, response_message_id "
+            "FROM discord_messages WHERE message_id='42'"
+        ).fetchone()
+    )
+    assert result == SendResult(
+        success=True,
+        message_id="7002",
+        raw_response={"message_ids": ["7002"]},
+    )
+    assert receipt == ("responded", 1, "7002")
+    instance.edit_message.assert_awaited_once()
+    assert thread.send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_partial_oversized_terminal_edit_does_not_record_completion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(fetch_message=AsyncMock(return_value=retained))
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+    partial_result = SendResult(
+        success=True,
+        message_id="7001",
+        continuation_message_ids=["7002"],
+        raw_response={"partial_overflow": True},
+    )
+    instance._edit_overflow_split = AsyncMock(return_value=partial_result)
+
+    result = await instance.edit_message(
+        "555",
+        "7001",
+        "Incomplete final result " * 300,
+        finalize=True,
+        metadata={
+            "thread_id": "777",
+            "status_terminal": True,
+            "reply_to_message_id": "42",
+        },
+    )
+
+    assert result is partial_result
+    instance._edit_overflow_split.assert_awaited_once()
+    record_response.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_style_running_edit_refreshes_embed_in_routed_thread(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type, "summary": card.summary},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(
+        send=AsyncMock(return_value=retained),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Starting",
+        metadata={"thread_id": "777", "status_key": "task_run"},
+    )
+    result = await instance.edit_message(
+        "555",
+        "7001",
+        "Still working",
+        metadata={"thread_id": "777", "status_key": "task_run"},
+    )
+
+    assert result.success is True
+    retained.edit.assert_awaited_once()
+    assert retained.edit.await_args.kwargs["embed"] == {
+        "kind": "task_run",
+        "summary": "Still working",
+    }
+    assert retained.edit.await_args.kwargs["content"].startswith(
+        "🔵 **Info — Task running**"
+    )
+
+
+@pytest.mark.asyncio
+async def test_keyed_consumer_fresh_oversized_final_preserves_all_chunks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def send_message(**kwargs):
+        message = SimpleNamespace(id=7001 + len(sent), edit=AsyncMock())
+        sent.append((kwargs, message))
+        return message
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+    final_text = "A" * 2200 + "B" * 2200
+    consumer = GatewayStreamConsumer(
+        adapter=instance,
+        chat_id="555",
+        config=StreamConsumerConfig(cursor="", buffer_only=True),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer.on_delta(final_text)
+    consumer.finish()
+
+    await consumer.run()
+
+    assert consumer.final_response_sent is True
+    assert len(sent) >= 2
+    assert sent[0][0]["content"].startswith("A" * 100)
+    assert "B" * 100 in sent[-1][0]["content"]
+    assert all(message.edit.await_count == 0 for _kwargs, message in sent)
+
+
+@pytest.mark.asyncio
+async def test_keyed_consumer_fallback_oversized_final_preserves_all_chunks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def send_message(**kwargs):
+        message = SimpleNamespace(id=7001 + len(sent), edit=AsyncMock())
+        sent.append((kwargs, message))
+        return message
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+    running = await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "non_conversational": True,
+        },
+    )
+    retained = sent[0][1]
+    thread.fetch_message.return_value = retained
+    final_text = "A" * 2200 + "B" * 2200
+    consumer = GatewayStreamConsumer(
+        adapter=instance,
+        chat_id="555",
+        config=StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer._message_id = running.message_id
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final(final_text)
+
+    assert consumer.final_response_sent is True
+    assert retained.edit.await_count == 1
+    assert retained.edit.await_args.kwargs["content"].startswith("A" * 100)
+    assert len(sent) >= 2
+    assert "B" * 100 in sent[-1][0]["content"]
+    visible_ids = [str(message.id) for _kwargs, message in sent]
+    assert all(
+        message_id not in instance._nonconversational_messages
+        for message_id in visible_ids
+    )
+    assert instance._last_self_message_id["777"] == visible_ids[-1]
+
+
+@pytest.mark.asyncio
+async def test_keyed_oversized_terminal_continuation_failure_falls_back_fresh_once(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(
+        id=7001,
+        edit=AsyncMock(),
+        to_reference=lambda **_kwargs: object(),
+    )
+    send_calls = []
+
+    async def send_message(**kwargs):
+        send_calls.append(kwargs)
+        call_number = len(send_calls)
+        if call_number == 1:
+            return retained
+        if call_number == 2:
+            return SimpleNamespace(
+                id=7002,
+                to_reference=lambda **_kwargs: object(),
+            )
+        if call_number in {3, 4}:
+            raise RuntimeError("continuation send failed")
+        return SimpleNamespace(
+            id=8000 + call_number,
+            to_reference=lambda **_kwargs: object(),
+        )
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    final_text = "Complete final result " * 300
+    result = await instance.send(
+        "555",
+        final_text,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    fallback_ids = result.raw_response["message_ids"]
+    assert result.success is True
+    assert result.message_id == fallback_ids[0]
+    assert fallback_ids[0].startswith("800")
+    assert len(send_calls) == 4 + len(fallback_ids)
+    assert retained.edit.await_count == 1
+    key = ("555", "777", "task_run:message:42")
+    assert instance._status_message_ids[key] == fallback_ids[0]
+    assert instance._status_message_terminal[key] is True
+    assert instance._last_self_message_id["777"] == fallback_ids[-1]
+
+
+@pytest.mark.asyncio
+async def test_oversized_streamed_terminal_transform_removes_prior_chunks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(
+        id=7001,
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        to_reference=lambda **_kwargs: object(),
+    )
+    messages = {7001: retained}
+    next_message_id = 7002
+
+    async def send_message(**_kwargs):
+        nonlocal next_message_id
+        message = SimpleNamespace(
+            id=next_message_id,
+            edit=AsyncMock(),
+            delete=AsyncMock(),
+            to_reference=lambda **_kwargs: object(),
+        )
+        messages[next_message_id] = message
+        next_message_id += 1
+        return message
+
+    async def fetch_message(message_id):
+        return messages[int(message_id)]
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(side_effect=fetch_message),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    # Seed the retained running card without consuming the continuation ID
+    # allocator used by the oversized terminal edit below.
+    instance._status_message_ids[("555", "777", "task_run:message:42")] = "7001"
+    instance._status_message_groups[("555", "777", "task_run:message:42")] = (
+        "7001",
+    )
+    raw_final = "Raw streamed answer " * 300
+    first_terminal = await instance.send(
+        "555",
+        raw_final,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+    key = ("555", "777", "task_run:message:42")
+    raw_group = instance._status_message_groups[key]
+
+    assert first_terminal.success is True
+    assert len(raw_group) > 1
+    assert raw_group[0] == "7001"
+    assert instance._status_message_ids[key] == "7001"
+
+    transformed = "Plugin-transformed complete answer"
+    transformed_terminal = await instance.send(
+        "555",
+        transformed,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    assert transformed_terminal.success is True
+    assert instance._status_message_ids[key] == "7001"
+    assert instance._status_message_groups[key] == ("7001",)
+    assert retained.edit.await_args.kwargs == {
+        "content": transformed,
+        "embed": None,
+    }
+    for stale_id in raw_group[1:]:
+        messages[int(stale_id)].delete.assert_awaited_once()
+    retained.delete.assert_not_awaited()
+    assert instance._last_self_message_id["777"] == "7001"

@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -500,6 +501,31 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+def _discord_task_run_status_key(
+    platform: Any,
+    *,
+    event_message_id: Any = None,
+    session_key: Any = None,
+    run_generation: Any = None,
+) -> Optional[str]:
+    """Return one stable status identity for a single Discord agent run.
+
+    The inbound reply anchor is the best identity because Discord message ids
+    are unique and every seam already receives it. Synthetic/recovery events
+    can lack an anchor; hash their session generation instead so sequential
+    runs in the same thread still never overwrite each other's final answer.
+    """
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").lower() != "discord":
+        return None
+    anchor = str(event_message_id or "").strip()
+    if anchor:
+        return f"task_run:message:{anchor}"
+    fallback = f"{session_key or 'session'}:{run_generation or 0}"
+    digest = hashlib.sha256(fallback.encode("utf-8")).hexdigest()[:20]
+    return f"task_run:generation:{digest}"
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
@@ -507,10 +533,37 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    routed_status_key = (
+        (metadata or {}).get("status_key")
+        if isinstance(metadata, dict)
+        else None
+    ) or status_key
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
+        return await sender(chat_id, routed_status_key, content, metadata=metadata)
     return await adapter.send(chat_id, content, metadata=metadata)
+
+
+async def _edit_streamed_transformed_final(
+    stream_consumer: Any,
+    *,
+    message_id: str,
+    content: str,
+) -> bool:
+    """Replace a streamed reply with plugin-transformed terminal content.
+
+    Route through the consumer's metadata-aware edit seam so Discord retains
+    its thread and keyed status identity.  Only report delivery when the
+    adapter explicitly confirms success; otherwise Base delivery remains the
+    fallback for the transformed answer.
+    """
+    result = await stream_consumer._edit_message(
+        message_id=message_id,
+        content=content,
+        finalize=True,
+        status_terminal=True,
+    )
+    return bool(result and result.success)
 
 
 def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_message_id: Any) -> Optional[str]:
@@ -12911,6 +12964,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # below; a /new or another lifecycle transition may move
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
+            _run_reply_anchor = self._reply_anchor_for_event(event)
+            _task_status_key = _discord_task_run_status_key(
+                source.platform,
+                event_message_id=_run_reply_anchor,
+                session_key=session_key,
+                run_generation=run_generation,
+            )
+            if _task_status_key:
+                # BasePlatformAdapter owns the final send after this handler
+                # returns. Carry the same key used by Discord progress,
+                # streaming, status, and heartbeat paths so that final send
+                # replaces their retained card instead of appending a bubble.
+                event._status_key = _task_status_key
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -12919,12 +12985,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=_run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
-                event_message_id=self._reply_anchor_for_event(event),
+                event_message_id=_run_reply_anchor,
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
+            if isinstance(agent_result, dict) and agent_result.get("_status_key"):
+                # An in-band queued follow-up may finish under a different
+                # inbound-message identity.  BasePlatformAdapter performs the
+                # final delivery after this handler returns, so hand it the
+                # final turn's key rather than overwriting the first answer.
+                event._status_key = agent_result["_status_key"]
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -14576,7 +14648,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import (
+                BasePlatformAdapter,
+                attachment_delivery_status,
+                confirmed_attachment_delivery_count,
+                should_send_media_as_audio,
+                status_terminal_metadata,
+            )
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
@@ -14588,10 +14666,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # producing false-positive bare-path matches with the MEDIA: prefix
             # glued on. This matches the chain order in gateway/platforms/base.py.
             _, cleaned = adapter.extract_images(cleaned)
-            local_files, _ = adapter.extract_local_files(cleaned)
+            local_files, cleaned = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _reply_anchor = self._reply_anchor_for_event(event)
+            _thread_meta = self._thread_metadata_for_source(event.source, _reply_anchor)
+            _attachment_deliveries = 0
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -14622,10 +14702,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    image_result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
+                    )
+                    _attachment_deliveries += (
+                        confirmed_attachment_delivery_count(image_result)
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
@@ -14634,23 +14717,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        media_result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        media_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        media_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    _attachment_deliveries += min(
+                        1,
+                        confirmed_attachment_delivery_count(media_result),
+                    )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -14658,19 +14745,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        file_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        file_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    _attachment_deliveries += min(
+                        1,
+                        confirmed_attachment_delivery_count(file_result),
+                    )
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+
+            _status_key = getattr(event, "_status_key", None)
+            if _status_key and not cleaned.strip() and _attachment_deliveries:
+                # Streaming owns the visible body, but attachment transports do
+                # not own Discord's keyed text lifecycle. For a MEDIA-only final,
+                # replace the retained running card after at least one attachment
+                # succeeds so the run cannot remain visibly stuck.
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=attachment_delivery_status(_attachment_deliveries),
+                    reply_to=_reply_anchor,
+                    metadata=status_terminal_metadata(
+                        _thread_meta,
+                        _status_key,
+                        _reply_anchor,
+                    ),
+                )
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -18537,6 +18645,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _proxy_status_key = _discord_task_run_status_key(
+            source.platform,
+            event_message_id=event_message_id,
+            session_key=session_key,
+            run_generation=run_generation,
+        )
+        if _proxy_status_key:
+            _thread_metadata = dict(_thread_metadata or {})
+            _thread_metadata["status_key"] = _proxy_status_key
+            if event_message_id:
+                _thread_metadata["reply_to_message_id"] = str(event_message_id)
 
         if _streaming_enabled:
             try:
@@ -18931,6 +19050,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        _task_run_status_key = _discord_task_run_status_key(
+            source.platform,
+            event_message_id=event_message_id,
+            session_key=session_key,
+            run_generation=run_generation,
+        )
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -19141,6 +19266,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
         ):
             # Adapter doesn't support deletion — silently disable.
+            _cleanup_progress = False
+            _cleanup_adapter = None
+        if _task_run_status_key:
+            # Discord's progress/status/heartbeat identity is retained and
+            # becomes the terminal answer. Registering that message for the
+            # temporary-bubble cleanup would delete the completed response.
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
@@ -19408,9 +19539,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        if _task_run_status_key:
+            _progress_metadata = dict(_progress_metadata or {})
+            _progress_metadata["status_key"] = _task_run_status_key
+            if event_message_id:
+                # Progress/status/heartbeat can win the race to create the
+                # retained Discord card. Carry the inbound anchor in shared
+                # metadata so every first-creation seam replies to the user.
+                _progress_metadata["reply_to_message_id"] = str(event_message_id)
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if (
+                source.platform == Platform.DISCORD
+                and _task_run_status_key
+                and event_message_id
+            )
+            or (
+                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                and source.thread_id
+                and event_message_id
+            )
             else None
         )
 
@@ -19861,6 +20009,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        if _task_run_status_key:
+            _status_thread_metadata = dict(_status_thread_metadata or {})
+            _status_thread_metadata["status_key"] = _task_run_status_key
+            if event_message_id:
+                _status_thread_metadata["reply_to_message_id"] = str(event_message_id)
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -21401,7 +21554,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 try:
                     _notify_res = None
-                    if _heartbeat_msg_id:
+                    _heartbeat_metadata = _non_conversational_metadata(
+                        _status_thread_metadata,
+                        platform=source.platform,
+                    )
+                    if isinstance(_heartbeat_metadata, dict) and _heartbeat_metadata.get("status_key"):
+                        # Discord's keyed status-card send owns both the edit
+                        # and stale-identity fallback. Calling it on every tick
+                        # keeps heartbeat/progress/stream/final on one message.
+                        _notify_res = await _notify_adapter.send(
+                            source.chat_id,
+                            _heartbeat_text,
+                            metadata=_heartbeat_metadata,
+                        )
+                    elif _heartbeat_msg_id:
                         try:
                             _notify_res = await _notify_adapter.edit_message(
                                 source.chat_id,
@@ -21415,14 +21581,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
-                            metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                            metadata=_heartbeat_metadata,
                         )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
-                        ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    if getattr(_notify_res, "success", False) and getattr(
+                        _notify_res, "message_id", None
+                    ):
+                        _heartbeat_msg_id = str(_notify_res.message_id)
+                        if _cleanup_progress:
+                            _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -21832,10 +21998,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            _first_response_metadata = dict(
+                                _status_thread_metadata or {}
+                            )
+                            if _task_run_status_key:
+                                _first_response_metadata["status_terminal"] = True
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
-                                metadata=_status_thread_metadata,
+                                metadata=_first_response_metadata or None,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -21952,6 +22123,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                _followup_status_key = _discord_task_run_status_key(
+                    next_source.platform,
+                    event_message_id=next_message_id,
+                    session_key=next_session_key,
+                    run_generation=run_generation,
+                )
+                if _followup_status_key and isinstance(followup_result, dict):
+                    # Preserve a deeper queued turn's identity when recursive
+                    # draining returns through multiple levels.
+                    followup_result = dict(followup_result)
+                    followup_result.setdefault("_status_key", _followup_status_key)
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
@@ -22067,17 +22249,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
+                        _transformed_delivered = await _edit_streamed_transformed_final(
+                            _sc,
                             message_id=_sc_msg_id,
                             content=response["final_response"],
-                            finalize=True,
                         )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
+                        if _transformed_delivered:
+                            response["already_sent"] = True
+                            logger.info(
+                                "Edited streamed message %s for session %s to include plugin-transformed content.",
+                                _sc_msg_id, session_key or "?",
+                            )
+                        else:
+                            logger.warning(
+                                "Failed to confirm transformed streamed edit for session %s; leaving normal final delivery enabled.",
+                                session_key or "?",
+                            )
                     except Exception as _edit_err:
                         logger.warning(
                             "Failed to edit streamed message for session %s: %s",

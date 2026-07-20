@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -112,6 +113,17 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.operator_cards import (
+    OperatorCard,
+    operator_card_severity_display,
+    render_operator_card_text,
+)
+from plugins.platforms.discord.workspace_headers import (
+    WorkspaceHeaderResult,
+    WorkspaceHeaderState,
+    WorkspaceHeaderStore,
+    WorkspaceHeaderStoreError,
+)
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float, env_int
@@ -121,6 +133,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    confirmed_attachment_delivery_count,
     cache_image_from_url,
     cache_image_from_bytes,
     cache_audio_from_url,
@@ -140,6 +153,31 @@ def _truncate_discord_component_text(text: str, limit: int) -> str:
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
 
 
+def _chunk_discord_lossless_text(text: str, limit: int) -> list[str]:
+    """Split text on Discord's UTF-16 budget without changing its content.
+
+    Operator-card fallbacks are evidence-bearing data.  Generic message
+    chunking adds page indicators and trims boundary whitespace, which can
+    corrupt a long URL.  These chunks intentionally omit presentation markers
+    so joining them reproduces the exact validated fallback.
+    """
+    text = str(text or "")
+    limit = max(1, int(limit))
+    if utf16_len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while utf16_len(remaining) > limit:
+        chunk = _prefix_within_utf16_limit(remaining, limit)
+        if not chunk:  # Defensive only: Discord's real limit is 2,000 units.
+            chunk = remaining[0]
+        chunks.append(chunk)
+        remaining = remaining[len(chunk):]
+    chunks.append(remaining)
+    return chunks
+
+
 def _abort_discord_websocket_transport(websocket: Any) -> bool:
     """Abort the active aiohttp transport after a bounded close times out."""
     socket = getattr(websocket, "socket", None)
@@ -157,6 +195,93 @@ def _abort_discord_websocket_transport(websocket: Any) -> bool:
         return False
     abort()
     return True
+
+
+_DISCORD_OPERATOR_CARD_COLORS = {
+    "done": 0x2ECC71,
+    "info": 0x3498DB,
+    "needs_review": 0xF1C40F,
+    "blocked": 0xE74C3C,
+    "critical": 0x992D22,
+}
+# Discord embed budgets, measured in UTF-16 code units (Discord's own unit for
+# these limits).  A contract-valid operator card can still exceed them — e.g.
+# up to 12 fields at the 1024-char field ceiling, or a link block wider than a
+# single field — and Discord rejects an oversized embed wholesale (HTTP 400,
+# error code 50035), which would drop the entire message.  We bound each part
+# and stop once the running aggregate would overflow.
+_DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+_DISCORD_EMBED_FOOTER_LIMIT = 2048
+_DISCORD_EMBED_FIELD_NAME_LIMIT = 256
+_DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+_DISCORD_EMBED_TOTAL_LIMIT = 6000
+_DISCORD_EMBED_MAX_FIELDS = 25
+
+
+def _build_operator_card_embed(card: OperatorCard) -> Any:
+    """Render a validated operator card as an embed bounded to Discord's limits.
+
+    Every part is truncated to its per-element ceiling and fields are dropped
+    once the running aggregate would exceed Discord's 6000-code-unit budget, so
+    the embed is always API-valid.  Nothing the operator needs is lost: the
+    plaintext fallback (``render_operator_card_text``) still carries the full
+    card as the message content alongside this embed.
+    """
+    title = _truncate_discord_component_text(card.title, _DISCORD_EMBED_TITLE_LIMIT)
+    description = _truncate_discord_component_text(
+        card.summary, _DISCORD_EMBED_DESCRIPTION_LIMIT
+    )
+    card_type_label = card.card_type.replace("_", " ").title()
+    _, severity_label = operator_card_severity_display(card.severity)
+    footer = _truncate_discord_component_text(
+        f"{card_type_label} · {severity_label}", _DISCORD_EMBED_FOOTER_LIMIT
+    )
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=_DISCORD_OPERATOR_CARD_COLORS[card.severity],
+    )
+
+    # Title, description, and footer always count against the 6000 aggregate.
+    remaining = _DISCORD_EMBED_TOTAL_LIMIT - (
+        utf16_len(title) + utf16_len(description) + utf16_len(footer)
+    )
+
+    def _add_bounded_field(name: str, value: str) -> None:
+        nonlocal remaining
+        if len(embed.fields) >= _DISCORD_EMBED_MAX_FIELDS or remaining <= 0:
+            return
+        name = _truncate_discord_component_text(
+            name, min(_DISCORD_EMBED_FIELD_NAME_LIMIT, remaining)
+        )
+        if not name:
+            return
+        remaining -= utf16_len(name)
+        if remaining <= 0:
+            return
+        value = _truncate_discord_component_text(
+            value, min(_DISCORD_EMBED_FIELD_VALUE_LIMIT, remaining)
+        )
+        if not value:
+            return
+        remaining -= utf16_len(value)
+        embed.add_field(name=name, value=value, inline=False)
+
+    for field in card.fields:
+        _add_bounded_field(field.label, field.value)
+    if card.actions:
+        _add_bounded_field(
+            "Actions", " · ".join(action.label for action in card.actions)
+        )
+    if card.links:
+        _add_bounded_field(
+            "Links", "\n".join(f"[{link.label}]({link.url})" for link in card.links)
+        )
+
+    embed.set_footer(text=footer)
+    return embed
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -262,6 +387,17 @@ class _DiscordNonConversationalMessageTracker:
             key = str(message_id or "").strip()
             if key and key not in self._ids:
                 self._ids[key] = None
+                changed = True
+        if changed:
+            self._save()
+
+    def discard_many(self, message_ids: List[str]) -> None:
+        """Stop treating completed status-card messages as history noise."""
+        changed = False
+        for message_id in message_ids:
+            key = str(message_id or "").strip()
+            if key and key in self._ids:
+                self._ids.pop(key, None)
                 changed = True
         if changed:
             self._save()
@@ -835,11 +971,70 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+    # Status identity is process-local delivery state, not history. Keep recent
+    # run identities for retries/final replacement without retaining every run
+    # for the lifetime of a busy gateway process.
+    _STATUS_MESSAGE_CACHE_LIMIT = 512
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
+    _ATTACHMENT_FALLBACK_TERMINAL_KEYS = frozenset(
+        {"notify", "status_key", "status_terminal"}
+    )
+
+    @staticmethod
+    def _attachment_target_id(
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> str:
+        """Return the routed Discord destination for an attachment send."""
+        return str((metadata or {}).get("thread_id") or chat_id)
+
+    @classmethod
+    def _attachment_fallback_metadata(
+        cls,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Keep fallback routing without falsely terminalizing a status card."""
+        if not metadata:
+            return None
+        fallback_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in cls._ATTACHMENT_FALLBACK_TERMINAL_KEYS
+        }
+        return fallback_metadata or None
+
+    async def _resolve_attachment_channel(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> tuple[Any, str]:
+        target_id = self._attachment_target_id(chat_id, metadata)
+        channel = self._client.get_channel(int(target_id))
+        if not channel:
+            channel = await self._client.fetch_channel(int(target_id))
+        return channel, target_id
+
+    async def _attachment_reply_reference(
+        self,
+        channel: Any,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Any:
+        anchor = reply_to or (metadata or {}).get("reply_to_message_id")
+        if not anchor or self._reply_to_mode == "off":
+            return None
+        try:
+            message = await channel.fetch_message(int(anchor))
+            if hasattr(message, "to_reference"):
+                return message.to_reference(fail_if_not_exists=False)
+            return message
+        except Exception as exc:
+            logger.debug("Could not fetch attachment reply target: %s", exc)
+            return None
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -879,6 +1074,22 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # One durable header per Discord thread workspace. Identity is
+        # partitioned by canonical guild scope_id; locks close a create/create
+        # race when per-user thread sessions are enabled.
+        self._workspace_headers = WorkspaceHeaderStore()
+        self._workspace_header_locks: Dict[tuple[str, str], asyncio.Lock] = {}
+        # One mutable task-run card per (parent chat, routed thread, status
+        # key).  Discord thread sessions can share a parent chat id, so the
+        # thread component is required to prevent cross-workspace edits.
+        self._status_message_ids: Dict[tuple[str, str, str], str] = {}
+        self._status_message_groups: Dict[
+            tuple[str, str, str], tuple[str, ...]
+        ] = {}
+        self._status_message_fingerprints: Dict[tuple[str, str, str], str] = {}
+        self._status_message_locks: Dict[tuple[str, str, str], asyncio.Lock] = {}
+        self._status_message_users: Dict[tuple[str, str, str], int] = {}
+        self._status_message_terminal: Dict[tuple[str, str, str], bool] = {}
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2803,15 +3014,54 @@ class DiscordAdapter(BasePlatformAdapter):
             event,
             outcome,
         )
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+        if self._reactions_enabled():
+            message = event.raw_message
+            if hasattr(message, "add_reaction"):
+                await self._remove_reaction(message, "👀")
+                if outcome == ProcessingOutcome.SUCCESS:
+                    await self._add_reaction(message, "✅")
+                elif outcome == ProcessingOutcome.FAILURE:
+                    await self._add_reaction(message, "❌")
+        # The processing lifecycle is the concrete status producer for the
+        # persistent workspace card. Successful turns may create the header;
+        # failures and cancellations only edit an already-tracked message.
+        # Header I/O remains non-fatal to chat.
+        try:
+            source = event.source
+            binding = None
+            if (
+                source is not None
+                and source.scope_id
+                and source.thread_id
+            ):
+                binding = self._workspace_headers.get(
+                    source.scope_id,
+                    source.thread_id,
+                )
+            if outcome == ProcessingOutcome.SUCCESS or binding is not None:
+                if outcome == ProcessingOutcome.SUCCESS:
+                    status = "Active"
+                    next_action = "Awaiting next assistant turn"
+                elif outcome == ProcessingOutcome.FAILURE:
+                    status = "Needs attention"
+                    next_action = "Retry the last request"
+                else:
+                    status = "Paused"
+                    next_action = "Awaiting next instruction"
+                if source is not None and source.scope_id and source.thread_id:
+                    self._workspace_headers.update_state(
+                        source.scope_id,
+                        source.thread_id,
+                        status=status,
+                        next_action=next_action,
+                    )
+                await self.ensure_workspace_header(source)
+        except Exception:
+            logger.debug(
+                "[%s] Failed to refresh Discord workspace header",
+                self.name,
+                exc_info=True,
+            )
 
     async def send(
         self,
@@ -2828,16 +3078,57 @@ class DiscordAdapter(BasePlatformAdapter):
         Forum channels (type 15) reject direct messages — a thread post is
         created automatically.
         """
+        status_key = (metadata or {}).get("status_key")
+        if status_key:
+            # Gateway progress, heartbeat, streaming, and final-delivery seams
+            # all use normal send/edit calls. A metadata key lets those paths
+            # share the keyed-card lifecycle without platform checks at every
+            # call site. send_or_update_status strips the key before its direct
+            # transport write, preventing recursion.
+            return await self.send_or_update_status(
+                chat_id,
+                str(status_key),
+                content,
+                metadata=metadata,
+                reply_to=reply_to,
+            )
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         try:
+            operator_card = None
+            operator_card_embed = None
+            operator_card_thread_name = None
+            if metadata and "operator_card" in metadata:
+                operator_card = OperatorCard.from_mapping(metadata["operator_card"])
+                content = render_operator_card_text(
+                    operator_card,
+                    max_length=None,
+                )
+                operator_card_embed = _build_operator_card_embed(operator_card)
+                _, severity_label = operator_card_severity_display(
+                    operator_card.severity
+                )
+                # Discord's 100-char thread-name cap is measured in UTF-16 code
+                # units; a naive ``[:100]`` slice counts code points and can
+                # emit a name Discord rejects.  Use the shared UTF-16-aware
+                # component truncator like every other Discord label.
+                operator_card_thread_name = _truncate_discord_component_text(
+                    f"{severity_label} — {operator_card.title}", 100
+                )
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
             nonconversational = _metadata_marks_nonconversational(metadata)
-            final_delivery = bool(metadata and metadata.get("notify"))
+            final_delivery = bool(
+                metadata
+                and (
+                    metadata.get("notify")
+                    or metadata.get("status_terminal")
+                )
+            )
 
             if thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
@@ -2856,7 +3147,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(
+                    channel,
+                    content,
+                    embed=operator_card_embed,
+                    thread_name=operator_card_thread_name,
+                    preserve_content=operator_card is not None,
+                )
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
@@ -2868,7 +3165,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = (
+                _chunk_discord_lossless_text(formatted, self.MAX_MESSAGE_LENGTH)
+                if operator_card is not None
+                else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
 
             message_ids = []
             reference = None
@@ -2889,10 +3190,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: Dict[str, Any] = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if i == 0 and operator_card_embed is not None:
+                        send_kwargs["embed"] = operator_card_embed
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -2911,10 +3215,8 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        send_kwargs["reference"] = None
+                        msg = await channel.send(**send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -2950,11 +3252,453 @@ class DiscordAdapter(BasePlatformAdapter):
                 reply_to=reply_to,
                 result=result,
                 content=content,
-                final=bool(metadata and metadata.get("notify")),
+                final=bool(
+                    metadata
+                    and (
+                        metadata.get("notify")
+                        or metadata.get("status_terminal")
+                    )
+                ),
             )
             return result
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    @staticmethod
+    def _task_run_operator_card(status_key: str, content: str) -> Dict[str, Any]:
+        """Build the bounded rich presentation for a non-terminal run update."""
+        summary = str(content or "").strip() or "Task is still running."
+        if len(summary) > 500:
+            summary = summary[:499].rstrip() + "…"
+        identity = hashlib.sha256(str(status_key).encode("utf-8")).hexdigest()[:20]
+        return {
+            "kind": "operator_card",
+            "version": 1,
+            "card_type": "task_run",
+            "title": "Task running",
+            "severity": "info",
+            "summary": summary,
+            "fields": [],
+            "actions": [],
+            "links": [],
+            "state_ref": f"discord-task-run:{identity}",
+        }
+
+    @staticmethod
+    def _plain_status_metadata(
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Keep routing/terminal markers while stripping rich controls."""
+        if not metadata:
+            return None
+        plain = {
+            key: value
+            for key, value in metadata.items()
+            if key
+            not in {
+                "operator_card",
+                "status_key",
+                "reply_to_message_id",
+            }
+        }
+        return plain or None
+
+    @staticmethod
+    def _status_transport_metadata(
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Strip lifecycle-only receipt state before a direct Discord send."""
+        if not metadata:
+            return None
+        transport = dict(metadata)
+        transport.pop("reply_to_message_id", None)
+        return transport or None
+
+    def _cache_status_message(
+        self,
+        key: tuple[str, str, str],
+        message_id: str,
+        fingerprint: str,
+        *,
+        message_ids: Optional[tuple[str, ...]] = None,
+        terminal: bool = False,
+    ) -> None:
+        """Cache one identity and evict the oldest inactive status runs.
+
+        Dict insertion order supplies a small LRU without another dependency.
+        A locked key may be sending or editing, so eviction skips it even when
+        that means temporarily exceeding the cap until a later successful run.
+        """
+        self._status_message_ids.pop(key, None)
+        self._status_message_fingerprints.pop(key, None)
+        self._status_message_ids[key] = message_id
+        self._status_message_fingerprints[key] = fingerprint
+        if message_ids is not None:
+            self._status_message_groups[key] = message_ids
+        if terminal:
+            self._status_message_terminal[key] = True
+
+        while len(self._status_message_ids) > self._STATUS_MESSAGE_CACHE_LIMIT:
+            evict_key = next(
+                (
+                    candidate
+                    for candidate in self._status_message_ids
+                    if candidate != key
+                    and self._status_message_users.get(candidate, 0) == 0
+                ),
+                None,
+            )
+            if evict_key is None:
+                break
+            self._status_message_ids.pop(evict_key, None)
+            self._status_message_groups.pop(evict_key, None)
+            self._status_message_fingerprints.pop(evict_key, None)
+            self._status_message_locks.pop(evict_key, None)
+            self._status_message_users.pop(evict_key, None)
+            self._status_message_terminal.pop(evict_key, None)
+
+    @staticmethod
+    def _status_result_message_ids(
+        result: SendResult,
+        *,
+        original_message_id: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """Return every visible message ID owned by one status result."""
+        message_ids: list[str] = []
+
+        def _append(message_id: Any) -> None:
+            value = str(message_id or "").strip()
+            if value and value not in message_ids:
+                message_ids.append(value)
+
+        _append(original_message_id)
+        raw_response = result.raw_response
+        if isinstance(raw_response, dict):
+            for message_id in raw_response.get("message_ids", ()) or ():
+                _append(message_id)
+            for message_id in raw_response.get("continuation_message_ids", ()) or ():
+                _append(message_id)
+        for message_id in result.continuation_message_ids or ():
+            _append(message_id)
+        _append(result.message_id)
+        return tuple(message_ids)
+
+    async def _delete_replaced_status_messages(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        previous_message_ids: tuple[str, ...],
+        retained_message_ids: tuple[str, ...],
+    ) -> None:
+        """Best-effort remove stale chunks after their replacement succeeds."""
+        retained = set(retained_message_ids)
+        stale = [
+            message_id
+            for message_id in previous_message_ids
+            if message_id not in retained
+        ]
+        if not stale or not self._client:
+            return
+        target_chat_id = thread_id or str(chat_id)
+        try:
+            channel = self._client.get_channel(int(target_chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_chat_id))
+            if not channel:
+                return
+        except Exception:
+            logger.debug(
+                "[%s] Failed to resolve channel for stale status-chunk cleanup",
+                self.name,
+                exc_info=True,
+            )
+            return
+
+        deleted: list[str] = []
+        for message_id in stale:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                await message.delete()
+                deleted.append(message_id)
+            except Exception:
+                logger.debug(
+                    "[%s] Failed to delete replaced status chunk %s",
+                    self.name,
+                    message_id,
+                    exc_info=True,
+                )
+        self._nonconversational_messages.discard_many(deleted)
+
+    def _restore_terminal_status_to_conversation(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        message_ids: tuple[str, ...],
+    ) -> None:
+        """Make a completed card visible to history backfill again.
+
+        Running task cards are deliberately excluded from conversational
+        history.  Once the card becomes the assistant's final answer, every
+        chunk belongs to the conversation and the fast-path history cursor
+        must point at the last visible chunk.
+        """
+        self._nonconversational_messages.discard_many(list(message_ids))
+        if message_ids:
+            self._last_self_message_id[thread_id or str(chat_id)] = message_ids[-1]
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Create or update one Discord task-run card for a routed status key.
+
+        Running updates use the operator-card renderer. A terminal update
+        replaces the retained message with the complete plaintext result and
+        removes the embed. Any stale-message edit failure gets exactly one
+        fresh plaintext send; a first rich-send/embed failure does the same.
+        """
+        thread_id = str((metadata or {}).get("thread_id") or "")
+        key = (str(chat_id), thread_id, str(status_key))
+        lock = self._status_message_locks.setdefault(key, asyncio.Lock())
+        # Register before awaiting the lock. The count covers the acquired
+        # caller and queued callers, making eviction/removal safe without
+        # relying on private asyncio.Lock waiter internals.
+        self._status_message_users[key] = self._status_message_users.get(key, 0) + 1
+        try:
+            async with lock:
+                terminal = bool((metadata or {}).get("status_terminal"))
+                reply_anchor = reply_to or (metadata or {}).get(
+                    "reply_to_message_id"
+                )
+                status_metadata: Optional[Dict[str, Any]] = dict(metadata or {})
+                status_metadata.pop("status_key", None)
+                if reply_anchor is not None:
+                    # Direct cached edits do not receive ``reply_to``. Retain the
+                    # originating message identity as lifecycle metadata so a
+                    # terminal edit can complete Discord's recovery receipt.
+                    status_metadata["reply_to_message_id"] = str(reply_anchor)
+                if terminal:
+                    status_metadata.pop("operator_card", None)
+                else:
+                    # Running cards are operational UI, not assistant turns.
+                    # Enforce this at the keyed lifecycle boundary so every
+                    # producer (progress, stream, proxy, status) stays out of
+                    # history/backfill even if its caller omits the marker.
+                    status_metadata["non_conversational"] = True
+                    if "operator_card" not in status_metadata:
+                        status_metadata["operator_card"] = self._task_run_operator_card(
+                            status_key, content
+                        )
+                if not status_metadata:
+                    status_metadata = None
+
+                fingerprint_payload = repr(
+                    (
+                        str(content),
+                        terminal,
+                        (status_metadata or {}).get("operator_card"),
+                    )
+                )
+                fingerprint = hashlib.sha256(
+                    fingerprint_payload.encode("utf-8")
+                ).hexdigest()
+                cached_id = self._status_message_ids.get(key)
+                cached_group = self._status_message_groups.get(
+                    key,
+                    (cached_id,) if cached_id is not None else (),
+                )
+                if (
+                    not terminal
+                    and cached_id is not None
+                    and self._status_message_terminal.get(key)
+                ):
+                    # Final delivery is monotonic. A late progress callback or
+                    # heartbeat must never turn the complete plaintext answer
+                    # back into a running operator card.
+                    return SendResult(success=True, message_id=cached_id)
+                if (
+                    cached_id is not None
+                    and self._status_message_fingerprints.get(key) == fingerprint
+                ):
+                    self._cache_status_message(
+                        key,
+                        cached_id,
+                        fingerprint,
+                        terminal=terminal,
+                    )
+                    return SendResult(success=True, message_id=cached_id)
+
+                edit_failed = False
+                replaced_message_ids: tuple[str, ...] = ()
+                if cached_id is not None:
+                    result = await self.edit_message(
+                        chat_id=str(chat_id),
+                        message_id=cached_id,
+                        content=content,
+                        finalize=terminal,
+                        metadata=status_metadata,
+                    )
+                    raw_response = result.raw_response
+                    partial_overflow = bool(
+                        isinstance(raw_response, dict)
+                        and raw_response.get("partial_overflow")
+                    )
+                    result_group = self._status_result_message_ids(
+                        result,
+                        original_message_id=cached_id,
+                    )
+                    if result.success and not partial_overflow:
+                        await self._delete_replaced_status_messages(
+                            chat_id=str(chat_id),
+                            thread_id=thread_id,
+                            previous_message_ids=cached_group,
+                            retained_message_ids=result_group,
+                        )
+                        if terminal:
+                            self._restore_terminal_status_to_conversation(
+                                chat_id=str(chat_id),
+                                thread_id=thread_id,
+                                message_ids=result_group,
+                            )
+                        self._cache_status_message(
+                            key,
+                            cached_id,
+                            fingerprint,
+                            message_ids=result_group,
+                            terminal=terminal,
+                        )
+                        return result
+                    # Discord deliberately reports a mid-continuation overflow
+                    # failure as partial success so callers know some chunks
+                    # are already visible.  It is not a completed terminal
+                    # delivery: do not fingerprint or latch it.  Reuse the
+                    # stale-edit fallback below to make exactly one fresh
+                    # plaintext send of the complete answer.
+                    edit_failed = True
+                    replaced_message_ids = tuple(
+                        dict.fromkeys((*cached_group, *result_group))
+                    )
+                    self._status_message_ids.pop(key, None)
+                    self._status_message_groups.pop(key, None)
+                    self._status_message_fingerprints.pop(key, None)
+
+                # Terminal results are deliberately plaintext so the operator gets
+                # the full answer rather than the card summary's 500-character cap.
+                # After a stale edit, go straight to one plaintext send as well.
+                send_metadata = (
+                    self._plain_status_metadata(status_metadata)
+                    if terminal or edit_failed
+                    else self._status_transport_metadata(status_metadata)
+                )
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": str(chat_id),
+                    "content": content,
+                    "metadata": send_metadata,
+                }
+                if reply_anchor is not None:
+                    send_kwargs["reply_to"] = str(reply_anchor)
+                result = await self.send(
+                    **send_kwargs,
+                )
+
+                # A first rich send can fail because Discord rejected the embed.
+                # Retry exactly once without the rich payload; never recursively
+                # enter this method or the generic send retry loop.
+                if (
+                    not result.success
+                    and not terminal
+                    and not edit_failed
+                    and status_metadata
+                    and "operator_card" in status_metadata
+                ):
+                    fallback_kwargs: Dict[str, Any] = {
+                        "chat_id": str(chat_id),
+                        "content": content,
+                        "metadata": self._plain_status_metadata(status_metadata),
+                    }
+                    if reply_anchor is not None:
+                        fallback_kwargs["reply_to"] = str(reply_anchor)
+                    result = await self.send(**fallback_kwargs)
+
+                if result.success and result.message_id:
+                    result_group = self._status_result_message_ids(result)
+                    await self._delete_replaced_status_messages(
+                        chat_id=str(chat_id),
+                        thread_id=thread_id,
+                        previous_message_ids=replaced_message_ids,
+                        retained_message_ids=result_group,
+                    )
+                    if terminal:
+                        self._restore_terminal_status_to_conversation(
+                            chat_id=str(chat_id),
+                            thread_id=thread_id,
+                            message_ids=result_group,
+                        )
+                    self._cache_status_message(
+                        key,
+                        result_group[0],
+                        fingerprint,
+                        message_ids=result_group,
+                        terminal=terminal,
+                    )
+                return result
+        finally:
+            remaining_users = self._status_message_users.get(key, 1) - 1
+            if remaining_users > 0:
+                self._status_message_users[key] = remaining_users
+            else:
+                self._status_message_users.pop(key, None)
+            # Failed first sends have no useful retained identity. Remove their
+            # now-unlocked lock so repeated failures cannot grow the lock map.
+            if (
+                key not in self._status_message_ids
+                and self._status_message_locks.get(key) is lock
+                and remaining_users == 0
+            ):
+                self._status_message_locks.pop(key, None)
+                self._status_message_groups.pop(key, None)
+                self._status_message_terminal.pop(key, None)
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Keep keyed-card fallback single-shot; retain normal send retries."""
+        if metadata and metadata.get("status_key"):
+            return await self.send(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return await super()._send_with_retry(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+            max_retries=max_retries,
+            base_delay=base_delay,
+        )
+
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        *,
+        embed: Any = None,
+        thread_name: Optional[str] = None,
+        preserve_content: bool = False,
+    ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -2967,17 +3711,24 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = (
+            _chunk_discord_lossless_text(formatted, self.MAX_MESSAGE_LENGTH)
+            if preserve_content
+            else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
 
-        thread_name = _derive_forum_thread_name(content)
+        thread_name = thread_name or _derive_forum_thread_name(content)
 
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "name": thread_name,
+                "content": starter_content,
+            }
+            if embed is not None:
+                create_kwargs["embed"] = embed
+            thread = await forum_channel.create_thread(**create_kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -3068,6 +3819,9 @@ class DiscordAdapter(BasePlatformAdapter):
             success=True,
             message_id=message_id,
             raw_response={"thread_id": thread_id},
+            delivered_attachment_count=(
+                len(files) if files else 1 if file is not None else 0
+            ),
         )
 
     async def edit_message(
@@ -3092,14 +3846,61 @@ class DiscordAdapter(BasePlatformAdapter):
         re-split, looping forever (the Telegram #48648 lesson).  The complete
         text is delivered when ``finalize=True`` via ``_edit_overflow_split``.
         """
+        status_key = (metadata or {}).get("status_key")
+        if status_key:
+            # Stream consumers call edit_message directly after their first
+            # send. Route those updates back through the keyed lifecycle so
+            # heartbeat, stream finalization, and BasePlatformAdapter's final
+            # delivery share the same lock, fingerprint, and fallback policy.
+            routed_metadata = dict(metadata or {})
+            if finalize and "status_terminal" not in routed_metadata:
+                routed_metadata["status_terminal"] = True
+            return await self.send_or_update_status(
+                chat_id,
+                str(status_key),
+                content,
+                metadata=routed_metadata,
+            )
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            target_chat_id = (metadata or {}).get("thread_id") or chat_id
+            channel = self._client.get_channel(int(target_chat_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_chat_id))
             msg = await channel.fetch_message(int(message_id))
-            formatted = self.format_message(content)
+            terminal_status = bool(metadata and metadata.get("status_terminal"))
+
+            async def _record_completed_edit(result: SendResult) -> SendResult:
+                """Persist only complete final edits before returning upstream."""
+                raw_response = result.raw_response
+                partial_overflow = bool(
+                    isinstance(raw_response, dict)
+                    and raw_response.get("partial_overflow")
+                )
+                if finalize and result.success and not partial_overflow:
+                    await asyncio.to_thread(
+                        self._record_discord_response,
+                        reply_to=(metadata or {}).get("reply_to_message_id"),
+                        result=result,
+                        content=content,
+                        final=True,
+                    )
+                return result
+
+            operator_card_embed = None
+            operator_card_payload = (
+                metadata.get("operator_card") if metadata else None
+            )
+            if operator_card_payload is not None:
+                operator_card = OperatorCard.from_mapping(operator_card_payload)
+                formatted = render_operator_card_text(
+                    operator_card,
+                    max_length=self.MAX_MESSAGE_LENGTH,
+                )
+                operator_card_embed = _build_operator_card_embed(operator_card)
+            else:
+                formatted = self.format_message(content)
 
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
@@ -3112,8 +3913,14 @@ class DiscordAdapter(BasePlatformAdapter):
             # streaming edits truncate a one-message preview in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(
-                        channel, msg, message_id, content,
+                    return await _record_completed_edit(
+                        await self._edit_overflow_split(
+                            channel,
+                            msg,
+                            message_id,
+                            content,
+                            clear_embed=terminal_status,
+                        )
                     )
                 formatted = self.truncate_message(
                     formatted, self.MAX_MESSAGE_LENGTH,
@@ -3133,7 +3940,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
-                await msg.edit(content=formatted)
+                edit_kwargs: Dict[str, Any] = {"content": formatted}
+                if terminal_status:
+                    # A final result replaces the card; omitting embed=None
+                    # would leave the stale running embed attached.
+                    edit_kwargs["embed"] = None
+                elif operator_card_embed is not None:
+                    edit_kwargs["embed"] = operator_card_embed
+                await msg.edit(**edit_kwargs)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
@@ -3143,8 +3957,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 # as "error code: 50035 ... Must be 2000 or fewer in length".
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(
-                            channel, msg, message_id, content,
+                        return await _record_completed_edit(
+                            await self._edit_overflow_split(
+                                channel,
+                                msg,
+                                message_id,
+                                content,
+                                clear_embed=terminal_status,
+                            )
                         )
                     # Mid-stream: truncate and retry in place (no split).
                     truncated = self.truncate_message(
@@ -3158,15 +3978,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:
                     raise
             result = SendResult(success=True, message_id=message_id)
-            if finalize:
-                await asyncio.to_thread(
-                    self._record_discord_response,
-                    reply_to=(metadata or {}).get("reply_to_message_id"),
-                    result=result,
-                    content=content,
-                    final=True,
-                )
-            return result
+            return await _record_completed_edit(result)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
@@ -3191,6 +4003,8 @@ class DiscordAdapter(BasePlatformAdapter):
         msg: Any,
         message_id: str,
         content: str,
+        *,
+        clear_embed: bool = False,
     ) -> SendResult:
         """Deliver an oversized final edit across message + continuations.
 
@@ -3214,12 +4028,20 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
-            await msg.edit(content=chunks[0] if chunks else formatted)
+            edit_kwargs: Dict[str, Any] = {
+                "content": chunks[0] if chunks else formatted
+            }
+            if clear_embed:
+                edit_kwargs["embed"] = None
+            await msg.edit(**edit_kwargs)
             return SendResult(success=True, message_id=message_id)
 
         # Step 1 — edit the existing message with the first chunk.
         try:
-            await msg.edit(content=chunks[0])
+            edit_kwargs: Dict[str, Any] = {"content": chunks[0]}
+            if clear_embed:
+                edit_kwargs["embed"] = None
+            await msg.edit(**edit_kwargs)
         except Exception as e:
             logger.error(
                 "[%s] Overflow split: first-chunk edit failed: %s",
@@ -3294,6 +4116,8 @@ class DiscordAdapter(BasePlatformAdapter):
         file_path: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment.
 
@@ -3303,11 +4127,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        channel = self._client.get_channel(int(chat_id))
+        channel, target_id = await self._resolve_attachment_channel(
+            chat_id,
+            metadata,
+        )
         if not channel:
-            channel = await self._client.fetch_channel(int(chat_id))
-        if not channel:
-            return SendResult(success=False, error=f"Channel {chat_id} not found")
+            return SendResult(success=False, error=f"Channel {target_id} not found")
 
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
@@ -3318,8 +4143,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     content=(caption or "").strip(),
                     file=file,
                 )
-            msg = await channel.send(content=caption if caption else None, file=file)
-        return SendResult(success=True, message_id=str(msg.id))
+            send_kwargs: Dict[str, Any] = {
+                "content": caption if caption else None,
+                "file": file,
+            }
+            reference = await self._attachment_reply_reference(
+                channel,
+                reply_to,
+                metadata,
+            )
+            if reference is not None:
+                send_kwargs["reference"] = reference
+            msg = await channel.send(**send_kwargs)
+        return SendResult(
+            success=True,
+            message_id=str(msg.id),
+            delivered_attachment_count=1,
+        )
 
     async def send_multiple_images(
         self,
@@ -3327,7 +4167,7 @@ class DiscordAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images as a single Discord message with multiple attachments.
 
         Discord permits up to 10 file attachments per message. Batches are
@@ -3338,32 +4178,53 @@ class DiscordAdapter(BasePlatformAdapter):
         fall back to the base per-image loop.
         """
         if not self._client:
-            return
+            return SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return SendResult(success=False, error="No images to send")
 
         try:
             import discord as _discord_mod
             import io as _io
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(
+                chat_id,
+                images,
+                self._attachment_fallback_metadata(metadata),
+                human_delay,
+            )
 
         try:
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
-                return
+                logger.warning("[%s] Channel %s not found for multi-image send", self.name, target_id)
+                return SendResult(
+                    success=False,
+                    error=f"Channel {target_id} not found",
+                )
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(
+                chat_id,
+                images,
+                self._attachment_fallback_metadata(metadata),
+                human_delay,
+            )
+
+        reference = await self._attachment_reply_reference(
+            channel,
+            None,
+            metadata,
+        )
 
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered_attachment_count = 0
+        last_message_id: Optional[str] = None
+        delivery_errors: List[str] = []
 
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
@@ -3428,26 +4289,69 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
 
                 if self._is_forum_parent(channel):
-                    await self._forum_post_file(
+                    forum_result = await self._forum_post_file(
                         channel,
                         content=(content or "").strip(),
                         files=files,
                     )
+                    confirmed_count = confirmed_attachment_delivery_count(
+                        forum_result
+                    )
+                    if not confirmed_count:
+                        delivery_errors.append(
+                            forum_result.error or "Forum image batch failed"
+                        )
+                        continue
+                    delivered_attachment_count += confirmed_count
+                    last_message_id = forum_result.message_id
                 else:
-                    await channel.send(content=content, files=files)
+                    send_kwargs: Dict[str, Any] = {
+                        "content": content,
+                        "files": files,
+                    }
+                    if reference is not None and chunk_idx == 0:
+                        send_kwargs["reference"] = reference
+                    message = await channel.send(**send_kwargs)
+                    delivered_attachment_count += len(files)
+                    last_message_id = str(message.id)
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e,
                     exc_info=True,
                 )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback_result = await super().send_multiple_images(
+                    chat_id,
+                    chunk,
+                    self._attachment_fallback_metadata(metadata),
+                    human_delay=human_delay,
+                )
+                if fallback_result.success:
+                    delivered_attachment_count += (
+                        fallback_result.delivered_attachment_count
+                    )
+                    last_message_id = fallback_result.message_id or last_message_id
+                elif fallback_result.error:
+                    delivery_errors.append(fallback_result.error)
             finally:
                 if aiohttp_session is not None:
                     try:
                         await aiohttp_session.close()
                     except Exception:
                         pass
+
+        success = delivered_attachment_count > 0
+        return SendResult(
+            success=success,
+            message_id=last_message_id,
+            error=(
+                None
+                if success
+                else "; ".join(delivery_errors)
+                or "No image attachments were delivered"
+            ),
+            delivered_attachment_count=delivered_attachment_count,
+        )
 
     async def play_tts(
         self,
@@ -3480,11 +4384,12 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import io
 
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                return SendResult(success=False, error=f"Channel {target_id} not found")
 
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
@@ -3531,6 +4436,16 @@ class DiscordAdapter(BasePlatformAdapter):
                         "waveform": waveform_b64,
                     }],
                 })
+                reply_anchor = reply_to or (metadata or {}).get(
+                    "reply_to_message_id"
+                )
+                if reply_anchor and self._reply_to_mode != "off":
+                    payload_data = _json.loads(payload)
+                    payload_data["message_reference"] = {
+                        "message_id": str(reply_anchor),
+                        "fail_if_not_exists": False,
+                    }
+                    payload = _json.dumps(payload_data)
                 form = [
                     {"name": "payload_json", "value": payload},
                     {
@@ -3544,15 +4459,37 @@ class DiscordAdapter(BasePlatformAdapter):
                     discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
                     form=form,
                 )
-                return SendResult(success=True, message_id=str(msg_data["id"]))
+                return SendResult(
+                    success=True,
+                    message_id=str(msg_data["id"]),
+                    delivered_attachment_count=1,
+                )
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
-                return SendResult(success=True, message_id=str(msg.id))
+                send_kwargs: Dict[str, Any] = {"file": file}
+                reference = await self._attachment_reply_reference(
+                    channel,
+                    reply_to,
+                    metadata,
+                )
+                if reference is not None:
+                    send_kwargs["reference"] = reference
+                msg = await channel.send(**send_kwargs)
+                return SendResult(
+                    success=True,
+                    message_id=str(msg.id),
+                    delivered_attachment_count=1,
+                )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+            return await super().send_voice(
+                chat_id,
+                audio_path,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     # ------------------------------------------------------------------
     # Voice channel methods (join / leave / play)
@@ -4491,12 +5428,24 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         try:
-            return await self._send_file_attachment(chat_id, image_path, caption)
+            return await self._send_file_attachment(
+                chat_id,
+                image_path,
+                caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send local image, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
+            return await super().send_image_file(
+                chat_id,
+                image_path,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_image(
         self,
@@ -4512,16 +5461,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL during Discord send_image", self.name)
-            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
         try:
             import aiohttp
 
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                return SendResult(success=False, error=f"Channel {target_id} not found")
 
             # Download the image and send as a Discord file attachment
             # (Discord renders attachments inline, unlike plain URLs)
@@ -4555,11 +5511,23 @@ class DiscordAdapter(BasePlatformAdapter):
                             file=file,
                         )
 
-                    msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                    send_kwargs: Dict[str, Any] = {
+                        "content": caption if caption else None,
+                        "file": file,
+                    }
+                    reference = await self._attachment_reply_reference(
+                        channel,
+                        reply_to,
+                        metadata,
                     )
-                    return SendResult(success=True, message_id=str(msg.id))
+                    if reference is not None:
+                        send_kwargs["reference"] = reference
+                    msg = await channel.send(**send_kwargs)
+                    return SendResult(
+                        success=True,
+                        message_id=str(msg.id),
+                        delivered_attachment_count=1,
+                    )
 
         except ImportError:
             logger.warning(
@@ -4567,7 +5535,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name,
                 exc_info=True,
             )
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send image attachment, falling back to URL: %s",
@@ -4575,7 +5549,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_animation(
         self,
@@ -4591,16 +5571,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not is_safe_url(animation_url):
             logger.warning("[%s] Blocked unsafe animation URL during Discord send_animation", self.name)
-            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await super().send_animation(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
         try:
             import aiohttp
 
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                return SendResult(success=False, error=f"Channel {target_id} not found")
 
             # Download the GIF and send as a Discord file attachment
             # (Discord renders .gif attachments as auto-playing animations inline)
@@ -4624,11 +5611,23 @@ class DiscordAdapter(BasePlatformAdapter):
                             file=file,
                         )
 
-                    msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                    send_kwargs: Dict[str, Any] = {
+                        "content": caption if caption else None,
+                        "file": file,
+                    }
+                    reference = await self._attachment_reply_reference(
+                        channel,
+                        reply_to,
+                        metadata,
                     )
-                    return SendResult(success=True, message_id=str(msg.id))
+                    if reference is not None:
+                        send_kwargs["reference"] = reference
+                    msg = await channel.send(**send_kwargs)
+                    return SendResult(
+                        success=True,
+                        message_id=str(msg.id),
+                        delivered_attachment_count=1,
+                    )
 
         except ImportError:
             logger.warning(
@@ -4636,7 +5635,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name,
                 exc_info=True,
             )
-            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await super().send_animation(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send animation attachment, falling back to URL: %s",
@@ -4644,7 +5649,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await super().send_animation(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_video(
         self,
@@ -4656,12 +5667,24 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, video_path, caption)
+            return await self._send_file_attachment(
+                chat_id,
+                video_path,
+                caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send local video, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
+            return await super().send_video(
+                chat_id,
+                video_path,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_document(
         self,
@@ -4674,12 +5697,26 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            return await self._send_file_attachment(
+                chat_id,
+                file_path,
+                caption,
+                file_name=file_name,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
+            return await super().send_document(
+                chat_id,
+                file_path,
+                caption,
+                file_name,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing indicator for a channel.
@@ -5506,6 +6543,18 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=(str(getattr(interaction, "guild_id", "") or "") or None),
+            parent_chat_id=(
+                str(
+                    getattr(
+                        getattr(interaction, "channel", None),
+                        "parent_id",
+                        "",
+                    )
+                    or ""
+                )
+                or None
+            ),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -5600,6 +6649,21 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=(
+                str(getattr(getattr(interaction, "guild", None), "id", "") or "")
+                or None
+            ),
+            parent_chat_id=(
+                str(
+                    getattr(
+                        self._thread_parent_channel(_chan),
+                        "id",
+                        "",
+                    )
+                    or ""
+                )
+                or None
+            ),
         )
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
@@ -6333,6 +7397,204 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
+
+    @staticmethod
+    def _workspace_header_message_missing(error: BaseException) -> bool:
+        """True only when Discord definitively says the tracked message is gone."""
+        code = getattr(error, "code", None)
+        status = getattr(error, "status", None)
+        text = str(error).casefold()
+        return code == 10008 or (status == 404 and "unknown message" in text)
+
+    def _build_workspace_header_card(
+        self,
+        source: Any,
+        thread: Any,
+        state: WorkspaceHeaderState,
+    ) -> OperatorCard:
+        """Build the standard thread-header operator card."""
+        scope_id = str(source.scope_id)
+        thread_id = str(source.thread_id)
+        thread_name = (
+            " ".join(str(getattr(thread, "name", "") or "").split()) or "Hermes"
+        )
+        return OperatorCard.from_mapping(
+            {
+                "kind": "operator_card",
+                "version": 1,
+                "card_type": "thread_header",
+                "title": f"Workspace · {thread_name}",
+                "severity": "info",
+                "summary": "Persistent Hermes context for this Discord thread.",
+                "fields": [
+                    {"label": "Owner", "value": state.owner},
+                    {"label": "Status", "value": state.status},
+                    {"label": "Thread", "value": f"<#{thread_id}>"},
+                    {
+                        "label": "Linked issue / artifact",
+                        "value": state.linked_issue_or_artifact,
+                    },
+                    {"label": "Last decision", "value": state.last_decision},
+                    {"label": "Next action", "value": state.next_action},
+                ],
+                "actions": [],
+                "links": [],
+                "state_ref": f"discord-workspace:{scope_id}:{thread_id}",
+            }
+        )
+
+    async def ensure_workspace_header(self, source: Any) -> WorkspaceHeaderResult:
+        """Create or edit the one persistent header for a Discord thread.
+
+        The method fails closed when canonical scope is missing/mismatched. A
+        tracked message is recreated only after Discord definitively reports
+        Unknown Message; transient fetch failures never risk a duplicate.
+        """
+        if (
+            getattr(source, "platform", None) != Platform.DISCORD
+            or getattr(source, "chat_type", None) != "thread"
+            or not getattr(source, "scope_id", None)
+            or not getattr(source, "thread_id", None)
+            or self._client is None
+        ):
+            return WorkspaceHeaderResult(
+                False, "skipped", error="not a scoped Discord thread"
+            )
+
+        scope_id = str(source.scope_id)
+        thread_id = str(source.thread_id)
+        try:
+            thread_id_int = int(thread_id)
+            thread = self._client.get_channel(thread_id_int)
+            if thread is None:
+                thread = await self._client.fetch_channel(thread_id_int)
+        except Exception as error:
+            return WorkspaceHeaderResult(False, "failed", error=str(error))
+        live_scope_id = str(
+            getattr(getattr(thread, "guild", None), "id", "") or ""
+        )
+        if live_scope_id != scope_id:
+            return WorkspaceHeaderResult(
+                False, "skipped", error="live guild scope mismatch"
+            )
+
+        lock_key = (scope_id, thread_id)
+        lock = self._workspace_header_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            try:
+                binding = self._workspace_headers.get(scope_id, thread_id)
+                state = self._workspace_headers.get_state(scope_id, thread_id)
+            except WorkspaceHeaderStoreError as error:
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            state = state or WorkspaceHeaderState()
+            card = self._build_workspace_header_card(source, thread, state)
+            content = render_operator_card_text(
+                card, max_length=self.MAX_MESSAGE_LENGTH
+            )
+            embed = _build_operator_card_embed(card)
+            action = "created"
+            expected_message_id: Optional[str] = None
+
+            if binding is not None:
+                if binding.pending or not binding.message_id:
+                    return WorkspaceHeaderResult(
+                        False,
+                        "failed",
+                        error="workspace header creation is pending in the registry",
+                    )
+                try:
+                    message = await thread.fetch_message(int(binding.message_id))
+                except Exception as error:
+                    if not self._workspace_header_message_missing(error):
+                        return WorkspaceHeaderResult(
+                            False,
+                            "failed",
+                            message_id=binding.message_id,
+                            error=str(error),
+                        )
+                    expected_message_id = binding.message_id
+                    action = "recreated"
+                else:
+                    try:
+                        await message.edit(content=content, embed=embed)
+                    except Exception as error:
+                        return WorkspaceHeaderResult(
+                            False,
+                            "failed",
+                            message_id=binding.message_id,
+                            error=str(error),
+                        )
+                    self._nonconversational_messages.mark_many(
+                        [binding.message_id]
+                    )
+                    return WorkspaceHeaderResult(
+                        True, "updated", message_id=binding.message_id
+                    )
+
+            reservation_token = secrets.token_hex(16)
+            try:
+                reserved = self._workspace_headers.reserve_creation(
+                    scope_id,
+                    thread_id,
+                    token=reservation_token,
+                    expected_message_id=expected_message_id,
+                )
+            except WorkspaceHeaderStoreError as error:
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            if not reserved:
+                return WorkspaceHeaderResult(
+                    False,
+                    "failed",
+                    error="workspace header identity changed before creation",
+                )
+
+            try:
+                message = await thread.send(content=content, embed=embed)
+            except Exception as error:
+                try:
+                    self._workspace_headers.cancel_creation(
+                        scope_id, thread_id, token=reservation_token
+                    )
+                except WorkspaceHeaderStoreError:
+                    logger.debug(
+                        "[%s] Failed to release Discord workspace header reservation",
+                        self.name,
+                        exc_info=True,
+                    )
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            message_id = str(getattr(message, "id", "") or "")
+            if not message_id:
+                try:
+                    self._workspace_headers.cancel_creation(
+                        scope_id, thread_id, token=reservation_token
+                    )
+                except WorkspaceHeaderStoreError:
+                    logger.debug(
+                        "[%s] Failed to release Discord workspace header reservation",
+                        self.name,
+                        exc_info=True,
+                    )
+                return WorkspaceHeaderResult(
+                    False, "failed", error="Discord send returned no message id"
+                )
+            self._nonconversational_messages.mark_many([message_id])
+            try:
+                self._workspace_headers.complete_creation(
+                    scope_id,
+                    thread_id,
+                    token=reservation_token,
+                    message_id=message_id,
+                )
+            except WorkspaceHeaderStoreError as error:
+                # The persisted pending reservation deliberately remains. A
+                # later turn fails closed instead of emitting a duplicate.
+                return WorkspaceHeaderResult(
+                    False,
+                    "failed",
+                    message_id=message_id,
+                    error=str(error),
+                )
+            return WorkspaceHeaderResult(True, action, message_id=message_id)
 
     async def create_handoff_thread(
         self,
@@ -8826,13 +10088,13 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
 
 
 def _derive_forum_thread_name(message: str) -> str:
-    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    """Derive a thread name within Discord's 100 UTF-16-unit limit."""
     first_line = message.strip().split("\n", 1)[0].strip()
     # Strip common markdown heading prefixes
     first_line = first_line.lstrip("#").strip()
     if not first_line:
         first_line = "New Post"
-    return first_line[:100]
+    return _truncate_discord_component_text(first_line, 100)
 
 
 def _standalone_sanitize_error(text) -> str:

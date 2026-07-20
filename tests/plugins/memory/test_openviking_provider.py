@@ -1149,3 +1149,53 @@ def test_in_place_compression_lifecycle_allows_a_later_commit(monkeypatch):
         "post-compression turns were never committed: "
         f"{provider._client.post.call_args_list}"
     )
+
+def test_resolve_connection_settings_reads_config_yaml_non_secret_fields(monkeypatch):
+    """#68209: non-secret fields saved to config.yaml feed the resolution chain."""
+    _clear_openviking_env(monkeypatch)
+    provider_config = {
+        "endpoint": "http://saved.local:1933",
+        "account": "cfg-account",
+        "user": "cfg-user",
+        "agent": "cfg-agent",
+    }
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings["endpoint"] == "http://saved.local:1933"
+    assert settings["account"] == "cfg-account"
+    assert settings["user"] == "cfg-user"
+    assert settings["agent"] == "cfg-agent"
+
+
+def test_env_overrides_config_yaml_non_secret_fields(monkeypatch):
+    """env still wins over config.yaml (env -> ovcli -> config.yaml -> default)."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://env.local")
+    monkeypatch.setenv("OPENVIKING_AGENT", "env-agent")
+
+    settings = openviking_module._resolve_connection_settings(
+        {"endpoint": "http://saved.local", "agent": "cfg-agent"}
+    )
+
+    assert settings["endpoint"] == "http://env.local"
+    assert settings["agent"] == "env-agent"
+
+
+def test_is_available_true_for_config_yaml_endpoint(monkeypatch):
+    """#68209: a config.yaml endpoint (no env, no ovcli) counts as available."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {"endpoint": "http://saved.local:1933"},
+    )
+    assert OpenVikingMemoryProvider().is_available() is True
+
+
+def test_is_available_false_without_any_endpoint(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(
+        openviking_module, "_load_hermes_openviking_config", lambda: {}
+    )
+    assert OpenVikingMemoryProvider().is_available() is False

@@ -70,7 +70,9 @@ class TestHandleFastCommand(unittest.TestCase):
         # Session-scoped by default: no config write.
         mock_save.assert_not_called()
         self.assertIsNone(stub.service_tier)
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.service_tier, stub.service_tier)
 
 
     def test_unsupported_model_does_not_expose_fast(self):

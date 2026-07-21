@@ -29,7 +29,15 @@ const PILL = cn(
  * `model.options` dropdown (`modelMenuContent`) verbatim; falls back to the
  * full picker when the gateway is closed and no live menu exists.
  */
-export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatBarState['model'] }) {
+export function ModelPill({
+  compact = false,
+  disabled,
+  model
+}: {
+  compact?: boolean
+  disabled: boolean
+  model: ChatBarState['model']
+}) {
   const copy = useI18n().t.shell.statusbar
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
@@ -40,7 +48,9 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
   // color at half opacity) until a model lands.
-  const label = (
+  const label = compact ? (
+    <ChevronDown className="size-3.5 shrink-0 opacity-70" />
+  ) : (
     <>
       {currentModel.trim() ? (
         <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
@@ -51,13 +61,22 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
     </>
   )
 
+  // Compact (floating composer): a snug square holding just the chevron — no pill
+  // padding, sized to match the other composer icon buttons.
+  const pillClass = compact
+    ? cn(
+        'size-(--composer-control-size) shrink-0 justify-center gap-0 rounded-md p-0',
+        'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+      )
+    : PILL
+
   const title = currentProvider ? copy.modelTitle(currentProvider, currentModel || copy.modelNone) : copy.switchModel
 
   if (!model.modelMenuContent) {
     return (
       <Button
         aria-label={copy.openModelPicker}
-        className={PILL}
+        className={pillClass}
         disabled={disabled}
         onClick={() => setModelPickerOpen(true)}
         title={copy.openModelPicker}
@@ -72,7 +91,14 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
   return (
     <DropdownMenu onOpenChange={setOpen} open={open}>
       <DropdownMenuTrigger asChild>
-        <Button aria-label={title} className={PILL} disabled={disabled} title={title} type="button" variant="ghost">
+        <Button
+          aria-label={title}
+          className={pillClass}
+          disabled={disabled}
+          title={title}
+          type="button"
+          variant="ghost"
+        >
           {label}
         </Button>
       </DropdownMenuTrigger>

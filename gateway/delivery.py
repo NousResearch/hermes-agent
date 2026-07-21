@@ -20,8 +20,13 @@ from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+# Cap before gateway-level truncation of cron output for non-chunking platform
+# delivery.  Telegram's hard API limit is 4096; the headroom covers the "full
+# output saved to …" footer appended on truncation.  Adapters that split long
+# messages natively (BasePlatformAdapter.splits_long_messages) bypass this
+# entirely — the adapter chunks in its own send() and the full output is
+# preserved.
 MAX_PLATFORM_OUTPUT = 4000
-TRUNCATED_VISIBLE = 3800
 
 # Matches strings that are *only* a "silence" narration with optional markdown
 # wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
@@ -316,15 +321,55 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
-        # Guard: truncate oversized cron output to stay within platform limits
+        # Guard: handle oversized cron output.
+        #
+        # Two independent decisions:
+        #   1. AUDIT SAVE — when content exceeds MAX_PLATFORM_OUTPUT, the full
+        #      output is always written to disk as a recoverable audit trail.
+        #      This fires regardless of adapter capability (best-effort).
+        #   2. TRUNCATION — for non-chunking adapters, content above the cap is
+        #      truncated with a footer pointing to the saved file.  Chunking-
+        #      capable adapters (splits_long_messages=True) receive the full
+        #      payload and split natively in their send().
+        job_id = (metadata or {}).get("job_id", "unknown")
+        saved_path: Optional[Path] = None
+
         if len(content) > MAX_PLATFORM_OUTPUT:
-            job_id = (metadata or {}).get("job_id", "unknown")
-            saved_path = self._save_full_output(content, job_id)
-            logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
-            content = (
-                content[:TRUNCATED_VISIBLE]
-                + f"\n\n... [truncated, full output saved to {saved_path}]"
-            )
+            # Step 1 — audit save (best-effort).  The save is a side-effect
+            # audit trail, not essential to delivery.  If it fails (full disk,
+            # permissions), delivery proceeds — the content reaches the adapter
+            # regardless.
+            try:
+                saved_path = self._save_full_output(content, job_id)
+            except OSError as exc:
+                logger.warning(
+                    "Audit save failed for cron output (%d chars, job=%s): %s — "
+                    "delivery proceeds without audit copy",
+                    len(content), job_id, exc,
+                )
+
+            # Step 2 — truncation (only for non-chunking adapters).
+            if getattr(adapter, "splits_long_messages", False):
+                # Adapter chunks natively — deliver full payload.
+                if saved_path:
+                    logger.info(
+                        "Cron output preserved for chunking adapter (%d chars) — "
+                        "full output saved to %s",
+                        len(content), saved_path,
+                    )
+            else:
+                # Non-chunking adapter — truncate with footer.  The footer
+                # needs a valid path, so if the best-effort save above failed,
+                # retry it here (a failure now is a real delivery problem).
+                if saved_path is None:
+                    saved_path = self._save_full_output(content, job_id)
+                footer = f"\n\n... [truncated, full output saved to {saved_path}]"
+                visible = max(0, MAX_PLATFORM_OUTPUT - len(footer))
+                logger.info(
+                    "Cron output truncated (%d chars) — full output: %s",
+                    len(content), saved_path,
+                )
+                content = content[:visible] + footer
         
         # Substrate-level anti-loop guard: drop hallucinated "silence narration"
         # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.

@@ -18,7 +18,7 @@ from gateway.session import build_session_key
 
 def _make_adapter():
     """Create a minimal TelegramAdapter for testing text batching."""
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)

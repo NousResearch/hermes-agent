@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from gateway.config import Platform
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 

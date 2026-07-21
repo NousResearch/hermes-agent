@@ -430,6 +430,24 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['compose'],
+    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
+    name: 'prompt',
+    run: (arg, ctx) => {
+      if (arg) {
+        // The TUI editor opens with the current composer draft; there is no
+        // separate seed arg. Drop any inline text into the composer first so
+        // it carries into the editor, matching the CLI's /prompt <text>.
+        ctx.composer.setInput(arg)
+      }
+
+      void ctx.composer.openEditor().catch((err: unknown) => {
+        ctx.transcript.sys(`editor failed: ${String(err)}`)
+      })
+    }
+  },
+
+  {
     help: 'configure IDE terminal keybindings for multiline + undo/redo',
     name: 'terminal-setup',
     run: (arg, ctx) => {

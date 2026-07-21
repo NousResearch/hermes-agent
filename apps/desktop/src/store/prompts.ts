@@ -87,10 +87,20 @@ export interface SecretRequest extends KeyedPrompt {
 const approval = keyedPromptStore<ApprovalRequest>()
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
+const $approvalInlineAnchorCount = atom(0)
 
 export const $approvalRequest = approval.$active
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
+export const $approvalInlineVisible = computed($approvalInlineAnchorCount, count => count > 0)
+
+export function registerApprovalInlineAnchor(): () => void {
+  $approvalInlineAnchorCount.set($approvalInlineAnchorCount.get() + 1)
+
+  return () => {
+    $approvalInlineAnchorCount.set(Math.max(0, $approvalInlineAnchorCount.get() - 1))
+  }
+}
 
 export const $sudoRequest = sudo.$active
 export const setSudoRequest = sudo.set
@@ -107,6 +117,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
+    $approvalInlineAnchorCount.set(0)
 
     return
   }

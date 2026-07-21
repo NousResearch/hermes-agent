@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildToolView, type ToolPart } from './tool-fallback-model'
+import {
+  buildToolView,
+  countDiffLineStats,
+  inlineDiffFromResult,
+  type ToolPart
+} from './tool-fallback-model'
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
   args: {},
@@ -62,5 +67,53 @@ describe('buildToolView terminal exit-code status', () => {
     expect(buildToolView(part({ isError: true, result: { output: 'x' }, toolName: 'terminal' }), '').status).toBe(
       'error'
     )
+  })
+})
+
+describe('buildToolView file edit diffs', () => {
+  const patchDiff = '--- a/src/demo.ts\n+++ b/src/demo.ts\n@@ -1 +1 @@\n-old\n+new'
+
+  it('reads inline_diff and diff fields from patch results', () => {
+    expect(inlineDiffFromResult({ inline_diff: patchDiff })).toBe(patchDiff)
+    expect(inlineDiffFromResult({ diff: patchDiff })).toBe(patchDiff)
+  })
+
+  it('suppresses raw patch args when a diff is available', () => {
+    const view = buildToolView(
+      part({
+        args: { context: 'src/demo.ts', mode: 'replace', new_string: 'new', path: 'src/demo.ts' },
+        result: { diff: patchDiff, success: true },
+        toolName: 'patch'
+      }),
+      patchDiff
+    )
+
+    expect(view.title).toBe('demo.ts')
+    expect(view.subtitle).toBe('src/demo.ts')
+    expect(view.detail).toBe('')
+    expect(view.inlineDiff).toBe(patchDiff)
+  })
+
+  it('shows path subtitle instead of patch args JSON while pending', () => {
+    const view = buildToolView(
+      part({
+        args: { context: 'src/demo.ts', mode: 'replace', new_string: 'new', path: 'src/demo.ts' },
+        result: undefined,
+        toolName: 'patch'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('demo.ts')
+    expect(view.subtitle).toBe('src/demo.ts')
+    expect(view.detail).toBe('')
+  })
+})
+
+describe('countDiffLineStats', () => {
+  it('counts added and removed lines', () => {
+    expect(
+      countDiffLineStats(`--- a/x\n+++ b/x\n@@\n-old\n+new\n context\n+another`)
+    ).toEqual({ added: 2, removed: 1 })
   })
 })

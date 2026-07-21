@@ -67,6 +67,57 @@ def normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
+# A target that is "just a phone number" — optional leading ``+`` then digits
+# and the usual human separators (spaces, dots, dashes, parens). Anything that
+# already carries an ``@`` is a fully-qualified JID and must pass through
+# untouched (group ``@g.us``, LID ``@lid``, ``status@broadcast`` etc.).
+_BARE_PHONE_RE = re.compile(r"^\+?[\d\s().\-]+$")
+
+
+def to_whatsapp_jid(value: str) -> str:
+    """Normalize an *outbound* WhatsApp target to a bridge-safe JID.
+
+    Baileys' ``jidDecode`` crashes on a bare phone number — it expects a
+    fully-qualified JID such as ``50766715226@s.whatsapp.net``. This helper
+    is the inverse of :func:`normalize_whatsapp_identifier`: instead of
+    stripping a JID down to its numeric core for comparison, it *builds* the
+    JID a send must use.
+
+    Behaviour:
+
+    - ``"+50766715226"`` / ``"50766715226"`` → ``"50766715226@s.whatsapp.net"``
+    - ``"50766715226@s.whatsapp.net"`` → unchanged
+    - ``"group-id@g.us"`` / ``"130631430344750@lid"`` → unchanged
+    - ``"user:device@s.whatsapp.net"`` style colon-before-``@`` → ``@`` form
+    - anything that isn't a recognizable bare phone → returned unchanged so
+      the bridge can surface a meaningful error rather than us mangling it.
+
+    Returns ``""`` for an empty/whitespace input.
+    """
+    if not value:
+        return ""
+
+    normalized = str(value).strip()
+    # Drop a device suffix before the domain: ``user:device@domain`` is a
+    # legacy Baileys shape whose ``:device`` part is not addressable — collapse
+    # it to ``user@domain``. (Mirrors normalize_whatsapp_identifier, which
+    # splits the bare id on ``:`` for the same reason.)
+    if ":" in normalized and "@" in normalized:
+        prefix, _, domain = normalized.partition("@")
+        normalized = f"{prefix.split(':', 1)[0]}@{domain}"
+
+    # Already a fully-qualified JID — leave it alone.
+    if "@" in normalized:
+        return normalized
+
+    if _BARE_PHONE_RE.fullmatch(normalized):
+        digits = re.sub(r"\D+", "", normalized)
+        if digits:
+            return f"{digits}@s.whatsapp.net"
+
+    return normalized
+
+
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """Resolve WhatsApp phone/LID aliases via bridge session mapping files.
 

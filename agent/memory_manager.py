@@ -25,12 +25,13 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
@@ -849,6 +850,87 @@ class MemoryManager:
                     "Memory provider '%s' on_memory_write failed: %s",
                     provider.name, e,
                 )
+
+    # Actions the bridge mirrors to external providers. The built-in memory
+    # tool can also return non-mutating shapes (errors, staged-for-approval
+    # records); those are filtered out by ``notify_memory_tool_write`` before
+    # we ever reach a provider.
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+
+    @staticmethod
+    def _memory_tool_result_succeeded(result: Any) -> bool:
+        """True only when the built-in memory tool actually committed a write.
+
+        Fails closed: a string that isn't JSON, a non-dict result, a missing
+        ``success``, or a write staged for approval (``staged is True``) all
+        return False so external providers are never told about a write that
+        did not land.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return False
+        if not isinstance(result, dict):
+            return False
+        return result.get("success") is True and result.get("staged") is not True
+
+    def notify_memory_tool_write(
+        self,
+        tool_result: Any,
+        tool_args: Dict[str, Any],
+        *,
+        build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
+        """Mirror a built-in memory tool call to external providers.
+
+        This is the single entry point the agent loop calls after running the
+        built-in ``memory`` tool. All the decisions about *whether* and *what*
+        to mirror live here, behind the manager interface — the loop only hands
+        over the raw tool result and args:
+
+        * gate on a committed (non-staged, successful) write,
+        * expand the single-op and batched (``operations``) shapes,
+        * keep only mutating actions (add/replace/remove),
+        * build per-op provenance metadata and forward ``old_text``.
+
+        ``build_metadata`` is an optional agent-side callable (the loop knows
+        session/task/tool-call provenance the manager does not) invoked once per
+        mirrored op.
+        """
+        if not self._memory_tool_result_succeeded(tool_result):
+            return
+
+        target = str(tool_args.get("target") or "memory")
+        operations = tool_args.get("operations")
+        if isinstance(operations, list) and operations:
+            raw_operations = operations
+        else:
+            raw_operations = [{
+                "action": tool_args.get("action"),
+                "content": tool_args.get("content"),
+                "old_text": tool_args.get("old_text"),
+            }]
+
+        for op in raw_operations:
+            if not isinstance(op, dict):
+                continue
+            action = str(op.get("action") or "")
+            if action not in self._MIRRORED_MEMORY_ACTIONS:
+                continue
+            try:
+                metadata = dict(build_metadata() if build_metadata else {})
+                old_text = op.get("old_text")
+                if old_text:
+                    metadata["old_text"] = str(old_text)
+                self.on_memory_write(
+                    action,
+                    target,
+                    str(op.get("content") or ""),
+                    metadata=metadata,
+                )
+            except Exception as e:
+                logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:

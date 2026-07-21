@@ -33,6 +33,7 @@ import logging
 import os
 from typing import Any, Optional
 
+from agent.redact import redact_sensitive_text
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -487,6 +488,17 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    if summary:
+        summary = redact_sensitive_text(str(summary), force=True)
+    if result:
+        result = redact_sensitive_text(str(result), force=True)
+    if metadata is not None and isinstance(metadata, dict):
+        meta_json = json.dumps(metadata)
+        meta_json = redact_sensitive_text(meta_json, force=True)
+        try:
+            metadata = json.loads(meta_json)
+        except json.JSONDecodeError:
+            pass
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
     if created_cards is not None:
@@ -609,6 +621,7 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    reason = redact_sensitive_text(str(reason), force=True)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -696,6 +709,7 @@ def _handle_comment(args: dict, **kw) -> str:
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
+    body = redact_sensitive_text(str(body), force=True)
     # Author is intentionally derived from the worker's own runtime
     # identity, NOT from caller-supplied args. Comments are injected
     # into the next worker's system prompt by ``build_worker_context``
@@ -1368,8 +1382,8 @@ KANBAN_CREATE_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Skill names to force-load into the dispatched "
-                    "worker (in addition to the built-in kanban-worker "
-                    "skill). Use this to pin a task to a specialist "
+                    "worker. The kanban lifecycle is already injected "
+                    "automatically; use this to pin a task to a specialist "
                     "context — e.g. ['translation'] for a translation "
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "

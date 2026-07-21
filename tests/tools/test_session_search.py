@@ -98,6 +98,14 @@ class TestSchema:
         desc = SESSION_SEARCH_SCHEMA["description"].lower()
         assert "no llm" in desc
 
+    def test_schema_description_enforces_source_first_limit(self):
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "source-first limit" in desc
+        assert "conversation history only" in desc
+        assert "direct source" in desc
+        assert "session_search as secondary" in desc
+        assert "not found" in desc
+
 
 class TestHiddenSources:
     def test_tool_source_hidden(self):

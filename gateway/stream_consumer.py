@@ -119,6 +119,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
@@ -133,6 +134,10 @@ class GatewayStreamConsumer:
         # the content, not edit the old bubble above it.
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
+        # Fired once when the stream transitions into its finalization path.
+        # Gateway callers use this to pause typing refreshes before a slow
+        # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
+        self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
@@ -196,6 +201,7 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+        self._before_finalize_notified = False
 
     def _metadata_for_send(
         self,
@@ -241,6 +247,20 @@ class GatewayStreamConsumer:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
+
+    async def _notify_before_finalize(self) -> None:
+        """Run the pre-finalize hook exactly once, swallowing hook errors."""
+        if self._before_finalize_notified:
+            return
+        self._before_finalize_notified = True
+        if self._on_before_finalize is None:
+            return
+        try:
+            result = self._on_before_finalize()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            pass
 
     async def _edit_message(
         self,
@@ -620,6 +640,8 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    if self._accumulated or self._message_id is not None or self._already_sent:
+                        await self._notify_before_finalize()
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -1418,11 +1440,37 @@ class GatewayStreamConsumer:
                     # finalizing through edit would visibly downgrade a rich
                     # preview, so re-deliver as a fresh message + delete the
                     # preview instead.
+                    #
+                    # When the adapter exposes prefers_fresh_final_streaming
+                    # and explicitly returns False, the time-based threshold
+                    # must NOT override that decision.  On Telegram the
+                    # fresh-final path sends a Rich Message (sendRichMessage)
+                    # that overlaps with the legacy MarkdownV2 preview already
+                    # visible from streaming — both remain on screen because
+                    # the old message is only best-effort deleted.  Adapters
+                    # without the hook still get the time-based fresh-final.
+                    # (#47048)
+                    # Check the *class* for the hook so MagicMock adapters
+                    # (which auto-create attributes on access) are not
+                    # falsely detected as having it.  Also check instance
+                    # __dict__ for test doubles that explicitly assign the
+                    # attribute (e.g. adapter.prefers_fresh_final_streaming
+                    # = MagicMock(return_value=False)).
+                    _has_prefers_hook = (
+                        hasattr(type(self.adapter),
+                                "prefers_fresh_final_streaming")
+                        or "prefers_fresh_final_streaming"
+                            in getattr(self.adapter, "__dict__", {})
+                    )
+                    _prefers_fresh = self._adapter_prefers_fresh_final(text)
                     if (
                         finalize
                         and (
-                            self._should_send_fresh_final()
-                            or self._adapter_prefers_fresh_final(text)
+                            _prefers_fresh
+                            or (
+                                not _has_prefers_hook
+                                and self._should_send_fresh_final()
+                            )
                         )
                         and await self._try_fresh_final(
                             text, is_turn_final=is_turn_final,

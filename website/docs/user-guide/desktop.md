@@ -144,7 +144,7 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 ## How it works
 
-The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
+The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `--ignore-existing` / `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix. The React renderer talks to a `hermes dashboard` backend over the `tui_gateway`/dashboard APIs and reuses the agent runtime rather than embedding `hermes --tui`. Install, backend-resolution, and self-update logic live in the Electron main process.
 
 ## Connecting to a remote backend
 
@@ -292,7 +292,7 @@ macOS/Windows signing and notarization run automatically when the relevant crede
 ## See also
 
 - [CLI Guide](./cli.md) — the terminal interface
-- [TUI](./tui.md) — the modern terminal UI the desktop backend reuses
+- [TUI](./tui.md) — the modern terminal UI used by `hermes --tui` and the dashboard chat tab
 - [Web Dashboard](./features/web-dashboard.md) — browser admin panel with an embedded chat tab
 - [Configuration](./configuration.md) — config that the desktop app reads and writes
 - [Windows (Native)](./windows-native.md) — native Windows install path

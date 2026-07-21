@@ -41,7 +41,18 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply, reportBackendContract } = await import('./updates')
+const {
+  maybeNotifyUpdateAvailable,
+  checkBackendUpdates,
+  $backendUpdateStatus,
+  applyBackendUpdate,
+  $backendUpdateApply,
+  reportBackendContract,
+  applyUpdates,
+  $updateApply,
+  $updateOverlayOpen,
+  resetUpdateApplyState
+} = await import('./updates')
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -215,6 +226,119 @@ describe('checkBackendUpdates', () => {
     setRemote(false)
     await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('applyUpdates terminal state', () => {
+  const applyMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyMock.mockReset()
+    resetUpdateApplyState()
+    $updateOverlayOpen.set(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('holds the restart view when a relauncher hands off (no close, no toast)', async () => {
+    applyMock.mockResolvedValue({ ok: true, handedOff: true })
+
+    const result = await applyUpdates()
+
+    expect(result.handedOff).toBe(true)
+    // The detached relauncher will quit + reopen us; keep "applying" until then.
+    expect($updateApply.get().applying).toBe(true)
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('closes the overlay + toasts when updated but not relaunched in place', async () => {
+    // The Linux AppImage / dev-run path: backend + GUI updated, no in-place
+    // relaunch. Must not strand the overlay on a closeless spinner.
+    applyMock.mockResolvedValue({ ok: true, backendUpdated: true })
+
+    await applyUpdates()
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('idle')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ kind: 'success' })
+  })
+
+  it('lands on a closeable error state when the apply resolves not-ok', async () => {
+    applyMock.mockResolvedValue({ ok: false, error: 'rebuild-failed', message: 'rebuild failed' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('error')
+    expect($updateApply.get().error).toBe('rebuild-failed')
+  })
+
+  it('keeps the manual command state for CLI installs with no staged updater', async () => {
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBe('hermes update')
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('lands on the guiSkew terminal state for a GUI/backend skew (AppImage/.deb/.rpm), without claiming a GUI update', async () => {
+    // Linux: backend updated, but the running desktop package was NOT replaced.
+    // Must NOT toast "loads next launch" — that's the dishonest message #45205
+    // guards against. Lands on a closeable guiSkew view instead.
+    applyMock.mockResolvedValue({
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      guiSkew: true,
+      message: 'Backend updated, but the desktop app package was not changed.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.guiUpdated).toBe(false)
+    expect($updateApply.get().stage).toBe('guiSkew')
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().message).toMatch(/desktop app package was not changed/)
+    // Overlay stays open on a closeable terminal view; no "all set" toast.
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('lands on a closeable manual-restart state when the rebuilt sandbox blocks auto-relaunch', async () => {
+    // Under release/*-unpacked but chrome-sandbox isn't launchable: don't quit
+    // into a dead app — keep a working window on a closeable manual state.
+    applyMock.mockResolvedValue({
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      manualRestart: true,
+      sandboxBlocked: true,
+      message: 'Backend updated. Quit and reopen Hermes to finish.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.manualRestart).toBe(true)
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBeNull()
+    expect($updateApply.get().message).toMatch(/Quit and reopen/)
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
   })
 })
 

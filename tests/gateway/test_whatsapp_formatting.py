@@ -20,7 +20,7 @@ from gateway.config import Platform
 
 def _make_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -153,7 +153,7 @@ class TestMessageLimits:
     """WhatsApp message length limits."""
 
     def test_max_message_length_is_practical(self):
-        from gateway.platforms.whatsapp import WhatsAppAdapter
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         assert WhatsAppAdapter.MAX_MESSAGE_LENGTH == 4096
 
     def test_chunk_limit_reserves_default_self_chat_prefix(self, monkeypatch):

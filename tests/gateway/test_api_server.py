@@ -421,6 +421,63 @@ class TestAuth:
 
 
 # ---------------------------------------------------------------------------
+# Concurrency cap (gateway.api_server.max_concurrent_runs) — #7483
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrencyCap:
+    def test_resolve_defaults_to_10_when_unset(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 10
+
+    def test_resolve_reads_config_value(self):
+        cfg = {"gateway": {"api_server": {"max_concurrent_runs": 3}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 3
+
+    def test_resolve_clamps_negative_to_zero(self):
+        cfg = {"gateway": {"api_server": {"max_concurrent_runs": -5}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 0
+
+    def test_resolve_malformed_falls_back_to_default(self):
+        cfg = {"gateway": {"api_server": {"max_concurrent_runs": "not-an-int"}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert APIServerAdapter._resolve_max_concurrent_runs() == 10
+
+    def test_under_cap_returns_none(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 5
+        adapter._inflight_agent_runs = 2
+        assert adapter._concurrency_limited_response() is None
+
+    def test_at_cap_returns_429_with_retry_after(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 3
+        adapter._inflight_agent_runs = 3
+        resp = adapter._concurrency_limited_response()
+        assert resp is not None
+        assert resp.status == 429
+        assert resp.headers.get("Retry-After")
+
+    def test_cap_counts_both_buckets(self):
+        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 4
+        adapter._inflight_agent_runs = 2
+        adapter._run_streams = {"r1": object(), "r2": object()}
+        resp = adapter._concurrency_limited_response()
+        assert resp is not None
+        assert resp.status == 429
+
+    def test_zero_disables_cap(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 0
+        adapter._inflight_agent_runs = 9999
+        assert adapter._concurrency_limited_response() is None
+
+
+# ---------------------------------------------------------------------------
 # Helpers for HTTP tests
 # ---------------------------------------------------------------------------
 
@@ -584,6 +641,10 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_state"] == "running"
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
                 assert data["active_agents"] == 2
+                # Derived busy/drainable: this endpoint is served BY the live
+                # gateway, so running + 2 agents ⇒ busy and drainable.
+                assert data["gateway_busy"] is True
+                assert data["gateway_drainable"] is True
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
 
@@ -599,6 +660,9 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["gateway_state"] is None
                 assert data["platforms"] == {}
+                # No runtime file ⇒ state None ⇒ not busy, not drainable.
+                assert data["gateway_busy"] is False
+                assert data["gateway_drainable"] is False
 
     @pytest.mark.asyncio
     async def test_health_detailed_does_not_require_auth(self, auth_adapter):

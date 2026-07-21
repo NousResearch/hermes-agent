@@ -315,31 +315,55 @@ echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 
 ### Mem0
 
-Server-side LLM fact extraction with semantic search, reranking, and automatic deduplication.
+Server-side LLM fact extraction with semantic search, reranking, and automatic deduplication. Supports both Mem0 Platform (cloud) and OSS (self-hosted) modes.
 
 | | |
 |---|---|
 | **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
-| **Requires** | `pip install mem0ai` + API key |
-| **Data storage** | Mem0 Cloud |
-| **Cost** | Mem0 pricing |
+| **Requires** | `pip install mem0ai` + API key (platform) or LLM/vector store (OSS) |
+| **Data storage** | Mem0 Cloud (platform) or self-hosted (OSS) |
+| **Cost** | Mem0 pricing (platform) / free (OSS) |
 
-**Tools:** `mem0_profile` (all stored memories), `mem0_search` (semantic search + reranking), `mem0_conclude` (store verbatim facts)
+**Tools (5):** `mem0_list` (list all memories, paginated), `mem0_search` (semantic search with reranking in platform mode), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
 
-**Setup:**
+**Setup (Platform):**
 ```bash
-hermes memory setup    # select "mem0"
+hermes memory setup    # select "mem0" → "Platform"
 # Or manually:
 hermes config set memory.provider mem0
 echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-**Config:** `$HERMES_HOME/mem0.json`
+**Setup (OSS):**
+```bash
+hermes memory setup    # select "mem0" → "Open Source (self-hosted)"
+# Or via flags:
+hermes memory setup mem0 --mode oss --oss-llm openai --oss-llm-key sk-... --oss-vector qdrant
+```
+
+Preview without writing files:
+```bash
+hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
+```
+
+**Config:** `$HERMES_HOME/mem0.json` (behavioral settings). Only the secret `MEM0_API_KEY` belongs in `~/.hermes/.env`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-hosted) |
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
+| `rerank` | `true` | Rerank search results for relevance (platform mode only) |
+
+**OSS supported providers:**
+
+| Component | Providers |
+|-----------|-----------|
+| LLM | openai, ollama |
+| Embedder | openai, ollama |
+| Vector Store | qdrant (local/server), pgvector |
+
+**Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|oss>` or edit `mem0.json` directly.
 
 ---
 
@@ -569,7 +593,7 @@ hermes memory setup
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
-| **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
+| **Mem0** | Cloud/Self-hosted | Free/Paid | 5 | `mem0ai` | Server-side LLM extraction + OSS mode |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |

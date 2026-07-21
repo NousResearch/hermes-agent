@@ -360,6 +360,10 @@ export const api = {
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
     ),
+  getSessionDetail: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionInfo>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+    ),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,

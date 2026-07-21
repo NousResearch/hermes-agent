@@ -21,6 +21,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    write_platform_config_field,
     _sanitize_env_lines,
 )
 
@@ -254,6 +255,24 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+    def test_write_platform_config_field_coerces_nested_platform_maps(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model: test/custom-model\nplatforms: not-a-map\n",
+                encoding="utf-8",
+            )
+
+            write_platform_config_field(
+                "email",
+                "unauthorized_dm_behavior",
+                "pair",
+                raw=True,
+            )
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert saved["model"] == "test/custom-model"
+            assert saved["platforms"]["email"]["unauthorized_dm_behavior"] == "pair"
 
 
 class TestSaveEnvValueSecure:
@@ -1056,7 +1075,6 @@ class TestEnvWriteDenylist:
     @pytest.mark.parametrize(
         "allowed_key",
         [
-            "HERMES_GEMINI_CLIENT_ID",
             "HERMES_LANGFUSE_PUBLIC_KEY",
             "HERMES_SPOTIFY_CLIENT_ID",
             "HERMES_QWEN_BASE_URL",

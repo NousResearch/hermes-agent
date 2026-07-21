@@ -1,6 +1,23 @@
+import base64
+import json
+import time
+
 import pytest
 
 from hermes_cli import runtime_provider as rp
+
+
+def _fake_invoke_jwt(ttl_seconds=3600):
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "scope": "inference:invoke",
+                "exp": int(time.time() + ttl_seconds),
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
 
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
@@ -975,6 +992,49 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert resolved["api_key"] == "nous-runtime-key"
     assert resolved["requested_provider"] == "nous"
+
+
+def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
+    stale_token = _fake_invoke_jwt(ttl_seconds=-60)
+    fresh_token = _fake_invoke_jwt(ttl_seconds=3600)
+
+    class _Entry:
+        def __init__(self, token):
+            self.access_token = "pool-access-token"
+            self.agent_key = token
+            self.agent_key_expires_at = "2099-01-01T00:00:00+00:00"
+            self.scope = "inference:invoke"
+            self.base_url = "https://inference.pool.example/v1"
+            self.source = "manual:nous"
+
+        @property
+        def runtime_api_key(self):
+            return self.agent_key
+
+    class _Pool:
+        refreshed = False
+
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry(stale_token)
+
+        def try_refresh_current(self):
+            self.refreshed = True
+            return _Entry(fresh_token)
+
+    pool = _Pool()
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert pool.refreshed is True
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == fresh_token
+    assert resolved["base_url"] == "https://inference.pool.example/v1"
 
 
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):

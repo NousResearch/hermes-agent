@@ -466,6 +466,7 @@ export interface Translations {
       title: string
       envOverride: string
       intro: string
+      connectionsIntro: string
       appliesTo: string
       allProfiles: string
       defaultConnection: string
@@ -543,6 +544,7 @@ export interface Translations {
       testRemote: string
       saveForRestart: string
       saveAndReconnect: string
+      saveAndConnect: string
       diagnostics: string
       diagnosticsDesc: string
       openLogs: string
@@ -553,8 +555,10 @@ export interface Translations {
       incompleteTokenTest: string
       enterUrlFirst: string
       restartingTitle: string
+      switchingTitle: string
       savedTitle: string
       restartingMessage: string
+      switchingMessage: string
       savedMessage: string
       connectedTo: (baseUrl: string, version?: string) => string
       reachableTitle: string

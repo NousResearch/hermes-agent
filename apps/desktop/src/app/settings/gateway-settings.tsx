@@ -538,7 +538,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       acceptSavedConfig(next)
       setRemoteToken('')
       setGlobalPanel(null)
-      notify({ kind: 'success', title: g.restartingTitle, message: g.restartingMessage })
+      notify({ kind: 'success', title: g.switchingTitle, message: g.switchingMessage })
     } catch (err) {
       notifyError(err, g.applyFailed)
     } finally {
@@ -554,7 +554,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       acceptSavedConfig(next)
       setRemoteToken('')
       setGlobalPanel(null)
-      notify({ kind: 'success', title: g.restartingTitle, message: g.restartingMessage })
+      notify({ kind: 'success', title: g.switchingTitle, message: g.switchingMessage })
     } catch (err) {
       notifyError(err, g.applyFailed)
     } finally {
@@ -628,10 +628,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         setGlobalPanel(null)
       }
 
+      const applyingGlobalConnection = apply && scope === null
+
       notify({
         kind: 'success',
-        title: apply ? g.restartingTitle : g.savedTitle,
-        message: apply ? g.restartingMessage : g.savedMessage
+        title: applyingGlobalConnection ? g.switchingTitle : apply ? g.restartingTitle : g.savedTitle,
+        message: applyingGlobalConnection ? g.switchingMessage : apply ? g.restartingMessage : g.savedMessage
       })
     } catch (err) {
       notifyError(err, apply ? g.applyFailed : g.saveFailed)
@@ -995,7 +997,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
           </div>
           <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {g.intro}
+            {scope === null ? g.connectionsIntro : g.intro}
           </p>
         </div>
       )}
@@ -1494,7 +1496,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           )}
           <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
             {saving ? <Loader2 className="animate-spin" /> : null}
-            {g.saveAndReconnect}
+            {scope === null ? g.saveAndConnect : g.saveAndReconnect}
           </Button>
         </div>
       ) : null}

@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import type { Translations } from './types'
+import { defineLocale } from './define-locale'
 
-export const zh: Translations = {
+export const zh = defineLocale({
   common: {
     apply: '应用',
     back: '返回',
@@ -752,28 +752,11 @@ export const zh: Translations = {
       title: '网关连接',
       envOverride: '环境变量覆盖',
       intro:
-        '选择此 Desktop 要控制的网关。本地网关始终可作为恢复入口；已保存的远程网关和 Hermes Cloud 可在不重启界面的情况下切换。',
+        'Hermes Desktop 默认会启动自己的本地网关。当你希望此应用控制另一台机器上或可信代理后的现有 Hermes 后端时，可以使用远程网关。下面可按 profile 指定各自的远程主机。',
       appliesTo: '应用于',
       allProfiles: '所有 profile',
       defaultConnection: '默认连接会用于所有没有自定义覆盖的 profile。',
       profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。设为本地即可继承默认连接。`,
-      savedConnectionsTitle: '连接',
-      savedConnectionsDesc: '在本地、Hermes Cloud 和已保存的远程网关之间立即切换。',
-      addConnection: '添加远程网关',
-      connectedConnection: '当前使用',
-      connectConnection: '连接',
-      connectionShortcut: (id, url) => `${url} · 使用 --connection ${id} 启动`,
-      deleteConnection: name => `删除 ${name}`,
-      deleteConnectionConfirm: name => `删除已保存的网关“${name}”？`,
-      deletedConnectionTitle: '网关已删除',
-      deletedConnection: name => `已删除 ${name}。`,
-      deleteConnectionFailed: '无法删除已保存的网关',
-      connectionNameTitle: '连接名称',
-      connectionNamePlaceholder: '家庭实验室',
-      connectionNameDesc: '友好名称；Hermes 会创建一个用于 CLI 启动的稳定快捷名称。',
-      connectionIdDesc: id => `CLI 快捷方式：hermes desktop --connection ${id}`,
-      connectionNameRequiredTitle: '需要连接名称',
-      connectionNameRequired: '请先为此远程网关命名，再保存或登录。',
       envOverrideTitle: '环境变量正在控制此桌面会话。',
       envOverrideDesc: '取消设置 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 后才会使用下面保存的设置。',
       modeTitle: '连接模式',
@@ -833,7 +816,7 @@ export const zh: Translations = {
       pasteSessionToken: '粘贴会话 token',
       testRemote: '测试远程',
       saveForRestart: '保存到下次重启',
-      saveAndReconnect: '保存并连接',
+      saveAndReconnect: '保存并重连',
       diagnostics: '诊断',
       diagnosticsDesc: '在文件管理器中显示 desktop.log，网关启动失败时很有用。',
       openLogs: '打开日志',
@@ -843,9 +826,9 @@ export const zh: Translations = {
       incompleteSignInTest: '测试前，请输入远程 URL 并完成登录。',
       incompleteTokenTest: '测试前，请输入远程 URL 和会话 token。',
       enterUrlFirst: '请先输入远程 URL。',
-      restartingTitle: '正在切换网关',
+      restartingTitle: '网关连接正在重启',
       savedTitle: '网关设置已保存',
-      restartingMessage: 'Hermes Desktop 正在切换连接，界面会保持打开。',
+      restartingMessage: 'Hermes Desktop 将使用已保存设置重新连接（界面保持打开）。',
       savedMessage: '已保存，下一次重启生效。',
       connectedTo: (baseUrl, version) => `已连接到 ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
       reachableTitle: '远程网关可访问',
@@ -2832,4 +2815,4 @@ export const zh: Translations = {
       toggle: '切换侧边栏'
     }
   }
-}
+})

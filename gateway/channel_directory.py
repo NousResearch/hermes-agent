@@ -25,6 +25,7 @@ DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 # letting you pre-name a chat before it has produced any traffic).
 # Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
 CHANNEL_ALIASES_PATH = get_hermes_home() / "channel_aliases.json"
+MATRIX_LANE_LABELS_PATH = get_hermes_home() / "matrix_lane_labels.json"
 
 
 def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
@@ -69,6 +70,58 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
                     "type": "group" if str(chat_id).endswith("@g.us") else "dm",
                     "thread_id": None,
                 })
+
+
+def _build_matrix_lanes() -> Optional[List[Dict[str, Any]]]:
+    """Build curated Matrix room/thread targets from matrix_lane_labels.json.
+
+    Matrix sessions are intentionally thread-heavy. Falling back to every
+    historical Matrix session pollutes target discovery with stale
+    ``dm / topic $...`` ghosts, so a curated lane file acts as the source
+    of truth when present.
+    """
+    if not MATRIX_LANE_LABELS_PATH.exists():
+        return None
+
+    try:
+        with open(MATRIX_LANE_LABELS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.debug("Channel directory: failed to read Matrix lane labels: %s", e)
+        return []
+
+    rooms = data.get("rooms") if isinstance(data, dict) else None
+    if not isinstance(rooms, dict):
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    for room_id, meta in rooms.items():
+        if not room_id:
+            continue
+        meta = meta if isinstance(meta, dict) else {}
+        raw_name = meta.get("name")
+        room_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else str(room_id)
+        entries.append({
+            "id": str(room_id),
+            "name": room_name,
+            "type": "group",
+            "thread_id": None,
+        })
+
+        raw_threads = meta.get("threads")
+        threads = raw_threads if isinstance(raw_threads, dict) else {}
+        for thread_id, label in threads.items():
+            if not thread_id:
+                continue
+            label = label if isinstance(label, str) and label.strip() else f"topic {thread_id}"
+            entries.append({
+                "id": f"{room_id}:{thread_id}",
+                "name": f"{room_name} / {label.strip()}",
+                "type": "group",
+                "thread_id": str(thread_id),
+            })
+
+    return entries
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -143,6 +196,11 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             or plat_name not in adapter_platform_names
         ):
             continue
+        if plat_name == "matrix":
+            matrix_lanes = _build_matrix_lanes()
+            if matrix_lanes is not None:
+                platforms[plat_name] = matrix_lanes
+                continue
         platforms[plat_name] = await asyncio.to_thread(_build_from_sessions, plat_name)
 
     # Include plugin-registered platforms (dynamic enum members aren't in
@@ -157,6 +215,11 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 and entry.name not in platforms
                 and entry.name in adapter_platform_names
             ):
+                if entry.name == "matrix":
+                    matrix_lanes = _build_matrix_lanes()
+                    if matrix_lanes is not None:
+                        platforms[entry.name] = matrix_lanes
+                        continue
                 platforms[entry.name] = await asyncio.to_thread(_build_from_sessions, entry.name)
     except Exception:
         pass

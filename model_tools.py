@@ -571,6 +571,8 @@ def _compute_tool_definitions(
             if assembly.activated and not quiet_mode:
                 _forms = {"full": "catalog listing embedded",
                           "names": "names-only listing embedded",
+                          "mixed": "listing embedded (oversized servers summarized)",
+                          "groups": "server summary embedded (search-only discovery)",
                           "none": "no listing (search-only)"}
                 print(
                     f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "

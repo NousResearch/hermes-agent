@@ -44,7 +44,7 @@ class TestConfigParsing:
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
-        assert cfg.threshold_pct == 10.0
+        assert cfg.threshold_pct == 5.0
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -162,14 +162,16 @@ class TestThresholdGate:
     def test_listing_budget_min_of_pct_and_cap(self):
         from tools.tool_search import ToolSearchConfig, listing_token_budget
         cfg = ToolSearchConfig.from_raw(
-            {"threshold_pct": 10, "listing_max_tokens": 8000})
-        # 10% of 200K = 20K > cap 8K → cap wins
+            {"threshold_pct": 5, "listing_max_tokens": 8000})
+        # 5% of 200K = 10K > cap 8K → cap wins
         assert listing_token_budget(cfg, 200_000) == 8000
-        # 10% of 50K = 5K < cap 8K → pct leg wins
-        assert listing_token_budget(cfg, 50_000) == 5000
-        # unknown context → 20K fallback for the pct leg, still capped
+        # 5% of 50K = 2.5K < cap 8K → pct leg wins
+        assert listing_token_budget(cfg, 50_000) == 2500
+        # unknown context → 10K fallback for the pct leg, still capped
         assert listing_token_budget(cfg, 0) == 8000
         assert listing_token_budget(cfg, None) == 8000
+        # default threshold is 5%
+        assert ToolSearchConfig.from_raw(None).threshold_pct == 5.0
 
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas
@@ -291,9 +293,9 @@ class TestAssembly:
                       if t["function"]["name"] == "tool_search")
         assert "tier_small_a" in search["function"]["description"]
 
-    def test_oversized_catalog_degrades_to_bare_bridge_tier2(self):
+    def test_oversized_catalog_degrades_to_server_summary_tier2(self):
         """When even the names-only listing exceeds the budget, tier 2:
-        bare bridge, no listing."""
+        bare bridge + one-line-per-server summary (no per-tool names)."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig
         names = [f"tier2_very_long_tool_name_number_{i:04d}_extra" for i in range(400)]
         for n in names:
@@ -308,10 +310,52 @@ class TestAssembly:
         )
         assert result.activated
         assert result.tier == 2
-        assert result.listing_form == "none"
+        assert result.listing_form == "groups"
         search = next(t for t in result.tool_defs
                       if t["function"]["name"] == "tool_search")
-        assert "tier2_very_long_tool_name_number_0000" not in search["function"]["description"]
+        desc = search["function"]["description"]
+        # No individual tool names...
+        assert "tier2_very_long_tool_name_number_0000" not in desc
+        # ...but the server (toolset) is named with its tool count, and the
+        # model is told to search rather than substitute/deny.
+        assert "tiertest" in desc
+        assert "(400 tools" in desc
+        assert "search here FIRST" in desc
+
+    def test_mixed_catalog_small_server_keeps_listing(self):
+        """Per-server degradation: an oversized server collapses to a
+        summary line while a small co-attached server keeps per-tool names
+        (the Cloudflare+Linear shape)."""
+        from tools.tool_search import build_catalog_listing_with_form
+        from tools.registry import registry
+        import json as _json
+
+        def _h(args, task_id=None, **kw):
+            return _json.dumps({"ok": True})
+
+        big = [f"bigsrv_tool_{i:04d}_with_a_long_name" for i in range(300)]
+        small = ["smallsrv_create_item", "smallsrv_list_items"]
+        for n in big:
+            registry.register(name=n, handler=_h,
+                              schema=_td(n, "Big server tool.")["function"],
+                              toolset="mcp-bigsrv")
+        for n in small:
+            registry.register(name=n, handler=_h,
+                              schema=_td(n, "Small server tool.")["function"],
+                              toolset="mcp-smallsrv")
+        defs = ([_td(n, "Big server tool.") for n in big]
+                + [_td(n, "Small server tool.") for n in small])
+        # Budget fits the small server's lines + big server's summary,
+        # but not the big server's 300 names.
+        text, form = build_catalog_listing_with_form(defs, max_tokens=300)
+        assert form == "mixed"
+        assert text is not None
+        assert "smallsrv_create_item" in text          # small server listed
+        assert "bigsrv_tool_0000" not in text          # big server names dropped
+        assert "bigsrv (300 tools" in text             # ...but summarized
+        # deterministic (cache safety)
+        text2, _ = build_catalog_listing_with_form(list(reversed(defs)), max_tokens=300)
+        assert text == text2
 
     def test_idempotent_when_bridge_already_present(self):
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
@@ -675,7 +719,7 @@ class TestCatalogListing:
             for i in range(30)
         ]
         result = assemble_tool_defs(
-            defs, context_length=1000,
+            defs, context_length=200_000,
             config=ToolSearchConfig.from_raw({"enabled": "on"}),
         )
         assert result.activated

@@ -437,6 +437,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
     batch_tool_stats = {}
     batch_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
     completed_in_batch = []
+    batch_results_to_write = []
     discarded_no_reasoning = 0
     
     # Process each prompt sequentially in this batch
@@ -482,9 +483,8 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 "tool_error_counts": tool_error_counts  # Simple: {tool: failure_count} - normalized
             }
             
-            # Append to batch output file
-            with open(batch_output_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(trajectory_entry, ensure_ascii=False) + "\n")
+            # Accumulate results in memory instead of writing to disk every time
+        batch_results_to_write.append(trajectory_entry)
         
         # Aggregate tool statistics
         for tool_name, stats in result.get("tool_stats", {}).items():
@@ -511,6 +511,11 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
         else:
             print(f"   ❌ Prompt {prompt_index} failed (will retry on resume)")
     
+    # Write all accumulated results to disk in a single I/O operation
+    if batch_results_to_write:
+        with open(batch_output_file, 'a', encoding='utf-8') as f:
+            for entry in batch_results_to_write:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     print(f"✅ Batch {batch_num}: Completed ({len(prompts_to_process)} prompts processed)")
     
     return {

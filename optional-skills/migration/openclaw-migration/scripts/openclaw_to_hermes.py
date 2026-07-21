@@ -1127,7 +1127,11 @@ class Migrator:
                 destination.write_text(content, encoding="utf-8")
                 shutil.copystat(source, destination)
             else:
-                shutil.copy2(source, destination)
+                try:
+                    shutil.copy2(source, destination)
+                except shutil.SameFileError:
+                    self.record(kind, source, destination, "skipped", "Source and destination are the same file (symlink)")
+                    return
             self.record(kind, source, destination, "migrated", backup=str(backup_path) if backup_path else None)
         else:
             self.record(kind, source, destination, "migrated", "Would copy")
@@ -2012,7 +2016,7 @@ class Migrator:
         files = [
             p
             for p in source_root.rglob("*")
-            if p.is_file() and not any(part in ignore_dir_names for part in p.relative_to(source_root).parts[:-1])
+            if p.is_file() and not p.is_symlink() and not any(part in ignore_dir_names for part in p.relative_to(source_root).parts[:-1])
         ]
         if not files:
             self.record(kind, source_root, destination_root, "skipped", "No files found")
@@ -2037,7 +2041,11 @@ class Migrator:
             if self.execute:
                 self.maybe_backup(destination)
                 ensure_parent(destination)
-                shutil.copy2(source, destination)
+                try:
+                    shutil.copy2(source, destination)
+                except shutil.SameFileError:
+                    skipped += 1
+                    continue
             copied += 1
 
         status = "migrated" if copied else "skipped"

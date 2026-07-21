@@ -1107,3 +1107,114 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+
+def test_copy_tree_non_destructive_skips_symlinks(tmp_path: Path):
+    """Symlinks in the source tree should be skipped, not followed."""
+    mod = load_module()
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    # Create a real file
+    real_file = source / "real.txt"
+    real_file.write_text("real content", encoding="utf-8")
+
+    # Create a symlink pointing to an external file
+    external = tmp_path / "external.txt"
+    external.write_text("external content", encoding="utf-8")
+    link = source / "link.txt"
+    link.symlink_to(external)
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    migrator.copy_tree_non_destructive(source, target, kind="test")
+
+    # Real file should be copied
+    assert (target / "real.txt").exists()
+    assert (target / "real.txt").read_text() == "real content"
+
+    # Symlink should NOT be copied
+    assert not (target / "link.txt").exists()
+
+
+def test_copy_tree_non_destructive_handles_same_file_error(tmp_path: Path):
+    """When source and destination resolve to the same file, skip gracefully."""
+    mod = load_module()
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    # Create a real file in a shared directory
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    real_file = shared / "shared.txt"
+    real_file.write_text("shared content", encoding="utf-8")
+
+    # Create a symlink in source that points to the shared file
+    link = source / "shared.txt"
+    link.symlink_to(real_file)
+
+    # Create the SAME file in target (same inode)
+    target_file = target / "shared.txt"
+    target_file.symlink_to(real_file)
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=True,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    migrator.copy_tree_non_destructive(source, target, kind="test")
+
+    # Should not crash; file is already at destination
+    # (either skipped as symlink or handled by SameFileError)
+    assert target_file.exists()
+
+
+def test_copy_file_handles_same_file_error(tmp_path: Path):
+    """copy_file should handle SameFileError when source resolves to the destination."""
+    mod = load_module()
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    # Simulate the real scenario: source_root is resolved (symlinks dereferenced),
+    # so source path IS the real file. Destination points to the same real file.
+    real_file = source / "IDENTITY.md"
+    real_file.write_text("identity content", encoding="utf-8")
+
+    # Destination is the same file (e.g., workspace symlink resolved to same path)
+    # We create it by making dest point to the exact same inode
+    dest_file = target / "IDENTITY.md"
+    dest_file.hardlink_to(real_file)
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=True,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+
+    # Should not raise SameFileError
+    migrator.copy_file(real_file, dest_file, kind="test")
+
+    # Verify it was handled (either skipped or migrated without error)
+    assert not any(i.status == "error" for i in migrator.items)

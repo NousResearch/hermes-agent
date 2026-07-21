@@ -134,7 +134,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         pass
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
-    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
     monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
@@ -169,3 +169,21 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_rejects_empty_node_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A partial/aborted npm install leaves an empty node_modules/ behind.
+
+    _start_sidecar() must reject it the same way check_requirements() does
+    (both go through sidecar_deps_installed()) instead of spawning a sidecar
+    that immediately crashes on a missing spectrum-ts module.
+    """
+    adapter = _make_adapter(monkeypatch)
+    (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    with pytest.raises(RuntimeError, match="not installed"):
+        await adapter._start_sidecar()

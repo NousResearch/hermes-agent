@@ -3739,6 +3739,37 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized == "vertex":
+            # Google Vertex AI — ADC-issued OAuth2 access token, minted by
+            # google-auth and cached in ``vertex_adapter._creds_cache``
+            # keyed by service-account path (``"__adc__"`` for ADC). The
+            # underlying Credentials object auto-refreshes when within 5
+            # minutes of expiry, but the auxiliary-client layer caches
+            # OpenAI clients with the token baked in as ``api_key`` — so a
+            # cached client stays stale even after the Credentials refresh
+            # and any request with the frozen token 401s.
+            #
+            # Live case: an aux compression / vision call at 55m into a
+            # long-lived main-agent session receives a 401 from Vertex.
+            # Without this branch, ``_refresh_provider_credentials`` has
+            # no handler for ``vertex`` and returns False; the retry path
+            # then bails and the aux task fails permanently until the
+            # cached client is manually evicted (usually via process
+            # restart).
+            #
+            # Force a fresh mint by clearing the module cache, re-resolve
+            # to verify a working token can still be produced, and evict
+            # cached aux clients so the next call picks up the new token.
+            try:
+                from agent.vertex_adapter import _creds_cache, get_vertex_config
+            except ImportError:
+                return False
+            _creds_cache.clear()
+            token, base_url = get_vertex_config()
+            if not token or not base_url:
+                return False
+            _evict_cached_clients(normalized)
+            return True
         if normalized == "xai-oauth":
             # Preference: pool-level refresh (uses refresh_token from pool entry),
             # then fall back to singleton auth-store resolver.
@@ -3785,6 +3816,16 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
+    # Vertex hosts follow ``[{region}-]aiplatform.googleapis.com``:
+    # ``aiplatform.googleapis.com`` for the ``global`` location and
+    # ``{region}-aiplatform.googleapis.com`` (e.g.
+    # ``us-central1-aiplatform.googleapis.com``) for regional locations.
+    # ``base_url_host_matches`` only accepts strict subdomain-of matches,
+    # which would miss the regional case (there is no dot between the
+    # region and ``aiplatform``), so match on hostname suffix here.
+    _host = base_url_hostname(client_base_url)
+    if _host == "aiplatform.googleapis.com" or _host.endswith("-aiplatform.googleapis.com"):
+        return "vertex"
     return normalized
 
 
@@ -5145,12 +5186,76 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
-        # Demoted from logger.warning to debug; dedup keyed by provider name
-        # so the first occurrence surfaces but repeated retries stay silent.
-        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
-            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
-            logger.debug("resolve_provider_client: unknown provider %r", provider)
-        return None, None
+        # Plugin-catalog fallback for non-api_key providers.
+        #
+        # ``hermes_cli/auth.py`` auto-extends ``PROVIDER_REGISTRY`` from the
+        # provider-plugin catalog, but its filter (``auth_type != "api_key"
+        # or not env_vars``) intentionally skips OAuth-token / SDK-token
+        # providers (vertex, aws_sdk, oauth_device_code, oauth_external).
+        # Without this fallback, ``resolve_provider_client("vertex", ...)``
+        # returns ``(None, None)`` and the existing
+        # ``elif pconfig.auth_type == "vertex":`` branch below is dead code
+        # — silently breaking every auxiliary task (vision, compression,
+        # curator, session_search, title generation) on any deployment
+        # whose main provider is a non-api_key one. The failure is latent
+        # for fleets that keep an aggregator fallback (openrouter/nous):
+        # Step 3 of ``_resolve_auto`` catches the miss. A vertex-only
+        # deployment (no aggregator credentials) hits it terminally with
+        # ``RuntimeError: No LLM provider configured for task=<task>``.
+        #
+        # Consult the plugin catalog directly for the well-known non-api_key
+        # auth families and synthesize a minimal ``pconfig``-shaped object
+        # so the existing auth_type dispatch further down still fires. The
+        # dispatch is the single source of truth for how each family builds
+        # a client; we only fix the reachability.
+        try:
+            from providers import get_provider_profile as _get_provider_profile
+        except ImportError:
+            _get_provider_profile = None
+
+        _plugin_profile = None
+        if _get_provider_profile is not None:
+            try:
+                _plugin_profile = _get_provider_profile(provider)
+            except Exception:
+                _plugin_profile = None
+
+        # Scoped to ``vertex`` only. Broader coverage was proposed originally
+        # (``aws_sdk`` for Bedrock, ``oauth_device_code`` / ``oauth_external``
+        # for Nous/Codex/Copilot/xAI/Anthropic) but the downstream branches
+        # for those auth families are provider-specific, not generic:
+        #
+        # * ``auth_type == "aws_sdk"`` builds an ``AnthropicBedrockClient`` or
+        #   ``BedrockAuxiliaryClient`` — the Bedrock schema is hardcoded, and
+        #   any future non-Bedrock ``aws_sdk`` profile would misroute here.
+        # * ``auth_type in {"oauth_device_code", "oauth_external"}`` matches
+        #   only ``provider in {"nous", "openai-codex", "xai-oauth"}`` by
+        #   name; a third-party OAuth profile with a novel provider name
+        #   would fall through to the "not directly supported" branch.
+        #
+        # Provider profiles are user-overridable (``providers/__init__.py``
+        # last-writer-wins) so a user plugin re-declaring one of those auth
+        # types could send us into a branch that doesn't know how to build
+        # its client. Vertex is the one auth family with genuinely generic
+        # downstream dispatch (OAuth2 token → OpenAI-compat endpoint), and
+        # the aliases the vertex profile registers (``google-vertex``,
+        # ``vertex-ai``, ``gcp-vertex``) resolve through the same handler
+        # unchanged. Bedrock / OAuth non-registry providers stay on the
+        # existing "unknown provider" bail path until a generic dispatch
+        # for each family exists.
+        _NON_API_KEY_AUTH_TYPES = {"vertex"}
+        if (
+            _plugin_profile is not None
+            and _plugin_profile.auth_type in _NON_API_KEY_AUTH_TYPES
+        ):
+            pconfig = SimpleNamespace(auth_type=_plugin_profile.auth_type)
+        else:
+            # Demoted from logger.warning to debug; dedup keyed by provider name
+            # so the first occurrence surfaces but repeated retries stay silent.
+            if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+                _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+                logger.debug("resolve_provider_client: unknown provider %r", provider)
+            return None, None
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":

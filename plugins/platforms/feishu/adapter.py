@@ -291,6 +291,7 @@ FALLBACK_SHARE_CHAT_TEXT = "[Shared chat]"
 FALLBACK_INTERACTIVE_TEXT = "[Interactive message]"
 FALLBACK_IMAGE_TEXT = "[Image]"
 FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
+FALLBACK_LOCATION_TEXT = "[Location]"
 # ---------------------------------------------------------------------------
 # Post/card parsing helpers
 # ---------------------------------------------------------------------------
@@ -898,6 +899,27 @@ def normalize_feishu_message(
         return _normalize_share_chat_message(payload)
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
+
+    if normalized_type == "location":
+        address = str(payload.get("address", "") or "")
+        name = str(payload.get("name", "") or payload.get("title", "") or "")
+        latitude = payload.get("latitude")
+        longitude = payload.get("longitude")
+        lines = []
+        if name:
+            lines.append(f"📍 {name}")
+        if address:
+            lines.append(f"   {address}")
+        if latitude is not None and longitude is not None:
+            lines.append(f"   坐标: {latitude}, {longitude}")
+        text_content = "\n".join(lines) if lines else FALLBACK_LOCATION_TEXT
+        return FeishuNormalizedMessage(
+            raw_type=normalized_type,
+            text_content=text_content,
+            preferred_message_type="location",
+            metadata={"latitude": latitude, "longitude": longitude, "address": address, "name": name},
+            mentions=mention_refs,
+        )
 
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
 
@@ -3873,6 +3895,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
+        if preferred == "location":
+            return MessageType.LOCATION
         return MessageType.TEXT
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:

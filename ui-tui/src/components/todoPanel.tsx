@@ -12,6 +12,9 @@ const rowColor = (t: Theme, status: TodoItem['status']) => {
   return tone === 'active' ? t.color.text : tone === 'body' ? t.color.statusFg : t.color.muted
 }
 
+const currentTodo = (todos: readonly TodoItem[]) =>
+  todos.find(todo => todo.status === 'in_progress') ?? todos.find(todo => todo.status === 'pending') ?? null
+
 export const TodoPanel = memo(function TodoPanel({
   collapsed,
   defaultCollapsed = false,
@@ -88,6 +91,74 @@ export const TodoPanel = memo(function TodoPanel({
           })}
         </Box>
       )}
+    </Box>
+  )
+})
+
+export const BottomTodoPanel = memo(function BottomTodoPanel({
+  cols,
+  t,
+  todos,
+  visible
+}: {
+  cols: number
+  t: Theme
+  todos: TodoItem[]
+  visible: boolean
+}) {
+  if (!visible || !todos.length) {
+    return null
+  }
+
+  const done = todos.filter(todo => todo.status === 'completed').length
+  const current = currentTodo(todos)
+  const maxRows = Math.max(2, Math.min(5, Math.floor(cols / 24)))
+  const rows = todos.slice(0, maxRows)
+  const hidden = Math.max(0, todos.length - rows.length)
+
+  return (
+    <Box
+      borderColor={t.color.border}
+      borderStyle="round"
+      flexDirection="column"
+      flexShrink={0}
+      paddingX={1}
+      width={Math.max(1, cols - 2)}
+    >
+      <Text color={t.color.muted} wrap="truncate-end">
+        <Text bold color={t.color.text}>
+          Todo
+        </Text>{' '}
+        <Text color={t.color.statusFg} dim>
+          ({done}/{todos.length})
+        </Text>
+        {current && (
+          <Text color={t.color.muted} dim>
+            {' '}
+            · current: {current.content}
+          </Text>
+        )}
+      </Text>
+
+      <Box flexDirection="column">
+        {rows.map(todo => {
+          const tone = todoTone(todo.status)
+          const color = rowColor(t, todo.status)
+
+          return (
+            <Text color={color} dim={tone === 'dim'} key={todo.id} wrap="truncate-end">
+              <Text color={color}>{todoGlyph(todo.status)} </Text>
+              {todo.content}
+            </Text>
+          )
+        })}
+
+        {hidden > 0 && (
+          <Text color={t.color.muted} dim>
+            +{hidden} more
+          </Text>
+        )}
+      </Box>
     </Box>
   )
 })

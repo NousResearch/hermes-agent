@@ -536,3 +536,112 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+class TestDeferredCallSchemaProbe:
+    """Blind tool_call invocations missing required arguments must return
+    the tool's parameter schema instead of dispatching into an opaque
+    downstream failure (port of nearai/ironclaw#5149's describe-first fix).
+
+    A deferred tool's schema is invisible until tool_describe is called, so
+    models routinely invoke deferred tools by name alone. Pre-fix, that
+    produced ``KeyError: 'document_id'``-style errors that teach the model
+    nothing; post-fix, the probe returns the schema so the model repairs
+    the call in one round-trip. Valid calls dispatch untouched.
+    """
+
+    @staticmethod
+    def _register(name, toolset, required=("document_id",)):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            # Simulates a tool that crashes opaquely on a missing required arg.
+            return json.dumps({"ok": True, "doc": args["document_id"]})
+
+        params = {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "Doc id"},
+                "format": {"type": "string"},
+            },
+            "required": list(required),
+        }
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema={"type": "function",
+                    "function": {"name": name, "description": f"desc {name}",
+                                 "parameters": params}},
+            toolset=toolset,
+        )
+
+    def test_validator_returns_schema_for_missing_required(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        self._register("mcp_probe_docs_get", "mcp-probe")
+        err = validate_deferred_call_args("mcp_probe_docs_get", {})
+        assert err is not None
+        parsed = json.loads(err)
+        assert "document_id" in parsed["error"]
+        assert "NOT invoked" in parsed["error"]
+        assert parsed["parameters"]["required"] == ["document_id"]
+        assert "document_id" in parsed["parameters"]["properties"]
+
+    def test_validator_passes_valid_and_optional_only_calls(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        self._register("mcp_probe_docs_get2", "mcp-probe")
+        # All required present → dispatch.
+        assert validate_deferred_call_args(
+            "mcp_probe_docs_get2", {"document_id": "abc"}) is None
+        # Extra optional args don't matter.
+        assert validate_deferred_call_args(
+            "mcp_probe_docs_get2", {"document_id": "abc", "format": "md"}) is None
+
+    def test_validator_never_blocks_unvalidatable_tools(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        # Unknown tool → no schema → dispatch (downstream scope gate handles it).
+        assert validate_deferred_call_args("mcp_no_such_tool_xyz", {}) is None
+
+    def test_validator_no_required_list_dispatches(self):
+        from tools.tool_search import validate_deferred_call_args
+        from tools.registry import registry
+
+        registry.register(
+            name="mcp_probe_norequired",
+            handler=lambda args, task_id=None, **kw: json.dumps({"ok": True}),
+            schema={"type": "function",
+                    "function": {"name": "mcp_probe_norequired",
+                                 "description": "d",
+                                 "parameters": {"type": "object", "properties": {}}}},
+            toolset="mcp-probe",
+        )
+        assert validate_deferred_call_args("mcp_probe_norequired", {}) is None
+
+    def test_blind_tool_call_returns_schema_not_keyerror(self):
+        import model_tools
+
+        self._register("mcp_probe_blind_op", "mcp-probe-blind")
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": "mcp_probe_blind_op", "arguments": {}},
+            enabled_toolsets=["mcp-probe-blind"],
+        ))
+        assert "error" in result
+        assert "KeyError" not in result["error"]
+        assert "missing required argument" in result["error"]
+        assert result["parameters"]["required"] == ["document_id"]
+
+    def test_valid_tool_call_still_dispatches(self):
+        import model_tools
+
+        self._register("mcp_probe_valid_op", "mcp-probe-valid")
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": "mcp_probe_valid_op",
+                           "arguments": {"document_id": "abc"}},
+            enabled_toolsets=["mcp-probe-valid"],
+        ))
+        assert result.get("ok") is True
+        assert result.get("doc") == "abc"
+

@@ -9,14 +9,23 @@ session, sends the formatted conversation as a single prompt, collects text
 chunks, and converts the result back into the minimal shape Hermes expects
 from an OpenAI client.
 
-The protocol loop, filesystem callbacks, permission posture (deny), and
-tool-call extraction are unchanged from the battle-tested Copilot client;
-only the launch command, marker URL, and messages are parameterized.
+The protocol loop, filesystem callbacks, and tool-call extraction are
+unchanged from the battle-tested Copilot client; only the launch command,
+marker URL, and messages are parameterized.
+
+Permission requests are NOT inherited from that client. Copilot CLI rarely
+emits ``session/request_permission``, so its blanket-deny posture went
+unnoticed there — but Claude Code gates ordinary state-changing commands
+that way, and a blanket deny surfaces to the agent as "Tool use aborted"
+for every one of them. Requests are instead routed through Hermes's own
+approval policy; see :meth:`ACPClient._decide_permission` and the
+``approvals.acp_mode`` config key.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -44,6 +53,8 @@ from agent.acp_agent_registry import (
 from agent.file_safety import get_read_block_error, get_write_denied_error
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 ACP_MARKER_PREFIX = "acp://"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -128,6 +139,85 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
             }
         },
     }
+
+
+def _permission_selected(message_id: Any, option_id: str) -> dict[str, Any]:
+    """Answer a permission request by selecting one of its offered options."""
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "result": {
+            "outcome": {
+                "outcome": "selected",
+                "optionId": option_id,
+            }
+        },
+    }
+
+
+# ACP option kinds, in the order we prefer them for each verdict. Agents only
+# have to offer a subset, so we pick the first kind actually on offer and fall
+# back to a "cancelled" outcome when none matches.
+_ALLOW_KINDS = ("allow_once", "allow_always")
+_REJECT_KINDS = ("reject_once", "reject_always")
+
+
+def _select_option(options: Any, *, allow: bool) -> str | None:
+    """Return the option id matching *allow*, or None when none is offered."""
+    if not isinstance(options, list):
+        return None
+    wanted = _ALLOW_KINDS if allow else _REJECT_KINDS
+    for kind in wanted:
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            if str(option.get("kind") or "") == kind:
+                option_id = str(option.get("optionId") or option.get("option_id") or "")
+                if option_id:
+                    return option_id
+    return None
+
+
+def _extract_permission_command(tool_call: Any) -> tuple[str, str]:
+    """Best-effort ``(command, description)`` from a permission tool call.
+
+    ACP does not mandate a payload shape for the thing being approved. The
+    richest form is ``rawInput`` (what Hermes itself emits when acting as an
+    ACP server — see ``acp_adapter/permissions.py``); otherwise fall back to
+    the human-readable title so the approval prompt still says something
+    meaningful.
+    """
+    if not isinstance(tool_call, dict):
+        return "", ""
+    raw = tool_call.get("rawInput") or tool_call.get("raw_input") or {}
+    command = ""
+    description = ""
+    if isinstance(raw, dict):
+        command = str(raw.get("command") or "").strip()
+        description = str(raw.get("description") or "").strip()
+    title = str(tool_call.get("title") or "").strip()
+    if not command:
+        command = title
+    if not description:
+        description = title if title != command else str(tool_call.get("kind") or "").strip()
+    return command, description
+
+
+_ACP_PERMISSION_MODES = ("bridge", "deny", "allow")
+
+
+def _acp_permission_mode() -> str:
+    """Resolve ``approvals.acp_mode`` (env override wins). Defaults to bridge."""
+    override = os.getenv("HERMES_ACP_PERMISSION_MODE", "").strip().lower()
+    if override in _ACP_PERMISSION_MODES:
+        return override
+    try:
+        from tools.approval import _get_approval_config
+
+        mode = str(_get_approval_config().get("acp_mode") or "").strip().lower()
+    except Exception:  # pragma: no cover - config layer unavailable
+        mode = ""
+    return mode if mode in _ACP_PERMISSION_MODES else "bridge"
 
 
 def _format_messages_as_prompt(
@@ -673,6 +763,77 @@ class ACPClient:
         finally:
             self.close()
 
+    def _decide_permission(self, message_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+        """Answer an agent's ``session/request_permission``.
+
+        Modes (``approvals.acp_mode``, or ``HERMES_ACP_PERMISSION_MODE``):
+
+        ``bridge`` (default)
+            Route the request through :func:`tools.approval.check_dangerous_command`
+            — the same gate ``terminal_tool`` uses before running anything. Safe
+            commands pass straight through; dangerous ones honour the user's
+            deny rules, allowlists, ``/yolo``, and (in a gateway session) an
+            interactive approval prompt.
+        ``deny``
+            Refuse everything. The historical posture, kept for operators who
+            want ACP backends to have no side effects at all.
+        ``allow``
+            Approve everything. For sandboxed deployments that already trust
+            whatever the agent can reach.
+
+        Any failure denies: an ACP backend must never gain more privilege than
+        Hermes's own terminal tool because the approval layer misbehaved.
+        """
+        options = params.get("options")
+        try:
+            mode = _acp_permission_mode()
+
+            if mode == "deny":
+                return _permission_denied(message_id)
+
+            if mode == "allow":
+                option_id = _select_option(options, allow=True)
+                return (
+                    _permission_selected(message_id, option_id)
+                    if option_id
+                    else _permission_denied(message_id)
+                )
+
+            command, description = _extract_permission_command(params.get("toolCall"))
+            if not command:
+                logger.warning(
+                    "%s ACP permission request carried no identifiable command; denying",
+                    self.agent_display_name,
+                )
+                return _permission_denied(message_id)
+
+            from tools.approval import check_dangerous_command
+
+            # env_type="local": the ACP agent is a subprocess of this container,
+            # so its commands act on us. Claiming a sandboxed backend here would
+            # make _should_skip_container_guards() auto-approve everything.
+            verdict = check_dangerous_command(command, "local") or {}
+            approved = bool(verdict.get("approved"))
+            logger.info(
+                "%s ACP permission %s: %s",
+                self.agent_display_name,
+                "approved" if approved else "denied",
+                (verdict.get("message") or description or command)[:200],
+            )
+
+            option_id = _select_option(options, allow=approved)
+            if option_id:
+                return _permission_selected(message_id, option_id)
+            # Nothing suitable on offer: "cancelled" is the only safe answer,
+            # and is what an unapproved request should get anyway.
+            return _permission_denied(message_id)
+        except Exception:
+            logger.exception(
+                "%s ACP permission decision failed; denying",
+                self.agent_display_name,
+            )
+            return _permission_denied(message_id)
+
     def _handle_server_message(
         self,
         msg: dict[str, Any],
@@ -707,7 +868,7 @@ class ACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = _permission_denied(message_id)
+            response = self._decide_permission(message_id, params)
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)

@@ -6,6 +6,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -322,6 +324,38 @@ class TestSingleQueryState:
         assert cli._voice_tts_done.is_set()
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
+
+
+class TestInitialPromptMode:
+    def test_main_passes_initial_prompt_to_interactive_run(self, monkeypatch):
+        import cli as cli_mod
+
+        captured = {}
+
+        class FakeCLI:
+            session_id = "sid"
+            system_prompt = ""
+            preloaded_skills = []
+            enabled_toolsets = []
+
+            def __init__(self, **kwargs):
+                captured["init_kwargs"] = kwargs
+
+            def run(self, initial_prompt=None):
+                captured["initial_prompt"] = initial_prompt
+
+        monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+        monkeypatch.setattr(cli_mod, "_run_cleanup", lambda: None)
+
+        cli_mod.main(initial="seed this session", toolsets="web")
+
+        assert captured["initial_prompt"] == "seed this session"
+
+    def test_main_rejects_initial_with_single_query(self):
+        import cli as cli_mod
+
+        with pytest.raises(ValueError, match="--initial"):
+            cli_mod.main(initial="seed", query="one shot", toolsets="web")
 
 
 class TestHistoryDisplay:

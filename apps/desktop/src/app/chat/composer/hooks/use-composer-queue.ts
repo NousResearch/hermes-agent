@@ -85,6 +85,20 @@ export function useComposerQueue({
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
   const drainFailuresRef = useRef(new Map<string, number>())
+  const retryTimersRef = useRef<number[]>([])
+  const [drainRetryTick, setDrainRetryTick] = useState(0)
+
+  // Cleanup retry timers on unmount.
+  useEffect(
+    () => () => {
+      for (const timer of retryTimersRef.current) {
+        window.clearTimeout(timer)
+      }
+
+      retryTimersRef.current = []
+    },
+    []
+  )
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
@@ -167,11 +181,29 @@ export function useComposerQueue({
   const queueCurrentDraft = useCallback(() => {
     const text = draftRef.current
 
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+    if (!activeQueueSessionKey) {
+      notify({
+        id: 'composer-queue-key-missing',
+        kind: 'error',
+        title: t.composer.queueNotReadyTitle,
+        message: t.composer.queueNotReadyBody
+      })
+
+      return false
+    }
+
+    if (!text.trim() && attachments.length === 0) {
       return false
     }
 
     if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+      notify({
+        id: 'composer-queue-store-failed',
+        kind: 'error',
+        title: t.composer.queueStoreFailedTitle,
+        message: t.composer.queueStoreFailedBody
+      })
+
       return false
     }
 
@@ -180,7 +212,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, t])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -266,7 +298,8 @@ export function useComposerQueue({
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
   // a stale-session 404) can't strand the entry permanently nor spin-loop. The
-  // drain lock serializes sends; a remount/reconnect resets the failure counts.
+  // drain lock serializes sends; a reconnect/remount resets the failure counts.
+  // Unlike sendQueuedNow, auto-drain does not cancel the current turn.
   const autoDrainNext = useCallback(() => {
     if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
       return
@@ -274,7 +307,7 @@ export function useComposerQueue({
 
     const entry = pickDrainHead(queuedPrompts)
 
-    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+    if (!entry) {
       return
     }
 
@@ -282,7 +315,7 @@ export function useComposerQueue({
       const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
       drainFailuresRef.current.set(entry.id, fails)
 
-      if (fails >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      if (fails === MAX_AUTO_DRAIN_ATTEMPTS) {
         notify({
           id: 'composer-queue-stuck',
           kind: 'error',
@@ -290,6 +323,20 @@ export function useComposerQueue({
           message: t.composer.queueStuckBody
         })
       }
+
+      // Retry with exponential backoff capped at ~30s.
+      // A reconnect/remount resets the count via a fresh ChatBar mount.
+      const backoffMs = Math.min(
+        750 * Math.pow(1.5, fails),
+        30_000
+      )
+
+      const timer = window.setTimeout(() => {
+        retryTimersRef.current = retryTimersRef.current.filter(id => id !== timer)
+        setDrainRetryTick(tick => tick + 1)
+      }, backoffMs)
+
+      retryTimersRef.current.push(timer)
     }
 
     void runDrain(() => entry)
@@ -317,13 +364,14 @@ export function useComposerQueue({
   }, [activeQueueSessionKey, queueSessionKey])
 
   // Queued turns flow whenever the session is idle — on the busy→false settle
-  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
-  // strand them. To cancel queued turns, the user deletes them from the panel.
+  // edge, on mount/reconnect, on failure retry ticks, and after a re-key — so a
+  // swallowed edge can't strand them. To cancel queued turns, the user deletes
+  // them from the panel.
   useEffect(() => {
     if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
       autoDrainNext()
     }
-  }, [autoDrainNext, busy, queuedPrompts.length])
+  }, [autoDrainNext, busy, drainRetryTick, queuedPrompts.length])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

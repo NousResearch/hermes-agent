@@ -1294,12 +1294,13 @@ def init_agent(
     # reference their own session for --resume commands, cross-session
     # coordination, and logging. Keep the ContextVar and os.environ
     # fallback synchronized because different tool paths still read both.
-    try:
-        from gateway.session_context import set_current_session_id
+    if parent_session_id is None:
+        try:
+            from gateway.session_context import set_current_session_id
 
-        set_current_session_id(agent.session_id)
-    except Exception:
-        os.environ["HERMES_SESSION_ID"] = agent.session_id
+            set_current_session_id(agent.session_id)
+        except Exception:
+            os.environ["HERMES_SESSION_ID"] = agent.session_id
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()

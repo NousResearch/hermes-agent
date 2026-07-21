@@ -11,10 +11,12 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -35,6 +37,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _run_single_child,
 )
 
 
@@ -59,6 +62,44 @@ def _make_mock_parent(depth=0):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     return parent
+
+
+def _make_real_child(session_root: Path, session_id: str):
+    from hermes_state import SessionDB
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+
+        db = SessionDB(db_path=session_root / "state.db")
+        db.create_session(session_id, source="cli", model="test/model")
+        child = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            session_db=db,
+            session_id=session_id,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    compressor = MagicMock()
+    compressor.compress.return_value = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "assistant", "content": "tail"},
+    ]
+    compressor.compression_count = 1
+    compressor.last_prompt_tokens = 0
+    compressor.last_completion_tokens = 0
+    compressor._last_summary_error = None
+    compressor._last_compress_aborted = False
+    compressor._last_summary_auth_failure = False
+    compressor._last_aux_model_failure_model = None
+    compressor._last_aux_model_failure_error = None
+    child.context_compressor = compressor
+    child._compression_feasibility_checked = True
+    child.compression_in_place = False
+    return child, db
 
 
 class TestDelegateRequirements(unittest.TestCase):
@@ -3247,6 +3288,171 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestSubagentSessionEnvIsolation(unittest.TestCase):
+    """Child session context is scoped to the execution worker."""
+
+    def test_child_worker_binds_session_and_restores_parent(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session-abc"
+        from gateway.session_context import get_session_env, set_current_session_id
+        from tools.environments.local import _make_run_env
+
+        parent_token = set_current_session_id("parent-session-abc")
+        try:
+            child = MagicMock()
+            child.session_id = "child-session-xyz"
+            child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+            observed = {}
+
+            def run_child(**_kwargs):
+                observed["session"] = get_session_env("HERMES_SESSION_ID")
+                observed["subprocess"] = _make_run_env({})["HERMES_SESSION_ID"]
+                return child.run_conversation.return_value
+
+            child.run_conversation.side_effect = run_child
+            result = _run_single_child(0, "isolation test", child, parent)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(observed, {
+                "session": child.session_id,
+                "subprocess": child.session_id,
+            })
+            self.assertEqual(get_session_env("HERMES_SESSION_ID"), parent.session_id)
+            self.assertEqual(os.environ["HERMES_SESSION_ID"], parent.session_id)
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+            from gateway.session_context import reset_current_session_id
+            reset_current_session_id(parent_token)
+
+    def test_child_worker_resets_session_after_failure(self):
+        from gateway import session_context
+
+        parent_token = session_context.set_current_session_id("parent-session-abc")
+        child = MagicMock()
+        child.session_id = "child-session-xyz"
+        child.run_conversation.side_effect = RuntimeError("boom")
+        reset = session_context.reset_current_session_id
+
+        with patch.object(session_context, "reset_current_session_id", wraps=reset) as spy:
+            result = _run_single_child(0, "failure", child, _make_mock_parent())
+
+        self.assertEqual(result["status"], "error")
+        spy.assert_called_once()
+        os.environ.pop("HERMES_SESSION_ID", None)
+        session_context.reset_current_session_id(parent_token)
+
+    def test_child_session_rotation_keeps_parent_environ(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session-abc"
+        from gateway.session_context import get_session_env, set_current_session_id
+        from tools.environments.local import _make_run_env
+
+        with tempfile.TemporaryDirectory() as tmp:
+            child, db = _make_real_child(Path(tmp), "child-session-xyz")
+            parent_token = set_current_session_id("parent-session-abc")
+            try:
+                child._parent_session_id = parent.session_id
+                observed = {}
+
+                def run_child(**_kwargs):
+                    child._compress_context(
+                        [{"role": "user", "content": f"m{i}"} for i in range(20)],
+                        "sys",
+                        approx_tokens=120_000,
+                    )
+                    observed["session"] = get_session_env("HERMES_SESSION_ID")
+                    observed["subprocess"] = _make_run_env({})["HERMES_SESSION_ID"]
+                    observed["environ"] = os.environ["HERMES_SESSION_ID"]
+                    observed["child"] = child.session_id
+                    return {
+                        "final_response": "done",
+                        "completed": True,
+                        "api_calls": 1,
+                        "messages": [],
+                    }
+
+                child.run_conversation = run_child
+                result = _run_single_child(0, "compression rotation", child, parent)
+
+                self.assertEqual(result["status"], "completed")
+                self.assertNotEqual(child.session_id, "child-session-xyz")
+                self.assertEqual(observed, {
+                    "session": child.session_id,
+                    "subprocess": child.session_id,
+                    "environ": parent.session_id,
+                    "child": child.session_id,
+                })
+                self.assertEqual(get_session_env("HERMES_SESSION_ID"), parent.session_id)
+                self.assertEqual(os.environ["HERMES_SESSION_ID"], parent.session_id)
+            finally:
+                child.close()
+                db.close()
+                os.environ.pop("HERMES_SESSION_ID", None)
+                from gateway.session_context import reset_current_session_id
+                reset_current_session_id(parent_token)
+
+    def test_child_compression_rollback_keeps_parent_environ(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session-abc"
+        from gateway.session_context import get_session_env, set_current_session_id
+        from tools.environments.local import _make_run_env
+
+        with tempfile.TemporaryDirectory() as tmp:
+            child, db = _make_real_child(Path(tmp), "child-session-xyz")
+            parent_token = set_current_session_id("parent-session-abc")
+            try:
+                child._parent_session_id = parent.session_id
+                observed = {}
+
+                def run_child(**_kwargs):
+                    with patch.object(
+                        db,
+                        "create_session",
+                        side_effect=RuntimeError("FOREIGN KEY constraint failed"),
+                    ):
+                        child._compress_context(
+                            [{"role": "user", "content": f"m{i}"} for i in range(20)],
+                            "sys",
+                            approx_tokens=120_000,
+                        )
+                    observed["session"] = get_session_env("HERMES_SESSION_ID")
+                    observed["subprocess"] = _make_run_env({})["HERMES_SESSION_ID"]
+                    observed["environ"] = os.environ["HERMES_SESSION_ID"]
+                    observed["child"] = child.session_id
+                    return {
+                        "final_response": "done",
+                        "completed": True,
+                        "api_calls": 1,
+                        "messages": [],
+                    }
+
+                child.run_conversation = run_child
+                result = _run_single_child(0, "compression rollback", child, parent)
+
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(child.session_id, "child-session-xyz")
+                self.assertEqual(observed, {
+                    "session": child.session_id,
+                    "subprocess": child.session_id,
+                    "environ": parent.session_id,
+                    "child": child.session_id,
+                })
+                self.assertIsNotNone(db.get_session("child-session-xyz"))
+                self.assertEqual(get_session_env("HERMES_SESSION_ID"), parent.session_id)
+                self.assertEqual(os.environ["HERMES_SESSION_ID"], parent.session_id)
+            finally:
+                child.close()
+                db.close()
+                os.environ.pop("HERMES_SESSION_ID", None)
+                from gateway.session_context import reset_current_session_id
+                reset_current_session_id(parent_token)
 
 
 if __name__ == "__main__":

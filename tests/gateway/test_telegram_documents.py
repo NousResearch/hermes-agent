@@ -9,6 +9,7 @@ We mock the telegram module at import time to avoid collection errors.
 """
 
 import asyncio
+import io
 import os
 import sys
 from types import SimpleNamespace
@@ -969,3 +970,106 @@ class TestSendVideo:
 
         call_kwargs = connected_adapter._bot.send_video.call_args[1]
         assert call_kwargs["message_thread_id"] == 789
+
+
+class TestSendVideoMetadata:
+    """Tests for video aspect-ratio preview: width, height, and thumbnail."""
+
+    @pytest.fixture()
+    def connected_adapter(self, adapter):
+        bot = AsyncMock()
+        adapter._bot = bot
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_video_passes_dimensions_and_thumbnail(self, connected_adapter, tmp_path):
+        """Width, height, and JPEG thumbnail are forwarded for a 720x1280 video."""
+        test_file = tmp_path / "portrait.mp4"
+        test_file.write_bytes(b"\x00" * 200)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 300
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 200  # JPEG SOI marker + padding
+
+        async def _fake_probe(path):
+            return {"width": 720, "height": 1280, "duration": 12}
+
+        async def _fake_thumb(path):
+            return io.BytesIO(fake_jpeg)
+
+        with patch.object(
+            TelegramAdapter, "_probe_video_metadata", staticmethod(_fake_probe)
+        ), patch.object(
+            TelegramAdapter, "_generate_video_thumbnail", staticmethod(_fake_thumb)
+        ):
+            result = await connected_adapter.send_video(
+                chat_id="12345",
+                video_path=str(test_file),
+                caption="Portrait clip",
+            )
+
+        assert result.success is True
+        assert result.message_id == "300"
+
+        call_kwargs = connected_adapter._bot.send_video.call_args[1]
+        assert call_kwargs["width"] == 720
+        assert call_kwargs["height"] == 1280
+        assert call_kwargs["duration"] == 12
+
+        thumb = call_kwargs["thumbnail"]
+        assert isinstance(thumb, io.BytesIO)
+        thumb.seek(0)
+        assert thumb.read(2) == b"\xff\xd8"  # JPEG SOI marker
+
+    @pytest.mark.asyncio
+    async def test_send_video_probe_failure_still_sends(self, connected_adapter, tmp_path):
+        """Video is sent without metadata when ffprobe/ffmpeg both fail."""
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00" * 200)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 301
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        async def _fail_probe(path):
+            return None
+
+        async def _fail_thumb(path):
+            return None
+
+        with patch.object(
+            TelegramAdapter, "_probe_video_metadata", staticmethod(_fail_probe)
+        ), patch.object(
+            TelegramAdapter, "_generate_video_thumbnail", staticmethod(_fail_thumb)
+        ):
+            result = await connected_adapter.send_video(
+                chat_id="12345",
+                video_path=str(test_file),
+            )
+
+        assert result.success is True
+        assert result.message_id == "301"
+
+        call_kwargs = connected_adapter._bot.send_video.call_args[1]
+        assert "width" not in call_kwargs
+        assert "height" not in call_kwargs
+        assert "thumbnail" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_thumbnail_oversized_returns_none(self, adapter):
+        """_generate_video_thumbnail returns None when output exceeds 200 kB."""
+        oversized_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * (200 * 1024 + 1)
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(oversized_jpeg, b""))
+
+        with (
+            patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)),
+            patch("asyncio.wait_for", new=lambda coro, timeout: coro),
+        ):
+            result = await TelegramAdapter._generate_video_thumbnail("/fake/path.mp4")
+
+        assert result is None, "Thumbnail >200 kB should return None"

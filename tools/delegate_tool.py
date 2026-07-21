@@ -1214,6 +1214,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    memory_mode: str = "on_demand",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1314,6 +1315,11 @@ def _build_child_agent(
     # test_intersection_preserves_delegation_bound test for the design rationale.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
+
+    # If memory_mode is on_demand or full, ensure memory tools are available
+    # so sub-agents can use memory and hermes_mem_search tools.
+    if memory_mode != "off" and "memory" not in child_toolsets:
+        child_toolsets.append("memory")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -1523,7 +1529,7 @@ def _build_child_agent(
             log_prefix=f"[subagent-{task_index}]",
             platform="subagent",
             skip_context_files=True,
-            skip_memory=True,
+            memory_mode=memory_mode,
             clarify_callback=None,
             thinking_callback=child_thinking_cb,
             session_db=getattr(parent_agent, "_session_db", None),
@@ -1673,7 +1679,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("## Child config")
         for attr in (
             "model", "provider", "api_mode", "base_url", "max_iterations",
-            "quiet_mode", "skip_memory", "skip_context_files", "platform",
+            "quiet_mode", "memory_mode", "skip_context_files", "platform",
             "_delegate_role", "_delegate_depth",
         ):
             try:
@@ -2783,6 +2789,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    memory_mode: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2851,6 +2858,11 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     effective_max_iter = default_max_iter
+
+    # Resolve memory_mode — default to on_demand for sub-agents so they can
+    # read parent memories, but allow callers (including the model) to set
+    # "off" or "full" explicitly.
+    effective_memory_mode = memory_mode if memory_mode else "on_demand"
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -2937,40 +2949,42 @@ def delegate_task(
     # toolset resolution never leaks into the parent (shared with the plugin
     # subagent-lifecycle API).
     children = []
-    for i, t in enumerate(task_list):
-        # Per-task role beats top-level; normalise again so unknown
-        # per-task values warn and degrade to leaf uniformly.
-        effective_role = _normalize_role(t.get("role") or top_role)
-        child = _build_child_preserving_parent_tools(
-            task_index=i,
-            goal=t["goal"],
-            context=t.get("context"),
-            # Subagents always inherit the parent's toolsets; the model
-            # cannot choose or narrow them (no model-facing toolsets arg).
-            toolsets=None,
-            model=creds["model"],
-            max_iterations=effective_max_iter,
-            task_count=n_tasks,
-            parent_agent=parent_agent,
-            override_provider=creds["provider"],
-            override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
-            override_request_overrides=creds.get("request_overrides"),
-            override_max_tokens=creds.get("max_output_tokens"),
-            override_acp_command=creds.get("command"),
-            override_acp_args=creds.get("args"),
-            role=effective_role,
-        )
-        # Tee the child's progress events into its live transcript log.
-        # wrap_progress_callback preserves the inner callback contract
-        # (including the _flush attribute) and never lets writer failures
-        # reach the agent loop. When no parent display exists the inner
-        # callback is None and the wrapper still records events.
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(
-                getattr(child, "tool_progress_callback", None), _writer
+    try:
+        for i, t in enumerate(task_list):
+            # Per-task role beats top-level; normalise again so unknown
+            # per-task values warn and degrade to leaf uniformly.
+            effective_role = _normalize_role(t.get("role") or top_role)
+            child = _build_child_agent(
+                task_index=i,
+                goal=t["goal"],
+                context=t.get("context"),
+                # Subagents always inherit the parent's toolsets; the model
+                # cannot choose or narrow them (no model-facing toolsets arg).
+                toolsets=None,
+                model=creds["model"],
+                max_iterations=effective_max_iter,
+                task_count=n_tasks,
+                parent_agent=parent_agent,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+                override_request_overrides=creds.get("request_overrides"),
+                override_max_tokens=creds.get("max_output_tokens"),
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
+                role=effective_role,
+                memory_mode=effective_memory_mode,
+            )
+            # Tee the child's progress events into its live transcript log.
+            # wrap_progress_callback preserves the inner callback contract
+            # (including the _flush attribute) and never lets writer failures
+            # reach the agent loop. When no parent display exists the inner
+            # callback is None and the wrapper still records events.
+            _writer = live_writers[i] if i < len(live_writers) else None
+            if _writer is not None:
+                child.tool_progress_callback = wrap_progress_callback(
+                    getattr(child, "tool_progress_callback", None), _writer
             )
             child._live_transcript_path = str(_writer.path)
         children.append((i, t, child))

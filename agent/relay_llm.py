@@ -32,7 +32,7 @@ def execute(
 ) -> Any:
     """Run one non-streaming physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
-    if runtime is None or session is None:
+    if runtime is None or session is None or not runtime.managed_execution_enabled():
         return callback(request)
     logical = _logical_parent(runtime, session, parent, metadata)
     parent = logical[1] if logical is not None else parent
@@ -101,7 +101,7 @@ async def execute_async(
 ) -> Any:
     """Run one asynchronous physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
-    if runtime is None or session is None:
+    if runtime is None or session is None or not runtime.managed_execution_enabled():
         return await callback(request)
     logical = _logical_parent(runtime, session, parent, metadata)
     parent = logical[1] if logical is not None else parent
@@ -299,7 +299,11 @@ class ManagedLlmStream(Iterator[Any]):
         self.output_modified = False
 
         runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
-        if runtime is None or session is None:
+        if (
+            runtime is None
+            or session is None
+            or not runtime.managed_execution_enabled()
+        ):
             raw_stream = stream_factory(request)
             if completed_response_predicate is not None and completed_response_predicate(
                 raw_stream

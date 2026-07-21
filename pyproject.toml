@@ -138,10 +138,10 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
-  # First-party lifecycle and shared-metrics runtime. Follow the contribution
-  # policy's bounded pre-1.0 range while supporting Relay 0.5 and 0.6. Native
-  # wheels target these platforms; keep unsupported Hermes targets installable.
-  "nemo-relay>=0.5,<0.7; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
+  # First-party lifecycle and shared-metrics runtime. Relay 0.6 RC 3 is the
+  # minimum lossless provider-codec contract; final 0.6 releases also satisfy
+  # this bounded pre-1.0 range. Native wheels target these platforms.
+  "nemo-relay>=0.6.0rc3,<0.7; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 
 [project.optional-dependencies]

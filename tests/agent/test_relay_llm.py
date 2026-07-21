@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -24,9 +25,11 @@ def relay_turn(tmp_path, monkeypatch):
         turn_id="turn-1",
         task_id="task-1",
     )
+    lease.host.retain_managed_execution("test.relay_llm")
     try:
         yield lease.host.relay, turn
     finally:
+        lease.host.release_managed_execution("test.relay_llm")
         relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
         relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
         relay_runtime._reset_for_tests()
@@ -323,6 +326,133 @@ def test_current_attempt_bypasses_relay_without_an_active_turn(monkeypatch):
     )
 
     assert result is request
+
+
+def test_non_stream_bypasses_relay_without_an_active_consumer(relay_turn, monkeypatch):
+    relay, turn = relay_turn
+    turn.lease.host.release_managed_execution("test.relay_llm")
+    request = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+
+    monkeypatch.setattr(
+        relay.llm,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inactive Relay must not manage the provider call")
+        ),
+    )
+
+    result = relay_llm.execute(
+        request,
+        lambda value: value,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+    )
+
+    assert result is request
+
+
+def test_stream_bypasses_relay_without_an_active_consumer(relay_turn, monkeypatch):
+    relay, turn = relay_turn
+    turn.lease.host.release_managed_execution("test.relay_llm")
+    request = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+    observed = []
+
+    monkeypatch.setattr(
+        relay.llm,
+        "stream_execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inactive Relay must not manage the provider stream")
+        ),
+    )
+
+    stream = relay_llm.stream(
+        request,
+        lambda value: (observed.append(value), iter([{"delta": "ok"}]))[1],
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+    )
+
+    assert list(stream) == [{"delta": "ok"}]
+    assert observed == [request]
+
+
+def test_anthropic_codec_preserves_tool_history_and_cached_system_blocks(relay_turn):
+    _relay, _turn = relay_turn
+    request = {
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 512,
+        "system": [
+            {
+                "type": "text",
+                "text": "You are Hermes.",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Run pwd"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "terminal",
+                        "input": {"command": "pwd"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01",
+                        "content": [{"type": "text", "text": "/tmp/worktree"}],
+                    }
+                ],
+            },
+        ],
+    }
+    original_wire = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
+    observed_body_wire = ""
+
+    def provider(final_request):
+        nonlocal observed_body_wire
+        provider_body = {
+            key: value for key, value in final_request.items() if key != "extra_headers"
+        }
+        observed_body_wire = json.dumps(
+            provider_body,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return {
+            "id": "msg_01",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5",
+            "content": [{"type": "text", "text": "Done"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+        }
+
+    relay_llm.execute(
+        request,
+        provider,
+        session_id="session-1",
+        name="anthropic",
+        model_name="claude-sonnet-4-5",
+        metadata={
+            "api_mode": "anthropic_messages",
+            "api_request_id": "request-anthropic",
+        },
+    )
+
+    assert observed_body_wire == original_wire
 
 
 def test_current_attempt_bypasses_a_closed_turn_from_a_copied_context(

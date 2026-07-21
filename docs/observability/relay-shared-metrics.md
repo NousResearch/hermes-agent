@@ -9,6 +9,10 @@ Hermes execution remains available, while Relay scopes, middleware, plugins,
 and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
 as a no-op compatibility alias for existing installation commands.
 
+Hermes requires NeMo Relay 0.6 RC 3 or later. That release establishes the
+lossless provider-codec contract used for Anthropic Messages, OpenAI Chat
+Completions, and OpenAI Responses requests.
+
 Collection remains off unless Hermes policy enables it:
 
 ```yaml

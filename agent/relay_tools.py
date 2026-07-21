@@ -21,7 +21,7 @@ def execute(
 ) -> tuple[Any, dict[str, Any]]:
     """Run one tool call through Relay and return its final arguments."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
-    if runtime is None or session is None:
+    if runtime is None or session is None or not runtime.managed_execution_enabled():
         return callback(args), args
 
     observed_args = args

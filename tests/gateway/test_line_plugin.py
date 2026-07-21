@@ -19,7 +19,7 @@ import hashlib
 import hmac
 import base64
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -674,3 +674,86 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+class TestInboundMediaCacheRouting:
+
+    def _adapter(self):
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "tok",
+                "channel_secret": "sec",
+            },
+        )
+        ad = LineAdapter(cfg)
+        ad.handle_message = AsyncMock()
+        return ad
+
+    def test_inbound_media_records_mime_type_from_cached_path(self):
+        ad = self._adapter()
+        ad._download_media = AsyncMock(return_value="/tmp/test_image.jpg")
+
+        event = {
+            "type": "message",
+            "replyToken": "rt",
+            "source": {"type": "user", "userId": "U1"},
+            "message": {"id": "m1", "type": "image"},
+        }
+        asyncio.run(ad._handle_message_event(event))
+        ad.handle_message.assert_awaited_once()
+        event_obj = ad.handle_message.call_args[0][0]
+        assert event_obj.media_urls == ["/tmp/test_image.jpg"]
+        assert event_obj.media_types == ["image/jpeg"]
+
+    def test_download_media_image_uses_image_cache(self):
+        ad = self._adapter()
+        ad._client = AsyncMock()
+        gif_bytes = b"GIF89a\x01\x00"
+        ad._client.fetch_content.return_value = (gif_bytes, "image/gif")
+
+        with patch.object(_line, "cache_image_from_bytes", return_value="/tmp/fake.gif") as mock_cache:
+            path = asyncio.run(ad._download_media("m1", "image"))
+            assert path == "/tmp/fake.gif"
+            mock_cache.assert_called_once_with(gif_bytes, ext=".gif")
+
+    def test_download_media_audio_uses_audio_cache(self):
+        ad = self._adapter()
+        ad._client = AsyncMock()
+        ad._client.fetch_content.return_value = (b"fake audio data", "audio/mpeg")
+
+        with patch.object(_line, "cache_audio_from_bytes", return_value="/tmp/fake.mp3") as mock_cache:
+            path = asyncio.run(ad._download_media("m2", "audio"))
+            assert path == "/tmp/fake.mp3"
+            mock_cache.assert_called_once_with(b"fake audio data", ext=".mp3")
+
+    def test_download_media_video_uses_video_cache(self):
+        ad = self._adapter()
+        ad._client = AsyncMock()
+        ad._client.fetch_content.return_value = (b"fake video data", "video/mp4")
+
+        with patch.object(_line, "cache_video_from_bytes", return_value="/tmp/fake.mp4") as mock_cache:
+            path = asyncio.run(ad._download_media("m3", "video"))
+            assert path == "/tmp/fake.mp4"
+            mock_cache.assert_called_once_with(b"fake video data", ext=".mp4")
+
+    def test_download_media_file_uses_document_cache_with_mime_extension(self):
+        ad = self._adapter()
+        ad._client = AsyncMock()
+        ad._client.fetch_content.return_value = (b"fake doc pdf data", "application/pdf")
+
+        with patch.object(_line, "cache_document_from_bytes", return_value="/tmp/fake.pdf") as mock_cache:
+            path = asyncio.run(ad._download_media("m4", "file"))
+            assert path == "/tmp/fake.pdf"
+            mock_cache.assert_called_once_with(b"fake doc pdf data", "file_m4.pdf")
+
+    def test_download_media_file_falls_back_to_bin_extension(self):
+        ad = self._adapter()
+        ad._client = AsyncMock()
+        ad._client.fetch_content.return_value = (b"fake bin data", "")
+
+        with patch.object(_line, "cache_document_from_bytes", return_value="/tmp/fake.bin") as mock_cache:
+            path = asyncio.run(ad._download_media("m5", "file"))
+            assert path == "/tmp/fake.bin"
+            mock_cache.assert_called_once_with(b"fake bin data", "file_m5.bin")

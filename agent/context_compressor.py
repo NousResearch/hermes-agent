@@ -34,6 +34,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from agent.agent_runtime_helpers import ensure_reasoning_content_on_messages
 
 logger = logging.getLogger(__name__)
 
@@ -3723,5 +3724,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
         self._last_compression_made_progress = True
+
+        # Ensure every assistant message carries reasoning_content
+        # for providers that enforce the echo-back (DeepSeek, Kimi, MiMo).
+        # Compressed messages are persisted to the session DB and may be loaded
+        # by paths outside the main loop's API message building, which already
+        # handles this via copy_reasoning_content_for_api(). Self-healing here
+        # is defense-in-depth. Refs #17341.
+        ensure_reasoning_content_on_messages(
+            compressed,
+            provider=getattr(self, "provider", None),
+            model=getattr(self, "model", None),
+            base_url=getattr(self, "base_url", None),
+        )
 
         return compressed

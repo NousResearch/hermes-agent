@@ -3078,6 +3078,105 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     api_msg.pop("reasoning_content", None)
 
 
+def needs_thinking_reasoning_pad(
+    provider: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> bool:
+    """Return True when the given provider/model/endpoint enforces reasoning_content echo-back.
+
+    DeepSeek V4 thinking, Kimi/Moonshot thinking, and Xiaomi MiMo thinking
+    all require ``reasoning_content`` on every assistant message;
+    omitting it causes HTTP 400 on replay.
+
+    This is the standalone counterpart of ``AIAgent._needs_thinking_reasoning_pad()``
+    for use in auxiliary paths (context compression, session search) that don't
+    have access to a live AIAgent instance with its cached detection.
+    """
+    provider_lower = (provider or "").lower()
+    model_lower = (model or "").lower()
+    effective_base = base_url or ""
+
+    # DeepSeek
+    if (
+        provider_lower == "deepseek"
+        or "deepseek" in model_lower
+        or base_url_host_matches(effective_base, "api.deepseek.com")
+    ):
+        return True
+
+    # Kimi / Moonshot
+    if provider_lower in {"kimi-coding", "kimi-coding-cn"}:
+        return True
+    if (
+        base_url_host_matches(effective_base, "api.kimi.com")
+        or base_url_host_matches(effective_base, "moonshot.ai")
+        or base_url_host_matches(effective_base, "moonshot.cn")
+    ):
+        return True
+
+    # Xiaomi MiMo
+    if (
+        provider_lower == "xiaomi"
+        or "mimo" in model_lower
+        or base_url_host_matches(effective_base, "api.xiaomimimo.com")
+        or base_url_host_matches(effective_base, "xiaomimimo.com")
+    ):
+        return True
+
+    return False
+
+
+def ensure_reasoning_content_on_messages(
+    messages: list,
+    provider: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> int:
+    """Ensure every assistant message carries reasoning_content.
+
+    For providers that enforce the echo-back (DeepSeek, Kimi, MiMo), every
+    assistant message in the list is checked and padded with a single-space
+    ``reasoning_content`` if missing.  This matches the established replay
+    contract in ``copy_reasoning_content_for_api()`` step 4, which pads ALL
+    assistant turns — not just tool-call ones — when the provider enforces
+    the echo-back.
+
+    .. note::
+
+        This function mutates the caller's message dicts **in place**.
+        That is deliberate for compressed output (persisted self-healing).
+        Callers that pass transient message lists used outside the API call
+        should pass copies if the pad must not leak.
+
+    Returns the number of messages that were patched.
+    """
+    if not needs_thinking_reasoning_pad(provider, model, base_url):
+        return 0
+
+    patched = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        existing = msg.get("reasoning_content")
+        if isinstance(existing, str) and existing.strip():
+            continue
+        # Inject a single space — DeepSeek V4 Pro rejects empty string
+        # with HTTP 400. A space satisfies non-empty checks everywhere
+        # without leaking fabricated reasoning. Refs #17341.
+        msg["reasoning_content"] = " "
+        patched += 1
+
+    if patched:
+        logger.info(
+            "Padded reasoning_content on %d assistant message(s) "
+            "(provider=%s model=%s)",
+            patched, provider, model,
+        )
+
+    return patched
+
+
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
 
@@ -3465,6 +3564,8 @@ __all__ = [
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
+    "needs_thinking_reasoning_pad",
+    "ensure_reasoning_content_on_messages",
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",

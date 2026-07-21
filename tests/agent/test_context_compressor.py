@@ -13,6 +13,10 @@ from agent.context_compressor import (
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
 )
+from agent.agent_runtime_helpers import (
+    needs_thinking_reasoning_pad,
+    ensure_reasoning_content_on_messages,
+)
 from hermes_state import SessionDB
 
 
@@ -3741,3 +3745,86 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestReasoningContentPadding:
+    """Tests for ensure_reasoning_content_on_messages and needs_thinking_reasoning_pad."""
+
+    def test_deepseek_provider_triggers_padding(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="deepseek")
+        assert patched == 1
+        assert msgs[1].get("reasoning_content") == " "
+
+    def test_deepseek_model_triggers_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, model="deepseek-v4")
+        assert patched == 1
+
+    def test_kimi_provider_triggers_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="kimi-coding")
+        assert patched == 1
+        assert msgs[0].get("reasoning_content") == " "
+
+    def test_mimo_model_triggers_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, model="mimo-1.5")
+        assert patched == 1
+
+    def test_pads_all_assistant_messages(self):
+        """The established replay contract pads ALL assistant turns, not just
+        tool-call ones — matching copy_reasoning_content_for_api() step 4."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "plain response"},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="deepseek")
+        assert patched == 1
+        assert msgs[1].get("reasoning_content") == " "
+
+    def test_skips_when_reasoning_content_already_present(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}],
+             "reasoning_content": "existing reasoning"},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="deepseek")
+        assert patched == 0
+        assert msgs[0]["reasoning_content"] == "existing reasoning"
+
+    def test_strict_provider_skips_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="openai")
+        assert patched == 0
+
+    def test_needs_thinking_reasoning_pad_deepseek(self):
+        assert needs_thinking_reasoning_pad(provider="deepseek") is True
+        assert needs_thinking_reasoning_pad(model="deepseek-v4") is True
+        assert needs_thinking_reasoning_pad(base_url="https://api.deepseek.com") is True
+
+    def test_needs_thinking_reasoning_pad_kimi(self):
+        assert needs_thinking_reasoning_pad(provider="kimi-coding") is True
+        assert needs_thinking_reasoning_pad(provider="kimi-coding-cn") is True
+        assert needs_thinking_reasoning_pad(base_url="https://api.kimi.com/v1") is True
+        assert needs_thinking_reasoning_pad(base_url="https://moonshot.ai") is True
+
+    def test_needs_thinking_reasoning_pad_mimo(self):
+        assert needs_thinking_reasoning_pad(provider="xiaomi") is True
+        assert needs_thinking_reasoning_pad(model="mimo-1.5") is True
+        assert needs_thinking_reasoning_pad(base_url="https://api.xiaomimimo.com") is True
+
+    def test_needs_thinking_reasoning_pad_false_for_other(self):
+        assert needs_thinking_reasoning_pad(provider="openai") is False
+        assert needs_thinking_reasoning_pad(provider="anthropic") is False
+        assert needs_thinking_reasoning_pad(provider="", model="", base_url="") is False

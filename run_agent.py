@@ -622,12 +622,29 @@ class AIAgent:
                 cwd=_launch_cwd_for_session(source),
                 profile_name=_profile_for_session,
             )
-            self._session_db_created = True
-        except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
+
+            if self.provider not in _AGGREGATOR_PROVIDERS:
+                self.model = normalize_model_for_provider(self.model, self.provider)
+        except Exception:
+            pass
+
+        # GPT-5.x models require the Responses API path, but some
+        # providers have exceptions (for example Copilot's gpt-5-mini still
+        # uses chat completions). Only upgrade when the model actually
+        # requires the Responses API — guessing based on base URL alone
+        # breaks Chat Completions models like gpt-4o that don't support
+        # the ``include: ["reasoning.encrypted_content"]`` parameter.
+        # Azure OpenAI is excluded (serves gpt-5.x on /chat/completions).
+        if (
+            api_mode is None
+            and self.api_mode == "chat_completions"
+            and self.provider != "copilot-acp"
+            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp+tcp://")
+            and not self._is_azure_openai_url()
+            and self._provider_model_requires_responses_api(
+                self.model,
+                provider=self.provider,
             )
 
     def _transition_context_engine_session(

@@ -3,6 +3,7 @@
 import pytest
 
 from hermes_cli.session_listing import (
+    format_gateway_session_listing,
     parse_session_listing_args,
     query_session_listing,
 )
@@ -97,3 +98,33 @@ class TestQuerySessionListingSearch:
 
     def test_plain_listing_still_hides_unnamed(self, db):
         assert self._ids(db, source="telegram") == ["sess_an94"]
+
+    def test_current_session_is_hidden_by_default(self, db):
+        rows = query_session_listing(db, source="telegram", current_session_id="sess_an94")
+        assert [r["id"] for r in rows] == []
+
+    def test_current_session_can_be_listed_with_marker(self, db):
+        rows = query_session_listing(
+            db,
+            source="telegram",
+            current_session_id="sess_an94",
+            include_current_session=True,
+        )
+
+        assert [r["id"] for r in rows] == ["sess_an94"]
+        assert rows[0]["is_current_session"] is True
+
+
+class TestFormatGatewaySessionListing:
+    def test_marks_current_session(self):
+        listing = format_gateway_session_listing(
+            [
+                {
+                    "id": "sess_an94",
+                    "title": "AN-94 Prestige Barrel Build #2",
+                    "is_current_session": True,
+                }
+            ]
+        )
+
+        assert "**AN-94 Prestige Barrel Build #2** (current)" in listing

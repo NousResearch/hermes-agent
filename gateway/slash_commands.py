@@ -4000,6 +4000,7 @@ class GatewaySlashCommandsMixin:
             getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
             current_session_id=current_entry.session_id,
+            include_current_session=True,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
             search_query=search_query,

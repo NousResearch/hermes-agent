@@ -60,6 +60,32 @@ describe('detectTrigger', () => {
 })
 
 describe('extractClipboardImageBlobs', () => {
+  it('keeps one native clipboard image when a screenshot is exposed in multiple formats', () => {
+    const png = new File([new Uint8Array([1, 2, 3])], 'screenshot.png', {
+      type: 'image/png',
+      lastModified: 1_700_000_000_000
+    })
+
+    const bmp = new File([new Uint8Array([4, 5, 6])], 'screenshot.bmp', {
+      type: 'image/bmp',
+      lastModified: 1_700_000_000_001
+    })
+
+    const clipboard = {
+      files: {
+        length: 0,
+        item: () => null
+      },
+      getData: () => '',
+      items: [
+        { getAsFile: () => png, kind: 'file', type: 'image/png' },
+        { getAsFile: () => bmp, kind: 'file', type: 'image/bmp' }
+      ]
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([png])
+  })
+
   it('dedupes the same image exposed on both items and files', () => {
     const image = new File([new Uint8Array([1, 2, 3])], 'paste.png', {
       type: 'image/png',

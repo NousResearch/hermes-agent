@@ -66,7 +66,7 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   }
 
   if (blobs.length > 0) {
-    return blobs
+    return blobs.slice(0, 1)
   }
 
   const text = clipboard.getData('text/plain').trim()

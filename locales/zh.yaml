@@ -124,7 +124,7 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
-    picker_title:          "⚡ **优先处理**\\n\\n当前模式：`{mode}`\\n\\n请选择："
+    picker_title:          "⚡ **优先处理**\n\n当前模式：`{mode}`\n\n请选择："
     choice_fast:           "fast — 开启优先处理"
     choice_normal:         "normal — 标准处理"
 
@@ -197,7 +197,7 @@ gateway:
     reset_global_unsupported:  "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
     reset_done:                "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
     unknown_arg:               "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh, max, ultra\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
-    picker_title:              "🧠 **推理设置**\\n\\n**强度：** `{level}`\\n**作用域：** {scope}\\n**显示：** {display}\\n\\n请选择："
+    picker_title:              "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n请选择："
     choice_none:               "none — 关闭推理"
     choice_reset:              "reset — 清除会话覆盖"
     choice_show:               "在回复中显示推理"

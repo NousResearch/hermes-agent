@@ -19,6 +19,9 @@ This skill guides you through systematic exploratory QA testing of web applicati
 
 - Browser toolset must be available (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision`, `browser_console`, `browser_scroll`, `browser_back`, `browser_press`)
 - A target URL and testing scope from the user
+- Terminal access is strongly recommended when dogfooding public endpoints, DNS,
+  TLS, redirects, callbacks, or webhooks. Browser-only failures can be caused by
+  resolver cache, proxy behavior, or client state rather than the app itself.
 
 ## Inputs
 
@@ -85,6 +88,60 @@ For each page or feature in your plan:
    - Console errors: `browser_console()`
    - Visual changes: `browser_vision(question="What changed after the interaction?")`
    - Expected vs actual behavior
+
+### Public Endpoint and DNS Checks
+
+When the target is a public URL, generated hostname, callback URL, webhook URL,
+or any feature where DNS/readiness matters, verify the network layer explicitly
+before calling the app broken.
+
+1. **Compare resolvers before reporting NXDOMAIN or DNS timeout.** The local
+   system resolver can hold a negative cache after a record is created. Check a
+   fresh public resolver and, when possible, authoritative nameservers:
+
+   ```sh
+   host=example.devopsellence.io
+   date -u +%Y-%m-%dT%H:%M:%SZ
+   getent ahosts "$host" || true
+   dig "$host" A +noall +answer +authority +comments || true
+   dig @1.1.1.1 "$host" A +noall +answer +authority +comments || true
+   dig @8.8.8.8 "$host" A +noall +answer +authority +comments || true
+   dig @9.9.9.9 "$host" A +noall +answer +authority +comments || true
+   for ns in $(dig "${host#*.}" NS +short | sed 's/\.$//' | head -5); do
+     dig @"$ns" "$host" A +noall +answer +authority +comments || true
+   done
+   ```
+
+   Interpret carefully:
+   - `NXDOMAIN` from only the local resolver, while `1.1.1.1`, `8.8.8.8`, or an
+     authoritative nameserver returns an address, is usually local negative DNS
+     caching. Record the SOA authority TTL and retry after it expires instead of
+     filing a product/runtime failure.
+   - `NXDOMAIN` from authoritative nameservers means the record is genuinely
+     absent at the source.
+   - `NOERROR` with no `A` but a valid `AAAA` (or vice versa) may still be enough
+     depending on the expected address family; test the address family the app
+     is supposed to support.
+
+2. **Probe the endpoint using the resolved address when DNS evidence diverges.**
+   If public resolvers or authoritative DNS return an address but the local
+   resolver still fails, bypass the local cache to verify the app:
+
+   ```sh
+   host=example.devopsellence.io
+   ip=203.0.113.10
+   curl -fsS --resolve "$host:80:$ip" "http://$host/up"
+   curl -fsS --resolve "$host:443:$ip" "https://$host/up"
+   ```
+
+   For HTTPS, `--resolve` preserves the original hostname for SNI/certificate
+   validation while forcing the selected IP.
+
+3. **Do not trust control-plane or app status alone.** A dashboard, CLI, or API
+   may say a public URL is ready while DNS is still propagating or negatively
+   cached. Conversely, a local browser may fail while public resolvers already
+   work. Final readiness needs both sides: structured app/control-plane status
+   and an external DNS+HTTP(S) probe.
 
 ### Phase 3: Collect Evidence
 

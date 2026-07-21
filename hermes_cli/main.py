@@ -8,6 +8,7 @@ Usage:
     hermes gateway             # Run gateway in foreground
     hermes gateway start       # Start gateway as service
     hermes gateway stop        # Stop gateway service
+    hermes start / stop        # Aliases for gateway start / stop
     hermes gateway status      # Show gateway status
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
@@ -7273,9 +7274,7 @@ def _discard_stashed_changes(
     return True
 
 
-# =========================================================================
 # Fork detection and upstream management for `hermes update`
-# =========================================================================
 
 OFFICIAL_REPO_URLS = {
     "https://github.com/NousResearch/hermes-agent.git",
@@ -13423,6 +13422,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "start", "status", "stop", "restart", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13955,9 +13955,7 @@ def main():
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
 
-    # =========================================================================
     # model command  (parser built in hermes_cli/subcommands/model.py)
-    # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
 
     from hermes_cli.moa_cmd import cmd_moa
@@ -13975,9 +13973,7 @@ def main():
     moa_delete.add_argument("name", help="Preset name to delete")
     moa_parser.set_defaults(func=cmd_moa)
 
-    # =========================================================================
     # fallback command — manage the fallback provider chain
-    # =========================================================================
     from hermes_cli.fallback_cmd import cmd_fallback
 
     fallback_parser = subparsers.add_parser(
@@ -14011,9 +14007,7 @@ def main():
     )
     fallback_parser.set_defaults(func=cmd_fallback)
 
-    # =========================================================================
     # secrets command — external secret managers (Bitwarden, 1Password)
-    # =========================================================================
     secrets_parser = subparsers.add_parser(
         "secrets",
         help="Manage external secret sources (Bitwarden, 1Password)",
@@ -14058,9 +14052,7 @@ def main():
 
     secrets_parser.set_defaults(func=_dispatch_secrets)
 
-    # =========================================================================
     # migrate command
-    # =========================================================================
     from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
 
     migrate_parser = subparsers.add_parser(
@@ -14096,16 +14088,12 @@ def main():
     migrate_xai.set_defaults(func=cmd_migrate_xai)
     migrate_parser.set_defaults(func=cmd_migrate)
 
-    # =========================================================================
     # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)
-    # =========================================================================
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
 
-    # =========================================================================
     # lsp command
-    # =========================================================================
     try:
         from agent.lsp.cli import register_subparser as _lsp_register
         _lsp_register(subparsers)
@@ -14114,24 +14102,16 @@ def main():
         # failure break the CLI overall.
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
-    # =========================================================================
     # setup command  (parser built in hermes_cli/subcommands/setup.py)
-    # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
 
-    # =========================================================================
     # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
-    # =========================================================================
     build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
-    # =========================================================================
     # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
-    # =========================================================================
     build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
 
-    # =========================================================================
     # whatsapp-cloud command (official Meta Cloud API; complement to Baileys)
-    # =========================================================================
     whatsapp_cloud_parser = subparsers.add_parser(
         "whatsapp-cloud",
         help="Set up WhatsApp Business Cloud API integration",
@@ -14144,106 +14124,68 @@ def main():
     )
     whatsapp_cloud_parser.set_defaults(func=cmd_whatsapp_cloud)
 
-    # =========================================================================
     # slack command  (parser built in hermes_cli/subcommands/slack.py)
-    # =========================================================================
     build_slack_parser(subparsers, cmd_slack=cmd_slack)
 
-    # =========================================================================
     # send command — pipe shell-script output to any configured platform
-    # =========================================================================
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
-    # =========================================================================
     # login command  (parser built in hermes_cli/subcommands/login.py)
-    # =========================================================================
     build_login_parser(subparsers, cmd_login=cmd_login)
 
-    # =========================================================================
     # logout command  (parser built in hermes_cli/subcommands/logout.py)
-    # =========================================================================
     build_logout_parser(subparsers, cmd_logout=cmd_logout)
 
-    # =========================================================================
     # auth command  (parser built in hermes_cli/subcommands/auth.py)
-    # =========================================================================
     build_auth_parser(subparsers, cmd_auth=cmd_auth)
 
-    # =========================================================================
     # status command  (parser built in hermes_cli/subcommands/status.py)
-    # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
 
-    # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
-    # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
 
-    # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)
-    # =========================================================================
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
-    # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing
-    # =========================================================================
     from hermes_cli.portal_cli import add_parser as _add_portal_parser
     _add_portal_parser(subparsers)
 
-    # =========================================================================
     # kanban command — multi-profile collaboration board
-    # =========================================================================
     from hermes_cli.kanban import build_parser as _build_kanban_parser
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
 
-    # =========================================================================
     # project command — named, multi-folder workspaces
-    # =========================================================================
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
 
     project_parser = _build_project_parser(subparsers)
     project_parser.set_defaults(func=cmd_project)
 
-    # =========================================================================
     # hooks command — shell-hook inspection and management
-    # =========================================================================
     # hooks command  (parser built in hermes_cli/subcommands/hooks.py)
-    # =========================================================================
     build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
 
-    # =========================================================================
     # doctor command  (parser built in hermes_cli/subcommands/doctor.py)
-    # =========================================================================
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
 
-    # =========================================================================
     # security command — on-demand supply-chain audit
-    # =========================================================================
     # security command  (parser built in hermes_cli/subcommands/security.py)
-    # =========================================================================
     build_security_parser(subparsers, cmd_security=cmd_security)
 
-    # =========================================================================
     # dump command  (parser built in hermes_cli/subcommands/dump.py)
-    # =========================================================================
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
 
-    # =========================================================================
     # debug command  (parser built in hermes_cli/subcommands/debug.py)
-    # =========================================================================
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
 
-    # =========================================================================
     # backup command  (parser built in hermes_cli/subcommands/backup.py)
-    # =========================================================================
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
 
-    # =========================================================================
     # checkpoints command
-    # =========================================================================
     checkpoints_parser = subparsers.add_parser(
         "checkpoints",
         help="Inspect / prune / clear ~/.hermes/checkpoints/",
@@ -14255,39 +14197,25 @@ def main():
     from hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
 
-    # =========================================================================
     # import command  (parser built in hermes_cli/subcommands/import_cmd.py)
-    # =========================================================================
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
 
-    # =========================================================================
     # config command  (parser built in hermes_cli/subcommands/config.py)
-    # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
 
-    # =========================================================================
     # skin command  (parser built in hermes_cli/subcommands/skin.py)
-    # =========================================================================
     build_skin_parser(subparsers, cmd_skin=cmd_skin)
 
-    # =========================================================================
     # console command  (parser built in hermes_cli/subcommands/console.py)
-    # =========================================================================
     build_console_parser(subparsers, cmd_console=cmd_console)
 
-    # =========================================================================
     # pairing command  (parser built in hermes_cli/subcommands/pairing.py)
-    # =========================================================================
     build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
 
-    # =========================================================================
     # skills command  (parser built in hermes_cli/subcommands/skills.py)
-    # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
 
-    # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)
-    # =========================================================================
     bundles_parser = subparsers.add_parser(
         "bundles",
         help="Create, list, and manage skill bundles (aliases for multiple skills)",
@@ -14301,12 +14229,9 @@ def main():
     _bundles_register(bundles_parser)
     bundles_parser.set_defaults(func=bundles_command)
 
-    # =========================================================================
     # plugins command  (parser built in hermes_cli/subcommands/plugins.py)
-    # =========================================================================
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
-    # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.
@@ -14316,7 +14241,6 @@ def main():
     # etc.  This avoids eagerly importing every bundled plugin module
     # (google.cloud.pubsub_v1, aiohttp, grpc, PIL …) which costs
     # 500-650ms on typical installs.
-    # =========================================================================
     if _plugin_cli_discovery_needed():
         try:
             from plugins.memory import discover_plugin_cli_commands
@@ -14351,9 +14275,7 @@ def main():
         except Exception as _exc:
             logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
-    # =========================================================================
     # curator command — background skill maintenance
-    # =========================================================================
     curator_parser = subparsers.add_parser(
         "curator",
         help="Background skill maintenance (curator) — status, run, pause, pin",
@@ -14372,9 +14294,7 @@ def main():
     except Exception as _exc:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
-    # =========================================================================
     # pets command — petdex animated mascots (CLI / TUI / desktop display)
-    # =========================================================================
     pets_parser = subparsers.add_parser(
         "pets",
         help="Browse, install, and select petdex animated pets",
@@ -14392,9 +14312,7 @@ def main():
     except Exception as _exc:
         logging.getLogger(__name__).debug("pets CLI wiring failed: %s", _exc)
 
-    # =========================================================================
     # journey command — learned skills + memories over time, in the terminal
-    # =========================================================================
     journey_parser = subparsers.add_parser(
         "journey",
         aliases=["learning", "memory-graph"],
@@ -14413,19 +14331,13 @@ def main():
     except Exception as _exc:
         logging.getLogger(__name__).debug("journey CLI wiring failed: %s", _exc)
 
-    # =========================================================================
     # memory command  (parser built in hermes_cli/subcommands/memory.py)
-    # =========================================================================
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
 
-    # =========================================================================
     # tools command  (parser built in hermes_cli/subcommands/tools.py)
-    # =========================================================================
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
 
-    # =========================================================================
     # computer-use command — manage Computer Use (cua-driver) on macOS
-    # =========================================================================
     computer_use_parser = subparsers.add_parser(
         "computer-use",
         help="Manage the Computer Use (cua-driver) backend (macOS/Windows/Linux)",
@@ -14623,14 +14535,10 @@ def main():
         computer_use_parser.print_help()
 
     computer_use_parser.set_defaults(func=cmd_computer_use)
-    # =========================================================================
     # mcp command  (parser built in hermes_cli/subcommands/mcp.py)
-    # =========================================================================
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
 
-    # =========================================================================
     # sessions command
-    # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
         help="Manage session history (list, rename, export, prune, delete)",
@@ -15787,44 +15695,28 @@ def main():
 
     sessions_parser.set_defaults(func=cmd_sessions)
 
-    # =========================================================================
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
-    # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
 
-    # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)
-    # =========================================================================
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
 
-    # =========================================================================
     # version command  (parser built in hermes_cli/subcommands/version.py)
-    # =========================================================================
     build_version_parser(subparsers, cmd_version=cmd_version)
 
-    # =========================================================================
     # update command  (parser built in hermes_cli/subcommands/update.py)
-    # =========================================================================
     build_update_parser(subparsers, cmd_update=cmd_update)
 
-    # =========================================================================
     # uninstall command  (parser built in hermes_cli/subcommands/uninstall.py)
-    # =========================================================================
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
 
-    # =========================================================================
     # acp command  (parser built in hermes_cli/subcommands/acp.py)
-    # =========================================================================
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
 
-    # =========================================================================
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
-    # =========================================================================
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
 
-    # =========================================================================
     # completion command
-    # =========================================================================
     completion_parser = subparsers.add_parser(
         "completion",
         help="Print shell completion script (bash, zsh, or fish)",
@@ -15838,9 +15730,7 @@ def main():
     )
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
-    # =========================================================================
     # dashboard command  (parser built in hermes_cli/subcommands/dashboard.py)
-    # =========================================================================
     build_dashboard_parser(
         subparsers,
         cmd_dashboard=cmd_dashboard,
@@ -15848,7 +15738,6 @@ def main():
     )
 
 
-    # =========================================================================
     # desktop (a.k.a. gui) command
     #
     # The canonical name is "desktop"; "gui" is kept as a deprecated alias
@@ -15856,24 +15745,16 @@ def main():
     # run `hermes desktop` from a terminal, so the canonical name needs
     # to be the one that appears in --help (argparse promotes the primary
     # name; aliases stay hidden).
-    # =========================================================================
     # gui command  (parser built in hermes_cli/subcommands/gui.py)
-    # =========================================================================
     build_gui_parser(subparsers, cmd_gui=cmd_gui)
 
-    # =========================================================================
     # logs command  (parser built in hermes_cli/subcommands/logs.py)
-    # =========================================================================
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
 
-    # =========================================================================
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
-    # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
 
-    # =========================================================================
     # Parse and execute
-    # =========================================================================
     # Pre-process argv so unquoted multi-word session names after -c / -r
     # are merged into a single token before argparse sees them.
     # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``

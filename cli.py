@@ -6382,7 +6382,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         use_compact = self.compact or term_width < 80
         
         if use_compact:
-            self._console_print(_build_compact_banner())
+            with _suspend_output_history():
+                self._console_print(_build_compact_banner())
             self._show_status()
         else:
             # Get tools for display
@@ -8892,7 +8893,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 cc = ChatConsole()
                 term_w = shutil.get_terminal_size().columns
                 if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
+                    with _suspend_output_history():
+                        cc.print(_build_compact_banner())
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -9011,6 +9013,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_resume_command(cmd_original)
         elif canonical == "sessions":
             self._handle_sessions_command(cmd_original)
+        elif canonical == "objective":
+            self._handle_executive_v2_dryrun(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":

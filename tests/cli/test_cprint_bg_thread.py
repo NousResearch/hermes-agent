@@ -306,3 +306,140 @@ def test_clear_output_history_removes_replayable_lines():
     cli._clear_output_history()
 
     assert list(cli._OUTPUT_HISTORY) == []
+
+
+# ── PR1 (HERMES_CLI_OUTPUT_HISTORY_FIRST_APPLY): chrome exclusion ───────────
+#
+# These tests verify the contract that the compact banner is suppressed from
+# the replayable output history while normal content continues to record.
+# They extend the baseline suspend test above with the full contract from
+# the frozen scope (T1 — suspension contract, T2 — compact banner excluded,
+# T3 — normal content preserved).
+
+
+class TestSuspendOutputHistoryContract:
+    """T1 — Suspension contract (frozen scope §6)."""
+
+    def test_outside_context_records(self):
+        cli._configure_output_history(True, 10)
+        cli._record_output_history("visible")
+        assert list(cli._OUTPUT_HISTORY) == ["visible"]
+
+    def test_inside_context_does_not_record(self):
+        cli._configure_output_history(True, 10)
+        with cli._suspend_output_history():
+            cli._record_output_history("hidden")
+            cli._record_output_history_entry("also hidden")
+        assert list(cli._OUTPUT_HISTORY) == []
+
+    def test_recording_resumes_after_context_exit(self):
+        cli._configure_output_history(True, 10)
+        with cli._suspend_output_history():
+            cli._record_output_history("hidden")
+        cli._record_output_history("visible-again")
+        assert list(cli._OUTPUT_HISTORY) == ["visible-again"]
+
+    def test_exception_inside_context_restores_state(self):
+        cli._configure_output_history(True, 10)
+        with pytest.raises(RuntimeError):
+            with cli._suspend_output_history():
+                cli._record_output_history("hidden")
+                raise RuntimeError("boom")
+        # After exception, the recorder must be functional again.
+        cli._record_output_history("after-exception")
+        assert list(cli._OUTPUT_HISTORY) == ["after-exception"]
+        # And the suppression flag must be back to its prior value.
+        assert cli._OUTPUT_HISTORY_SUPPRESSED is False
+
+    def test_nested_context_records_nothing_inside_both(self):
+        cli._configure_output_history(True, 10)
+        with cli._suspend_output_history():
+            cli._record_output_history("outer-hidden")
+            with cli._suspend_output_history():
+                cli._record_output_history("inner-hidden")
+            cli._record_output_history("inner-then-outer-still-hidden")
+        assert list(cli._OUTPUT_HISTORY) == []
+        # After both contexts exit, recording resumes.
+        cli._record_output_history("after-both")
+        assert list(cli._OUTPUT_HISTORY) == ["after-both"]
+
+
+class TestCompactBannerExcluded:
+    """T2 — Compact banner excluded (frozen scope §6).
+
+    The compact banner is the chrome entry whose path was traced and confirmed
+    by inspection:
+        show_banner()  →  _console_print(banner)  →  ChatConsole().print()
+                     →  _cprint(line)  →  _record_output_history(line)
+    The contract tests below exercise the same ChatConsole.print() path that
+    the compact branch uses, with the recorder live.
+    """
+
+    def test_chat_console_under_suspend_records_nothing(self, monkeypatch):
+        """Driving ChatConsole.print() inside _suspend_output_history()
+        must produce zero entries in _OUTPUT_HISTORY, even though the
+        visible _pt_print still fires."""
+        cli._configure_output_history(True, 50)
+        monkeypatch.setattr(cli, "_pt_print", lambda *_a, **_k: None)
+
+        with cli._suspend_output_history():
+            cli.ChatConsole().print(cli._build_compact_banner())
+
+        assert list(cli._OUTPUT_HISTORY) == [], (
+            "Compact banner leaked into _OUTPUT_HISTORY despite suspend."
+        )
+
+    def test_chat_console_outside_suspend_records_banner(self, monkeypatch):
+        """Control: the same call without the suspend MUST record, proving
+        the negative above is real and not a broken recorder."""
+        cli._configure_output_history(True, 50)
+        monkeypatch.setattr(cli, "_pt_print", lambda *_a, **_k: None)
+
+        cli.ChatConsole().print(cli._build_compact_banner())
+
+        assert cli._OUTPUT_HISTORY, (
+            "Banner outside the suspend block must record — if this fails, "
+            "the test harness itself is broken."
+        )
+
+    def test_compact_banner_double_line_marker_does_not_record(self, monkeypatch):
+        """Specifically verify no ═-bearing line enters the history."""
+        cli._configure_output_history(True, 50)
+        monkeypatch.setattr(cli, "_pt_print", lambda *_a, **_k: None)
+
+        with cli._suspend_output_history():
+            cli.ChatConsole().print(cli._build_compact_banner())
+
+        for entry in cli._OUTPUT_HISTORY:
+            assert "═" not in str(entry), (
+                f"chrome banner line leaked into history: {entry!r}"
+            )
+
+
+class TestNormalContentPreserved:
+    """T3 — Normal content preserved (frozen scope §6)."""
+
+    def test_agent_response_records_normally(self):
+        cli._configure_output_history(True, 10)
+        cli._record_output_history("Here is your answer, with full content.")
+        assert "Here is your answer" in list(cli._OUTPUT_HISTORY)[0]
+
+    def test_cprint_helper_path_unchanged_outside_suspend(self, monkeypatch):
+        """Outside any suspend block, _cprint still routes through the
+        recorder exactly as before — the suspend helper must not perturb
+        the normal path."""
+        cli._configure_output_history(True, 10)
+        monkeypatch.setattr(cli, "_pt_print", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+        # No active app → direct _pt_print path, no thread plumbing.
+        import sys
+        import types
+        fake_pt_app = types.ModuleType("prompt_toolkit.application")
+        fake_pt_app.get_app_or_none = lambda: None
+        fake_pt_app.run_in_terminal = lambda *a, **kw: None
+        monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+        cli._cprint("agent-response-line")
+
+        assert any("agent-response-line" in str(e) for e in cli._OUTPUT_HISTORY)

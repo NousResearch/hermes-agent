@@ -413,6 +413,7 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.session_state import build_session_state_parsers
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -4444,10 +4445,38 @@ def cmd_auth(args):
 
 
 def cmd_status(args):
-    """Show status of all components."""
+    """Show status of all components or canonical project state."""
     from hermes_cli.status import show_status
 
-    show_status(args)
+    return show_status(args)
+
+
+def cmd_session_resume(args):
+    """Validate and load canonical SESSION_STATE.json."""
+    from hermes_cli.session_state import command_resume
+
+    return command_resume(args)
+
+
+def cmd_session_checkpoint(args):
+    """Generate SESSION_STATE.json from a passed checkpoint."""
+    from hermes_cli.session_state import command_checkpoint
+
+    return command_checkpoint(args)
+
+
+def cmd_session_next(args):
+    """Advance via SESSION_STATE.next_recommended_prompt."""
+    from hermes_cli.session_state import command_next
+
+    return command_next(args)
+
+
+def cmd_session_gc(args):
+    """Archive obsolete temporary conversation metadata."""
+    from hermes_cli.session_state import command_gc
+
+    return command_gc(args)
 
 
 def cmd_cron(args):
@@ -4500,6 +4529,41 @@ def cmd_kanban(args):
     from hermes_cli.kanban import kanban_command
 
     return kanban_command(args)
+
+
+def cmd_task(args):
+    """Run a single end-to-end task through the Task Runtime MVP.
+
+    MVP modes: dry-run (default, no HTTP/LLM), shadow (no mutations),
+    supervised (requires confirmation), enforce (requires confirmation).
+    """
+    from hermes_cli.task_runtime import TaskRuntime
+
+    raw_text = getattr(args, "text", None)
+    file_path = getattr(args, "file", None)
+    if file_path and not raw_text:
+        from pathlib import Path as _P
+        raw_text = _P(file_path).read_text(encoding="utf-8")
+    if not raw_text:
+        print("Error: provide a task instruction via positional arg or --file")
+        sys.exit(1)
+
+    mode = getattr(args, "mode", "dry-run") or "dry-run"
+    confirm = getattr(args, "confirm", False)
+    runtime = TaskRuntime()
+    result = runtime.run(
+        raw_text,
+        execution_mode=mode,
+        source="cli",
+        confirmation_token="confirm" if confirm else None,
+    )
+    print(result.final_answer)
+    if getattr(args, "verbose", False):
+        print()
+        print("[verbose] intent_id:", result.intent_id)
+        print("[verbose] contract_id:", result.contract_id)
+        print("[verbose] contract_fingerprint:", result.contract_fingerprint)
+        print("[verbose] trace_path:", result.trace_path)
 
 
 def cmd_project(args):
@@ -13092,8 +13156,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
-        "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "send", "sessions", "setup", "resume", "next",
+        "skills", "slack", "status", "task", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13847,6 +13911,17 @@ def main():
     build_status_parser(subparsers, cmd_status=cmd_status)
 
     # =========================================================================
+    # SESSION_STATE project-memory commands
+    # =========================================================================
+    build_session_state_parsers(
+        subparsers,
+        cmd_resume=cmd_session_resume,
+        cmd_next=cmd_session_next,
+        cmd_checkpoint=cmd_session_checkpoint,
+        cmd_gc=cmd_session_gc,
+    )
+
+    # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
@@ -13869,6 +13944,38 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Run a task end-to-end via Task Runtime MVP",
+        description=(
+            "Execute a single task through the Task Runtime pipeline "
+            "(Producer → Producer Normalizer v1.1 → conditional Reviewer). "
+            "MVP default mode is dry-run (no HTTP, no LLM, no mutations)."
+        ),
+    )
+    task_parser.add_argument(
+        "text", nargs="?", default=None,
+        help="Task instruction (a free-form string).",
+    )
+    task_parser.add_argument(
+        "--file", default=None,
+        help="Path to a task YAML/JSON file (overrides positional text).",
+    )
+    task_parser.add_argument(
+        "--mode", default="dry-run",
+        choices=["dry-run", "shadow", "supervised", "enforce"],
+        help="Execution mode (default: dry-run).",
+    )
+    task_parser.add_argument(
+        "--confirm", action="store_true",
+        help="Required for supervised/enforce modes.",
+    )
+    task_parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Print extra diagnostic info.",
+    )
+    task_parser.set_defaults(func=cmd_task)
 
     # =========================================================================
     # project command — named, multi-folder workspaces
@@ -15550,7 +15657,9 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        if isinstance(result, int) and not isinstance(result, bool):
+            sys.exit(result)
     else:
         parser.print_help()
 

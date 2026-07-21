@@ -1068,46 +1068,53 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                 activeConfig.selectedConnectionId === connection.id
 
               return (
-                <ListRow
-                  action={
-                    <div className="flex items-center gap-1.5">
-                      {active ? (
-                        <Pill tone="primary">
-                          <Check className="size-3" /> {g.connectedConnection}
-                        </Pill>
-                      ) : (
-                        <Button
-                          disabled={activeConfig.envOverride || saving}
-                          onClick={() => void connectSavedConnection(connection.id)}
-                          size="sm"
-                        >
-                          {g.connectConnection}
-                        </Button>
-                      )}
-                      <Button
-                        aria-label={`${t.common.change} ${connection.name}`}
-                        disabled={activeConfig.envOverride || saving}
-                        onClick={() => editSavedConnection(connection)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        aria-label={g.deleteConnection(connection.name)}
-                        disabled={activeConfig.envOverride || saving}
-                        onClick={() => void deleteSavedConnection(connection)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  }
-                  description={g.connectionShortcut(connection.id, connection.remoteUrl)}
+                <div
+                  aria-current={active ? 'true' : undefined}
+                  aria-label={connection.name}
+                  className={cn('px-3', selectableCardClass({ active, prominent: true }))}
                   key={connection.id}
-                  title={connection.name}
-                />
+                  role="group"
+                >
+                  <ListRow
+                    action={
+                      <div className="flex items-center gap-1.5">
+                        {active ? (
+                          <Pill tone="primary">
+                            <Check className="size-3" /> {g.connectedConnection}
+                          </Pill>
+                        ) : (
+                          <Button
+                            disabled={activeConfig.envOverride || saving}
+                            onClick={() => void connectSavedConnection(connection.id)}
+                            size="sm"
+                          >
+                            {g.connectConnection}
+                          </Button>
+                        )}
+                        <Button
+                          aria-label={`${t.common.change} ${connection.name}`}
+                          disabled={activeConfig.envOverride || saving}
+                          onClick={() => editSavedConnection(connection)}
+                          size="icon-sm"
+                          variant="ghost"
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          aria-label={g.deleteConnection(connection.name)}
+                          disabled={activeConfig.envOverride || saving}
+                          onClick={() => void deleteSavedConnection(connection)}
+                          size="icon-sm"
+                          variant="ghost"
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    }
+                    description={g.connectionShortcut(connection.id, connection.remoteUrl)}
+                    title={connection.name}
+                  />
+                </div>
               )
             })}
 

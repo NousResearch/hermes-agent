@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopCloudStatus, DesktopConnectionConfig } from '@/global'
@@ -171,11 +171,14 @@ describe('GatewaySettings connection picker', () => {
     render(<GatewaySettings />)
 
     await screen.findByText('Home Lab')
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    const savedConnection = screen.getByRole('group', { name: 'Home Lab' })
+
+    expect(savedConnection.getAttribute('aria-current')).toBeNull()
+    fireEvent.click(within(savedConnection).getByRole('button', { name: 'Connect' }))
 
     await waitFor(() => expect(selectConnectionConfig).toHaveBeenCalledWith('home-lab'))
     await waitFor(() =>
-      expect(screen.getByText('Home Lab').parentElement?.parentElement?.textContent).toContain('Active')
+      expect(screen.getByRole('group', { name: 'Home Lab' }).getAttribute('aria-current')).toBe('true')
     )
   })
 

@@ -17482,6 +17482,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         store = getattr(self, "session_store", None)
         if store is None:
             return
+        # When the operator opted out of override persistence, never
+        # rehydrate a persisted override into the in-memory map — sessions
+        # must always fall back to config.yaml's model.default/provider.
+        if not getattr(store, "_persist_model_override", True):
+            return
         try:
             persisted = store.get_model_override(session_key)
         except Exception:

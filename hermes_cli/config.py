@@ -3024,6 +3024,15 @@ DEFAULT_CONFIG = {
         # producing ~/.hermes/sessions/sessions.json entirely.
         "write_sessions_json": True,
 
+        # Whether an in-chat /model switch is persisted per-session and
+        # survives a gateway restart. Default True preserves existing
+        # behavior: the override outranks config.yaml's model.default until
+        # cleared (/new, another /model). Set to false so /model only
+        # applies for the current process lifetime — operators who manage
+        # models via config.yaml / `hermes model` (SSH) never get silently
+        # pinned to a stale in-chat override after a restart.
+        "persist_model_override": True,
+
         # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent

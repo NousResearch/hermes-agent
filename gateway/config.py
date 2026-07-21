@@ -851,6 +851,22 @@ class GatewayConfig:
     # tooling and downgrade safety; set gateway.write_sessions_json: false in
     # config.yaml to stop producing the file.
     write_sessions_json: bool = True
+
+    # Whether an in-chat /model switch is persisted per-session and survives
+    # a gateway restart. Default True preserves existing behavior: /model
+    # writes {model, provider, base_url} to the session store, and the
+    # override is rehydrated on the next restart, permanently outranking
+    # config.yaml's model.default/model.provider for that session until
+    # cleared (e.g. by /new or another /model call).
+    #
+    # Set gateway.persist_model_override: false for the opposite contract:
+    # /model still switches the model for the remainder of the current
+    # process lifetime, but the switch is never written to disk and never
+    # rehydrated after a restart. Sessions always fall back to
+    # model.default/model.provider on the next gateway boot, so operators
+    # who manage models exclusively via config.yaml / `hermes model` (SSH)
+    # never get silently pinned to a stale in-chat override again.
+    persist_model_override: bool = True
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
@@ -1007,6 +1023,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
+            "persist_model_override": self.persist_model_override,
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
@@ -1137,6 +1154,7 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
+            persist_model_override=_coerce_bool(data.get("persist_model_override"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
@@ -1335,6 +1353,12 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
             elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
                 gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
+
+            # persist_model_override: same top-level vs nested precedence.
+            if "persist_model_override" in yaml_cfg:
+                gw_data["persist_model_override"] = yaml_cfg["persist_model_override"]
+            elif isinstance(gateway_section, dict) and "persist_model_override" in gateway_section:
+                gw_data["persist_model_override"] = gateway_section["persist_model_override"]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[

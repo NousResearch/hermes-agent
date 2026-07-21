@@ -1050,6 +1050,14 @@ class SessionStore:
         self._write_sessions_json = bool(
             getattr(config, "write_sessions_json", True)
         )
+        # Whether in-chat /model overrides are persisted per-session and
+        # rehydrated on the next gateway restart. Default True preserves
+        # existing behavior. Disable via gateway.persist_model_override so
+        # operators who manage models exclusively via config.yaml / SSH are
+        # never silently pinned to a stale in-chat override.
+        self._persist_model_override = bool(
+            getattr(config, "persist_model_override", True)
+        )
         
         # Initialize SQLite session database
         self._db = None
@@ -2159,11 +2167,25 @@ class SessionStore:
         are re-resolved at rehydration time via the normal runtime provider
         resolution.  Pass ``None`` (or a dict with no persistable values)
         to clear the persisted override, e.g. on /new.
+
+        No-op on the persistence side when
+        ``gateway.persist_model_override`` is false: the in-memory
+        override still applies for the current process lifetime (set
+        directly on ``_session_model_overrides`` by the caller), but it
+        is never written to the session store and therefore never
+        rehydrated after a restart. Clearing (None) is always honored so
+        existing persisted overrides can still be wiped even after the
+        flag is turned off.
         """
         with self._lock:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             if entry is None:
+                return
+            if override is not None and not self._persist_model_override:
+                # Skip persistence (non-clearing write) when the operator
+                # opted out of override persistence. The in-memory map is
+                # updated by the caller; nothing to persist here.
                 return
             cleaned = sanitize_model_override(override)
             if entry.model_override == cleaned:

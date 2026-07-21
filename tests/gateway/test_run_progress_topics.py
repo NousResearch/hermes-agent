@@ -739,6 +739,59 @@ class QueuedFailedEmptyAgent:
         }
 
 
+class QueuedStreamedAgent:
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        response = f"final response {type(self).calls}"
+        if type(self).calls == 1 and self.stream_delta_callback:
+            self.stream_delta_callback(response)
+        return {
+            "final_response": response,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FinalContentOnlyStreamConsumer:
+    delivery_succeeds = True
+
+    def __init__(self, adapter, chat_id, **kwargs):
+        self.adapter = adapter
+        self.chat_id = chat_id
+        self.metadata = kwargs.get("metadata")
+        self.accumulated = ""
+        self.finished = asyncio.Event()
+        self.final_response_sent = False
+        self.final_content_delivered = False
+        self.message_id = None
+
+    def on_delta(self, text):
+        self.accumulated += text
+
+    def finish(self):
+        self.finished.set()
+
+    async def run(self):
+        await self.finished.wait()
+        if self.accumulated and self.delivery_succeeds:
+            result = await self.adapter.send(
+                self.chat_id,
+                self.accumulated,
+                metadata=self.metadata,
+            )
+            self.final_content_delivered = result.success
+            self.message_id = result.message_id
+
+    def has_delivered_text(self, text):
+        return self.final_content_delivered and text == self.accumulated
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -1176,6 +1229,43 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
     assert QueuedFailedEmptyAgent.calls == 2
     assert result["final_response"] == "follow-up processed"
     assert any("The request failed: provider exploded" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery_succeeds", [True, False])
+async def test_queued_followup_sends_first_response_exactly_once_after_stream_finalization(
+    monkeypatch, tmp_path, delivery_succeeds,
+):
+    # Given a queued follow-up and a stream consumer whose final-content send
+    # either succeeds before finalization fails or genuinely never succeeds.
+    QueuedStreamedAgent.calls = 0
+    monkeypatch.setattr(
+        FinalContentOnlyStreamConsumer,
+        "delivery_succeeds",
+        delivery_succeeds,
+    )
+    stream_consumer = importlib.import_module("gateway.stream_consumer")
+    monkeypatch.setattr(
+        stream_consumer,
+        "GatewayStreamConsumer",
+        FinalContentOnlyStreamConsumer,
+    )
+
+    # When the gateway finishes the first turn and processes the queued turn.
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedStreamedAgent,
+        session_id="sess-queued-stream-finalization",
+        pending_text="queued follow-up",
+        config_data={"streaming": {"enabled": True}},
+    )
+
+    # Then the first response appears exactly once in both cases: either from
+    # the stream itself or from the queued branch's safety resend.
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result["final_response"] == "final response 2"
+    assert sent_texts.count("final response 1") == 1
 
 
 @pytest.mark.asyncio

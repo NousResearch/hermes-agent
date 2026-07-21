@@ -55,6 +55,19 @@ MAX_MESSAGE_LENGTH = 4000
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
 
+# Message queue — buffers rapid inbound messages during processing backpressure.
+# When a user fires off 10 @-mentions in 30 seconds and each one takes 8-10s to
+# process, the bounded queue prevents the QQ Gateway WebSocket from having to
+# drop the overflow.  MUST be large enough to hold a worst-case burst; 100 is
+# generous for any realistic QQ group chat.
+MESSAGE_QUEUE_MAXSIZE = 100
+
+# Disk-persistence path for the message queue.  Every queued message is also
+# written to this JSONL file so no messages are lost on gateway restart or if
+# the consumer falls behind (QueueFull drop-oldest).  Relative paths resolve
+# against ~/.hermes/.  Set empty string to disable disk persistence.
+QUEUE_PERSIST_PATH = "qqbot_queue.jsonl"
+
 # ---------------------------------------------------------------------------
 # QQ Bot message types
 # ---------------------------------------------------------------------------

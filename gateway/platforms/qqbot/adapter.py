@@ -103,6 +103,8 @@ from gateway.platforms.qqbot.constants import (
     RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
+    MESSAGE_QUEUE_MAXSIZE,
+    QUEUE_PERSIST_PATH,
     MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS,
     DEDUP_MAX_SIZE,
@@ -223,10 +225,35 @@ class QQAdapter(BasePlatformAdapter):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._message_queue_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        
+        # Message buffer — a bounded queue that decouples WebSocket message
+        # reception from message processing.  When a burst of messages arrives
+        # faster than the handler can process them (e.g. 10 rapid @-mentions),
+        # the WebSocket reader enqueues them here without blocking, and a
+        # dedicated consumer task drains them one by one.  This prevents the
+        # QQ Gateway from dropping messages when our handler takes 8-10s per
+        # message but the user sends every 5s.
+        # Tuple: (msg_id: str, event_type: str, data: dict)
+        # msg_id is a UUID generated in _dispatch_payload for disk-persistence
+        # tracking — NOT the QQ platform message ID.
+        self._message_queue: asyncio.Queue[tuple[str, str, dict]] = asyncio.Queue(
+            maxsize=MESSAGE_QUEUE_MAXSIZE
+        )
+
+        # Disk-persistence path for the message queue.  Every queued message is
+        # also written to this JSONL file so it survives gateway restarts.
+        # Resolved relative to HERMES_HOME (~/.hermes/).
+        self._queue_persist_path: Optional[str] = None
+        if QUEUE_PERSIST_PATH:
+            from hermes_state import get_hermes_home
+            self._queue_persist_path = os.path.join(
+                get_hermes_home(), QUEUE_PERSIST_PATH
+            )
 
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
@@ -332,6 +359,14 @@ class QQAdapter(BasePlatformAdapter):
             # 4. Start listeners
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            # 4a. Restore any queued messages that survived a previous crash/restart
+            #     from disk.  Must happen before the consumer starts so recovered
+            #     messages are processed in FIFO order behind any new arrivals.
+            self._restore_queue_from_disk()
+            # 5. Start message queue consumer — decouples WebSocket reception
+            #    from message handling so a burst of rapid messages doesn't
+            #    overflow the QQ Gateway's WebSocket buffer.
+            self._message_queue_task = asyncio.create_task(self._message_queue_consumer())
             self._mark_connected()
             logger.info("[%s] Connected", self._log_tag)
             return True
@@ -363,6 +398,14 @@ class QQAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._message_queue_task:
+            self._message_queue_task.cancel()
+            try:
+                await self._message_queue_task
+            except asyncio.CancelledError:
+                pass
+            self._message_queue_task = None
 
         await self._cleanup()
         self._release_platform_lock()
@@ -729,6 +772,132 @@ class QQAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             pass
 
+    async def _message_queue_consumer(self) -> None:
+        """Consume messages from the bounded queue and dispatch them one by one.
+
+        The WebSocket reader (_read_events → _dispatch_payload) enqueues message
+        events into ``self._message_queue`` instead of spawning immediate tasks.
+        This consumer drains the queue sequentially so a burst of rapid messages
+        (e.g. 10 @-mentions in 30s) does not overflow the QQ Gateway's WebSocket
+        buffer — every message is queued first and processed in order.
+
+        The queue is bounded at ``MESSAGE_QUEUE_MAXSIZE`` (100).  If the queue
+        fills up, the oldest message is dropped to make room for the newest,
+        keeping the pipeline moving.
+
+        Each message carries a UUID (msg_id) generated in _dispatch_payload.
+        After processing, its disk-persistence entry is removed so the JSONL
+        file only holds unprocessed messages (crash-safe tail log).
+        """
+        from hermes_state import get_hermes_home
+        try:
+            while self._running:
+                msg_id, event_type, data = await self._message_queue.get()
+                try:
+                    await self._on_message(event_type, data)
+                except Exception as exc:
+                    logger.error(
+                        "[%s] Message queue consumer error: %s",
+                        self._log_tag, exc, exc_info=True,
+                    )
+                finally:
+                    self._remove_processed_from_disk(msg_id)
+        except asyncio.CancelledError:
+            pass
+
+    # ------------------------------------------------------------------
+    # Queue persistence helpers (UUID-based disk tail log)
+    # ------------------------------------------------------------------
+
+    def _persist_message_to_disk(self, msg_id: str, event_type: str, data: Any) -> None:
+        """Append one message to the JSONL persistence file.
+
+        Each line: ``{"id": "<uuid>", "t": "<event_type>", "d": {...}}``
+        The consumer removes the line after processing (see
+        ``_remove_processed_from_disk``), so the file always reflects
+        the set of unprocessed queued messages — a crash-safe tail log.
+        """
+        if not self._queue_persist_path:
+            return
+        try:
+            Path(self._queue_persist_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(self._queue_persist_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"id": msg_id, "t": event_type, "d": data}, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            logger.error("[%s] Failed to persist message %s: %s", self._log_tag, msg_id, exc)
+
+    def _remove_processed_from_disk(self, msg_id: str) -> None:
+        """Remove a single entry from the JSONL file by UUID match.
+
+        Rewrites the file without the matching line.  Uses a temp file
+        to avoid data loss on crash — the original file is only replaced
+        after the new file is fully written and fsynced.
+        """
+        if not self._queue_persist_path or not os.path.exists(self._queue_persist_path):
+            return
+        try:
+            src = Path(self._queue_persist_path)
+            tmp = src.with_suffix(".jsonl.tmp")
+            removed = False
+            with open(src, "r", encoding="utf-8") as fin, \
+                 open(tmp, "w", encoding="utf-8") as fout:
+                for line in fin:
+                    entry = json.loads(line)
+                    if entry.get("id") == msg_id:
+                        removed = True
+                        continue  # skip this line
+                    fout.write(line)
+            if removed:
+                tmp.replace(src)  # atomic replace on Linux
+            else:
+                tmp.unlink(missing_ok=True)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("[%s] Failed to remove %s from queue disk: %s", self._log_tag, msg_id, exc)
+            # Clean up temp file on error
+            tmp_path = Path(str(self._queue_persist_path) + ".tmp")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _restore_queue_from_disk(self) -> None:
+        """Re-enqueue all messages found in the persistence file into the memory queue.
+
+        Called on connect() so any messages that were queued but not yet
+        processed before a previous gateway shutdown are recovered.  After
+        loading, the file is deleted (consumed entries will be re-written
+        as the consumer processes them).
+        """
+        if not self._queue_persist_path or not os.path.exists(self._queue_persist_path):
+            return
+        restored = 0
+        try:
+            with open(self._queue_persist_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        msg_id = entry.get("id", "")
+                        event_type = entry.get("t", "")
+                        data = entry.get("d")
+                        if msg_id and event_type and data is not None:
+                            self._message_queue.put_nowait((msg_id, event_type, data))
+                            restored += 1
+                    except (json.JSONDecodeError, asyncio.QueueFull):
+                        continue
+            # Remove the file — entries are now in the memory queue and
+            # will be re-persisted as the consumer processes them.
+            os.remove(self._queue_persist_path)
+            if restored:
+                logger.info(
+                    "[%s] Restored %d messages from disk queue",
+                    self._log_tag, restored,
+                )
+        except OSError as exc:
+            logger.error("[%s] Failed to restore queue from disk: %s", self._log_tag, exc)
+
     async def _send_identify(self) -> None:
         """Send op 2 Identify to authenticate the WebSocket connection.
 
@@ -854,7 +1023,27 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
             }:
-                asyncio.create_task(self._on_message(t, d))
+                # Enqueue onto the bounded message queue instead of spawning
+                # an immediate task.  The queue consumer drains messages one
+                # by one, preventing loss when a burst of messages arrives
+                # faster than the handler can process them.
+                msg_id = str(uuid.uuid4())
+                try:
+                    self._message_queue.put_nowait((msg_id, t, d))
+                except asyncio.QueueFull:
+                    # Queue is full — drop the oldest item to make room,
+                    # then enqueue the new one.  This keeps the queue from
+                    # stalling the WebSocket reader and ensures recent
+                    # messages are always processed.
+                    try:
+                        self._message_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    self._message_queue.put_nowait((msg_id, t, d))
+                # Persist to disk AFTER enqueueing — the consumer removes
+                # the entry after processing it, so this file acts as a
+                # crash-safe tail log.
+                self._persist_message_to_disk(msg_id, t, d)
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
             else:

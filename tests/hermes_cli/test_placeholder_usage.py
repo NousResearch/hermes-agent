@@ -54,3 +54,34 @@ def test_setup_summary_marks_placeholders(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "hermes config set <key> <value>" in out
+
+def test_show_config_displays_all_display_keys(tmp_path, capsys):
+    """Verify show_config() renders tool_progress, skin, and show_cost."""
+    import yaml
+    from hermes_cli.config import _LOAD_CONFIG_CACHE
+
+    config_dir = tmp_path / ".hermes"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "display": {
+            "tool_progress": "verbose",
+            "skin": "cyberpunk",
+            "show_cost": True,
+            "show_reasoning": True,
+        }
+    }, sort_keys=False), encoding="utf-8")
+
+    # Clear config cache to ensure fresh load
+    _LOAD_CONFIG_CACHE.clear()
+
+    with patch.dict(os.environ, {"HERMES_HOME": str(config_dir)}):
+        show_config()
+
+    out = capsys.readouterr().out
+    assert "Tool progress:" in out
+    assert "Skin:" in out
+    assert "Cost:" in out
+    # Use non-default values to verify config is actually read
+    assert "verbose" in out
+    assert "cyberpunk" in out

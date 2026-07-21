@@ -8389,6 +8389,10 @@ def show_config():
     print(f"  Personality:  {display.get('personality') or 'none'}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    print(f"  Cost:         {'on' if display.get('show_cost', False) else 'off'}")
+    print(f"  Skin:         {display.get('skin', 'default')}")
+    tp = display.get('tool_progress', 'all')
+    print(f"  Tool progress: {tp}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
     ump_first = ump.get('first_lines', 2)
     ump_last = ump.get('last_lines', 2)

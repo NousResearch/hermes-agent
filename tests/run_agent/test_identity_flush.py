@@ -31,6 +31,82 @@ def _contents(db, session_id=SESSION_ID):
 
 
 class TestIdentityFlush:
+    def test_flush_commits_all_new_messages_in_one_transaction(self):
+        """A turn boundary should enter the SQLite writer lane only once."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                messages = [
+                    {"role": "user", "content": "question"},
+                    {"role": "assistant", "content": "answer"},
+                    {"role": "tool", "content": "result", "tool_call_id": "c1"},
+                ]
+
+                with patch.object(
+                    db, "_execute_write", wraps=db._execute_write
+                ) as execute_write:
+                    agent._flush_messages_to_session_db(messages, [])
+
+                assert execute_write.call_count == 1
+                assert _contents(db) == ["question", "answer", "result"]
+                assert all(message.get("_db_persisted") is True for message in messages)
+            finally:
+                db.close()
+
+    def test_failed_batch_marks_nothing_and_retries_the_whole_batch(self):
+        """A failed commit must not leave a durable prefix or stale markers."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                messages = [
+                    {"role": "user", "content": "question"},
+                    {"role": "assistant", "content": "answer"},
+                    {"role": "tool", "content": "result", "tool_call_id": "c1"},
+                ]
+
+                with patch.object(
+                    db,
+                    "append_messages",
+                    side_effect=RuntimeError("simulated batch failure"),
+                    create=True,
+                ) as append_messages:
+                    agent._flush_messages_to_session_db(messages, [])
+
+                append_messages.assert_called_once()
+                assert _contents(db) == []
+                assert all("_db_persisted" not in message for message in messages)
+                assert agent._last_flushed_db_idx == 0
+
+                agent._flush_messages_to_session_db(messages, [])
+
+                assert _contents(db) == ["question", "answer", "result"]
+                assert all(message.get("_db_persisted") is True for message in messages)
+            finally:
+                db.close()
+
+    def test_same_message_object_is_staged_once_per_flush(self):
+        """Identity dedup remains intact while markers wait for batch commit."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                shared = {"role": "user", "content": "exactly once"}
+
+                agent._flush_messages_to_session_db([shared, shared], [])
+
+                assert _contents(db) == ["exactly once"]
+                assert shared.get("_db_persisted") is True
+            finally:
+                db.close()
+
     def test_repair_shrunk_messages_below_history_length_still_persists_assistant(self):
         """When repair shortens messages below conversation_history, don't slice empty."""
         from hermes_state import SessionDB

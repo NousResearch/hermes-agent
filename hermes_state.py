@@ -279,6 +279,12 @@ SCHEMA_VERSION = 23
 #       tool-row-excluded trigram)
 FTS_STORAGE_VERSION = 1
 
+# Version the shape of the FTS UPDATE triggers separately from the table
+# schema.  ``CREATE TRIGGER IF NOT EXISTS`` cannot replace triggers already
+# installed in a user's state.db, while bumping SCHEMA_VERSION would couple a
+# cheap trigger-only migration to unrelated data migrations.
+FTS_UPDATE_TRIGGER_LAYOUT_VERSION = 1
+
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
 # sanitizer/runtime behavior predictable under adversarial input.
@@ -1456,7 +1462,13 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_update
+AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+WHEN old.id IS NOT new.id
+  OR old.content IS NOT new.content
+  OR old.tool_name IS NOT new.tool_name
+  OR old.tool_calls IS NOT new.tool_calls
+BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
@@ -1482,7 +1494,13 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON message
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
+AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+WHEN old.id IS NOT new.id
+  OR old.content IS NOT new.content
+  OR old.tool_name IS NOT new.tool_name
+  OR old.tool_calls IS NOT new.tool_calls
+BEGIN
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
@@ -1991,9 +2009,162 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
+    def _ensure_fts_update_trigger_layout(
+        self,
+        cursor: sqlite3.Cursor,
+        *,
+        include_trigram: bool,
+    ) -> None:
+        """Install selective FTS UPDATE triggers without rebuilding indexes.
+
+        Older databases have unconditional UPDATE triggers, so metadata-only
+        changes such as ``active=0, compacted=1`` delete and reinsert every FTS
+        row twice (unicode + trigram).  That both amplifies WAL traffic and
+        extends the single-writer lock.  Replace only the two UPDATE triggers;
+        their indexed data remains valid because the searchable columns are
+        unchanged.
+
+        The replacement preserves whichever storage layout the database is
+        already using: legacy inline FTS or the v23 external-content tables.
+        The trigger replacement and version marker share a SAVEPOINT so a
+        crash cannot leave a partially migrated layout marked complete.
+        """
+        legacy_layout = self._db_has_legacy_inline_fts(cursor)
+        if legacy_layout:
+            base_trigger_ddl = """CREATE TRIGGER messages_fts_update
+                   AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+                   WHEN old.id IS NOT new.id
+                     OR old.content IS NOT new.content
+                     OR old.tool_name IS NOT new.tool_name
+                     OR old.tool_calls IS NOT new.tool_calls
+                   BEGIN
+                       DELETE FROM messages_fts WHERE rowid = old.id;
+                       INSERT INTO messages_fts(rowid, content) VALUES (
+                           new.id,
+                           COALESCE(new.content, '') || ' ' ||
+                           COALESCE(new.tool_name, '') || ' ' ||
+                           COALESCE(new.tool_calls, '')
+                       );
+                   END"""
+            trigram_trigger_ddl = """CREATE TRIGGER messages_fts_trigram_update
+                   AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+                   WHEN old.id IS NOT new.id
+                     OR old.content IS NOT new.content
+                     OR old.tool_name IS NOT new.tool_name
+                     OR old.tool_calls IS NOT new.tool_calls
+                   BEGIN
+                       DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+                       INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                           new.id,
+                           COALESCE(new.content, '') || ' ' ||
+                           COALESCE(new.tool_name, '') || ' ' ||
+                           COALESCE(new.tool_calls, '')
+                       );
+                   END"""
+        else:
+            base_trigger_ddl = """CREATE TRIGGER messages_fts_update
+                   AFTER UPDATE ON messages
+                   WHEN (old.content IS NOT new.content
+                      OR old.tool_name IS NOT new.tool_name
+                      OR old.tool_calls IS NOT new.tool_calls)
+                     AND (old.id > COALESCE((SELECT CAST(value AS INTEGER)
+                                             FROM state_meta
+                                             WHERE key = 'fts_rebuild_high_water'), -1)
+                       OR old.id <= COALESCE((SELECT CAST(value AS INTEGER)
+                                              FROM state_meta
+                                              WHERE key = 'fts_rebuild_progress'), -1))
+                   BEGIN
+                       INSERT INTO messages_fts(
+                           messages_fts, rowid, content, tool_name, tool_calls
+                       ) VALUES (
+                           'delete', old.id, old.content,
+                           old.tool_name, old.tool_calls
+                       );
+                       INSERT INTO messages_fts(
+                           rowid, content, tool_name, tool_calls
+                       ) VALUES (
+                           new.id, new.content, new.tool_name, new.tool_calls
+                       );
+                   END"""
+            trigram_trigger_ddl = """CREATE TRIGGER messages_fts_trigram_update
+                   AFTER UPDATE ON messages
+                   WHEN (old.content IS NOT new.content
+                      OR old.tool_name IS NOT new.tool_name
+                      OR old.tool_calls IS NOT new.tool_calls
+                      OR old.role IS NOT new.role)
+                     AND (old.id > COALESCE((SELECT CAST(value AS INTEGER)
+                                             FROM state_meta
+                                             WHERE key = 'fts_rebuild_high_water'), -1)
+                       OR old.id <= COALESCE((SELECT CAST(value AS INTEGER)
+                                              FROM state_meta
+                                              WHERE key = 'fts_rebuild_progress'), -1))
+                   BEGIN
+                       INSERT INTO messages_fts_trigram(
+                           messages_fts_trigram, rowid, content,
+                           tool_name, tool_calls
+                       )
+                       SELECT 'delete', old.id, old.content,
+                              old.tool_name, old.tool_calls
+                       WHERE old.role <> 'tool';
+                       INSERT INTO messages_fts_trigram(
+                           rowid, content, tool_name, tool_calls
+                       )
+                       SELECT new.id, new.content, new.tool_name, new.tool_calls
+                       WHERE new.role <> 'tool';
+                   END"""
+
+        trigger_specs = [
+            (
+                "fts_update_trigger_layout_version",
+                "messages_fts_update",
+                base_trigger_ddl,
+            )
+        ]
+        if include_trigram:
+            trigger_specs.append(
+                (
+                    "fts_trigram_update_trigger_layout_version",
+                    "messages_fts_trigram_update",
+                    trigram_trigger_ddl,
+                )
+            )
+
+        pending_specs = []
+        for marker_key, trigger_name, trigger_ddl in trigger_specs:
+            row = cursor.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (marker_key,),
+            ).fetchone()
+            try:
+                installed_version = int(row[0]) if row is not None else 0
+            except (TypeError, ValueError):
+                installed_version = 0
+            if installed_version < FTS_UPDATE_TRIGGER_LAYOUT_VERSION:
+                pending_specs.append((marker_key, trigger_name, trigger_ddl))
+        if not pending_specs:
+            return
+
+        cursor.execute("SAVEPOINT fts_update_trigger_layout")
+        try:
+            for marker_key, trigger_name, trigger_ddl in pending_specs:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+                cursor.execute(trigger_ddl)
+                cursor.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (marker_key, str(FTS_UPDATE_TRIGGER_LAYOUT_VERSION)),
+                )
+            cursor.execute("RELEASE SAVEPOINT fts_update_trigger_layout")
+        except BaseException:
+            cursor.execute("ROLLBACK TO SAVEPOINT fts_update_trigger_layout")
+            cursor.execute("RELEASE SAVEPOINT fts_update_trigger_layout")
+            raise
+
     def _execute_write(
         self,
         fn: Callable[[sqlite3.Connection], T],
+        *,
+        write_units: int = 1,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -2007,9 +2178,14 @@ class SessionDB:
         random 20-150ms, and retry — breaking the convoy pattern that
         SQLite's built-in deterministic backoff creates.
 
+        ``write_units`` preserves maintenance cadence for batched operations:
+        inserting N messages creates roughly the same FTS/WAL work as N
+        single-row transactions even though it enters the writer lane once.
+
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
+        normalized_write_units = max(1, int(write_units))
         if self._owner_pid != os.getpid():
             raise RuntimeError(
                 "SessionDB instances cannot be reused after fork; "
@@ -2032,10 +2208,23 @@ class SessionDB:
                                 pass
                             raise
                 # Success — periodic best-effort checkpoint + FTS merge.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                # Multiple gateway threads can share this SessionDB. Protect
+                # the read/modify/write cadence counters, but perform the
+                # potentially slow maintenance outside the instance lock.
+                with self._lock:
+                    previous_write_count = self._write_count
+                    self._write_count += normalized_write_units
+                    checkpoint_due = (
+                        previous_write_count // self._CHECKPOINT_EVERY_N_WRITES
+                        < self._write_count // self._CHECKPOINT_EVERY_N_WRITES
+                    )
+                    optimize_due = (
+                        previous_write_count // self._OPTIMIZE_EVERY_N_WRITES
+                        < self._write_count // self._OPTIMIZE_EVERY_N_WRITES
+                    )
+                if checkpoint_due:
                     self._try_wal_checkpoint()
-                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
+                if optimize_due:
                     self._try_optimize_fts()
                 return result
             except sqlite3.OperationalError as exc:
@@ -3293,6 +3482,10 @@ class SessionDB:
                         self._rebuild_legacy_fts_indexes(
                             cursor, include_trigram=trigram_enabled
                         )
+                    self._ensure_fts_update_trigger_layout(
+                        cursor,
+                        include_trigram=trigram_enabled,
+                    )
             else:
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
@@ -3317,6 +3510,10 @@ class SessionDB:
                     # CJK-bigram index (cjk_unicode61). Strictly additive to
                     # the surfaces above and gated on the loadable tokenizer:
                     self._ensure_fts_cjk_schema(cursor)
+                    self._ensure_fts_update_trigger_layout(
+                        cursor,
+                        include_trigram=trigram_enabled,
+                    )
 
         self._conn.commit()
 
@@ -5813,17 +6010,56 @@ class SessionDB:
 
         return self._execute_write(_do)
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
-        """Insert *messages* as fresh active rows for *session_id*.
+    def append_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> int:
+        """Append a group of messages in one atomic write transaction.
 
-        Shared by :meth:`replace_messages` (delete-then-insert) and
-        :meth:`archive_and_compact` (soft-archive-then-insert). Runs inside the
-        caller's write transaction (takes the live ``conn``). Returns
-        ``(inserted_count, tool_call_count)``. Does NOT touch sessions.* counters
-        — the caller owns that, since the two flows reconcile counts differently.
+        A normal agent turn can add a user row, an assistant tool request,
+        several tool results, and a final assistant row. Entering SQLite's
+        single-writer lane once per row multiplies contention with concurrent
+        gateway sessions and can leave a durable prefix when a later row fails.
+        This method inserts the complete group and advances session counters in
+        the same transaction, so callers observe either the whole batch or none
+        of it.
+        """
+        if not messages:
+            return 0
+
+        # Freeze and serialize every value before acquiring BEGIN IMMEDIATE.
+        # Large tool results and reasoning payloads must not consume time in
+        # SQLite's single-writer lane, and retries must replay identical input.
+        prepared_rows, tool_calls_total = self._prepare_message_rows(messages)
+
+        def _do(conn):
+            inserted = self._insert_prepared_message_rows(
+                conn, session_id, prepared_rows
+            )
+            conn.execute(
+                """UPDATE sessions
+                   SET message_count = message_count + ?,
+                       tool_call_count = tool_call_count + ?
+                   WHERE id = ?""",
+                (inserted, tool_calls_total, session_id),
+            )
+            return inserted
+
+        return self._execute_write(_do, write_units=len(prepared_rows))
+
+    def _prepare_message_rows(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[List[tuple[Any, ...]], int]:
+        """Normalize message dictionaries into immutable SQLite parameters.
+
+        This work intentionally happens outside write transactions for the
+        append path. ``replace_messages`` and compaction reuse the same helper
+        to keep row encoding identical across all persistence flows.
         """
         now_ts = time.time()
-        inserted = 0
+        prepared_rows: List[tuple[Any, ...]] = []
         tool_calls_total = 0
         for msg in messages:
             role = msg.get("role", "unknown")
@@ -5837,8 +6073,13 @@ class SessionDB:
                     else:
                         message_timestamp = float(ts_value)
                 except (TypeError, ValueError):
-                    logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
-            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                    logger.debug(
+                        "Ignoring invalid explicit message timestamp: %r",
+                        msg.get("timestamp"),
+                    )
+            reasoning_details = (
+                msg.get("reasoning_details") if role == "assistant" else None
+            )
             codex_reasoning_items = (
                 msg.get("codex_reasoning_items") if role == "assistant" else None
             )
@@ -5864,22 +6105,13 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-            # Accept either `platform_message_id` (new explicit name) or
-            # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
                 msg.get("platform_message_id") or msg.get("message_id")
             )
-
             api_content = msg.get("api_content")
 
-            conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            prepared_rows.append(
                 (
-                    session_id,
                     role,
                     self._encode_content(msg.get("content")),
                     msg.get("tool_call_id"),
@@ -5889,23 +6121,67 @@ class SessionDB:
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
-                    _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
+                    (
+                        _scrub_surrogates(msg.get("reasoning"))
+                        if role == "assistant"
+                        else None
+                    ),
+                    (
+                        _scrub_surrogates(msg.get("reasoning_content"))
+                        if role == "assistant"
+                        else None
+                    ),
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                ),
+                    (
+                        _scrub_surrogates(api_content)
+                        if isinstance(api_content, str)
+                        else None
+                    ),
+                )
             )
-            inserted += 1
             if tool_calls is not None:
                 tool_calls_total += (
                     len(tool_calls) if isinstance(tool_calls, list) else 1
                 )
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
+        return prepared_rows, tool_calls_total
+
+    @staticmethod
+    def _insert_prepared_message_rows(
+        conn: sqlite3.Connection,
+        session_id: str,
+        prepared_rows: List[tuple[Any, ...]],
+    ) -> int:
+        """Insert pre-normalized rows while holding the caller's transaction."""
+        for row in prepared_rows:
+            conn.execute(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                   codex_message_items, platform_message_id, observed, active, api_content)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, *row),
+            )
+        return len(prepared_rows)
+
+    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+        """Insert *messages* as fresh active rows for *session_id*.
+
+        Shared by :meth:`replace_messages` (delete-then-insert) and
+        :meth:`archive_and_compact` (soft-archive-then-insert). Runs inside the
+        caller's write transaction (takes the live ``conn``). Returns
+        ``(inserted_count, tool_call_count)``. Does NOT touch sessions.* counters
+        — the caller owns that, since the two flows reconcile counts differently.
+        """
+        prepared_rows, tool_calls_total = self._prepare_message_rows(messages)
+        inserted = self._insert_prepared_message_rows(
+            conn, session_id, prepared_rows
+        )
         return inserted, tool_calls_total
 
     def replace_messages(

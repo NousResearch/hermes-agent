@@ -4,14 +4,17 @@ from run_agent import AIAgent
 
 
 class _CapturingSessionDB:
-    """Minimal SessionDB stand-in that records every appended message."""
+    """Minimal SessionDB stand-in that records each atomic message batch."""
 
     def __init__(self):
         self.rows = []
 
-    def append_message(self, session_id, role, content=None, **kwargs):
-        self.rows.append({"role": role, "content": content})
-        return len(self.rows)
+    def append_messages(self, session_id, messages):
+        self.rows.extend(
+            {"role": row["role"], "content": row.get("content")}
+            for row in messages
+        )
+        return len(messages)
 
 
 def _agent_with_capturing_db():

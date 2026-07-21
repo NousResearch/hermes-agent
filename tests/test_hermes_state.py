@@ -5518,6 +5518,257 @@ class TestFTS5ToolCallIndexing:
         assert db.search_messages("ORIGINALTOOL") == []
         assert len(db.search_messages("RENAMEDTOOL")) == 1
 
+    def test_metadata_only_archive_does_not_reindex_fts(self, db):
+        """Archiving history must not rewrite unchanged full-text entries."""
+        db.create_session(session_id="s1", source="cli")
+        for index in range(5):
+            db.append_message(
+                "s1",
+                role="user",
+                content=f"archive_probe_{index}",
+            )
+
+        before = db._conn.total_changes
+        db.archive_and_compact("s1", [])
+
+        # Five canonical metadata updates plus one session-counter update.
+        # Any larger delta means the unchanged content was rewritten through
+        # one or both FTS indexes.
+        assert db._conn.total_changes - before == 6
+        assert db.get_messages("s1") == []
+        assert len(db.get_messages("s1", include_inactive=True)) == 5
+        for index in range(5):
+            assert len(db.search_messages(f"archive_probe_{index}")) == 1
+
+    def test_reopen_upgrades_legacy_unconditional_fts_update_triggers(
+        self, tmp_path, monkeypatch
+    ):
+        """Existing databases must receive selective triggers without rebuild."""
+        db_path = tmp_path / "legacy-update-trigger.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            for index in range(3):
+                seeded.append_message(
+                    "s1",
+                    role="user",
+                    content=f"legacy_archive_probe_{index}",
+                )
+            seeded._conn.executescript(
+                """
+                DROP TRIGGER IF EXISTS messages_fts_update;
+                CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid = old.id;
+                    INSERT INTO messages_fts(rowid, content) VALUES (
+                        new.id,
+                        COALESCE(new.content, '') || ' ' ||
+                        COALESCE(new.tool_name, '') || ' ' ||
+                        COALESCE(new.tool_calls, '')
+                    );
+                END;
+                DROP TRIGGER IF EXISTS messages_fts_trigram_update;
+                CREATE TRIGGER messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+                    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+                    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                        new.id,
+                        COALESCE(new.content, '') || ' ' ||
+                        COALESCE(new.tool_name, '') || ' ' ||
+                        COALESCE(new.tool_calls, '')
+                    );
+                END;
+                DELETE FROM state_meta
+                WHERE key IN (
+                    'fts_update_trigger_layout_version',
+                    'fts_trigram_update_trigger_layout_version'
+                );
+                """
+            )
+            seeded._conn.commit()
+        finally:
+            seeded.close()
+
+        # Simulate one startup on a SQLite runtime that has base FTS5 but no
+        # trigram tokenizer. It may mark the base trigger complete, but must
+        # leave the legacy trigram trigger eligible for a later upgrade.
+        original_ensure_fts_schema = SessionDB._ensure_fts_schema
+
+        def _without_trigram(self, cursor, table_name, ddl):
+            if table_name == "messages_fts_trigram":
+                return False
+            return original_ensure_fts_schema(self, cursor, table_name, ddl)
+
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                SessionDB,
+                "_ensure_fts_schema",
+                _without_trigram,
+            )
+            base_only = SessionDB(db_path=db_path)
+            base_only.close()
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            before = reopened._conn.total_changes
+            reopened.archive_and_compact("s1", [])
+            assert reopened._conn.total_changes - before == 4
+            for index in range(3):
+                assert len(
+                    reopened.search_messages(f"legacy_archive_probe_{index}")
+                ) == 1
+
+            def _update_indexed_content(conn):
+                conn.execute(
+                    "UPDATE messages SET content = ? "
+                    "WHERE session_id = ? AND content = ?",
+                    ("MIGRATEDNEWTOKEN", "s1", "legacy_archive_probe_0"),
+                )
+
+            reopened._execute_write(_update_indexed_content)
+            assert reopened.search_messages("legacy_archive_probe_0") == []
+            assert len(reopened.search_messages("MIGRATEDNEWTOKEN")) == 1
+        finally:
+            reopened.close()
+
+
+class TestBatchMessageAppend:
+    def test_append_messages_commits_one_batch_and_updates_counters(self, db):
+        db.create_session(session_id="batch", source="gateway")
+        inserted = db.append_messages(
+            "batch",
+            [
+                {"role": "user", "content": "question"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "function": {"name": "one", "arguments": "{}"}},
+                        {"id": "c2", "function": {"name": "two", "arguments": "{}"}},
+                    ],
+                },
+                {"role": "tool", "content": "first", "tool_call_id": "c1"},
+                {"role": "tool", "content": "second", "tool_call_id": "c2"},
+            ],
+        )
+
+        assert inserted == 4
+        assert [row["content"] for row in db.get_messages("batch")] == [
+            "question",
+            "",
+            "first",
+            "second",
+        ]
+        session = db.get_session("batch")
+        assert session["message_count"] == 4
+        assert session["tool_call_count"] == 2
+
+    def test_append_messages_rolls_back_rows_and_counters_together(self, db):
+        db.create_session(session_id="batch", source="gateway")
+        db._conn.executescript(
+            """
+            CREATE TRIGGER reject_batch_message
+            BEFORE INSERT ON messages
+            WHEN new.content = 'reject'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject batch');
+            END;
+            """
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="reject batch"):
+            db.append_messages(
+                "batch",
+                [
+                    {"role": "user", "content": "committed prefix"},
+                    {"role": "assistant", "content": "reject"},
+                    {"role": "assistant", "content": "unreached tail"},
+                ],
+            )
+
+        assert db.get_messages("batch") == []
+        session = db.get_session("batch")
+        assert session["message_count"] == 0
+        assert session["tool_call_count"] == 0
+
+    def test_append_messages_preserves_row_based_maintenance_cadence(
+        self, db, monkeypatch
+    ):
+        db.create_session(session_id="batch", source="gateway")
+        db._write_count = 0
+        db._CHECKPOINT_EVERY_N_WRITES = 3
+        db._OPTIMIZE_EVERY_N_WRITES = 4
+        checkpoints = []
+        optimizations = []
+        monkeypatch.setattr(
+            db, "_try_wal_checkpoint", lambda: checkpoints.append(True)
+        )
+        monkeypatch.setattr(
+            db, "_try_optimize_fts", lambda: optimizations.append(True)
+        )
+
+        db.append_messages(
+            "batch",
+            [
+                {"role": "user", "content": f"message-{index}"}
+                for index in range(5)
+            ],
+        )
+
+        assert db._write_count == 5
+        assert checkpoints == [True]
+        assert optimizations == [True]
+
+    def test_append_messages_round_trips_all_message_fields(self, db):
+        db.create_session(session_id="batch", source="gateway")
+        tool_calls = [
+            {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+        ]
+        reasoning_details = [{"type": "reasoning.text", "text": "detail"}]
+        codex_reasoning_items = [{"type": "reasoning", "id": "r1"}]
+        codex_message_items = [{"type": "message", "phase": "final"}]
+
+        db.append_messages(
+            "batch",
+            [
+                {
+                    "role": "assistant",
+                    "content": "clean content",
+                    "tool_name": "terminal",
+                    "tool_calls": tool_calls,
+                    "tool_call_id": "c1",
+                    "token_count": 42,
+                    "finish_reason": "tool_calls",
+                    "reasoning": "reasoning",
+                    "reasoning_content": "reasoning content",
+                    "reasoning_details": reasoning_details,
+                    "codex_reasoning_items": codex_reasoning_items,
+                    "codex_message_items": codex_message_items,
+                    "platform_message_id": "platform-123",
+                    "observed": True,
+                    "effect_disposition": "unknown",
+                    "timestamp": 1234.5,
+                    "api_content": "wire content",
+                }
+            ],
+        )
+
+        row = db.get_messages("batch")[0]
+        assert row["content"] == "clean content"
+        assert row["tool_name"] == "terminal"
+        assert row["tool_calls"] == tool_calls
+        assert row["tool_call_id"] == "c1"
+        assert row["token_count"] == 42
+        assert row["finish_reason"] == "tool_calls"
+        assert row["reasoning"] == "reasoning"
+        assert row["reasoning_content"] == "reasoning content"
+        assert json.loads(row["reasoning_details"]) == reasoning_details
+        assert json.loads(row["codex_reasoning_items"]) == codex_reasoning_items
+        assert json.loads(row["codex_message_items"]) == codex_message_items
+        assert row["platform_message_id"] == "platform-123"
+        assert row["observed"] == 1
+        assert row["effect_disposition"] == "unknown"
+        assert row["timestamp"] == 1234.5
+        assert row["api_content"] == "wire content"
+
 
 class TestFTS5ToolCallMigration:
     """v11 migration: pre-existing state.db with old external-content FTS tables
@@ -7103,4 +7354,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

@@ -182,6 +182,40 @@ class TestSlackExecApproval:
 
 
 # ===========================================================================
+# send_slash_confirm — CommonMark body must be converted to Slack mrkdwn
+# ===========================================================================
+
+class TestSlackSlashConfirmMrkdwn:
+    """The three-option confirm body (``/new`` etc.) arrives as CommonMark
+    (``**bold**``); Slack mrkdwn needs ``*bold*``, so the section must be run
+    through format_message or it renders literal double asterisks."""
+
+    @pytest.mark.asyncio
+    async def test_double_asterisk_body_becomes_single(self):
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        adapter._get_client = MagicMock(return_value=client)
+        message = (
+            "⚠️ **Confirm /new**\n\n"
+            "This starts a fresh session.\n\n"
+            "Choose:\n"
+            "• **Approve Once** — proceed this time only\n"
+            "• **Cancel** — keep current conversation\n\n"
+            "_Text fallback: reply `!approve` or `!cancel`._"
+        )
+        res = await adapter.send_slash_confirm("C1", "/new", message, "sess", "1")
+        assert res.success
+        section = client.chat_postMessage.await_args.kwargs["blocks"][0]["text"]["text"]
+        assert "**" not in section            # no literal CommonMark bold
+        assert "*Approve Once*" in section     # converted to Slack bold
+        assert "`!approve`" in section         # inline code preserved
+        # buttons still present
+        types = [b["type"] for b in client.chat_postMessage.await_args.kwargs["blocks"]]
+        assert "actions" in types
+
+
+# ===========================================================================
 # _handle_approval_action — button click handler
 # ===========================================================================
 

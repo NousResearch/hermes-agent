@@ -4168,6 +4168,10 @@ class SlackAdapter(BasePlatformAdapter):
             _title = (title or "Confirm")[:150]
             budget = 3000 - len(f"*{_title}*\n\n") - len("...")
             body = message[:budget] + "..." if len(message) > budget else message
+            # The caller passes CommonMark (``**bold**``); Slack mrkdwn wants
+            # ``*bold*``. Convert here — the adapter is the mrkdwn boundary —
+            # or the section renders literal double asterisks.
+            body = self.format_message(body)
             # Encode session_key and confirm_id into the button value so the
             # callback handler can resolve without extra bookkeeping.
             value = f"{session_key}|{confirm_id}"

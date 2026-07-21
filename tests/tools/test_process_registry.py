@@ -699,6 +699,129 @@ class TestSpawnEnvSanitization:
         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
 
+    def test_spawn_local_background_env_gets_hermes_bin_without_venv_markers(
+        self, registry, tmp_path, monkeypatch,
+    ):
+        """Background spawns reach the agent's interpreter via PATH only.
+
+        The gateway may be launched without its venv on PATH (systemd, cron);
+        the spawn env must gain the hermes install dir (the venv bin/) FIRST
+        on PATH — foreground-terminal parity — while the active-venv markers
+        stay stripped so uv/poetry in another project can never treat the
+        Hermes venv as the active environment (#23473).
+        """
+        import tools.environments.local as local_mod
+
+        fake_bin = tmp_path / "venv" / "bin"
+        fake_bin.mkdir(parents=True)
+        monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", str(fake_bin))
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "VIRTUAL_ENV": str(tmp_path / "venv"),
+            "CONDA_PREFIX": "/opt/conda/envs/other",
+        }, clear=True), \
+            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("python3 job.py", cwd="/tmp")
+
+        env = captured["env"]
+        entries = env["PATH"].split(os.pathsep)
+        assert entries[0] == str(fake_bin)
+        assert "/usr/bin" in entries and "/bin" in entries
+        # The intentional-strip contract is preserved end-to-end.
+        assert "VIRTUAL_ENV" not in env
+        assert "CONDA_PREFIX" not in env
+
+    def test_background_env_resolves_hermes_interpreter_via_path(
+        self, tmp_path, monkeypatch,
+    ):
+        """`python3` in the injected PATH resolves to the agent venv's copy."""
+        import shutil as _shutil
+        import tools.environments.local as local_mod
+        from tools.process_registry import _ensure_hermes_bin_on_path
+
+        fake_bin = tmp_path / "venv" / "bin"
+        fake_bin.mkdir(parents=True)
+        fake_python = fake_bin / "python3"
+        fake_python.write_text("#!/bin/sh\n")
+        fake_python.chmod(0o755)
+        monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", str(fake_bin))
+
+        env = {"PATH": "/usr/bin:/bin"}
+        _ensure_hermes_bin_on_path(env)
+
+        resolved = _shutil.which("python3", path=env["PATH"])
+        assert resolved == str(fake_python)
+        assert "VIRTUAL_ENV" not in env
+        assert "CONDA_PREFIX" not in env
+
+    def test_ensure_hermes_bin_prepend_is_idempotent(self, tmp_path, monkeypatch):
+        """A PATH already containing the dir is returned unchanged."""
+        import tools.environments.local as local_mod
+        from tools.process_registry import _ensure_hermes_bin_on_path
+
+        fake_bin = str(tmp_path / "venv" / "bin")
+        os.makedirs(fake_bin)
+        monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", fake_bin)
+
+        path_value = os.pathsep.join([fake_bin, "/usr/bin"])
+        env = {"PATH": path_value}
+        _ensure_hermes_bin_on_path(env)
+        assert env["PATH"] == path_value
+        assert env["PATH"].split(os.pathsep).count(fake_bin) == 1
+
+    def test_ensure_hermes_bin_windows_shape(self, monkeypatch):
+        """Windows: honor the existing `Path` key casing and `;` separator
+        (venv interpreters live under Scripts/, not bin/)."""
+        import tools.environments.local as local_mod
+        import tools.process_registry as pr_mod
+        from tools.process_registry import _ensure_hermes_bin_on_path
+
+        scripts_dir = r"C:\hermes\venv\Scripts"
+        monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", scripts_dir)
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(os, "pathsep", ";")
+
+        env = {"Path": r"C:\Windows\System32"}
+        _ensure_hermes_bin_on_path(env)
+
+        assert env["Path"] == scripts_dir + ";" + r"C:\Windows\System32"
+        assert "PATH" not in env  # no second, differently-cased key
+
+    def test_ensure_hermes_bin_noop_when_unresolvable(self, monkeypatch):
+        """No hermes install dir found → env is left untouched (no empty
+        PATH is invented)."""
+        import tools.environments.local as local_mod
+        from tools.process_registry import _ensure_hermes_bin_on_path
+
+        monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", None)
+
+        env = {}
+        _ensure_hermes_bin_on_path(env)
+        assert env == {}
+
+        env = {"PATH": "/usr/bin"}
+        _ensure_hermes_bin_on_path(env)
+        assert env == {"PATH": "/usr/bin"}
+
     def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
         class FakeEnv:
             def __init__(self):

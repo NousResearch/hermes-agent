@@ -41,26 +41,47 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Probe local venvs first; fall back to the Nix devShell's editable venv
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
-VENV=""
+python_has_pytest() {
+  "$1" -c 'import pytest' >/dev/null 2>&1
+}
+
+SKIPPED_PYTHON_HINTS=()
+PYTHON=""
+
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    VENV="$candidate"
-    break
+  candidate_python="$candidate/bin/python"
+  if [ -f "$candidate/bin/activate" ] && [ -x "$candidate_python" ]; then
+    if python_has_pytest "$candidate_python"; then
+      PYTHON="$candidate_python"
+      break
+    fi
+    echo "⚠ skipping ${candidate##*/}: $candidate_python cannot import pytest" >&2
+    SKIPPED_PYTHON_HINTS+=("${candidate##*/}: $candidate_python cannot import pytest")
   fi
 done
 
-if [ -n "$VENV" ]; then
-  PYTHON="$VENV/bin/python"
-elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
+if [ -z "$PYTHON" ] && [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ]; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE
   # venv (no pytest) when inherited from a wrapped `hermes` binary rather
   # than the devShell hook.
-  PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
-else
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  if python_has_pytest "$HERMES_PYTHON"; then
+    PYTHON="$HERMES_PYTHON"
+    echo "▶ no local test-ready venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  else
+    echo "⚠ skipping HERMES_PYTHON: $HERMES_PYTHON cannot import pytest" >&2
+    SKIPPED_PYTHON_HINTS+=("HERMES_PYTHON: $HERMES_PYTHON cannot import pytest")
+  fi
+fi
+
+if [ -z "$PYTHON" ]; then
+  echo "error: no test-ready virtualenv found" >&2
+  if [ ${#SKIPPED_PYTHON_HINTS[@]} -gt 0 ]; then
+    echo "       checked:" >&2
+    for hint in "${SKIPPED_PYTHON_HINTS[@]}"; do
+      echo "         - $hint" >&2
+    done
+  fi
+  echo "       create a venv with pytest installed or enter the Nix devShell" >&2
   exit 1
 fi
 

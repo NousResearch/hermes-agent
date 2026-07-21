@@ -4,6 +4,8 @@ title: "Interface CLI"
 description: "Domine a interface de terminal do Hermes Agent — comandos, atalhos de teclado, personalidades e muito mais"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Interface CLI
 
 O CLI do Hermes Agent é uma interface de terminal completa (TUI) — não é uma UI web. Ele oferece edição multilinha, autocompletar de slash commands, histórico de conversa, interrupção com redirecionamento e saída de ferramentas em streaming. Feito para quem vive no terminal.
@@ -53,7 +55,7 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 
 ## Layout da interface
 
-<img className="docs-terminal-figure" src="/docs/img/docs/cli-layout.svg" alt="Prévia estilizada do layout do CLI do Hermes mostrando o banner, a área de conversa e o prompt de input fixo." />
+<img className="docs-terminal-figure" src={useBaseUrl('/img/docs/cli-layout.svg')} alt="Prévia estilizada do layout do CLI do Hermes mostrando o banner, a área de conversa e o prompt de input fixo." />
 <p className="docs-figure-caption">O banner do CLI do Hermes, o fluxo de conversa e o prompt de input fixo renderizados como uma figura estável de documentação em vez de arte ASCII frágil.</p>
 
 O banner de boas-vindas mostra de relance o seu modelo, backend de terminal, diretório de trabalho, ferramentas disponíveis e skills instaladas.

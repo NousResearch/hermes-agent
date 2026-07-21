@@ -4,6 +4,8 @@ title: "TUI"
 description: "Inicie a interface de terminal moderna do Hermes — amigável ao mouse, overlays ricos e entrada não bloqueante."
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # TUI
 
 A TUI é a interface moderna do Hermes — uma UI de terminal apoiada no mesmo runtime Python da [CLI clássica](cli.md). Mesmo agente, mesmas sessões, mesmos slash commands; uma superfície mais limpa e responsiva para interagir com eles.
@@ -134,9 +136,9 @@ Abra com qualquer um destes:
 - `/sessions new` para criar uma sessão ao vivo nova imediatamente.
 - Clique no contador `N live sessions` na linha de status.
 
-<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src="/docs/img/docs/tui-session-orchestrator/session-orchestrator.png" />
+<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src={useBaseUrl('/img/docs/tui-session-orchestrator/session-orchestrator.png')} />
 
-<video controls muted loop playsInline src="/docs/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4" title="Hermes TUI Session Orchestrator demo" style={{maxWidth: '100%'}}></video>
+<video controls muted loop playsInline src={useBaseUrl('/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4')} title="Hermes TUI Session Orchestrator demo" style={{maxWidth: '100%'}}></video>
 
 Dentro do seletor:
 

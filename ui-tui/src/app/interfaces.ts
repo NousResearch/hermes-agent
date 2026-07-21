@@ -37,6 +37,17 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
+
+// A single battery reading pushed from the Python gateway (`system.battery`).
+// `available` is false on machines without a battery; `percent` is 0-100.
+export interface BatteryInfo {
+  available: boolean
+  category: BatteryCategory
+  percent: null | number
+  plugged: null | boolean
+}
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
@@ -297,6 +308,8 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  battery: boolean
+  batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode

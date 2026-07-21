@@ -13,7 +13,7 @@ import {
   todayBillingState,
   todaySubscriptionState
 } from './fixtures.test-util'
-import { buildManageSubscriptionUrl, deriveBillingView } from './use-billing-state'
+import { buildManageSubscriptionUrl, deriveBillingView, formatMonthlyCreditsDelta } from './use-billing-state'
 
 function usageRowFor(
   fixtureName: keyof typeof billingDevFixtures,
@@ -678,5 +678,24 @@ describe('buildManageSubscriptionUrl', () => {
     expect(buildManageSubscriptionUrl({ org_id: 'org_z', portal_url: null }, null, 'tier_q')).toBe(
       'https://portal.nousresearch.com/manage-subscription?org_id=org_z&plan=tier_q'
     )
+  })
+})
+
+describe('formatMonthlyCreditsDelta', () => {
+  it('renders a bare negative decimal as signed dollars, never a raw number', () => {
+    // Credits are DOLLARS — "-88" must not render bare.
+    expect(formatMonthlyCreditsDelta('-88')).toBe('−$88/mo')
+  })
+
+  it('renders a positive delta with a plus sign and dollar formatting', () => {
+    expect(formatMonthlyCreditsDelta('40')).toBe('+$40/mo')
+    expect(formatMonthlyCreditsDelta('-12.50')).toBe('−$12.50/mo')
+  })
+
+  it('hides the line (null) for a zero or absent delta', () => {
+    expect(formatMonthlyCreditsDelta('0')).toBeNull()
+    expect(formatMonthlyCreditsDelta(null)).toBeNull()
+    expect(formatMonthlyCreditsDelta(undefined)).toBeNull()
+    expect(formatMonthlyCreditsDelta('')).toBeNull()
   })
 })

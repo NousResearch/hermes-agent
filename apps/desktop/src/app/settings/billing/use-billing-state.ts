@@ -338,6 +338,22 @@ function creditsPerMonthDisplay(monthlyCredits: null | string): string | undefin
 }
 
 /**
+ * A monthly-credits delta from a plan-change preview. NAS sends a bare dollar
+ * decimal ("-88"); credits are DOLLARS, so render it as signed dollars
+ * ("−$88/mo"), never the raw number. Zero / absent → null so the caller hides
+ * the line entirely.
+ */
+export function formatMonthlyCreditsDelta(delta?: null | string): null | string {
+  const amount = parseAmount(delta)
+
+  if (amount == null || amount === 0) {
+    return null
+  }
+
+  return `${amount < 0 ? '−' : '+'}${formatMoney(Math.abs(amount))}/mo`
+}
+
+/**
  * The current-plan card. It offers the in-app "View plans" / "Change plan" button
  * ONLY when the account is plans-capable AND the grid has an actual UPGRADE to offer
  * — a top-tier subscriber (only downgrades / current below them) would otherwise open

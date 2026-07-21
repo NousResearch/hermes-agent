@@ -285,7 +285,13 @@ describe('BillingSettings', () => {
     apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
     apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
     apiMocks.previewSubscriptionChange.mockResolvedValue({
-      data: { effect: 'scheduled', effective_at: '2026-08-15T00:00:00Z', ok: true, target_tier_name: 'Free' },
+      data: {
+        effect: 'scheduled',
+        effective_at: '2026-08-15T00:00:00Z',
+        monthly_credits_delta: '-88',
+        ok: true,
+        target_tier_name: 'Free'
+      },
       ok: true
     })
     apiMocks.scheduleSubscriptionChange.mockResolvedValue({ data: { ok: true }, ok: true })
@@ -299,6 +305,8 @@ describe('BillingSettings', () => {
       expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal')
     )
     expect(await screen.findByText(/No charge now/)).toBeTruthy()
+    // Credits delta renders as signed dollars, not the raw wire string "-88".
+    expect(screen.getByText(/Monthly credits change: −\$88\/mo\./)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm downgrade' }))
 

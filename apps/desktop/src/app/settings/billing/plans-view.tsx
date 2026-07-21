@@ -7,7 +7,7 @@ import { Pill } from '../primitives'
 
 import { BillingRefusalInline } from './inline-feedback'
 import { TierArt } from './tier-art'
-import { type BillingPlanTierView, formatBillingDate } from './use-billing-state'
+import { type BillingPlanTierView, formatBillingDate, formatMonthlyCreditsDelta } from './use-billing-state'
 import { type SubscriptionSimulation, useDowngradeFlow } from './use-subscription-change'
 
 type DowngradeFlow = ReturnType<typeof useDowngradeFlow>
@@ -23,6 +23,7 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
   const { busy, failedOp, preview, refusal } = active
   const targetName = preview?.target_tier_name ?? tier.name
   const effect = preview?.effect
+  const creditsDelta = formatMonthlyCreditsDelta(preview?.monthly_credits_delta)
   const caption = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
 
   return (
@@ -33,7 +34,7 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
         <div className={caption}>
           Change to {targetName} — takes effect {formatBillingDate(preview?.effective_at)}. No charge now; you keep your
           current plan until then.
-          {preview?.monthly_credits_delta ? ` Monthly credits change: ${preview.monthly_credits_delta}.` : ''}
+          {creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}
         </div>
       ) : effect === 'no_op' ? (
         <div className={caption}>You are already on {targetName} — nothing to change.</div>

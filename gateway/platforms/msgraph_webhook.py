@@ -55,11 +55,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
         )
         self._health_path: str = self._normalize_path(extra.get("health_path", "/health"))
-        self._accepted_resources: list[str] = [
-            str(value).strip()
-            for value in (extra.get("accepted_resources") or [])
-            if str(value).strip()
-        ]
+        self._accepted_resources: list[str] = self._parse_accepted_resources(
+            extra.get("accepted_resources")
+        )
         self._client_state: Optional[str] = self._string_or_none(extra.get("client_state"))
         self._max_seen_receipts = max(
             1, int(extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS))
@@ -99,6 +97,26 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     @staticmethod
     def _normalize_resource_value(resource: str) -> str:
         return str(resource or "").strip().strip("/")
+
+    @staticmethod
+    def _parse_accepted_resources(raw: Any) -> list[str]:
+        """Normalize accepted resource patterns from config.
+
+        ``accepted_resources`` commonly arrives as a YAML list, but hand-edited
+        configs often collapse a single entry to a scalar string. Treat scalar
+        strings as one pattern instead of iterating over characters, which
+        otherwise turns ``"communications/onlineMeetings"`` into
+        ``["c", "o", "m", ...]`` and rejects every notification.
+        """
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            candidates = [chunk.strip() for chunk in raw.split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            candidates = [str(chunk).strip() for chunk in raw]
+        else:
+            candidates = [str(raw).strip()]
+        return [chunk for chunk in candidates if chunk]
 
     @staticmethod
     def _parse_allowed_source_cidrs(

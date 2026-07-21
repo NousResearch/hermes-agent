@@ -84,6 +84,11 @@ class TestMSGraphWebhookConfig:
             "chats/getAllMessages",
         ]
 
+    def test_scalar_accepted_resources_is_normalized_as_single_pattern(self):
+        adapter = _make_adapter(accepted_resources="communications/onlineMeetings")
+
+        assert adapter._accepted_resources == ["communications/onlineMeetings"]
+
 
 class TestMSGraphValidationHandshake:
     @pytest.mark.anyio
@@ -411,6 +416,24 @@ class TestMSGraphNotifications:
             "value": [
                 {
                     "id": "notif-slash",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-4",
+                    "clientState": "expected-client-state",
+                }
+            ]
+        }
+
+        resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        assert resp.status == 202
+
+    @pytest.mark.anyio
+    async def test_scalar_accepted_resources_string_accepts_matching_notification(self):
+        adapter = _make_adapter(accepted_resources="communications/onlineMeetings")
+        payload = {
+            "value": [
+                {
+                    "id": "notif-scalar",
                     "subscriptionId": "sub-1",
                     "changeType": "updated",
                     "resource": "communications/onlineMeetings/meeting-4",

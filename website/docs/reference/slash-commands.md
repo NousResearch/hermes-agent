@@ -39,7 +39,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/clear` | Clear screen and start a new session |
 | `/history` | Show conversation history |
-| `/save` | Save the current conversation |
+| `/save` | Save the current conversation to `~/.hermes/sessions/saved/hermes_conversation_<timestamp>.json`. The snapshot embeds the session's resolved **title** (`null` if the DB has no title and the auxiliary provider is unavailable) so the `saved/` directory stays browsable by name once you accumulate more than a handful of files (#61278). |
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |

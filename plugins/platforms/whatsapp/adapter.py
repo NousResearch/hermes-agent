@@ -348,6 +348,7 @@ def _bridge_access_policy_hash(
     allowed_users,
     group_policy: str,
     group_allowed_users,
+    forward_owner_messages: bool,
 ) -> str:
     """Fingerprint access settings that are snapshotted by the Node bridge."""
     import hashlib
@@ -358,6 +359,7 @@ def _bridge_access_policy_hash(
         _serialize_bridge_allowlist(allowed_users),
         str(group_policy or "pairing").strip().lower(),
         _serialize_bridge_allowlist(group_allowed_users),
+        "true" if forward_owner_messages else "false",
     )
     return hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest()[:16]
 
@@ -627,12 +629,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "_group_allow_from",
                 self._coerce_allow_list(os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")),
             )
+            effective_forward_owner_messages = os.getenv(
+                "WHATSAPP_FORWARD_OWNER_MESSAGES", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"}
             expected_policy_hash = _bridge_access_policy_hash(
                 mode=whatsapp_mode,
                 dm_policy=effective_dm_policy,
                 allowed_users=effective_allowed_users,
                 group_policy=effective_group_policy,
                 group_allowed_users=effective_group_allowed_users,
+                forward_owner_messages=effective_forward_owner_messages,
             )
             import aiohttp
             try:
@@ -708,6 +714,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["WHATSAPP_GROUP_POLICY"] = effective_group_policy
             bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] = _serialize_bridge_allowlist(
                 effective_group_allowed_users
+            )
+            bridge_env["WHATSAPP_FORWARD_OWNER_MESSAGES"] = (
+                "true" if effective_forward_owner_messages else "false"
             )
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix

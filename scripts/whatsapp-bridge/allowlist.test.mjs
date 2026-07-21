@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
+  classifyInboundAccessBeforeMedia,
   expandWhatsAppIdentifiers,
   isGroupChatAllowed,
   matchesAllowedUser,
@@ -122,19 +123,39 @@ test('non-open group policies reject groups unless explicitly allowlisted', () =
   }
 });
 
-test('bridge enforces group policy before media extraction', () => {
-  const source = readFileSync(new URL('./bridge.js', import.meta.url), 'utf8');
-  const gateComment = source.indexOf('// Apply group policy in the bridge before');
-  const extraction = source.indexOf('const event = await extractBridgeEvent({');
+test('blocked group rejects forwarded owner message before media handling', () => {
+  const result = classifyInboundAccessBeforeMedia({
+    isGroup: true,
+    fromMe: true,
+    chatId: '120363009999999999@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: parseAllowedUsers('*'),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+  });
 
-  assert.notEqual(gateComment, -1, 'group policy gate must exist');
-  assert.notEqual(extraction, -1, 'media-capable extraction must exist');
-  assert.ok(gateComment < extraction, 'group policy gate must precede extraction');
+  assert.deepEqual(result, {
+    allowed: false,
+    reason: 'group_policy_rejected_before_media',
+  });
+});
 
-  const preExtraction = source.slice(gateComment, extraction);
-  assert.match(preExtraction, /isGroupChatAllowed\(/);
-  assert.match(preExtraction, /group_policy_rejected_before_media/);
-  assert.match(preExtraction, /continue;/);
+test('allowed group accepts forwarded owner message before media handling', () => {
+  const result = classifyInboundAccessBeforeMedia({
+    isGroup: true,
+    fromMe: true,
+    chatId: '120363001234567890@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: new Set(),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+  });
+
+  assert.deepEqual(result, { allowed: true });
 });
 
 test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () => {

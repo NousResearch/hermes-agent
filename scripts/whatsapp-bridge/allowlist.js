@@ -74,6 +74,34 @@ export function isGroupChatAllowed(chatId, groupPolicy, allowedGroups, sessionDi
   return false;
 }
 
+export function classifyInboundAccessBeforeMedia({
+  isGroup,
+  fromMe,
+  chatId,
+  senderId,
+  dmPolicy,
+  allowedUsers,
+  groupPolicy,
+  groupAllowedUsers,
+  sessionDir,
+}) {
+  // Group authorization applies to every message that can reach extraction,
+  // including owner-authored messages forwarded from bot mode. Restricting
+  // this check to !fromMe would let blocked-group media touch disk.
+  if (isGroup) {
+    if (!isGroupChatAllowed(chatId, groupPolicy, groupAllowedUsers, sessionDir)) {
+      return { allowed: false, reason: 'group_policy_rejected_before_media' };
+    }
+    return { allowed: true };
+  }
+
+  if (!fromMe && dmPolicy !== 'pairing' && !matchesAllowedUser(senderId, allowedUsers, sessionDir)) {
+    return { allowed: false, reason: 'allowlist_mismatch' };
+  }
+
+  return { allowed: true };
+}
+
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   // Empty allowlist = NO ONE allowed (secure default, #8389).  Operators
   // who want an open bot must set ``WHATSAPP_ALLOWED_USERS=*`` explicitly.

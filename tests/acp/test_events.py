@@ -2,6 +2,7 @@
 
 import asyncio
 import gc
+import unittest
 import warnings
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -420,3 +421,65 @@ class TestSendUpdate:
             and "_session_update" in str(w.message)
         ]
         assert runtime_warnings == []
+
+class TestSendUpdateRetry(unittest.TestCase):
+    """Test _send_update retry and recovery mechanism."""
+
+    def test_send_update_returns_true_on_success(self):
+        """Verify _send_update returns True when safe_schedule_threadsafe succeeds."""
+        from unittest.mock import MagicMock, patch
+        from concurrent.futures import Future
+
+        conn = MagicMock()
+        session_id = "test-session"
+        loop = MagicMock()
+        update = {"type": "test"}
+
+        # Create a resolved future
+        resolved = Future()
+        resolved.set_result(None)
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=resolved):
+            from acp_adapter.events import _send_update
+            result = _send_update(conn, session_id, loop, update)
+            self.assertTrue(result)
+
+    def test_send_update_returns_false_on_schedule_failure(self):
+        """Verify _send_update returns False when safe_schedule_threadsafe returns None."""
+        from unittest.mock import MagicMock, patch
+
+        conn = MagicMock()
+        session_id = "test-session"
+        loop = MagicMock()
+        update = {"type": "test"}
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=None):
+            from acp_adapter.events import _send_update
+            result = _send_update(conn, session_id, loop, update)
+            self.assertFalse(result)
+
+    def test_send_update_returns_false_on_timeout(self):
+        """Verify _send_update returns False and logs warning on timeout."""
+        from unittest.mock import MagicMock, patch
+        from concurrent.futures import Future
+
+        conn = MagicMock()
+        session_id = "test-session"
+        loop = MagicMock()
+        update = {"type": "test"}
+
+        # Create a future that raises TimeoutError
+        failed = Future()
+        failed.set_exception(TimeoutError())
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", return_value=failed):
+            with patch("acp_adapter.events.logger") as mock_logger:
+                from acp_adapter.events import _send_update
+                result = _send_update(conn, session_id, loop, update)
+                self.assertFalse(result)
+                mock_logger.warning.assert_called_once()
+                self.assertIn("Failed to send ACP update", mock_logger.warning.call_args[0][0])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1205,3 +1205,71 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+    def test_get_updates_can_propagate_timeout_for_terminal_disconnect_drain(self):
+        session = _StubSession(_StubResponse(delay=1.0))
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                weixin._get_updates(
+                    session,
+                    base_url="https://weixin.example.com",
+                    token="tok",
+                    sync_buf="buf-123",
+                    timeout_ms=1,
+                    swallow_timeout=False,
+                )
+            )
+
+
+class TestWeixinDisconnectDrain:
+    @pytest.mark.asyncio
+    async def test_disconnect_drains_poll_session_before_closing(self):
+        adapter = _make_adapter()
+        poll_session = AsyncMock()
+        poll_session.closed = False
+        send_session = AsyncMock()
+        send_session.closed = False
+        adapter._poll_session = poll_session
+        adapter._send_session = send_session
+        adapter._poll_task = asyncio.create_task(asyncio.sleep(3600))
+
+        with patch.object(weixin, "_load_sync_buf", return_value="buf-123"), \
+             patch.object(weixin, "_save_sync_buf") as save_sync_buf_mock, \
+             patch.object(weixin, "_get_updates", new_callable=AsyncMock) as get_updates_mock:
+            get_updates_mock.return_value = {"ret": 0, "msgs": [], "get_updates_buf": "buf-456"}
+
+            await adapter.disconnect()
+
+        get_updates_mock.assert_awaited_once_with(
+            poll_session,
+            base_url=adapter._base_url,
+            token=adapter._token,
+            sync_buf="buf-123",
+            timeout_ms=weixin.DISCONNECT_DRAIN_TIMEOUT_MS,
+            swallow_timeout=False,
+        )
+        save_sync_buf_mock.assert_called_once_with(adapter._hermes_home, adapter._account_id, "buf-456")
+        poll_session.close.assert_awaited_once()
+        send_session.close.assert_awaited_once()
+        assert adapter._poll_task is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_continues_cleanup_when_terminal_drain_times_out(self):
+        adapter = _make_adapter()
+        poll_session = AsyncMock()
+        poll_session.closed = False
+        send_session = AsyncMock()
+        send_session.closed = False
+        adapter._poll_session = poll_session
+        adapter._send_session = send_session
+
+        with patch.object(weixin, "_load_sync_buf", return_value="buf-123"), \
+             patch.object(weixin, "_get_updates", new_callable=AsyncMock) as get_updates_mock, \
+             patch.object(weixin.logger, "warning") as warning_mock:
+            get_updates_mock.side_effect = asyncio.TimeoutError()
+
+            await adapter.disconnect()
+
+        warning_mock.assert_called_once()
+        poll_session.close.assert_awaited_once()
+        send_session.close.assert_awaited_once()

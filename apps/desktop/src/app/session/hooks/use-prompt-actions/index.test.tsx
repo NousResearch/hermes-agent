@@ -8,7 +8,7 @@ import { $composerAttachments, $composerDraft, type ComposerAttachment, setCompo
 import { $busy, $connection, $messages, $sessions, $turnStartedAt, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import type { SubmitTextOptions } from './utils'
+import type { SubmitTextOptions, SubmitTextResult } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
 
@@ -62,7 +62,7 @@ interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
-  submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
+  submitText: (text: string, options?: SubmitTextOptions) => Promise<SubmitTextResult>
 }
 
 function Harness({
@@ -163,7 +163,7 @@ function Harness({
       steerPrompt: (...args: Parameters<typeof actions.steerPrompt>) =>
         act(async () => actions.steerPrompt(...args)) as Promise<boolean>,
       submitText: (...args: Parameters<typeof actions.submitText>) =>
-        act(async () => actions.submitText(...args)) as Promise<boolean>
+        act(async () => actions.submitText(...args)) as Promise<SubmitTextResult>
     })
   }, [
     actions.cancelRun,
@@ -321,6 +321,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       session_id: RUNTIME_SESSION_ID
     })
     expect(calls[1]?.params).toEqual({
+      client_submission_id: expect.any(String),
       session_id: RUNTIME_SESSION_ID,
       text: 'write the implementation plan'
     })
@@ -524,6 +525,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        client_submission_id: expect.any(String),
         session_id: RUNTIME_SESSION_ID,
         text: 'hello after a stop'
       },
@@ -553,9 +555,32 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        client_submission_id: expect.any(String),
+        from_queue: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
       },
+      1_800_000
+    )
+  })
+
+  it('preserves the backend admission status for queue drains', async () => {
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'prompt.submit' ? { status: 'queued' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await expect(handle!.submitText('queued with status', { fromQueue: true })).resolves.toEqual({
+      accepted: true,
+      status: 'queued'
+    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ from_queue: true }),
       1_800_000
     )
   })
@@ -588,6 +613,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        client_submission_id: expect.any(String),
+        from_queue: true,
         session_id: 'rt-session-a',
         text: 'queued for background session'
       },
@@ -634,10 +661,12 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(first).toBe(false)
 
     const second = await handle!.submitText('please send me', { fromQueue: true })
-    expect(second).toBe(true)
+    expect(second === true || (typeof second === 'object' && second.accepted === true)).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        client_submission_id: expect.any(String),
+        from_queue: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'please send me'
       },
@@ -988,6 +1017,7 @@ describe('usePromptActions file attachment sync', () => {
       data_url: 'data:text/plain;base64,aGVsbG8='
     })
     expect(calls[1]?.params).toEqual({
+      client_submission_id: expect.any(String),
       session_id: RUNTIME_SESSION_ID,
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
@@ -1068,7 +1098,11 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[0]?.params).not.toHaveProperty('data_url')
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
+      params: {
+        client_submission_id: expect.any(String),
+        session_id: RUNTIME_SESSION_ID,
+        text: '@file:data/report.txt\n\nsummarize'
+      }
     })
   })
 })
@@ -1190,7 +1224,15 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    const firstSubmissionId = calls[0]?.params?.client_submission_id
+
+    expect(typeof firstSubmissionId).toBe('string')
+    expect(firstSubmissionId).not.toBe('')
+    expect(calls[2]?.params).toEqual({
+      client_submission_id: firstSubmissionId,
+      session_id: RECOVERED_SESSION_ID,
+      text: 'message after wake'
+    })
   })
 
   it('background queue resume uses the queued stored id and leaves foreground runtime selected', async () => {
@@ -1229,19 +1271,24 @@ describe('usePromptActions sleep/wake session recovery', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     const ok = await handle!.submitText('queued background message after wake', {
+      clientSubmissionId: 'queued-entry-stable-id',
       fromQueue: true,
       sessionId: 'rt-background-stale',
       storedSessionId: STORED_SESSION_ID
     })
 
-    expect(ok).toBe(true)
+    expect(ok === true || (typeof ok === 'object' && ok.accepted === true)).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
+      client_submission_id: 'queued-entry-stable-id',
+      from_queue: true,
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      client_submission_id: 'queued-entry-stable-id',
+      from_queue: true,
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
     })
@@ -1421,6 +1468,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      client_submission_id: expect.any(String),
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
     })
@@ -1539,7 +1587,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
+      {
+        client_submission_id: expect.any(String),
+        session_id: RECOVERED_SESSION_ID,
+        text: 'follow-up while the profile route is rebinding'
+      },
       1_800_000
     )
   })
@@ -1576,7 +1628,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
+      {
+        client_submission_id: expect.any(String),
+        session_id: RECOVERED_SESSION_ID,
+        text: 'stay in the routed profile session'
+      },
       1_800_000
     )
   })
@@ -1607,7 +1663,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
+      {
+        client_submission_id: expect.any(String),
+        session_id: RECOVERED_SESSION_ID,
+        text: 'normal follow-up'
+      },
       1_800_000
     )
   })
@@ -1664,7 +1724,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('retry after recovery')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
+      {
+        client_submission_id: expect.any(String),
+        session_id: RECOVERED_SESSION_ID,
+        text: 'retry after recovery'
+      },
       1_800_000
     )
   })

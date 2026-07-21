@@ -65,7 +65,8 @@ import {
   isSessionNotFoundError,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
-  type SubmitTextOptions
+  type SubmitTextOptions,
+  type SubmitTextResult
 } from './utils'
 
 interface HandoffResult {

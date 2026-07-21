@@ -5,18 +5,25 @@ import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
+  flushQueuedPromptMutations,
   getQueuedPrompts,
+  incrementQueuedPromptAttemptsAtomic,
+  markQueuedPromptAcceptedAtomic,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  QUEUED_PROMPT_ACCEPTANCE_RETRY_MS,
+  queuedPromptAwaitingCompletion,
+  removeQueuedPromptByIdAtomic,
   type QueuedPromptEntry,
-  removeQueuedPrompt,
-  shouldAutoDrain
+  refreshQueuedPromptsFromStorage,
+  shouldAutoDrain,
+  withComposerQueueDrainLease
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
 import { $workingSessionIds } from '@/store/session-states'
 
-import type { SubmitTextOptions } from './use-prompt-actions/utils'
+import type { SubmitTextOptions, SubmitTextResult } from './use-prompt-actions/utils'
 
-type SubmitQueuedPrompt = (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
+type SubmitQueuedPrompt = (text: string, options?: SubmitTextOptions) => Promise<SubmitTextResult> | SubmitTextResult
 
 interface BackgroundQueueDrainOptions {
   enabled: boolean
@@ -46,7 +53,6 @@ export function useBackgroundQueueDrain({
   const workingSessionIds = useStore($workingSessionIds)
   const submitTextRef = useRef(submitText)
   const drainingSessionIdsRef = useRef(new Set<string>())
-  const drainFailuresRef = useRef(new Map<string, number>())
   const retryTimersRef = useRef<number[]>([])
   const [retryTick, setRetryTick] = useState(0)
 
@@ -54,7 +60,7 @@ export function useBackgroundQueueDrain({
     submitTextRef.current = submitText
   }, [submitText])
 
-  const scheduleRetry = useCallback(() => {
+  const scheduleRetry = useCallback((delayMs = BACKGROUND_DRAIN_RETRY_MS) => {
     if (typeof window === 'undefined') {
       return
     }
@@ -62,7 +68,7 @@ export function useBackgroundQueueDrain({
     const timer = window.setTimeout(() => {
       retryTimersRef.current = retryTimersRef.current.filter(id => id !== timer)
       setRetryTick(tick => tick + 1)
-    }, BACKGROUND_DRAIN_RETRY_MS)
+    }, delayMs)
 
     retryTimersRef.current.push(timer)
   }, [])
@@ -87,10 +93,13 @@ export function useBackgroundQueueDrain({
       drainingSessionIdsRef.current.add(sessionKey)
 
       const onFail = () => {
-        const failures = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
-        drainFailuresRef.current.set(entry.id, failures)
+        refreshQueuedPromptsFromStorage()
 
-        if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
+        const current = Object.values($queuedPromptsBySession.get())
+          .flat()
+          .find(candidate => candidate.id === entry.id)
+
+        if (current && current.attempts >= MAX_AUTO_DRAIN_ATTEMPTS) {
           notify({
             id: `composer-background-queue-stuck-${sessionKey}`,
             kind: 'error',
@@ -106,32 +115,58 @@ export function useBackgroundQueueDrain({
 
       void Promise.resolve()
         .then(async () => {
-          const liveEntry = getQueuedPrompts(sessionKey).find(candidate => candidate.id === entry.id)
+          await flushQueuedPromptMutations()
 
-          if (!liveEntry) {
+          return withComposerQueueDrainLease(sessionKey, async () => {
+            refreshQueuedPromptsFromStorage()
+            let liveEntry = getQueuedPrompts(sessionKey).find(candidate => candidate.id === entry.id)
+
+            if (
+              !liveEntry ||
+              liveEntry.attempts >= MAX_AUTO_DRAIN_ATTEMPTS ||
+              queuedPromptAwaitingCompletion(liveEntry)
+            ) {
+              return true
+            }
+
+            liveEntry = (await incrementQueuedPromptAttemptsAtomic(liveEntry.id)) ?? liveEntry
+
+            const runtimeSessionId = runtimeIdByStoredSessionIdRef.current.get(sessionKey) ?? null
+
+            const accepted = await Promise.resolve(
+              submitTextRef.current(liveEntry.text, {
+                attachments: liveEntry.attachments,
+                clientSubmissionId: liveEntry.id,
+                fromQueue: true,
+                sessionId: runtimeSessionId,
+                storedSessionId: sessionKey
+              })
+            )
+
+            if (accepted === false) {
+              return false
+            }
+
+            if (typeof accepted === 'object' && accepted.status === 'duplicate') {
+              await removeQueuedPromptByIdAtomic(liveEntry.id)
+              return true
+            }
+
+            if (
+              typeof accepted === 'object' &&
+              accepted.status !== undefined &&
+              accepted.status !== 'queued' &&
+              accepted.status !== 'streaming'
+            ) {
+              return false
+            }
+
+            await markQueuedPromptAcceptedAtomic(liveEntry.id)
+            scheduleRetry(QUEUED_PROMPT_ACCEPTANCE_RETRY_MS)
+            resetBrowseState(runtimeSessionId)
+
             return true
-          }
-
-          const runtimeSessionId = runtimeIdByStoredSessionIdRef.current.get(sessionKey) ?? null
-
-          const accepted = await Promise.resolve(
-            submitTextRef.current(liveEntry.text, {
-              attachments: liveEntry.attachments,
-              fromQueue: true,
-              sessionId: runtimeSessionId,
-              storedSessionId: sessionKey
-            })
-          )
-
-          if (accepted === false) {
-            return false
-          }
-
-          drainFailuresRef.current.delete(liveEntry.id)
-          removeQueuedPrompt(sessionKey, liveEntry.id)
-          resetBrowseState(runtimeSessionId)
-
-          return true
+          })
         })
         .then(accepted => {
           if (!accepted) {
@@ -164,7 +199,7 @@ export function useBackgroundQueueDrain({
 
       const entry = entries[0]
 
-      if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      if (!entry || entry.attempts >= MAX_AUTO_DRAIN_ATTEMPTS || queuedPromptAwaitingCompletion(entry)) {
         continue
       }
 

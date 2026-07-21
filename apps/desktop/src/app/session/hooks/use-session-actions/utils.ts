@@ -224,6 +224,15 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
   })
 }
 
+const isOptimisticUserMessage = (message: ChatMessage): boolean =>
+  message.role === 'user' && (message.id.startsWith('user-') || message.id.startsWith('submission:'))
+
+const isPendingAssistantMessage = (message: ChatMessage): boolean =>
+  message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+
+export const hasLocalPendingTurnMessages = (messages: ChatMessage[]): boolean =>
+  messages.some(message => isOptimisticUserMessage(message) || isPendingAssistantMessage(message))
+
 /**
  * Keep the local tail of a turn while a reconnect hydrates an older server
  * projection. The user's optimistic row exists before prompt.submit persists
@@ -237,9 +246,14 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  */
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
-  previousMessages: ChatMessage[]
+  previousMessages: ChatMessage[],
+  hasAuthoritativeLiveProjection = false
 ): ChatMessage[] {
-  if (!previousMessages.length) {
+  // Resume payloads project the backend's exact inflight/queued tail before
+  // this function runs. At that point generic local user-* / assistant-stream-*
+  // rows are stale by definition; preserving them by text or ordinal cannot
+  // distinguish a legitimate repeated prompt from an old duplicate.
+  if (!previousMessages.length || hasAuthoritativeLiveProjection) {
     return nextMessages
   }
 
@@ -260,10 +274,8 @@ export function preserveLocalPendingTurnMessages(
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
 
-    const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
-
-    const isPendingAssistant =
-      message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+    const isOptimisticUser = isOptimisticUserMessage(message)
+    const isPendingAssistant = isPendingAssistantMessage(message)
 
     if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
       continue
@@ -314,7 +326,9 @@ export function appendLiveSessionProjection(
 
   if (inflightUser) {
     projected.push({
-      id: `user-inflight-${sessionId}`,
+      id: projection.inflight?.submission_id
+        ? `submission:${projection.inflight.submission_id}`
+        : `user-inflight-${sessionId}`,
       role: 'user',
       parts: [textPart(inflightUser)]
     })
@@ -333,9 +347,24 @@ export function appendLiveSessionProjection(
 
   if (queuedUser) {
     projected.push({
-      id: `user-queued-${sessionId}`,
+      id: projection.queued?.submission_id
+        ? `submission:${projection.queued.submission_id}`
+        : `user-queued-${sessionId}`,
       role: 'user',
       parts: [textPart(queuedUser)]
+    })
+  }
+
+  // Project an accepted following_prompt (P2 behind P1) so reconciliation
+  // does not delete its optimistic row when it sees only the head.
+  const followingUser = projection.queued?.following_prompt?.user?.trim() ?? ''
+  if (followingUser) {
+    projected.push({
+      id: projection.queued?.following_prompt?.submission_id
+        ? `submission:${projection.queued.following_prompt.submission_id}`
+        : `user-following-${sessionId}`,
+      role: 'user',
+      parts: [textPart(followingUser)]
     })
   }
 

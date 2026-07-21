@@ -136,6 +136,9 @@ _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
+_prompt_submission_lock = threading.Lock()
+_prompt_submission_receipts: dict[tuple[str, str], float] = {}
+_PROMPT_SUBMISSION_RECEIPT_LIMIT = 10_000
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
@@ -1252,7 +1255,13 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         return _compute_host_supervisor
 
 
-def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _compute_host_turn_frame(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    submission_id: str = "",
+) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -1261,6 +1270,7 @@ def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> di
         "type": "turn.start",
         "sid": sid,
         "request_id": rid,
+        "client_submission_id": submission_id,
         "session_key": session.get("session_key") or sid,
         "text": text,
         "history": history,
@@ -1332,7 +1342,19 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         _clear_inflight_turn(session)
     if is_error:
         message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
+        _emit(
+            "message.complete",
+            sid,
+            {
+                "text": f"Error: {message}",
+                "status": "error",
+                **(
+                    {"submission_id": str(frame.get("client_submission_id"))}
+                    if frame.get("client_submission_id")
+                    else {}
+                ),
+            },
+        )
     _apply_compute_host_metadata_mirror(session, frame)
     try:
         info = _session_info(session.get("agent"), session)
@@ -1343,9 +1365,15 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     _drain_queued_prompt(rid, sid, session)
 
 
-def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _submit_prompt_to_compute_host(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    submission_id: str = "",
+) -> dict:
     cfg = _load_dashboard_process_isolation_config()
-    frame = _compute_host_turn_frame(rid, sid, session, text)
+    frame = _compute_host_turn_frame(rid, sid, session, text, submission_id)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure through the callback
@@ -1354,6 +1382,8 @@ def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any)
         # duplicate terminal error.
         if done.get("reason") == "send_failed":
             return
+        if submission_id:
+            done.setdefault("client_submission_id", submission_id)
         _on_compute_host_turn_done(rid, sid, session, done)
 
     try:
@@ -5495,6 +5525,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        message_id = m.get("message_id")
+        if isinstance(message_id, str) and message_id:
+            msg["message_id"] = message_id
         if role == "assistant":
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
@@ -5562,7 +5595,7 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(session: dict, text: Any, submission_id: str = "") -> None:
     now = time.time()
     session["inflight_turn"] = {
         "assistant": "",
@@ -5570,6 +5603,7 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
         "streaming": True,
         "updated_at": now,
         "user": _inflight_text(text),
+        **({"submission_id": submission_id} if submission_id else {}),
     }
 
 
@@ -5590,7 +5624,51 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+def _prompt_submission_key(session: dict, submission_id: str) -> tuple[str, str]:
+    profile = str(session.get("profile_home") or get_hermes_home())
+    return (profile, submission_id)
+
+
+def _claim_prompt_submission(session: dict, submission_id: str) -> bool:
+    """Claim one client submission across windows and backend restarts."""
+    key = _prompt_submission_key(session, submission_id)
+    with _prompt_submission_lock:
+        if key in _prompt_submission_receipts:
+            return False
+        session_key = str(session.get("session_key") or "")
+        db = _get_db()
+        if db is not None and session_key:
+            try:
+                if db.has_platform_message_id(
+                    session_key,
+                    f"desktop:{submission_id}",
+                    include_compression_lineage=True,
+                ):
+                    return False
+            except Exception as exc:
+                logger.debug("Could not check persisted Desktop submission identity: %s", exc)
+        if len(_prompt_submission_receipts) >= _PROMPT_SUBMISSION_RECEIPT_LIMIT:
+            oldest = min(_prompt_submission_receipts, key=_prompt_submission_receipts.get)
+            _prompt_submission_receipts.pop(oldest, None)
+        _prompt_submission_receipts[key] = time.time()
+        return True
+
+
+def _release_prompt_submission(session: dict, submission_id: str) -> None:
+    with _prompt_submission_lock:
+        _prompt_submission_receipts.pop(
+            _prompt_submission_key(session, submission_id),
+            None,
+        )
+
+
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    *,
+    submission_id: str = "",
+) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
@@ -5607,7 +5685,11 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     ):
         prev = existing["text"]
         text = f"{prev}\n\n{text}" if prev and text else (prev or text)
-    session["queued_prompt"] = {"text": text, "transport": transport}
+    session["queued_prompt"] = {
+        "text": text,
+        "transport": transport,
+        **({"submission_id": submission_id} if submission_id else {}),
+    }
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -5646,7 +5728,14 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    *,
+    submission_id: str = "",
+    from_queue: bool = False,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -5669,7 +5758,7 @@ def _handle_busy_submit(
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+    if not from_queue and mode == "steer" and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
                 with session["history_lock"]:
@@ -5683,7 +5772,17 @@ def _handle_busy_submit(
     with session["history_lock"]:
         if not session.get("running"):
             return None
-        _enqueue_prompt(session, text, transport)
+        existing = session.get("queued_prompt")
+        if submission_id and existing:
+            if existing.get("submission_id") == submission_id:
+                return _ok(rid, {"status": "duplicate"})
+            return _err(rid, 4009, "session busy: already has a queued prompt")
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            submission_id=submission_id,
+        )
         session["last_active"] = time.time()
 
     if mode != "queue":
@@ -5691,32 +5790,105 @@ def _handle_busy_submit(
     return _ok(rid, {"status": "queued"})
 
 
-def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
-    """Fire a queued next-turn prompt if one is waiting and the session is idle.
+def _restore_dequeued_prompt(session: dict, queued: dict) -> None:
+    """Restore a failed head before the authoritative queue tail.
 
-    Returns True if a queued prompt was dispatched (the caller should then skip
-    lower-priority follow-ups this cycle — the user's message wins). Mirrors the
-    claim-under-lock pattern used by the goal-continuation re-fire.
+    Must be called while ``history_lock`` is held. The live ``queued_prompt``
+    may have changed while dispatch was in progress; it is the authoritative
+    representation of everything accepted after this head was dequeued.
     """
+    tail = session.get("queued_prompt")
+    if isinstance(tail, dict):
+        queued["following_prompt"] = tail
+    else:
+        queued.pop("following_prompt", None)
+    session["queued_prompt"] = queued
+
+
+def _schedule_queued_prompt_retry(rid, sid: str, session: dict) -> None:
+    """Retry an accepted backend-owned prompt after transient dispatch failure."""
+    with session["history_lock"]:
+        queued = session.get("queued_prompt")
+        if not isinstance(queued, dict):
+            return
+        attempts = int(queued.get("dispatch_attempts") or 0) + 1
+        queued["dispatch_attempts"] = attempts
+        slow_watchdog = attempts > 4
+        if not queued.get("retry_scheduled"):
+            queued["retry_scheduled"] = True
+            schedule = True
+        else:
+            schedule = False
+
+    if attempts == 5:
+        _emit(
+            "error",
+            sid,
+            {"message": "Queued prompt is still pending; continuing low-rate retries."},
+        )
+    if not schedule:
+        return
+
+    def retry() -> None:
+        with session["history_lock"]:
+            current = session.get("queued_prompt")
+            if not isinstance(current, dict):
+                return
+            current["retry_scheduled"] = False
+            if session.get("running"):
+                return
+        _drain_queued_prompt(rid, sid, session)
+
+    timer = threading.Timer(30.0 if slow_watchdog else 0.75, retry)
+    timer.daemon = True
+    timer.start()
+
+
+def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
+    """Fire a queued next-turn prompt if one is waiting and the session is idle."""
     with session["history_lock"]:
         queued = session.get("queued_prompt")
         if not queued or session.get("running"):
             return False
-        session["queued_prompt"] = None
         session["running"] = True
+        following = queued.get("following_prompt")
+        session["queued_prompt"] = following if isinstance(following, dict) else None
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
+        _start_inflight_turn(
+            session,
+            queued.get("text"),
+            str(queued.get("submission_id") or ""),
+        )
     try:
         if _session_uses_compute_host(session):
-            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+            resp = _submit_prompt_to_compute_host(
+                rid,
+                sid,
+                session,
+                queued["text"],
+                str(queued.get("submission_id") or ""),
+            )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
                 with session["history_lock"]:
                     session["running"] = False
                     _clear_inflight_turn(session)
+                    _restore_dequeued_prompt(session, queued)
                 _emit("error", sid, {"message": message})
+                _schedule_queued_prompt_retry(rid, sid, session)
         else:
-            _run_prompt_submit(rid, sid, session, queued["text"])
+            queued_submission_id = str(queued.get("submission_id") or "")
+            if queued_submission_id:
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    queued["text"],
+                    submission_id=queued_submission_id,
+                )
+            else:
+                _run_prompt_submit(rid, sid, session, queued["text"])
     except Exception as exc:
         print(
             f"[tui_gateway] queued prompt dispatch failed: "
@@ -5725,6 +5897,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         )
         with session["history_lock"]:
             session["running"] = False
+            _clear_inflight_turn(session)
+            _restore_dequeued_prompt(session, queued)
+        _schedule_queued_prompt_retry(rid, sid, session)
     return True
 
 
@@ -5741,6 +5916,7 @@ def _inflight_snapshot(session: dict) -> dict | None:
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
+        **({"submission_id": turn["submission_id"]} if turn.get("submission_id") else {}),
     }
 
 
@@ -5751,12 +5927,34 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     the current turn winds down. Desktop may reconnect or restart during that
     window, so the live-session projection must carry the user-visible text;
     otherwise the accepted prompt disappears until it finally drains.
+
+    If the head carries a ``following_prompt`` (accepted P2 waiting behind P1),
+    project it too so Desktop reconciliation does not delete P2's optimistic
+    row when it sees only the head.
     """
     queued = session.get("queued_prompt")
     if not isinstance(queued, dict):
         return None
     user = _inflight_text(queued.get("text"))
-    return {"user": user} if user else None
+    if not user:
+        return None
+    result: dict = {
+        "user": user,
+        **({"submission_id": queued["submission_id"]} if queued.get("submission_id") else {}),
+    }
+    following = queued.get("following_prompt")
+    if isinstance(following, dict):
+        following_user = _inflight_text(following.get("text"))
+        if following_user:
+            result["following_prompt"] = {
+                "user": following_user,
+                **(
+                    {"submission_id": following["submission_id"]}
+                    if following.get("submission_id")
+                    else {}
+                ),
+            }
+    return result
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -6681,16 +6879,14 @@ def _live_session_payload(
         "info": _fallback_session_info(session),
         "message_count": len(history),
         "messages": _history_to_messages(history),
+        "inflight": inflight,
+        "queued": queued,
         "running": running,
         "session_id": sid,
         "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
-    if inflight:
-        payload["inflight"] = inflight
-    if queued:
-        payload["queued"] = queued
     return payload
 
 
@@ -9394,10 +9590,16 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    submission_id = str(params.get("client_submission_id") or "").strip()
+    from_queue = params.get("from_queue") is True
+    if len(submission_id) > 128:
+        return _err(rid, 4004, "client_submission_id is too long")
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if submission_id and not _claim_prompt_submission(session, submission_id):
+        return _ok(rid, {"status": "duplicate"})
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -9407,6 +9609,8 @@ def _(rid, params: dict) -> dict:
         session["transport"] = t
     while True:
         busy_transport = None
+        idle_queue_pending = False
+        idle_queue_full = False
         with session["history_lock"]:
             if session.get("running"):
                 # Don't reject a mid-turn prompt — queue it (and, by default,
@@ -9414,10 +9618,47 @@ def _(rid, params: dict) -> dict:
                 # provider interrupt itself must happen after this lock is
                 # released: a non-interruptible tool may keep it waiting.
                 busy_transport = t or session.get("transport")
+            elif isinstance(session.get("queued_prompt"), dict):
+                # A dispatch failure can leave an accepted head waiting on its
+                # retry timer while the session itself is idle. New work must
+                # queue behind that head rather than overtake it as a direct
+                # turn. Keep one bounded following slot, matching the live-turn
+                # queue contract.
+                queued_head = session["queued_prompt"]
+                if isinstance(queued_head.get("following_prompt"), dict):
+                    idle_queue_full = True
+                else:
+                    queued_head["following_prompt"] = {
+                        "text": text,
+                        "transport": t or session.get("transport"),
+                        **({"submission_id": submission_id} if submission_id else {}),
+                    }
+                    idle_queue_pending = True
             else:
                 break
-        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+        if idle_queue_full:
+            if submission_id:
+                _release_prompt_submission(session, submission_id)
+            return _err(rid, 4009, "session already has a pending queued prompt")
+        if idle_queue_pending:
+            threading.Thread(
+                target=lambda: _drain_queued_prompt(rid, sid, session),
+                daemon=True,
+                name=f"tui-queued-drain-{sid}",
+            ).start()
+            return _ok(rid, {"status": "queued"})
+        busy_response = _handle_busy_submit(
+            rid,
+            sid,
+            session,
+            text,
+            busy_transport,
+            submission_id=submission_id,
+            from_queue=from_queue,
+        )
         if busy_response is not None:
+            if submission_id and busy_response.get("error"):
+                _release_prompt_submission(session, submission_id)
             return busy_response
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
@@ -9430,11 +9671,15 @@ def _(rid, params: dict) -> dict:
         # transcript, stale fork). After the run completes, submitting is fine:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            if submission_id:
+                _release_prompt_submission(session, submission_id)
             return _err(rid, 4009, "subagent still running — wait for it to finish")
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
+                if submission_id:
+                    _release_prompt_submission(session, submission_id)
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
@@ -9444,6 +9689,8 @@ def _(rid, params: dict) -> dict:
             # truncating history to everything before it and persisting that loss
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
+                if submission_id:
+                    _release_prompt_submission(session, submission_id)
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
@@ -9456,10 +9703,16 @@ def _(rid, params: dict) -> dict:
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
+        _start_inflight_turn(session, text, submission_id)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(
+            rid,
+            sid,
+            session,
+            text,
+            submission_id,
+        )
         if not isolated_response.get("error"):
             return isolated_response
         logger.warning(
@@ -9467,13 +9720,6 @@ def _(rid, params: dict) -> dict:
             sid,
             isolated_response["error"].get("message", "unknown error"),
         )
-
-    # Persist the DB row lazily, now that the user has actually sent a message.
-    _ensure_session_db_row(session)
-    # A branch becomes real here: copy its parent's transcript into the row so it
-    # resumes with full context (the agent won't persist the seed itself).
-    _persist_branch_seed(session)
-    _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
@@ -9490,19 +9736,56 @@ def _(rid, params: dict) -> dict:
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)
+                existing = session.get("queued_prompt")
+                if isinstance(existing, dict):
+                    session["queued_prompt"] = {
+                        "text": text,
+                        "transport": t or session.get("transport"),
+                        **({"submission_id": submission_id} if submission_id else {}),
+                        "following_prompt": existing,
+                    }
+                else:
+                    _enqueue_prompt(
+                        session,
+                        text,
+                        t or session.get("transport"),
+                        submission_id=submission_id,
+                    )
+            _schedule_queued_prompt_retry(rid, sid, session)
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
+                if submission_id:
+                    _release_prompt_submission(session, submission_id)
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        if submission_id:
+            _run_prompt_submit(rid, sid, session, text, submission_id=submission_id)
+        else:
+            _run_prompt_submit(rid, sid, session, text)
 
-    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
-    # Keep a handle so session.interrupt can tell a live turn from a stuck
-    # `running` flag (a turn that died without clearing it) and recover the latter.
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        # Persist the DB row lazily, now that the user has actually sent a message.
+        _ensure_session_db_row(session)
+        # A branch becomes real here: copy its parent's transcript into the row so it
+        # resumes with full context (the agent won't persist the seed itself).
+        _persist_branch_seed(session)
+        _start_agent_build(sid, session)
+        run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+        # Keep a handle so session.interrupt can tell a live turn from a stuck
+        # `running` flag (a turn that died without clearing it) and recover the latter.
+        session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception:
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
+            session.pop("_run_thread", None)
+        if submission_id:
+            _release_prompt_submission(session, submission_id)
+        raise
+
     return _ok(rid, {"status": "streaming"})
 
 
@@ -9911,14 +10194,21 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    submission_id: str = "",
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
-            _start_inflight_turn(session, text)
+            _start_inflight_turn(session, text, submission_id)
     agent = session["agent"]
     if hasattr(agent, "clear_interrupt"):
         try:
@@ -9989,24 +10279,38 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
+                    if submission_id:
+                        _release_prompt_submission(session, submission_id)
                     _emit(
                         "error",
                         sid,
                         {
                             "message": "\n".join(ctx.warnings)
-                            or "Context injection refused."
+                            or "Context injection refused.",
+                            **(
+                                {"submission_id": submission_id, "terminal": True}
+                                if submission_id
+                                else {"terminal": True}
+                            ),
                         },
                     )
-                    return
-                prompt = ctx.message
+                    # Do NOT bare-return: the finally + post-finally drain must
+                    # run so any accepted FIFO tail advances non-blockingly.
+                    # Fall through to the finally by entering the normal
+                    # cleanup path without running the agent.
+                    with session["history_lock"]:
+                        session["_context_blocked"] = True
+                else:
+                    prompt = ctx.message
 
             # Decide image routing per-turn based on active provider/model.
-            # "native" → pass pixels to the main model as OpenAI-style content
-            # parts (adapters translate for Anthropic/Gemini/Bedrock/etc.).
-            # "text"   → pre-analyze with vision_analyze and prepend the text.
-            # See agent/image_routing.py for the full decision table.
+            # Skip agent execution entirely when context preprocessing blocked
+            # this prompt; fall through to the finally/drain so the FIFO tail
+            # can advance without running a rejected prompt.
             run_message: Any = prompt
-            if images:
+            if session.get("_context_blocked"):
+                pass  # nothing to run; finally + drain handle cleanup
+            elif images:
                 try:
                     from agent.image_routing import (
                         decide_image_input_mode,
@@ -10083,11 +10387,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 "stream_callback": _stream,
             }
             try:
-                if "task_id" in inspect.signature(agent.run_conversation).parameters:
+                run_parameters = inspect.signature(agent.run_conversation).parameters
+                if "task_id" in run_parameters:
                     run_kwargs["task_id"] = session["session_key"]
+                if submission_id and "platform_message_id" in run_parameters:
+                    run_kwargs["platform_message_id"] = f"desktop:{submission_id}"
             except (TypeError, ValueError):
                 pass
-            result = agent.run_conversation(run_message, **run_kwargs)
+            result: dict[str, Any] | str | None = None
+            if not session.get("_context_blocked"):
+                result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.
@@ -10168,7 +10477,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 _sync_session_key_after_compress(
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
-
                 raw = result.get("final_response", "")
                 status = (
                     "interrupted"
@@ -10194,7 +10502,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload = {
+                "text": raw,
+                "usage": _get_usage(agent),
+                "status": status,
+                **({"submission_id": submission_id} if submission_id else {}),
+            }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
@@ -10390,6 +10703,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
+                session.pop("_context_blocked", None)
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
 
@@ -12307,7 +12621,7 @@ def _(rid, params: dict) -> dict:
             db,
             preview_limit=int(params.get("preview_limit") or 3),
             hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000),
+            session_limit=int(params.get("session_limit") or 5000),
             include_discovered=True,
         )
         return _ok(

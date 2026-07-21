@@ -2013,6 +2013,85 @@ class SessionDB:
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
+    def rotate_session_for_compression(
+        self,
+        *,
+        parent_session_id: str,
+        child_session_id: str,
+        source: str,
+        model: str = None,
+        model_config: Dict[str, Any] = None,
+        initial_messages: List[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Atomically end a session and create its compression continuation.
+
+        The parent metadata snapshot, title transfer, end marker, child insert,
+        and initial compacted transcript share one ``BEGIN IMMEDIATE``
+        transaction. A concurrent rename
+        or workspace update therefore lands wholly before or after the
+        rotation; it cannot be split into a stale child snapshot. Any child
+        insert failure rolls the parent end/title changes back with it.
+        """
+        if not parent_session_id or not child_session_id:
+            raise ValueError("parent_session_id and child_session_id are required")
+        if parent_session_id == child_session_id:
+            raise ValueError("compression continuation must use a new session id")
+
+        model_config_json = json.dumps(model_config) if model_config else None
+
+        def _do(conn):
+            parent = conn.execute(
+                """SELECT title, cwd, git_branch, git_repo_root, profile_name
+                   FROM sessions WHERE id = ?""",
+                (parent_session_id,),
+            ).fetchone()
+            if parent is None:
+                raise ValueError(f"Parent session not found: {parent_session_id}")
+
+            now = time.time()
+            ended = conn.execute(
+                """UPDATE sessions
+                   SET ended_at = ?, end_reason = 'compression', title = NULL
+                   WHERE id = ? AND ended_at IS NULL""",
+                (now, parent_session_id),
+            )
+            if ended.rowcount != 1:
+                raise ValueError(f"Parent session is already ended: {parent_session_id}")
+
+            conn.execute(
+                """INSERT INTO sessions (
+                   id, source, model, model_config, parent_session_id,
+                   cwd, git_branch, git_repo_root, profile_name, title, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    child_session_id,
+                    source,
+                    model,
+                    model_config_json,
+                    parent_session_id,
+                    parent["cwd"],
+                    parent["git_branch"],
+                    parent["git_repo_root"],
+                    parent["profile_name"],
+                    parent["title"],
+                    now,
+                ),
+            )
+            inserted, tool_calls = self._insert_message_rows(
+                conn,
+                child_session_id,
+                initial_messages or [],
+            )
+            conn.execute(
+                """UPDATE sessions
+                   SET message_count = ?, tool_call_count = ?
+                   WHERE id = ?""",
+                (inserted, tool_calls, child_session_id),
+            )
+            return dict(parent)
+
+        return self._execute_write(_do)
+
     def record_gateway_session_peer(
         self,
         session_id: str,
@@ -2463,10 +2542,13 @@ class SessionDB:
         if repo_root:
             sets.append("git_repo_root = ?")
             params.append(repo_root)
-        params.append(session_id)
 
         def _do(conn):
-            conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
+            target_id = self._get_compression_tip_conn(conn, session_id)
+            conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",
+                [*params, target_id],
+            )
 
         self._execute_write(_do)
 
@@ -3335,27 +3417,10 @@ class SessionDB:
 
         return cleaned
 
-    def _is_compression_ancestor(
-        self, conn, *, ancestor_id: str, descendant_id: str
-    ) -> bool:
-        """Return True if *ancestor_id* is a compression predecessor of
-        *descendant_id* (walking parent links up the continuation chain).
-
-        The continuation edge is the canonical one shared with
-        :func:`_ephemeral_child_sql` / :meth:`set_session_archived`
-        (``_COMPRESSION_CHILD_SQL``): a parent → child edge counts only when the
-        parent ended with ``end_reason = 'compression'`` and the child started
-        at or after the parent's ``ended_at``, which distinguishes continuations
-        from delegate subagents / branch children that also carry a
-        ``parent_session_id``. Expressed as a single recursive CTE rather than a
-        per-hop Python walk so the edge definition lives in exactly one place.
-        """
-        if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
-            return False
-        # Walk parent links up from the descendant, following only compression
-        # continuation edges, and check whether ancestor_id is reached.
+    def _compression_ancestor_ids_conn(self, conn, descendant_id: str) -> List[str]:
+        """Return a continuation tip followed by its compression ancestors."""
         edge = _COMPRESSION_CHILD_SQL.format(a="child")
-        row = conn.execute(
+        rows = conn.execute(
             f"""
             WITH RECURSIVE ancestors(id) AS (
                 SELECT ?
@@ -3366,11 +3431,11 @@ class SessionDB:
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE {edge}
             )
-            SELECT 1 FROM ancestors WHERE id = ? AND id != ? LIMIT 1
+            SELECT id FROM ancestors
             """,
-            (descendant_id, ancestor_id, descendant_id),
-        ).fetchone()
-        return row is not None
+            (descendant_id,),
+        ).fetchall()
+        return [row["id"] for row in rows]
 
     def _set_session_title(
         self,
@@ -3382,49 +3447,46 @@ class SessionDB:
         title = self.sanitize_title(title)
 
         def _do(conn):
+            target_id = self._get_compression_tip_conn(conn, session_id)
+            lineage_ids = self._compression_ancestor_ids_conn(conn, target_id)
             if only_if_empty:
                 current = conn.execute(
                     "SELECT title FROM sessions WHERE id = ?",
-                    (session_id,),
+                    (target_id,),
                 ).fetchone()
                 if current is None or current["title"] is not None:
                     return 0
 
             if title:
-                # Check uniqueness (allow the same session to keep its own title)
+                # Check uniqueness outside this logical compression lineage.
+                placeholders = ",".join("?" for _ in lineage_ids)
                 cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                    (title, session_id),
+                    f"SELECT id FROM sessions WHERE title = ? "
+                    f"AND id NOT IN ({placeholders})",
+                    (title, *lineage_ids),
                 )
                 conflict = cursor.fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
-                    # A compression continuation is the live, projected-forward
-                    # head of its conversation; its compressed predecessors are
-                    # ended and hidden from the session list (list_sessions_rich
-                    # projects roots → tip). When the title that "conflicts" is
-                    # held by such a hidden ancestor, the user has no way to free
-                    # it — renaming the visible tip back to the base name would
-                    # dead-end with "already in use by <session they can't see>".
-                    # Treat this as a transfer: move the title off the ancestor
-                    # onto the continuation. Uniqueness is preserved (still only
-                    # one session carries the exact title) and the parent-link
-                    # lineage is untouched.
-                    if self._is_compression_ancestor(
-                        conn, ancestor_id=conflict_id, descendant_id=session_id
-                    ):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
-                    else:
-                        raise ValueError(
-                            f"Title '{title}' is already in use by session {conflict_id}"
-                        )
+                    raise ValueError(
+                        f"Title '{title}' is already in use by session {conflict_id}"
+                    )
+
+            # Legacy rotations could leave obsolete aliases on hidden ancestors.
+            # A logical title write owns the lineage, so clear all predecessors
+            # before assigning (or explicitly clearing) the live tip.
+            ancestor_ids = [sid for sid in lineage_ids if sid != target_id]
+            if ancestor_ids:
+                placeholders = ",".join("?" for _ in ancestor_ids)
+                conn.execute(
+                    f"UPDATE sessions SET title = NULL "
+                    f"WHERE id IN ({placeholders})",
+                    ancestor_ids,
+                )
             predicate = " AND title IS NULL" if only_if_empty else ""
             cursor = conn.execute(
                 f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
-                (title, session_id),
+                (title, target_id),
             )
             return cursor.rowcount
 
@@ -3434,6 +3496,7 @@ class SessionDB:
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set or update a session's title.
 
+        Compression-ancestor ids resolve to their live continuation tip.
         Returns True if session was found and title was set.
         Raises ValueError if title is already in use by another session,
         or if the title fails validation (too long, invalid characters).
@@ -3451,10 +3514,11 @@ class SessionDB:
         return self._set_session_title(session_id, title, only_if_empty=True)
 
     def get_session_title(self, session_id: str) -> Optional[str]:
-        """Get the title for a session, or None."""
+        """Get a logical session's live-tip title, or None."""
         with self._lock:
+            target_id = self._get_compression_tip_conn(self._conn, session_id)
             cursor = self._conn.execute(
-                "SELECT title FROM sessions WHERE id = ?", (session_id,)
+                "SELECT title FROM sessions WHERE id = ?", (target_id,)
             )
             row = cursor.fetchone()
         return row["title"] if row else None
@@ -3582,6 +3646,46 @@ class SessionDB:
 
         return f"{base} #{max_num + 1}"
 
+    def _get_compression_tip_conn(self, conn, session_id: str) -> Optional[str]:
+        """Connection-scoped compression-tip lookup for atomic metadata writes."""
+        current = session_id
+        seen = {current} if current else set()
+        for _ in range(100):
+            row = conn.execute(
+                """
+                SELECT child.id
+                FROM sessions parent
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.id = ?
+                  AND parent.end_reason = 'compression'
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(child.source, '') != 'tool'
+                ORDER BY
+                  CASE
+                    WHEN child.end_reason = 'compression' THEN 0
+                    WHEN child.ended_at IS NULL THEN 1
+                    ELSE 2
+                  END,
+                  COALESCE(
+                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                    child.started_at
+                  ) DESC,
+                  child.started_at DESC,
+                  child.id DESC
+                LIMIT 1
+                """,
+                (current,),
+            ).fetchone()
+            if row is None:
+                return current
+            child_id = row["id"]
+            if not child_id or child_id in seen:
+                return current
+            seen.add(child_id)
+            current = child_id
+        return current
+
     def get_compression_tip(self, session_id: str) -> Optional[str]:
         """Walk the compression-continuation chain forward and return the tip.
 
@@ -3603,47 +3707,8 @@ class SessionDB:
         Returns the latest continuation tip, or the input id when no
         continuation exists.
         """
-        current = session_id
-        seen = {current} if current else set()
-        # Bound the walk defensively — compression chains this deep are
-        # pathological and shouldn't happen in practice. 100 = plenty.
-        for _ in range(100):
-            with self._lock:
-                cursor = self._conn.execute(
-                    """
-                    SELECT child.id
-                    FROM sessions parent
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
-                    ORDER BY
-                      CASE
-                        WHEN child.end_reason = 'compression' THEN 0
-                        WHEN child.ended_at IS NULL THEN 1
-                        ELSE 2
-                      END,
-                      COALESCE(
-                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
-                        child.started_at
-                      ) DESC,
-                      child.started_at DESC,
-                      child.id DESC
-                    LIMIT 1
-                    """,
-                    (current,),
-                )
-                row = cursor.fetchone()
-            if row is None:
-                return current
-            child_id = row["id"]
-            if not child_id or child_id in seen:
-                return current
-            seen.add(child_id)
-            current = child_id
-        return current
+        with self._lock:
+            return self._get_compression_tip_conn(self._conn, session_id)
 
     # Columns excluded from compact_rows projections: only the payload-heavy
     # blob no list consumer renders. Everything else — including gateway
@@ -3974,10 +4039,22 @@ class SessionDB:
                 merged = dict(s)
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
-                    "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "tool_call_count", "last_active", "preview",
+                    "model", "system_prompt",
                 ):
                     if key in tip_row:
+                        merged[key] = tip_row[key]
+                # The live tip is the title authority. Shape-based guesses such
+                # as treating ``<root> #N`` as a legacy auto-suffix corrupt
+                # legitimate user titles and resurrect explicitly-cleared ones.
+                merged["title"] = tip_row.get("title")
+                # Workspace fields describe the logical conversation, not just
+                # one physical compression segment. Older rotations created
+                # continuation rows without copying them, so a NULL tip must
+                # not erase a known root value. A non-empty tip remains
+                # authoritative when the workspace genuinely changed.
+                for key in ("cwd", "git_branch", "git_repo_root"):
+                    if tip_row.get(key):
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
@@ -5918,7 +5995,11 @@ class SessionDB:
             return cursor.fetchone()[0]
 
     def has_platform_message_id(
-        self, session_id: str, platform_message_id: str
+        self,
+        session_id: str,
+        platform_message_id: str,
+        *,
+        include_compression_lineage: bool = False,
     ) -> bool:
         """Check if a message with the given platform_message_id exists.
 
@@ -5928,12 +6009,45 @@ class SessionDB:
         prior retry of the same inbound platform message.
         """
         with self._lock:
+            session_ids = [session_id]
+            if include_compression_lineage:
+                tip_id = self._get_compression_tip_conn(self._conn, session_id)
+                session_ids = self._compression_ancestor_ids_conn(self._conn, tip_id)
+            placeholders = ", ".join("?" for _ in session_ids)
             cursor = self._conn.execute(
                 "SELECT 1 FROM messages "
-                "WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
-                (session_id, platform_message_id),
+                f"WHERE session_id IN ({placeholders}) "
+                "AND platform_message_id = ? LIMIT 1",
+                (*session_ids, platform_message_id),
             )
             return cursor.fetchone() is not None
+
+    def tag_latest_user_message(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Attach a stable external identity to the latest active user row."""
+        if not session_id or not platform_message_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                UPDATE messages
+                SET platform_message_id = ?
+                WHERE platform_message_id IS NULL
+                  AND id = (
+                    SELECT id
+                    FROM messages
+                    WHERE session_id = ? AND role = 'user' AND active = 1
+                    ORDER BY id DESC
+                    LIMIT 1
+                )
+                """,
+                (platform_message_id, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
 
     # =========================================================================
     # Export and cleanup

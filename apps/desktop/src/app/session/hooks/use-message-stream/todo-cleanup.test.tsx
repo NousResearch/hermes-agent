@@ -6,6 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { TodoItem } from '@/lib/todos'
+import {
+  $queuedPromptsBySession,
+  enqueueQueuedPrompt,
+  flushQueuedPromptMutations,
+  getQueuedPrompts
+} from '@/store/composer-queue'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -55,11 +61,16 @@ describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
     clearSessionTodos(SID)
+    window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    $queuedPromptsBySession.set({})
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
     clearSessionTodos(SID)
+    await flushQueuedPromptMutations()
+    window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    $queuedPromptsBySession.set({})
     vi.restoreAllMocks()
   })
 
@@ -89,5 +100,44 @@ describe('useMessageStream turn-end todo cleanup', () => {
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
 
     expect($todosBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('releases a locally retained queue entry when its backend turn completes', async () => {
+    await mountStream()
+    const entry = enqueueQueuedPrompt('stored-session-1', {
+      text: 'survive until completion',
+      attachments: []
+    })
+
+    act(() =>
+      handleEvent!({
+        payload: { text: 'done', submission_id: entry!.id },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect(getQueuedPrompts('stored-session-1')).toEqual([])
+  })
+
+  it('removes only the identified queue entry on a terminal backend refusal', async () => {
+    await mountStream()
+    const refused = enqueueQueuedPrompt('stored-session-1', { text: 'invalid context', attachments: [] })
+    const survivor = enqueueQueuedPrompt('stored-session-1', { text: 'P2', attachments: [] })
+
+    act(() =>
+      handleEvent!({
+        payload: {
+          message: 'Context injection refused.',
+          submission_id: refused!.id,
+          terminal: true
+        },
+        session_id: SID,
+        type: 'error'
+      })
+    )
+    await flushQueuedPromptMutations()
+
+    expect(getQueuedPrompts('stored-session-1').map(entry => entry.id)).toEqual([survivor!.id])
   })
 })

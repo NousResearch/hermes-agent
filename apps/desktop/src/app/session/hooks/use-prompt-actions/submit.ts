@@ -26,6 +26,8 @@ import {
   isProviderSetupError,
   isSessionBusyError,
   isSessionNotFoundError,
+  type SubmitTextResult,
+  type PromptSubmitStatus,
   type SubmitTextOptions,
   withSessionBusyRetry
 } from './utils'
@@ -201,7 +203,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const clientSubmissionId =
+        options?.clientSubmissionId ?? `direct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      const optimisticId = `submission:${clientSubmissionId}`
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
@@ -454,11 +458,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // while the desktop app still holds the old session ID. Detect this,
         // resume the stored session to re-register it, and retry once.
         let submitErr: unknown = null
+        let submitStatus: PromptSubmitStatus | undefined
 
         try {
-          await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          const response = await withSessionBusyRetry(() =>
+            requestGateway<{ status?: PromptSubmitStatus }>(
+              'prompt.submit',
+              {
+                session_id: sessionId,
+                text,
+                client_submission_id: clientSubmissionId,
+                ...(options?.fromQueue ? { from_queue: true } : {})
+              },
+              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            )
           )
+          submitStatus = response?.status
         } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
@@ -484,9 +499,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 activeSessionIdRef.current = recoveredId
               }
 
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+              const response = await withSessionBusyRetry(() =>
+                requestGateway<{ status?: PromptSubmitStatus }>(
+                  'prompt.submit',
+                  {
+                    session_id: recoveredId,
+                    text,
+                    client_submission_id: clientSubmissionId,
+                    ...(options?.fromQueue ? { from_queue: true } : {})
+                  },
+                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                )
               )
+              submitStatus = response?.status
             } else {
               submitErr = firstErr
             }
@@ -506,6 +531,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Submit landed — the turn now runs (busy stays true), but the submit
         // window is closed, so release the lock for the next (sequential) send.
         releaseSubmitLock()
+
+        if (options?.fromQueue && submitStatus !== undefined) {
+          return {
+            accepted: true,
+            status: submitStatus
+          } satisfies SubmitTextResult
+        }
 
         return true
       } catch (err) {

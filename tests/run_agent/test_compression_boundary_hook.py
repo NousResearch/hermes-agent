@@ -42,6 +42,8 @@ class TestCompressionBoundaryHook:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
             agent = self._make_agent(db)
+            db.create_session(agent.session_id, "cli", cwd=str(Path.cwd()))
+            db.set_session_title(agent.session_id, "Project Reliability")
 
             # Stub the context compressor: we only need to observe the hook.
             compressor = MagicMock()
@@ -71,6 +73,11 @@ class TestCompressionBoundaryHook:
             # Session_id rotated
             assert agent.session_id != original_sid, \
                 "compression should rotate session_id when session_db is set"
+            parent_cwd = db.get_session(original_sid)["cwd"]
+            assert parent_cwd
+            assert db.get_session(agent.session_id)["cwd"] == parent_cwd
+            assert db.get_session_title(agent.session_id) == "Project Reliability"
+            assert db.get_session(original_sid)["title"] is None
 
             # Hook fired with boundary_reason="compression" and old_session_id
             calls = [
@@ -92,6 +99,113 @@ class TestCompressionBoundaryHook:
                 f"Expected new session_id as first positional arg, got {call!r}"
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+
+    def test_rotation_failure_persists_compaction_on_parent(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            db.create_session(agent.session_id, "cli", cwd=str(Path.cwd()))
+            compressor = MagicMock()
+            compressed = [{"role": "user", "content": "durable summary"}]
+            compressor.compress.return_value = compressed
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+            original_sid = agent.session_id
+            db.rotate_session_for_compression = MagicMock(
+                side_effect=RuntimeError("child insert failed")
+            )
+
+            result, _ = agent._compress_context(
+                [{"role": "user", "content": "original"}],
+                "sys",
+                approx_tokens=100,
+            )
+
+            assert result == compressed
+            assert agent.session_id == original_sid
+            assert [m["content"] for m in db.get_messages(original_sid)] == [
+                "durable summary"
+            ]
+            assert agent._last_compaction_in_place is True
+
+    def test_rotation_persists_child_transcript_inside_atomic_split(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            db.create_session(agent.session_id, "cli", cwd=str(Path.cwd()))
+            compressed = [{"role": "user", "content": "durable child summary"}]
+            compressor = MagicMock()
+            compressor.compress.return_value = compressed
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+            original_sid = agent.session_id
+            db.replace_messages = MagicMock(side_effect=RuntimeError("post-rotation write failed"))
+
+            result, _ = agent._compress_context(
+                [{"role": "user", "content": "original"}],
+                "sys",
+                approx_tokens=100,
+            )
+
+            assert result == compressed
+            assert agent.session_id != original_sid
+            assert [message["content"] for message in db.get_messages(agent.session_id)] == [
+                "durable child summary"
+            ]
+            db.replace_messages.assert_not_called()
+
+    def test_rotation_and_parent_persistence_failure_returns_original(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            db.create_session(agent.session_id, "cli", cwd=str(Path.cwd()))
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "volatile summary"}
+            ]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+            original = [{"role": "user", "content": "original"}]
+            original_sid = agent.session_id
+            db.rotate_session_for_compression = MagicMock(
+                side_effect=RuntimeError("child insert failed")
+            )
+            db.archive_and_compact = MagicMock(
+                side_effect=RuntimeError("parent write failed")
+            )
+
+            result, _ = agent._compress_context(
+                original,
+                "sys",
+                approx_tokens=100,
+            )
+
+            assert result is original
+            assert agent.session_id == original_sid
+            assert agent._last_compaction_in_place is False
+            assert not [
+                call
+                for call in compressor.on_session_start.call_args_list
+                if call.kwargs.get("boundary_reason") == "compression"
+            ]
 
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""

@@ -274,6 +274,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    platform_message_id: Optional[str] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -450,6 +451,9 @@ def build_turn_context(
         user_msg = {"role": "user", "content": user_message}
         if isinstance(pending_cli_message, dict):
             agent._pending_cli_user_message = None
+    if platform_message_id:
+        user_msg["message_id"] = platform_message_id
+        user_msg["platform_message_id"] = platform_message_id
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():

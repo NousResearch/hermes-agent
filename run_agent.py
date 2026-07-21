@@ -6431,6 +6431,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        platform_message_id: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
@@ -6473,6 +6474,7 @@ class AIAgent:
                     stream_callback,
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
+                    platform_message_id=platform_message_id,
                     moa_config=moa_config,
                 )
             finally:

@@ -36,6 +36,7 @@ import {
   isSessionIdCandidate,
   renderCommandsCatalog,
   slashStatusText,
+  type SubmitTextResult,
   type SubmitTextOptions
 } from './utils'
 
@@ -65,7 +66,7 @@ interface SlashCommandDeps {
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   startFreshSessionDraft: () => void
-  submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<boolean>
+  submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<SubmitTextResult>
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */

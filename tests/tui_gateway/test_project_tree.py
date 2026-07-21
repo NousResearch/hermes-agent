@@ -180,6 +180,51 @@ def test_persisted_repo_root_used_when_no_live_probe():
     assert _lane_ids(project) == ["/repo::branch::main"]
 
 
+def test_remote_backend_keeps_noncontained_persisted_repo_root():
+    session = _session("/elsewhere/custom-worktree", branch="feature", repo_root="/repo")
+
+    tree = pt.build_tree([], [session], [], resolve=None, hydrate=True)
+
+    assert [project["id"] for project in tree["projects"]] == ["/repo"]
+
+
+def test_stale_persisted_repo_root_outside_cwd_is_not_trusted():
+    explicit = _project("p_repo", "Repo", ["/repo"])
+    session = _session("/work/notes", branch="main", repo_root="/repo")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert {project["id"] for project in tree["projects"]} == {"/work/notes", "p_repo"}
+    notes = next(project for project in tree["projects"] if project["id"] == "/work/notes")
+    repo = next(project for project in tree["projects"] if project["id"] == "p_repo")
+    assert notes["sessionCount"] == 1
+    assert repo["sessionCount"] == 0
+
+
+def test_external_linked_worktree_unavailable_joins_its_project_via_persisted_root():
+    # An external linked worktree (cwd /worktrees/feature-x, persisted
+    # git_repo_root /repos/app from a prior successful probe) is gone or
+    # unmounted, so the local resolver returns None for the cwd itself — but
+    # the common repo it belonged to is still live and the persisted root
+    # matches an explicit project folder. The session must land in that
+    # project instead of a synthetic /worktrees/feature-x auto project.
+    explicit = _project("p_app", "App", ["/repos/app"])
+    session = _session("/worktrees/feature-x", branch="feat", repo_root="/repos/app")
+
+    def resolve(cwd):
+        if cwd == "/repos/app":
+            return {"repo_root": "/repos/app", "worktree_root": "/repos/app"}
+        return None
+
+    tree = pt.build_tree([explicit], [session], [], resolve, hydrate=True)
+
+    assert [project["id"] for project in tree["projects"]] == ["p_app"]
+    project = tree["projects"][0]
+    assert project["sessionCount"] == 1
+    assert _lane_ids(project) == ["/repos/app::branch::feat"]
+    assert session["id"] in tree["scoped_session_ids"]
+
+
 def test_non_git_cwd_preserves_legacy_workspace_grouping():
     # Before first-class Projects, every non-empty session cwd appeared as a
     # workspace even when it was not a git repo. Historical sessions must keep

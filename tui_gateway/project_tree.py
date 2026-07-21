@@ -165,6 +165,36 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
     return _placement(path, path, base, path, True, False)
 
 
+def _trusted_persisted_root(cwd: str, persisted_root: str, resolve: Optional[Resolve]) -> str:
+    """Return a persisted root only when it remains plausible for this cwd.
+
+    Remote backends have no resolver, so their persisted identity remains the
+    authority. When a local probe ran and found no repo, reject a root outside
+    the cwd unless the legacy sibling-worktree heuristic independently derives
+    the same root. As a final fallback, probe the persisted root itself: when
+    the cwd's checkout has been deleted or is temporarily unavailable but the
+    common repo it used to belong to is still live, the recorded root remains
+    authoritative. This keeps an external linked worktree's history tied to
+    its project the moment the worktree is unmounted, without trusting root
+    values that no longer resolve as a git repo.
+    """
+    root = (persisted_root or "").strip()
+    if not root or not cwd:
+        return ""
+    if resolve is None or _is_path_under(root, cwd):
+        return root
+
+    heuristic = _place_by_heuristic(cwd)
+    if heuristic and _path_key(heuristic["repo_key"]) == _path_key(root):
+        return root
+
+    info = resolve(root)
+    if info and _path_key(info.get("repo_root") or "") == _path_key(root):
+        return root
+
+    return ""
+
+
 def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str) -> Optional[dict]:
     info = resolve(cwd) if resolve else None
 
@@ -186,8 +216,9 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
         label = base_name(worktree_root) or worktree_root
         return _placement(repo_root, worktree_root, label, worktree_root, False, False)
 
-    # No live probe: trust the backend-persisted root (group by it, split main by
-    # the session's recorded branch). Kanban tasks still collapse by path shape.
+    # No live probe: use a still-plausible backend-persisted root (group by it,
+    # split main by the recorded branch). Kanban tasks still collapse by shape.
+    persisted_root = _trusted_persisted_root(cwd, persisted_root, resolve)
     if persisted_root:
         kanban_dir = kanban_worktree_dir(cwd)
         if kanban_dir:
@@ -205,7 +236,7 @@ def _session_repo_root(session: dict, resolve: Optional[Resolve]) -> str:
         info = resolve(cwd)
         if info and info.get("repo_root"):
             return info["repo_root"]
-    return (session.get("git_repo_root") or "").strip()
+    return _trusted_persisted_root(cwd, session.get("git_repo_root") or "", resolve)
 
 
 # ---------------------------------------------------------------------------

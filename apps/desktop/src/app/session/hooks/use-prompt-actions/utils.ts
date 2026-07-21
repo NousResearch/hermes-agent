@@ -8,6 +8,19 @@ import type { ComposerAttachment } from '@/store/composer'
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
+export type PromptSubmitStatus = 'complete' | 'duplicate' | 'error' | 'queued' | 'steered' | 'streaming'
+
+/**
+ * Queue drains need the backend admission result, while existing direct submit
+ * callers still use a boolean. Keep the richer result additive and narrow.
+ */
+export interface SubmitTextSuccess {
+  accepted: true
+  status?: PromptSubmitStatus
+}
+
+export type SubmitTextResult = boolean | SubmitTextSuccess
+
 export function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -225,6 +238,9 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  /** Stable queue-entry identity used by the shared backend to make prompt
+   *  admission idempotent across renderer windows and resume retries. */
+  clientSubmissionId?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

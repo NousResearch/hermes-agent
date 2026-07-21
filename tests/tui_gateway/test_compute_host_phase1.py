@@ -77,6 +77,56 @@ def test_compute_host_frame_protocol_round_trip():
         host.close()
 
 
+def test_compute_host_real_turn_propagates_submission_identity(monkeypatch):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "session_key": "stored-1",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "last_active": 0.0,
+    }
+    starts = []
+    runs = []
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _server, _frame: session)
+    monkeypatch.setattr(
+        server,
+        "_start_inflight_turn",
+        lambda _session, text, submission_id="": starts.append((text, submission_id)),
+    )
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+
+    def run_prompt(request_id, sid, _session, text, submission_id=""):
+        runs.append((request_id, sid, text, submission_id))
+        _session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {})
+
+    try:
+        host._run_real_turn(
+            {
+                "type": "turn.start",
+                "sid": "runtime-1",
+                "request_id": "turn-1",
+                "text": "persist exactly once",
+                "client_submission_id": "entry-123",
+            }
+        )
+    finally:
+        host.close()
+
+    assert starts == [("persist exactly once", "entry-123")]
+    assert runs == [("turn-1", "runtime-1", "persist exactly once", "entry-123")]
+
+
 def test_compute_host_interrupt_control_is_not_queued_behind_turn():
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)

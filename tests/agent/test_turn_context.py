@@ -179,6 +179,25 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_platform_message_id_binds_to_the_submitted_user_turn():
+    agent = _FakeAgent()
+    ctx = _build(agent, platform_message_id="desktop:queued-123")
+
+    submitted = ctx.messages[ctx.current_turn_user_idx]
+    ctx.messages.append(
+        {
+            "role": "user",
+            "content": "generated continuation row",
+            "_verification_stop_synthetic": True,
+        }
+    )
+
+    assert submitted["message_id"] == "desktop:queued-123"
+    assert submitted["platform_message_id"] == "desktop:queued-123"
+    assert "message_id" not in ctx.messages[-1]
+    assert "platform_message_id" not in ctx.messages[-1]
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)

@@ -1257,6 +1257,25 @@ class TestMessageStorage:
         # Assistant row had no platform id — must not gain one spuriously.
         assert "message_id" not in assistant_msg
 
+    def test_tag_latest_user_message_round_trips_without_overwriting_platform_identity(self, db):
+        db.create_session(session_id="s_desktop_submission", source="desktop")
+        db.append_message("s_desktop_submission", role="user", content="first")
+        db.append_message("s_desktop_submission", role="assistant", content="answer")
+
+        assert db.tag_latest_user_message("s_desktop_submission", "desktop:queue-1") is True
+        first = db.get_messages_as_conversation("s_desktop_submission")[0]
+        assert first["message_id"] == "desktop:queue-1"
+
+        db.append_message(
+            "s_desktop_submission",
+            role="user",
+            content="second",
+            platform_message_id="telegram:already-owned",
+        )
+        assert db.tag_latest_user_message("s_desktop_submission", "desktop:queue-2") is False
+        latest = db.get_messages_as_conversation("s_desktop_submission")[-1]
+        assert latest["message_id"] == "telegram:already-owned"
+
     def test_replace_messages_preserves_platform_message_id(self, db):
         """``rewrite_transcript`` (which goes through replace_messages) must
         keep the platform_message_id round-trip working for /retry, /undo,
@@ -4461,6 +4480,94 @@ class TestCompressionChainProjection:
         db._conn.commit()
         return ("root1", "delegate1", "mid1", "tip1")
 
+    def test_atomic_compression_rotation_moves_exact_metadata_to_child(self, db):
+        db.create_session("parent", "desktop", cwd="/work/repo")
+        db.update_session_cwd(
+            "parent",
+            "/work/repo",
+            git_branch="feature/reliability",
+            git_repo_root="/work/repo",
+        )
+        db.set_session_title("parent", "Project Reliability #3")
+
+        metadata = db.rotate_session_for_compression(
+            parent_session_id="parent",
+            child_session_id="child",
+            source="desktop",
+            model="test-model",
+            model_config={"temperature": 0},
+            initial_messages=[{"role": "user", "content": "compacted handoff"}],
+        )
+
+        parent = db.get_session("parent")
+        child = db.get_session("child")
+        assert parent["end_reason"] == "compression"
+        assert parent["title"] is None
+        assert child["parent_session_id"] == "parent"
+        assert child["title"] == "Project Reliability #3"
+        assert child["cwd"] == "/work/repo"
+        assert child["git_branch"] == "feature/reliability"
+        assert child["git_repo_root"] == "/work/repo"
+        assert child["message_count"] == 1
+        assert [message["content"] for message in db.get_messages("child")] == ["compacted handoff"]
+        assert metadata["title"] == "Project Reliability #3"
+
+        # A writer holding the pre-rotation physical id can acquire the SQLite
+        # writer lock only after this transaction commits. It must resolve that
+        # stale id to the live continuation instead of mutating the hidden parent.
+        assert db.set_session_title("parent", "Renamed after rotation") is True
+        db.update_session_cwd(
+            "parent",
+            "/work/repo-b",
+            git_branch="feature/after",
+            git_repo_root="/work/repo-b",
+        )
+        assert db.get_session_title("child") == "Renamed after rotation"
+        child = db.get_session("child")
+        assert child["cwd"] == "/work/repo-b"
+        assert child["git_branch"] == "feature/after"
+        assert child["git_repo_root"] == "/work/repo-b"
+
+    def test_atomic_compression_rotation_rolls_parent_back_when_child_insert_fails(self, db):
+        db.create_session("parent", "desktop", cwd="/work/repo")
+        db.set_session_title("parent", "Project Reliability")
+        db.create_session("child", "desktop")
+
+        with pytest.raises(Exception):
+            db.rotate_session_for_compression(
+                parent_session_id="parent",
+                child_session_id="child",
+                source="desktop",
+            )
+
+        parent = db.get_session("parent")
+        assert parent["ended_at"] is None
+        assert parent["end_reason"] is None
+        assert parent["title"] == "Project Reliability"
+
+    def test_atomic_compression_rotation_rolls_parent_back_when_message_insert_fails(self, db, monkeypatch):
+        db.create_session("parent", "desktop", cwd="/work/repo")
+        db.set_session_title("parent", "Project Reliability")
+
+        def fail_message_insert(*_args, **_kwargs):
+            raise RuntimeError("message insert failed")
+
+        monkeypatch.setattr(db, "_insert_message_rows", fail_message_insert)
+
+        with pytest.raises(RuntimeError, match="message insert failed"):
+            db.rotate_session_for_compression(
+                parent_session_id="parent",
+                child_session_id="child",
+                source="desktop",
+                initial_messages=[{"role": "user", "content": "compacted handoff"}],
+            )
+
+        parent = db.get_session("parent")
+        assert parent["ended_at"] is None
+        assert parent["end_reason"] is None
+        assert parent["title"] == "Project Reliability"
+        assert db.get_session("child") is None
+
     def test_get_compression_tip_walks_full_chain(self, db):
         import time as _time
         self._build_compression_chain(db, _time.time() - 3600)
@@ -4529,6 +4636,82 @@ class TestCompressionChainProjection:
 
         assert tip_row["_lineage_root_id"] == "root1"
         assert tip_row["cwd"] == "/tmp/workspaces/tip"
+
+    def test_list_projection_preserves_root_cwd_when_tip_has_none(self, db):
+        """A compression child without an explicit cwd stays in its project.
+
+        Legacy compression rotations created continuation rows without copying
+        the parent cwd. Projecting that NULL over the root workspace makes a
+        logical conversation jump into "No workspace" after compression.
+        """
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.update_session_cwd("root1", "/tmp/workspaces/root")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["cwd"] == "/tmp/workspaces/root"
+
+    def test_list_projection_treats_tip_title_as_authoritative_even_when_numbered(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root1", "Project Reliability")
+        db.set_session_title("tip1", "Project Reliability #3")
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["title"] == "Project Reliability #3"
+
+    def test_list_projection_honors_explicitly_cleared_tip_title(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root1", "Project Reliability")
+        db.set_session_title("tip1", "")
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["title"] is None
+
+    def test_title_clear_removes_legacy_ancestor_alias_and_frees_name(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        with db._conn:
+            db._conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                ("Legacy Project", "root1"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                ("Legacy Project #3", "tip1"),
+            )
+
+        assert db.set_session_title("tip1", "") is True
+        assert db.resolve_session_by_title("Legacy Project") is None
+
+        db.create_session("other-session", source="cli")
+        assert db.set_session_title("other-session", "Legacy Project") is True
+        assert db.resolve_session_by_title("Legacy Project") == "other-session"
+
+    def test_list_projection_keeps_genuinely_renamed_tip_title(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root1", "Project Reliability")
+        db.set_session_title("tip1", "Release Investigation")
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["title"] == "Release Investigation"
 
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root

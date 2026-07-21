@@ -650,6 +650,48 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
   })
 
+  it('keeps live overlay sessions ordered by last activity, not creation time', () => {
+    const oldButActive = makeSession('/www/app', {
+      git_branch: 'main',
+      id: 'old-active',
+      last_active: 100,
+      started_at: 1
+    })
+
+    const newButIdle = makeSession('/www/app', {
+      git_branch: 'main',
+      id: 'new-idle',
+      last_active: 90,
+      started_at: 90
+    })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 2,
+          groups: [
+            lane({
+              id: '/www/app::branch::main',
+              isMain: true,
+              label: 'main',
+              path: '/www/app',
+              sessions: [newButIdle, oldButActive]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [newButIdle, oldButActive])
+    const main = overlaid.repos[0].groups.find(group => group.label === 'main')
+
+    expect(main?.sessions.map(session => session.id)).toEqual(['old-active', 'new-idle'])
+  })
+
   it('adds a new session to an existing worktree lane keyed by a divergent id (matches by path)', () => {
     // Backend keyed the worktree lane off a branch-style id (no live git probe),
     // but the lane PATH is the worktree dir. A new session under that worktree

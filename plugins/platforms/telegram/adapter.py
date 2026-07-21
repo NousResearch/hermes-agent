@@ -2043,7 +2043,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
-        self._send_path_degraded = True
+        # Don't proactively mark the send path as degraded when a new
+        # polling generation starts.  The flag gets set on actual errors
+        # (network failures, conflicts) and cleared after a successful
+        # getUpdates.  Marking it True here blocks all sends — including
+        # lifecycle notifications (restart, startup) — until the first
+        # getUpdates completes, which can take up to the long-poll timeout
+        # (~30 s).  The Bot API's sendMessage uses a separate connection,
+        # so sends are safe even while a getUpdates is in-flight.
         return self._polling_generation, self._polling_progress_event
 
     def _record_polling_progress(self, generation: int) -> None:

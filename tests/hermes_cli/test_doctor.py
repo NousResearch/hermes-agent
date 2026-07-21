@@ -791,7 +791,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
     assert "Alibaba/DashScope" in out
     assert "invalid API key" not in out
     assert any(
-        url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models"
+        url == "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
         for url, _, _ in calls
     )
     assert any(

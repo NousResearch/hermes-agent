@@ -617,7 +617,7 @@ def test_list_authenticated_providers_hides_custom_shadowing_builtin_endpoint(mo
         {
             "name": "my-alibaba",
             # Matches PROVIDER_REGISTRY['alibaba'].inference_base_url exactly.
-            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "api_key": "sk-sp-test",
             "model": "qwen3.6-plus",
             "models": {"qwen3.6-plus": {"context_length": 500000}},

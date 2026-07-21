@@ -321,7 +321,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="alibaba",
         name="Qwen Cloud",
         auth_type="api_key",
-        inference_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        inference_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key_env_vars=("DASHSCOPE_API_KEY",),
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),

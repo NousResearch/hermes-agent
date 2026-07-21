@@ -901,16 +901,47 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
                 shutil.rmtree(draft_dir, ignore_errors=True)
         skill_md = skill_dir / "SKILL.md"
     else:
-        # Foreground user-directed creation keeps the existing immediate
-        # publication behavior.
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        skill_md = skill_dir / "SKILL.md"
-        _atomic_write_text(skill_md, content)
+        # Foreground creation uses the same parent lock as autonomous draft
+        # publication. Otherwise a foreground mkdir/write can race between the
+        # draft's collision check and atomic rename, allowing one creator to
+        # replace or later delete the other's package.
+        from tools.skill_sidecar_io import secure_sidecar_io_available, sidecar_lock
 
-        scan_error = _security_scan_skill(skill_dir)
-        if scan_error:
-            shutil.rmtree(skill_dir, ignore_errors=True)
-            return {"success": False, "error": scan_error}
+        parent = skill_dir.parent
+        parent.mkdir(parents=True, exist_ok=True)
+
+        def publish_foreground() -> Optional[Dict[str, Any]]:
+            if skill_dir.exists() or _find_skill(name):
+                return {
+                    "success": False,
+                    "error": f"A skill named '{name}' already exists.",
+                }
+            skill_dir.mkdir(parents=False, exist_ok=False)
+            target = skill_dir / "SKILL.md"
+            _atomic_write_text(target, content)
+            scan_error = _security_scan_skill(skill_dir)
+            if scan_error:
+                shutil.rmtree(skill_dir, ignore_errors=True)
+                return {"success": False, "error": scan_error}
+            return None
+
+        if secure_sidecar_io_available():
+            try:
+                with sidecar_lock(parent, ".skill-create.lock"):
+                    create_error = publish_foreground()
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "error": f"Could not serialize skill creation safely: {exc}",
+                }
+        else:
+            # Autonomous draft publication fails closed without secure sidecar
+            # locking, so no cross-mode race is possible on this platform. Keep
+            # foreground user-directed creation available.
+            create_error = publish_foreground()
+        if create_error:
+            return create_error
+        skill_md = skill_dir / "SKILL.md"
 
     _desc = ""
     try:

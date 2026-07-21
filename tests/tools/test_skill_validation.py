@@ -190,6 +190,60 @@ def test_background_skill_draft_is_stamped_before_atomic_publication(
         assert validation.read_skill_validation(final_dir)["status"] == "draft"
 
 
+def test_foreground_create_is_serialized_with_background_draft_publish(
+    tmp_path, monkeypatch
+):
+    import threading
+    import time
+
+    import tools.skill_validation as validation
+    from tools.skill_provenance import (
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    with isolated_skills(tmp_path):
+        entered = threading.Event()
+        release = threading.Event()
+        real_record = validation.record_draft_validation
+        calls = 0
+
+        def blocking_record(draft_dir):
+            nonlocal calls
+            real_record(Path(draft_dir))
+            calls += 1
+            if calls == 1:
+                entered.set()
+                assert release.wait(5)
+
+        monkeypatch.setattr(validation, "record_draft_validation", blocking_record)
+        results = {}
+
+        def background_create():
+            token = set_current_write_origin("background_review")
+            try:
+                results["background"] = _create_skill("validated-skill", VALID_SKILL)
+            finally:
+                reset_current_write_origin(token)
+
+        def foreground_create():
+            results["foreground"] = _create_skill("validated-skill", VALID_SKILL)
+
+        background = threading.Thread(target=background_create)
+        foreground = threading.Thread(target=foreground_create)
+        background.start()
+        assert entered.wait(5)
+        foreground.start()
+        time.sleep(0.1)
+        assert foreground.is_alive(), "foreground create bypassed parent create lock"
+        release.set()
+        background.join(5)
+        foreground.join(5)
+
+        assert results["background"]["success"] is True
+        assert results["foreground"]["success"] is False
+
+
 def test_draft_survives_intermediate_script_write(tmp_path):
     from tools.skill_validation import (
         read_skill_validation,

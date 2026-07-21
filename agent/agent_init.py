@@ -340,6 +340,7 @@ def init_agent(
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
+    initial_fallback_from: Dict[str, str] = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
@@ -573,7 +574,6 @@ def init_agent(
     agent.reaction_callback = reaction_callback
     agent.tool_gen_callback = tool_gen_callback
 
-    
     # Tool execution state — allows _vprint during tool execution
     # even when stream consumers are registered (no tokens streaming then)
     agent._executing_tools = False
@@ -1063,6 +1063,11 @@ def init_agent(
                             explicit_api_key=_fb_explicit_key,
                         )
                         if _fb_client is not None:
+                            if not initial_fallback_from:
+                                initial_fallback_from = {
+                                    "provider": agent.provider,
+                                    "model": agent.model,
+                                }
                             agent.provider = _fb["provider"]
                             agent.model = _fb_model or _fb["model"]
                             agent._fallback_activated = True
@@ -1195,6 +1200,16 @@ def init_agent(
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+    if initial_fallback_from:
+        _fallback_notice = (
+            f"⚠️ Default model unavailable — using fallback: "
+            f"{agent.model} via {agent.provider}"
+        )
+        # Use the same success/failure-safe delivery contract as runtime
+        # failover: successful turns surface one notice, while a terminal
+        # failure flushes the buffered line instead.
+        agent._pending_fallback_notice = _fallback_notice
+        agent._buffer_status(_fallback_notice)
     if agent._fallback_chain and not agent.quiet_mode:
         if len(agent._fallback_chain) == 1:
             fb = agent._fallback_chain[0]

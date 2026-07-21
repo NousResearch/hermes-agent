@@ -5048,6 +5048,7 @@ def _make_agent(
     # Prefer a per-session model override (set by a prior in-session /model
     # switch) over global config/env resolution. Resume-time stored sessions may
     # also pass scalar model/provider/runtime knobs from the persisted DB row.
+    initial_fallback_from = None
     if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or provider_override or None
@@ -5083,6 +5084,10 @@ def _make_agent(
         if resolution.used_fallback:
             if not resolution.selected_model:
                 raise RuntimeError("Auth fallback resolved without a model")
+            initial_fallback_from = {
+                "provider": str(requested_provider or ""),
+                "model": model,
+            }
             model = resolution.selected_model
         else:
             # The switch already resolved concrete credentials/endpoint; honor
@@ -5108,6 +5113,10 @@ def _make_agent(
         if resolution.used_fallback:
             if not resolution.selected_model:
                 raise RuntimeError("Auth fallback resolved without a model")
+            initial_fallback_from = {
+                "provider": str(requested_provider or ""),
+                "model": model,
+            }
             model = resolution.selected_model
     _pr = _load_provider_routing()
     return AIAgent(
@@ -5155,6 +5164,7 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        initial_fallback_from=initial_fallback_from,
         **_agent_cbs(sid),
     )
 

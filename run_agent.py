@@ -487,6 +487,7 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        initial_fallback_from: Dict[str, str] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
@@ -563,6 +564,7 @@ class AIAgent:
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
             fallback_model=fallback_model,
+            initial_fallback_from=initial_fallback_from,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
             checkpoint_max_snapshots=checkpoint_max_snapshots,
@@ -1030,11 +1032,11 @@ class AIAgent:
 
         A provider/model switch is a durable state change operators must see,
         unlike transient retry chatter that ``_clear_status_buffer`` drops.
-        ``try_activate_fallback`` records the switch in
-        ``self._pending_fallback_notice``; this emits it exactly once via
-        ``_emit_status`` and then clears it, so a successful fallback still
-        produces one visible notice.  On terminal failure the buffered switch
-        line is flushed instead (and this notice discarded) — see
+        Fallback selection records the switch in
+        ``self._pending_fallback_notice``; this emits it exactly once through
+        the driver's structured notice rail, or through status output for
+        consumers without one. On terminal failure the buffered switch line is
+        flushed instead (and this notice discarded) — see
         ``_flush_status_buffer`` — so the user always sees the switch once.
         """
         try:
@@ -1043,7 +1045,18 @@ class AIAgent:
                 # Clear before emitting so a (swallowed) callback error can't
                 # leave the notice set for a stale re-emit on a later turn.
                 self._pending_fallback_notice = None
-                self._emit_status(notice)
+                if self.notice_callback:
+                    from agent.credits_tracker import AgentNotice
+
+                    self._emit_notice(AgentNotice(
+                        text=notice,
+                        level="warn",
+                        kind="ttl",
+                        ttl_ms=8000,
+                        key="model.fallback",
+                    ))
+                else:
+                    self._emit_status(notice)
         except Exception:
             # Never break the conversation loop on a notice hiccup.
             pass

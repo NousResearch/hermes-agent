@@ -47,6 +47,9 @@ def test_init_tries_fallback_when_primary_returns_none():
         assert agent.provider == "tencent-token-plan"
         assert agent.model == "kimi2.5"
         assert agent._fallback_activated is True
+        notice = "⚠️ Default model unavailable — using fallback: kimi2.5 via tencent-token-plan"
+        assert agent._pending_fallback_notice == notice
+        assert agent._retry_status_buffer == [("status", notice)]
 
 
 def test_init_raises_when_no_fallback_configured():

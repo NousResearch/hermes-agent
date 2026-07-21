@@ -11092,6 +11092,10 @@ class TestResolveRuntimeWithFallback:
         assert captured["provider"] == "deepseek"
         assert captured["base_url"] == "https://fallback.invalid/v1"
         assert captured["api_key"] == "fb-tok"
+        assert captured["initial_fallback_from"] == {
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+        }
 
 
 def test_get_usage_does_not_substitute_cumulative_total_for_context_used():

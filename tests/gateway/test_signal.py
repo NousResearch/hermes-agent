@@ -2565,3 +2565,117 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# allow_dms config key
+# ---------------------------------------------------------------------------
+
+def _make_group_envelope(sender: str, group_id: str, text: str = "hello") -> dict:
+    """Build a minimal signal-cli group envelope."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000002",
+            "timestamp": 1700000001000,
+            "dataMessage": {
+                "timestamp": 1700000001000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": [],
+                "groupInfo": {
+                    "groupId": group_id,
+                    "type": "DELIVER",
+                },
+            },
+        }
+    }
+
+
+class TestSignalAllowDms:
+    """allow_dms config key — DM suppression and group passthrough."""
+
+    def test_allow_dms_defaults_to_true(self, monkeypatch):
+        """allow_dms is True when not present in config.extra."""
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.allow_dms is True
+
+    def test_allow_dms_false_in_config(self, monkeypatch):
+        """allow_dms is False when config.extra sets allow_dms: false."""
+        adapter = _make_signal_adapter(monkeypatch, allow_dms=False)
+        assert adapter.allow_dms is False
+
+    def test_allow_dms_true_in_config(self, monkeypatch):
+        """allow_dms is True when config.extra explicitly sets allow_dms: true."""
+        adapter = _make_signal_adapter(monkeypatch, allow_dms=True)
+        assert adapter.allow_dms is True
+
+    @pytest.mark.asyncio
+    async def test_allow_dms_false_suppresses_dm(self, monkeypatch):
+        """When allow_dms=false, DMs must not reach handle_message."""
+        adapter = _make_signal_adapter(monkeypatch, allow_dms=False)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        envelope = _make_dm_envelope(sender="+15559876543", attachments=[], text="hi")
+        await adapter._handle_envelope(envelope)
+
+        assert dispatched == [], (
+            "DM should be silently dropped when allow_dms=false, "
+            f"but got {len(dispatched)} event(s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_allow_dms_false_still_delivers_group_message(self, monkeypatch):
+        """When allow_dms=false, group messages must still reach handle_message."""
+        group_id = "groupAABBCCDDEEFF=="
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            allow_dms=False,
+            group_allowed=group_id,
+        )
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        envelope = _make_group_envelope(
+            sender="+15559876543",
+            group_id=group_id,
+            text="hey group",
+        )
+        await adapter._handle_envelope(envelope)
+
+        assert len(dispatched) == 1, (
+            "Group message should be delivered even when allow_dms=false, "
+            f"but got {len(dispatched)} event(s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_allow_dms_true_delivers_dm(self, monkeypatch):
+        """Default behaviour: DMs reach handle_message when allow_dms=true."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        envelope = _make_dm_envelope(sender="+15559876543", attachments=[], text="hello")
+        await adapter._handle_envelope(envelope)
+
+        assert len(dispatched) == 1, (
+            f"DM should be delivered when allow_dms=true, but got {len(dispatched)} event(s)"
+        )

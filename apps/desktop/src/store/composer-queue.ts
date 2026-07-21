@@ -46,12 +46,42 @@ const save = (state: QueueState) => {
 
 export const $queuedPromptsBySession = atom<QueueState>(load())
 
+/**
+ * Sessions whose queue the user explicitly halted (Stop button / Esc). A parked
+ * queue is skipped by both auto-drain paths until the user acts on it again —
+ * resume, send-now, a manual drain, queueing a fresh prompt, or emptying the
+ * queue all unpark. Deliberately in-memory only: a fresh app process starts
+ * unparked, so restored-entry semantics stay a separate concern.
+ */
+export const $parkedQueueSessions = atom<Record<string, true>>({})
+
+const setParked = (sid: string, parked: boolean) => {
+  const current = $parkedQueueSessions.get()
+
+  if (Boolean(current[sid]) === parked) {
+    return
+  }
+
+  const next = { ...current }
+
+  if (parked) {
+    next[sid] = true
+  } else {
+    delete next[sid]
+  }
+
+  $parkedQueueSessions.set(next)
+}
+
 const writeSession = (sid: string, queue: QueuedPromptEntry[]) => {
   const current = $queuedPromptsBySession.get()
   const next = { ...current }
 
   if (queue.length === 0) {
     delete next[sid]
+    // An empty queue has nothing to hold back — drop the park so it can't
+    // linger as stale state and silently gate entries queued much later.
+    setParked(sid, false)
   } else {
     next[sid] = queue
   }
@@ -96,6 +126,10 @@ export const enqueueQueuedPrompt = (
   }
 
   writeSession(sid, [...queueFor(sid), entry])
+  // Queueing a new prompt is fresh intent to keep the conversation moving —
+  // a park from an earlier Stop must not hold this (or the entries ahead of
+  // it) back.
+  setParked(sid, false)
 
   return entry
 }
@@ -237,12 +271,55 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
   $queuedPromptsBySession.set(next)
   save(next)
 
+  // The park is a property of the entries the user halted — it re-homes with
+  // them. Without this, a backend bounce right after Stop would shed the park
+  // and auto-send the exact prompts the user just held back.
+  if ($parkedQueueSessions.get()[from]) {
+    setParked(from, false)
+    setParked(to, true)
+  }
+
   return true
+}
+
+/**
+ * Park a session's queue after an explicit user halt (Stop / Esc): entries stay
+ * visible in the panel but neither auto-drain path sends them. No-op for a
+ * session with nothing queued — parking exists to hold back queued turns, and
+ * a park with no queue would only linger as a stale gate.
+ */
+export const parkQueuedPrompts = (key: string | null | undefined): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid || queueFor(sid).length === 0) {
+    return false
+  }
+
+  setParked(sid, true)
+
+  return true
+}
+
+/** Lift a park (user resumed the queue). Safe to call for any session. */
+export const unparkQueuedPrompts = (key: string | null | undefined): void => {
+  const sid = sidOf(key)
+
+  if (sid) {
+    setParked(sid, false)
+  }
+}
+
+export const isQueueParked = (key: string | null | undefined): boolean => {
+  const sid = sidOf(key)
+
+  return sid ? Boolean($parkedQueueSessions.get()[sid]) : false
 }
 
 /** Inputs to {@link shouldAutoDrain}. */
 export interface AutoDrainInput {
   isBusy: boolean
+  /** The user explicitly halted this session's queue (Stop / Esc). */
+  parked?: boolean
   queueLength: number
 }
 
@@ -255,8 +332,16 @@ export interface AutoDrainInput {
  * busy ref to the current value, swallowing the settle edge — an edge-gated
  * drain would then strand the entry forever. The caller's drain lock
  * (`drainingQueueRef`) serializes sends so being edge-free can't double-submit.
+ *
+ * `parked` is the one deliberate exception: an explicit Stop/Esc is the user
+ * saying HALT, and immediately firing the next queued prompt contradicts the
+ * instruction they just gave. Parked entries stay in the panel until the user
+ * resumes, sends, edits, or deletes them. Interrupts that exist to reach the
+ * queue faster (send-now-while-busy) never park, so they keep draining through
+ * this same gate.
  */
-export const shouldAutoDrain = ({ isBusy, queueLength }: AutoDrainInput): boolean => !isBusy && queueLength > 0
+export const shouldAutoDrain = ({ isBusy, parked, queueLength }: AutoDrainInput): boolean =>
+  !isBusy && !parked && queueLength > 0
 
 /** Auto-drain attempts for one entry before we stop retrying and toast. The
  * entry stays queued for a manual send; a remount/reconnect resets the count. */

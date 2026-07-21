@@ -1768,6 +1768,7 @@ export const ja = defineLocale({
     urlHintPre: '完全な URL を入力してください。例: ',
     attach: '添付',
     queued: count => `${count} 件キュー済み`,
+    queuedPaused: count => `${count} 件キュー済み — 一時停止中`,
     attachmentOnly: '添付のみのターン',
     emptyTurn: '空のターン',
     attachments: count => `${count} 件の添付`,
@@ -1777,6 +1778,8 @@ export const ja = defineLocale({
     queueSendNext: '次に送信',
     queueSend: '送信',
     queueDelete: '削除',
+    queueResume: '再開',
+    queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',

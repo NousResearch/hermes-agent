@@ -67,6 +67,41 @@ class TestLightModeDetection:
         monkeypatch.setenv("COLORFGBG", "0;15")  # bg slot 15 = light
         assert cli_mod._detect_light_mode() is True
 
+    def test_zed_terminal_ignores_inherited_colorfgbg(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "zed")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        assert cli_mod._detect_light_mode() is False
+
+    def test_zed_term_flag_ignores_inherited_colorfgbg(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.setenv("ZED_TERM", "true")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        assert cli_mod._detect_light_mode() is False
+
+    def test_zed_terminal_still_honors_explicit_theme_override(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "zed")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        monkeypatch.setenv("HERMES_TUI_THEME", "light")
+        assert cli_mod._detect_light_mode() is True
+
+    def test_zed_terminal_still_honors_explicit_background_override(self, cli_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "zed")
+        monkeypatch.setenv("COLORFGBG", "0;15")
+        monkeypatch.setenv("HERMES_TUI_BACKGROUND", "#ffffff")
+        assert cli_mod._detect_light_mode() is True
+
     def test_cache_is_sticky(self, cli_mod, monkeypatch):
         monkeypatch.setenv("HERMES_LIGHT", "1")
         assert cli_mod._detect_light_mode() is True

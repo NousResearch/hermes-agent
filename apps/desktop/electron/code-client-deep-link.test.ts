@@ -5,20 +5,24 @@ import { codeClientDeepLink } from './code-client-deep-link'
 describe('codeClientDeepLink', () => {
   it('builds an inert Codex composer deep link', () => {
     expect(
-      codeClientDeepLink({ client: 'codex', cwd: '/Users/test/repo', prompt: 'Review notes/today.md' })
+      codeClientDeepLink({ client: 'codex', cwd: '/Users/test/repo', prompt: 'Review notes/today.md' }, 'darwin')
     ).toBe('codex://new?path=%2FUsers%2Ftest%2Frepo&prompt=Review%20notes%2Ftoday.md')
   })
 
   it('builds an inert Claude Code composer deep link', () => {
     expect(
-      codeClientDeepLink({ client: 'claude-code', cwd: '/Users/test/repo', prompt: 'Review notes/today.md' })
+      codeClientDeepLink(
+        { client: 'claude-code', cwd: '/Users/test/repo', prompt: 'Review notes/today.md' },
+        'darwin'
+      )
     ).toBe('claude-cli://open?cwd=%2FUsers%2Ftest%2Frepo&q=Review%20notes%2Ftoday.md')
   })
 
-  it('accepts absolute Windows paths without shell interpretation', () => {
-    expect(codeClientDeepLink({ client: 'codex', cwd: 'C:\\Users\\test\\repo', prompt: '' }, 'win32')).toBe(
-      'codex://new?path=C%3A%5CUsers%5Ctest%5Crepo'
-    )
+  it.each([
+    ['C:\\Users\\test\\repo', 'codex://new?path=C%3A%5CUsers%5Ctest%5Crepo'],
+    ['C:/Users/test/repo', 'codex://new?path=C%3A%2FUsers%2Ftest%2Frepo']
+  ])('accepts a fully qualified Windows path: %s', (cwd, expected) => {
+    expect(codeClientDeepLink({ client: 'codex', cwd, prompt: '' }, 'win32')).toBe(expected)
   })
 
   it.each(['/rooted', '\\rooted'])('rejects drive-relative Windows roots: %s', cwd => {

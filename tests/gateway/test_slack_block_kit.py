@@ -159,10 +159,12 @@ class TestTables:
         )
         blocks = render_blocks(md)
         cs = blocks[0]["column_settings"]
-        # left is default -> null; center/right emitted
-        assert cs[0] is None
+        # Slack requires every column_settings entry to be an object. Explicit
+        # left placeholders preserve the position of later custom alignments.
+        assert cs[0] == {"align": "left"}
         assert cs[1] == {"align": "center"}
         assert cs[2] == {"align": "right"}
+        assert all(isinstance(setting, dict) for setting in cs)
 
     def test_inline_formatting_inside_cells(self):
         md = (

@@ -757,6 +757,68 @@ class TestSearchFilesFallbackHiddenPaths:
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
 
+class TestSearchContentTruncation:
+    """Content search must flag truncation so the model knows to paginate.
+
+    Regression for the off-by-one in `_search_with_rg`/`_search_with_grep`:
+    the non-context branch capped the `head -n` fetch at exactly
+    `limit + offset`, so `truncated = total > offset + limit` could never be
+    True and the model never saw matches past the first page.
+    """
+
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command, shell=True, text=True, capture_output=True
+            )
+            return {
+                "output": completed.stdout,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        return env
+
+    def _write_hits(self, tmp_path, n):
+        f = tmp_path / "hits.txt"
+        f.write_text("".join(f"MATCH line {i}\n" for i in range(n)))
+        return f
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_truncated_set_when_more_matches_than_page(self, tmp_path, monkeypatch, backend):
+        ops = ShellFileOperations(self._make_env())
+        if not ops._has_command(backend):
+            pytest.skip(f"{backend} not available")
+        # Pin the backend under test so both code paths get exercised.
+        monkeypatch.setattr(ops, "_has_command", lambda c: c == backend)
+        self._write_hits(tmp_path, 10)
+
+        result = ops.search("MATCH", path=str(tmp_path), target="content", limit=3, offset=0)
+
+        assert result.error is None
+        assert len(result.matches) == 3  # page is still capped at limit
+        assert result.truncated is True  # ...but the model is told there's more
+        # The sentinel row fetched for detection must not leak into the page.
+        assert [m.line_number for m in result.matches] == [1, 2, 3]
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_not_truncated_when_page_fits_exactly(self, tmp_path, monkeypatch, backend):
+        ops = ShellFileOperations(self._make_env())
+        if not ops._has_command(backend):
+            pytest.skip(f"{backend} not available")
+        monkeypatch.setattr(ops, "_has_command", lambda c: c == backend)
+        self._write_hits(tmp_path, 10)
+
+        result = ops.search("MATCH", path=str(tmp_path), target="content", limit=10, offset=0)
+
+        assert result.error is None
+        assert len(result.matches) == 10
+        assert result.truncated is False  # exact fit must not false-positive
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")

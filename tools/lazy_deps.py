@@ -172,6 +172,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "slack-sdk==3.43.0",
         "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
+    "platform.zulip": ("zulip==0.9.0",),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
         "aiosqlite==0.22.1",

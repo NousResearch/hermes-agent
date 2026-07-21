@@ -18,6 +18,7 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -126,21 +127,97 @@ class TestOrphanRollbackOnCreateFailure:
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
 
-        # Make the CHILD create_session raise, but let the initial parent
-        # end_session/reopen work. We patch create_session to blow up.
-        real_create = db.create_session
-
         def _boom(*a, **k):
             raise RuntimeError("FOREIGN KEY constraint failed")
 
-        with patch.object(db, "create_session", side_effect=_boom):
+        with patch.object(db, "rotate_session_for_compression", side_effect=_boom):
             agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
 
         # The live id must roll back to the still-indexed parent — NOT a
         # phantom child id that has no row in state.db.
         assert agent.session_id == parent
-        assert db.get_session(parent) is not None
-        _ = real_create  # silence unused
+        parent_row = db.get_session(parent)
+        assert parent_row is not None
+        assert parent_row["ended_at"] is None
+
+
+class TestAtomicCompressionRotation:
+    def test_prune_cannot_delete_parent_before_child_is_created(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        prune_db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ATOMIC_ROT"
+        child = "CHILD_ATOMIC_ROT"
+        db.create_session(parent, source="telegram")
+
+        child_insert_reached = threading.Event()
+        allow_child_insert = threading.Event()
+        child_insert_timed_out = threading.Event()
+        prune_attempted = threading.Event()
+        rotation_errors = []
+        prune_result = []
+
+        def _trace(sql):
+            if sql.startswith("INSERT INTO sessions") and child in sql:
+                child_insert_reached.set()
+                if not allow_child_insert.wait(timeout=5):
+                    child_insert_timed_out.set()
+
+        assert db._conn is not None
+        db._conn.set_trace_callback(_trace)
+        real_prune_write = prune_db._execute_write
+
+        def _mark_prune_attempt(fn):
+            prune_attempted.set()
+            return real_prune_write(fn)
+
+        def _rotate():
+            try:
+                db.rotate_session_for_compression(
+                    parent_session_id=parent,
+                    child_session_id=child,
+                    source="telegram",
+                    model="test/model",
+                )
+            except BaseException as exc:
+                rotation_errors.append(exc)
+
+        def _prune():
+            prune_result.append(
+                prune_db.prune_sessions(older_than_days=None, started_after=0)
+            )
+
+        rotation_thread = threading.Thread(target=_rotate)
+        prune_thread = threading.Thread(target=_prune)
+        with patch.object(prune_db, "_execute_write", side_effect=_mark_prune_attempt):
+            rotation_thread.start()
+            assert child_insert_reached.wait(timeout=2)
+            # A WAL reader must still see the pre-rotation snapshot while the
+            # atomic writer is between its parent UPDATE and child INSERT. A
+            # split implementation exposes ended parent + missing child here.
+            visible_parent = prune_db.get_session(parent)
+            assert visible_parent is not None
+            assert visible_parent["ended_at"] is None
+            assert prune_db.get_session(child) is None
+            prune_thread.start()
+            assert prune_attempted.wait(timeout=2)
+            allow_child_insert.set()
+            rotation_thread.join(timeout=2)
+            prune_thread.join(timeout=2)
+
+        assert not rotation_thread.is_alive()
+        assert not prune_thread.is_alive()
+        assert not child_insert_timed_out.is_set()
+        assert rotation_errors == []
+        assert prune_result == [1]
+        assert db.get_session(parent) is None
+        child_row = db.get_session(child)
+        assert child_row is not None
+        assert child_row["parent_session_id"] is None
+        db.append_message(child, role="assistant", content="persisted after prune")
+        assert db.get_messages(child)[-1]["content"] == "persisted after prune"
+
+        db.close()
+        prune_db.close()
 
 
 class TestPlatformForwardedAtBoundary:

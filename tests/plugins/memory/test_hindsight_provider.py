@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import plugins.memory.hindsight as hindsight_plugin
 from hermes_cli.memory_setup import _CANCELLED
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
@@ -28,6 +29,99 @@ from plugins.memory.hindsight import (
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
+
+
+class TestWindowsDaemonLauncher:
+    def test_uv_venv_pythonw_uses_base_gui_python_with_hidden_child_bootstrap(
+        self, tmp_path, monkeypatch
+    ):
+        """uv's pythonw launcher must not respawn console python.exe."""
+        venv_root = tmp_path / "hindsight-runtime"
+        scripts = venv_root / "Scripts"
+        site_packages = venv_root / "Lib" / "site-packages"
+        base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
+        scripts.mkdir(parents=True)
+        site_packages.mkdir(parents=True)
+        base.mkdir(parents=True)
+
+        venv_pythonw = scripts / "pythonw.exe"
+        base_pythonw = base / "pythonw.exe"
+        venv_pythonw.write_bytes(b"")
+        base_pythonw.write_bytes(b"")
+        (venv_root / "pyvenv.cfg").write_text(
+            f"home = {base}\nimplementation = CPython\nuv = 0.11.14\n",
+            encoding="utf-8",
+        )
+
+        class FakeDaemonEmbedManager:
+            def _find_api_command(self):
+                return [
+                    str(venv_pythonw),
+                    "-m",
+                    "hindsight_api.main",
+                    "--existing-option",
+                ]
+
+        fake_manager_module = SimpleNamespace(DaemonEmbedManager=FakeDaemonEmbedManager)
+        real_import_module = hindsight_plugin.importlib.import_module
+
+        def fake_import_module(name):
+            if name == "hindsight_embed.daemon_embed_manager":
+                return fake_manager_module
+            return real_import_module(name)
+
+        monkeypatch.setattr(hindsight_plugin.sys, "platform", "win32")
+        monkeypatch.setattr(
+            hindsight_plugin.importlib, "import_module", fake_import_module
+        )
+
+        hindsight_plugin._patch_windows_hindsight_daemon_launcher()
+        command = FakeDaemonEmbedManager()._find_api_command()
+
+        assert command[0] == str(base_pythonw)
+        assert command[1] == "-c"
+        assert "CREATE_NO_WINDOW" in command[2]
+        assert str(venv_root) in command
+        assert str(site_packages) in command
+        assert command[-1] == "--existing-option"
+        assert str(venv_pythonw) not in command
+
+    def test_hidden_child_bootstrap_keeps_popen_subclassable(
+        self, tmp_path, monkeypatch
+    ):
+        """asyncio.windows_utils subclasses Popen while Hindsight imports."""
+        import runpy
+        import subprocess
+
+        calls = []
+
+        class RecordingPopen:
+            def __init__(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+        monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
+        monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        monkeypatch.setattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+        monkeypatch.setattr(runpy, "run_module", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["-c", str(tmp_path), str(tmp_path / "site-packages")],
+        )
+
+        exec(hindsight_plugin._WINDOWS_HINDSIGHT_BOOTSTRAP, {})
+
+        class AsyncioStylePopen(subprocess.Popen):
+            pass
+
+        subprocess.Popen(["hidden-child"])
+        subprocess.Popen(
+            ["explicit-console"], creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
+
+        assert issubclass(AsyncioStylePopen, RecordingPopen)
+        assert calls[0][1]["creationflags"] & subprocess.CREATE_NO_WINDOW
+        assert calls[1][1]["creationflags"] == subprocess.CREATE_NEW_CONSOLE
 
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,7 @@ function reduceStreams(grid: GridTestState, { ch, key }: WidgetInput): GridTestS
 
 export const gridTestApp = defineWidgetApp<GridTestState>({
   id: 'grid-test',
+  help: 'open an interactive widget-grid demo overlay',
   usage: USAGE,
 
   init(arg) {

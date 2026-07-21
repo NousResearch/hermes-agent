@@ -5,28 +5,28 @@ import { terminalBackgroundHex } from '@hermes/ink'
 
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
 import { launchWidget } from '../../../sdk/host.js'
+import { listWidgetApps } from '../../../sdk/registry.js'
 import { detectLightMode } from '../../../theme.js'
 import { getUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-/** Slash command → SDK widget-app launch. The app owns parsing (init),
- *  keybindings (reduce), and placement (render); refusals print usage. */
-const widgetCommand = (name: string, help: string): SlashCommand => ({
-  help,
-  name,
+/** The registry IS the catalog: every registered widget app becomes a slash
+ *  command carrying the app's own help/usage — nothing hardcoded per app.
+ *  The app owns parsing (init), keybindings (reduce), placement (render). */
+export const widgetAppCommands: SlashCommand[] = listWidgetApps().map(app => ({
+  help: app.help,
+  name: app.id,
   run: (arg, ctx) => {
-    const err = launchWidget(name, arg)
+    const err = launchWidget(app.id, arg)
 
     if (err) {
       ctx.transcript.sys(err)
     }
   }
-})
+}))
 
 export const debugCommands: SlashCommand[] = [
-  widgetCommand('grid-test', 'open an interactive widget-grid demo overlay'),
-  widgetCommand('dialog-test', 'open a sample dialog overlay with a faked backdrop'),
-  widgetCommand('weather', 'current conditions with themed ASCII art (wttr.in)'),
+  ...widgetAppCommands,
 
   {
     help: 'write a V8 heap snapshot + memory diagnostics (see HERMES_HEAPDUMP_DIR)',

@@ -22,7 +22,7 @@ const wttrReply = (weatherCode: string) => ({
   nearest_area: [{ areaName: [{ value: 'Austin' }], country: [{ value: 'USA' }] }]
 })
 
-const activeState = () => getOverlayState().widget?.state as undefined | WeatherState
+const activeState = () => getOverlayState().ambient.find(a => a.appId === 'weather')?.state as undefined | WeatherState
 
 beforeEach(() => resetOverlayState())
 afterEach(() => vi.unstubAllGlobals())
@@ -55,13 +55,13 @@ describe('weather reference app (async contract)', () => {
     launchWidget('weather', '')
     expect(activeState()?.phase.kind).toBe('loading')
 
-    // Close while in flight, then resolve.
-    expect(weatherApp.reduce(activeState()!, key({ escape: true }))).toBeNull()
-    resetOverlayState()
+    // Toggle closed while in flight (ambient dismissal), then resolve.
+    expect(launchWidget('weather', '')).toBeNull()
+    expect(getOverlayState().ambient).toEqual([])
     resolve({ json: async () => wttrReply('113'), ok: true })
     await new Promise(r => setTimeout(r, 0))
 
-    expect(getOverlayState().widget).toBeNull()
+    expect(getOverlayState().ambient).toEqual([])
   })
 
   it('fetch failure lands as an error phase', async () => {

@@ -1,6 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 
-import { Dialog, Overlay } from '../../components/overlay.js'
+import { Dialog } from '../../components/overlay.js'
 import type { Theme } from '../../theme.js'
 import { updateWidget } from '../host.js'
 import { defineWidgetApp } from '../registry.js'
@@ -120,6 +120,8 @@ function load(location: string): void {
 
 export const weatherApp = defineWidgetApp<WeatherState>({
   id: 'weather',
+  help: 'current conditions with themed ASCII art (wttr.in)',
+  mode: 'ambient',
   usage: USAGE,
 
   init(arg) {
@@ -144,18 +146,18 @@ export const weatherApp = defineWidgetApp<WeatherState>({
     return state
   },
 
+  // Ambient: renders IN the dock (host owns placement) — a compact card
+  // that sits above the status bar while the composer stays live.
   render({ cols, state, t }) {
     const { phase } = state
     const title = phase.kind === 'ready' ? phase.report.area : 'Weather'
 
     return (
-      <Overlay backdrop zone="center">
-        <Dialog hint="r refresh · Esc/q close" title={title} width={Math.min(46, cols - 8)}>
-          {phase.kind === 'loading' && <Text color={t.color.muted}>fetching wttr.in…</Text>}
-          {phase.kind === 'error' && <Text color={t.color.error}>{phase.message}</Text>}
-          {phase.kind === 'ready' && <ReadyBody report={phase.report} t={t} />}
-        </Dialog>
-      </Overlay>
+      <Dialog title={title} width={Math.min(42, cols - 4)}>
+        {phase.kind === 'loading' && <Text color={t.color.muted}>fetching wttr.in…</Text>}
+        {phase.kind === 'error' && <Text color={t.color.error}>{phase.message}</Text>}
+        {phase.kind === 'ready' && <ReadyBody report={phase.report} t={t} />}
+      </Dialog>
     )
   }
 })

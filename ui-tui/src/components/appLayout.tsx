@@ -22,7 +22,7 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
-import { ActiveWidgetSlot } from '../sdk/host.js'
+import { ActiveWidgetSlot, AmbientDock } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -442,6 +442,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
+      <AmbientDock />
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
   )

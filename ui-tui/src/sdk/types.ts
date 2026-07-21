@@ -35,6 +35,14 @@ export interface WidgetRenderCtx<S> {
  */
 export interface WidgetApp<S = unknown> {
   id: string
+  /** One-line description — surfaces in `/` completions and command help. */
+  help: string
+  /**
+   * `modal` (default): owns every keypress, blocks the composer.
+   * `ambient`: glanceable panel — no input capture, no blocking; launching
+   * the same id again toggles it closed.
+   */
+  mode?: 'ambient' | 'modal'
   init(arg: string): null | S
   reduce(state: S, input: WidgetInput): null | S
   render(ctx: WidgetRenderCtx<S>): ReactNode

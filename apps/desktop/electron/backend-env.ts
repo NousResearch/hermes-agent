@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -60,6 +61,78 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   return ordered.join(delimiter)
 }
 
+function dotenvKeyNames(contents = '') {
+  const names = []
+
+  for (const line of String(contents).split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/)
+
+    if (match) {
+      names.push(match[1])
+    }
+  }
+
+  return names
+}
+
+function buildProfileScopedParentEnv({
+  currentEnv = process.env,
+  profileEnvContents = [],
+  platform = process.platform
+}: any = {}) {
+  const normalizeKey = platform === 'win32' ? key => key.toUpperCase() : key => key
+
+  const profileOwnedKeys = new Set(
+    profileEnvContents.flatMap(contents => dotenvKeyNames(contents)).map(key => normalizeKey(key))
+  )
+
+  return Object.fromEntries(
+    Object.entries(currentEnv || {}).filter(([key]) => !profileOwnedKeys.has(normalizeKey(key)))
+  )
+}
+
+function readProfileEnvContents(hermesHome, { fsModule = fs, pathModule = path }: any = {}) {
+  const envPaths = [pathModule.join(hermesHome, '.env')]
+  const profilesRoot = pathModule.join(hermesHome, 'profiles')
+
+  try {
+    for (const entry of fsModule.readdirSync(profilesRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        envPaths.push(pathModule.join(profilesRoot, entry.name, '.env'))
+      }
+    }
+  } catch {
+    // A missing profiles directory is the normal single-profile case.
+  }
+
+  return envPaths.flatMap(envPath => {
+    try {
+      return [fsModule.readFileSync(envPath, 'utf8')]
+    } catch {
+      return []
+    }
+  })
+}
+
+function buildProfileBackendParentEnv({
+  hermesHome,
+  profile,
+  currentEnv = process.env,
+  platform = process.platform,
+  fsModule = fs,
+  pathModule = path
+}: any = {}) {
+  if (!profile || !hermesHome) {
+    return { ...(currentEnv || {}) }
+  }
+
+  return buildProfileScopedParentEnv({
+    currentEnv,
+    profileEnvContents: readProfileEnvContents(hermesHome, { fsModule, pathModule }),
+    platform
+  })
+}
+
 function buildDesktopBackendPath({
   hermesHome,
   venvRoot,
@@ -118,8 +191,12 @@ export {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  buildProfileBackendParentEnv,
+  buildProfileScopedParentEnv,
   delimiterForPlatform,
+  dotenvKeyNames,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  readProfileEnvContents
 }

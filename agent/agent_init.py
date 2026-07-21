@@ -1415,6 +1415,21 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+
+    # Cross-turn progress tracker — detects agents making different tool
+    # calls each turn without converging (no text output, no file mutations).
+    try:
+        from agent.progress_tracker import ProgressTracker
+        _delegation_cfg = _agent_cfg.get("delegation", {})
+        _pt_cfg = _delegation_cfg.get("progress_tracker", {})
+        agent._progress_tracker = ProgressTracker(
+            enabled=_pt_cfg.get("enabled", True),
+            warn_after=_pt_cfg.get("warn_after", 15),
+            halt_after=_pt_cfg.get("halt_after", 25),
+        )
+    except Exception as _pt_err:
+        _ra().logger.warning("Progress tracker config ignored: %s", _pt_err)
+
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

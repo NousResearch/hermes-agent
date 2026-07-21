@@ -5083,6 +5083,21 @@ def run_conversation(
                                 pass
                     break
 
+                # Cross-turn progress tracking — detect agents that make
+                # different tool calls each turn but never produce output.
+                if hasattr(agent, '_progress_tracker') and agent._progress_tracker:
+                    agent._progress_tracker.record_iteration()
+                    if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+                        for tc in assistant_message.tool_calls:
+                            tool_name = tc.function.name if hasattr(tc, 'function') else tc.get('function', {}).get('name', '')
+                            agent._progress_tracker.record_file_mutation(tool_name)
+                    progress_warning = agent._progress_tracker.check()
+                    if progress_warning:
+                        for msg in reversed(messages):
+                            if msg.get("role") == "tool":
+                                msg["content"] = (msg.get("content") or "") + f"\n\n{progress_warning}"
+                                break
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
@@ -5158,6 +5173,10 @@ def run_conversation(
             
             else:
                 # No tool calls - this is the final response
+                # Record text response for cross-turn progress tracking
+                if hasattr(agent, '_progress_tracker') and agent._progress_tracker:
+                    agent._progress_tracker.record_text_response()
+
                 final_response = assistant_message.content or ""
                 
                 # Fix: unmute output when entering the no-tool-call branch

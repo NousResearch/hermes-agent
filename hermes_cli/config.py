@@ -2388,6 +2388,13 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Cross-turn progress tracker — detects agents making different tool
+        # calls each turn without converging (no text output, no file changes).
+        "progress_tracker": {
+            "enabled": True,
+            "warn_after": 15,
+            "halt_after": 25,
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

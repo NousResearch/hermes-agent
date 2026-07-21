@@ -1123,6 +1123,13 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # Cross-turn progress tracker — detects agents that make different tool
+  # calls each turn without producing output (no text, no file changes).
+  # Complementary to tool_loop_guardrails (which catches intra-turn loops).
+  progress_tracker:
+    enabled: true                             # Enable cross-turn non-convergence detection (default: true)
+    warn_after: 15                            # Warn after N iterations with no progress (default: 15)
+    halt_after: 25                            # Force final response after N iterations with no progress (default: 25)
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

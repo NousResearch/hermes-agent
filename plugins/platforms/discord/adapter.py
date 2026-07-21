@@ -6618,6 +6618,7 @@ class DiscordAdapter(BasePlatformAdapter):
         next_steps: str,
         session_key: str,
         metadata: Optional[dict] = None,
+        approval_context: Optional[dict] = None,
     ) -> SendResult:
         """Send a Kanban approval gate message with Approve/Reject buttons.
 
@@ -6639,12 +6640,21 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
+            ctx = approval_context or {}
+            why = str(ctx.get("why") or summary or "Human approval required.")
+            risk = str(ctx.get("risk") or "Approving allows the worker to continue; rejecting keeps the task blocked for remediation.")
+            approve_means = str(ctx.get("approve_means") or "Approve means: record approval and unblock the task.")
+            reject_means = str(ctx.get("reject_means") or "Reject means: record rejection, keep the task blocked, and create a remediation child task.")
+
             # Build the approval message with full context
             content = (
                 f"🔔 **Kanban Approval Gate Required**\n\n"
                 f"**Task:** {task_id}\n"
                 f"**Title:** {title}\n\n"
+                f"**Why approval is needed:**\n{why}\n\n"
+                f"**Risk / consequence:**\n{risk}\n\n"
                 f"**Progress:**\n{progress}\n\n"
+                f"**Decision effects:**\n{approve_means}\n{reject_means}\n\n"
                 f"**Next Steps (if approved):**\n{next_steps}\n\n"
                 f"**Summary:** {summary}"
             )
@@ -6654,20 +6664,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 description=f"**Task:** `{task_id}`  \n**Title:** {title}",
                 color=discord.Color.orange(),
             )
+            embed.add_field(name="❓ Why approval is needed", value=why[:1024] or "—", inline=False)
+            embed.add_field(name="⚠️ Risk / consequence", value=risk[:1024] or "—", inline=False)
             embed.add_field(name="📋 Progress So Far", value=progress[:1024] or "—", inline=False)
+            embed.add_field(name="✅ Approve means", value=approve_means[:1024] or "—", inline=False)
+            embed.add_field(name="❌ Reject means", value=reject_means[:1024] or "—", inline=False)
             embed.add_field(name="➡️ Next Steps (if approved)", value=next_steps[:1024] or "—", inline=False)
             embed.add_field(name="📝 Summary", value=summary[:1024] or "—", inline=False)
             embed.set_footer(text=f"Task ID: {task_id} | Board: {board}")
 
-            # Mirror in plain content for clients where embeds don't render
-            content = (
-                f"🔔 **Kanban Approval Gate Required**\n\n"
-                f"**Task:** {task_id}\n"
-                f"**Title:** {title}\n\n"
-                f"**Progress:**\n{progress}\n\n"
-                f"**Next Steps (if approved):**\n{next_steps}\n\n"
-                f"**Summary:** {summary}"
-            )
+            # Mirror in plain content for clients where embeds don't render.
+            # Keep the same decision context as the embed so mobile / compact
+            # clients still show the consequence of each button.
 
             view = KanbanApprovalView(
                 task_id=task_id,
@@ -8019,6 +8027,39 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass  # message deleted or too old to edit
 
+    if all(
+        hasattr(discord.ui, attr) for attr in ("Modal", "TextInput")
+    ) and hasattr(discord, "TextStyle"):
+        class KanbanDecisionCommentModal(discord.ui.Modal):
+            """Collect an optional human reason before resolving a Kanban gate."""
+
+            def __init__(self, view, decision: str, color: discord.Color, label: str):
+                super().__init__(title=f"{label} with comment")
+                self._approval_view = view
+                self._decision = decision
+                self._color = color
+                self._label = label
+                self.reason = discord.ui.TextInput(
+                    label="Reason / instruction",
+                    style=discord.TextStyle.paragraph,
+                    required=False,
+                    max_length=1000,
+                    placeholder="Optional: explain constraints, rollback request, or what must change next.",
+                )
+                self.add_item(self.reason)
+
+            async def on_submit(self, interaction: discord.Interaction):
+                await self._approval_view._resolve(
+                    interaction,
+                    self._decision,
+                    self._color,
+                    self._label,
+                    note=str(self.reason.value or "").strip(),
+                )
+    else:
+        KanbanDecisionCommentModal = None
+
+
     class KanbanApprovalView(discord.ui.View):
         """Two-button view for Kanban human approval gates.
 
@@ -8059,6 +8100,7 @@ def _define_discord_view_classes() -> None:
             decision: str,
             color: discord.Color,
             label: str,
+            note: Optional[str] = None,
         ):
             if self.resolved:
                 await interaction.response.send_message(
@@ -8102,13 +8144,30 @@ def _define_discord_view_classes() -> None:
 
                 decision_text = "HUMAN_DECISION: APPROVED" if decision == "approve" else "HUMAN_DECISION: REJECTED"
                 actor = str(getattr(interaction.user, "display_name", "") or getattr(interaction.user, "id", "user"))
+                note_text = str(note or "").strip()
                 comment = f"{decision_text} by {actor}"
+                if note_text:
+                    comment = f"{comment}\nReason: {note_text}"
                 commands = [
                     f"--board {shlex.quote(self.board)} comment {self.task_id} {shlex.quote(comment)} --author {shlex.quote(actor)}",
                 ]
                 if decision == "approve":
                     commands.append(
                         f"--board {shlex.quote(self.board)} unblock --reason {shlex.quote(comment)} {self.task_id}"
+                    )
+                else:
+                    remediation_title = f"Address rejection for {self.task_id}"
+                    remediation_body = (
+                        f"{comment}\n\n"
+                        f"Original task `{self.task_id}` was rejected by a human approval gate. "
+                        "Revise the proposal or provide an alternative path before requesting approval again."
+                    )
+                    commands.append(
+                        f"--board {shlex.quote(self.board)} create {shlex.quote(remediation_title)} "
+                        f"--body {shlex.quote(remediation_body)} "
+                        f"--parent {self.task_id} --triage "
+                        f"--idempotency-key {shlex.quote('kanban-approval-rejection:' + self.task_id)} "
+                        f"--created-by {shlex.quote(actor)}"
                     )
                 for command in commands:
                     result = await asyncio.to_thread(run_slash, command)
@@ -8135,11 +8194,63 @@ def _define_discord_view_classes() -> None:
         ):
             await self._resolve(interaction, "approve", discord.Color.green(), "✅ Approved")
 
+        @discord.ui.button(label="📝 Approve + comment", style=discord.ButtonStyle.blurple)
+        async def approve_with_comment(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This approval gate has already been resolved~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to approve/reject this task~", ephemeral=True
+                )
+                return
+            modal_cls = KanbanDecisionCommentModal
+            send_modal = getattr(interaction.response, "send_modal", None)
+            if modal_cls is None or not callable(send_modal):
+                await interaction.response.send_message(
+                    "Comment modal is unavailable in this Discord runtime; use the plain Approve button or add a Kanban comment manually.",
+                    ephemeral=True,
+                )
+                return
+            await send_modal(
+                modal_cls(self, "approve", discord.Color.green(), "✅ Approved")
+            )
+
         @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red)
         async def reject(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
             await self._resolve(interaction, "reject", discord.Color.red(), "❌ Rejected")
+
+        @discord.ui.button(label="📝 Reject + comment", style=discord.ButtonStyle.grey)
+        async def reject_with_comment(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This approval gate has already been resolved~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to approve/reject this task~", ephemeral=True
+                )
+                return
+            modal_cls = KanbanDecisionCommentModal
+            send_modal = getattr(interaction.response, "send_modal", None)
+            if modal_cls is None or not callable(send_modal):
+                await interaction.response.send_message(
+                    "Comment modal is unavailable in this Discord runtime; use the plain Reject button or add a Kanban comment manually.",
+                    ephemeral=True,
+                )
+                return
+            await send_modal(
+                modal_cls(self, "reject", discord.Color.red(), "❌ Rejected")
+            )
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""

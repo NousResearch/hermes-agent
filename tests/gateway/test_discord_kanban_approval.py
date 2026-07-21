@@ -78,12 +78,44 @@ def test_kanban_approval_reject_comments_and_keeps_task_blocked():
             await view.reject(interaction, MagicMock())
 
         commands = [call.args[0] for call in run_slash.call_args_list]
-        assert len(commands) == 1
+        assert len(commands) == 2
         assert commands[0].startswith("--board default comment t_gate ")
         assert "HUMAN_DECISION: REJECTED" in commands[0]
         assert "capt.america" in commands[0]
+        assert commands[1].startswith("--board default create ")
+        assert "Address rejection for t_gate" in commands[1]
+        assert "--parent t_gate" in commands[1]
+        assert "--triage" in commands[1]
+        assert "--idempotency-key kanban-approval-rejection:t_gate" in commands[1]
+        assert "HUMAN_DECISION: REJECTED by capt.america" in commands[1]
         assert not any(" unblock " in cmd for cmd in commands)
         assert not any("kanban complete" in cmd for cmd in commands)
         interaction.response.edit_message.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_kanban_approval_comment_reason_is_recorded():
+    async def _run():
+        view = KanbanApprovalView(
+            task_id="t_gate",
+            board="default",
+            channel_id="1523615301965447298",
+            allowed_user_ids={"458519787346198530"},
+        )
+        interaction = _interaction()
+
+        with patch("hermes_cli.kanban.run_slash", return_value="OK") as run_slash:
+            await view._resolve(
+                interaction,
+                "reject",
+                MagicMock(),
+                "❌ Rejected",
+                note="Need safer rollback plan first.",
+            )
+
+        commands = [call.args[0] for call in run_slash.call_args_list]
+        assert "Reason: Need safer rollback plan first." in commands[0]
+        assert "Reason: Need safer rollback plan first." in commands[1]
 
     asyncio.run(_run())

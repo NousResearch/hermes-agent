@@ -397,6 +397,12 @@ class GatewayKanbanWatchersMixin:
                                 reason_text = ""
                                 if ev.payload and ev.payload.get("reason"):
                                     reason_text = str(ev.payload["reason"])
+                                approval_context = {
+                                    "why": reason_text or "The worker blocked with `kind=needs_input` and needs a human decision before it can safely continue.",
+                                    "risk": "Approving lets the assigned worker continue from the current blocked state. Rejecting preserves the block and asks for remediation instead of continuing down the rejected path.",
+                                    "approve_means": "Approve means: append `HUMAN_DECISION: APPROVED`, unblock the task, and allow the worker to continue.",
+                                    "reject_means": "Reject means: append `HUMAN_DECISION: REJECTED`, keep the task blocked, and create a remediation child task for follow-up.",
+                                }
                                 rich_approval = {
                                     "chat_id": sub["chat_id"],
                                     "task_id": sub["task_id"],
@@ -408,8 +414,9 @@ class GatewayKanbanWatchersMixin:
                                     ),
                                     "next_steps": (
                                         "Approve to append `HUMAN_DECISION: APPROVED` and unblock the task; "
-                                        "reject to append `HUMAN_DECISION: REJECTED` and keep it blocked."
+                                        "reject to append `HUMAN_DECISION: REJECTED`, keep it blocked, and create a remediation child task."
                                     ),
+                                    "approval_context": approval_context,
                                     "session_key": getattr(task, "session_id", None) or "",
                                     "metadata": metadata,
                                 }

@@ -284,6 +284,9 @@ def test_notifier_sends_rich_approval_for_needs_input_block(kanban_home):
         assert kwargs["board"] == "default"
         assert kwargs["title"] == "needs rich approval"
         assert "needs approval" in kwargs["summary"]
+        assert "why" in kwargs["approval_context"]
+        assert "Approve means" in kwargs["approval_context"]["approve_means"]
+        assert "Reject means" in kwargs["approval_context"]["reject_means"]
 
     asyncio.run(_run())
 

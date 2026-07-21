@@ -17,20 +17,24 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
+import { enqueueQueuedPrompt } from '@/store/composer-queue'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $connection,
+  $selectedStoredSessionId,
   $sessions,
   $yoloActive,
+  resolveComposerSessionKey,
   setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import type {
   BrowserManageResponse,
@@ -133,10 +137,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // binding momentarily absent (profile swap, reconnect, orphan-reap,
       // timeout) it minted a NEW session, so `/goal status` reported "No active
       // goal" for a goal that was live on the real chat.
-      const ensureSessionId = async (sessionHint?: string) =>
+      const ensureSessionId = async (sessionHint?: string, preview?: null | string) =>
         resolveTargetSessionId({
           activeRuntimeId: activeSessionIdRef.current,
-          createSession: () => createBackendSessionForSend(),
+          createSession: () => createBackendSessionForSend(preview),
           explicitRuntimeId: sessionHint,
           getRuntimeIdForStoredSession,
           requestGateway,
@@ -150,7 +154,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const withSlashOutput = async (
         ctx: SlashActionCtx
       ): Promise<{ render: (text: string) => void; sessionId: string; storedSessionId: string | null } | null> => {
-        const sessionId = await ensureSessionId(ctx.sessionHint)
+        // A slash on a fresh draft creates the backend session; seed the
+        // sidebar preview with the typed command so the row doesn't sit as
+        // "Untitled session" (auto-title only fires after a full exchange,
+        // which a bare exec command never produces).
+        const sessionId = await ensureSessionId(ctx.sessionHint, ctx.command)
 
         if (!sessionId) {
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
@@ -162,11 +170,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // output bound to the stored session selected at invocation time.
         const storedSessionId = selectedStoredSessionIdRef.current
 
+        // Header carries the command token only. The full invocation would
+        // duplicate long args — `/goal <prose>` echoed the whole goal in the
+        // mono header, then again in the backend notice right under it.
         const render = (text: string) =>
           appendSessionTextMessage(
             sessionId,
             'system',
-            ctx.recordInput ? slashStatusText(ctx.command, text) : text,
+            ctx.recordInput ? slashStatusText(`/${ctx.name}`, text) : text,
             storedSessionId
           )
 
@@ -184,7 +195,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
-        const { render: renderSlashOutput, sessionId } = resolved
+        const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
@@ -242,7 +253,27 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            // The backend already executed the command — for `/goal <text>`
+            // the goal is set and `message` is its kickoff prompt. Dropping
+            // it here loses the kickoff silently (the goal exists but the
+            // agent never hears about it, #63352). Queue it on the composer
+            // queue instead: it fires when the running turn settles, and the
+            // queue panel above the composer shows it in the meantime.
+            //
+            // Key off the storedSessionId resolved at invocation time (same
+            // value the output writer is bound to) rather than re-reading the
+            // globals here — a session switch between dispatch and this branch
+            // would otherwise park the kickoff on whichever chat is now in
+            // front. Fall back through the live selection for a session whose
+            // cache entry hasn't landed yet.
+            const storedId = storedSessionId || $sessionStates.get()[sessionId]?.storedSessionId || $selectedStoredSessionId.get()
+            const queueKey = resolveComposerSessionKey(storedId, $sessions.get()) || storedId || sessionId
+
+            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message })) {
+              renderSlashOutput('session busy — message queued to send when the current turn finishes')
+            } else {
+              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            }
 
             return
           }

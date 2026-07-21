@@ -162,7 +162,11 @@ def _query_osv(
     )
 
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        result = json.loads(resp.read())
+        try:
+            result = json.loads(resp.read())
+        except json.JSONDecodeError:
+            logger.debug("OSV API returned non-JSON response for %s/%s", ecosystem, package)
+            return []
 
     vulns = result.get("vulns", [])
     # Only malware advisories — ignore regular CVEs

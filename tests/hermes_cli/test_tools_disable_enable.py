@@ -95,6 +95,22 @@ class TestToolsDisableMcp:
         out = capsys.readouterr().out
         assert "MCP server 'unknown' not found in config" in out
 
+    def test_disable_updates_existing_include_filter(self):
+        config = {
+            "mcp_servers": {
+                "github": {"tools": {"include": ["create_issue", "delete_branch"]}}
+            }
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["github:create_issue"], platform="cli")
+            )
+        saved = mock_save.call_args[0][0]
+        tools_cfg = saved["mcp_servers"]["github"]["tools"]
+        assert tools_cfg["include"] == ["delete_branch"]
+        assert "exclude" not in tools_cfg
+
 
 # ── MCP tool enable ──────────────────────────────────────────────────────────
 
@@ -111,6 +127,18 @@ class TestToolsEnableMcp:
         saved = mock_save.call_args[0][0]
         assert "create_issue" not in saved["mcp_servers"]["github"]["tools"]["exclude"]
         assert "delete_branch" in saved["mcp_servers"]["github"]["tools"]["exclude"]
+
+    def test_enable_updates_existing_include_filter(self):
+        config = {"mcp_servers": {"github": {"tools": {"include": ["delete_branch"]}}}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["github:create_issue"], platform="cli")
+            )
+        saved = mock_save.call_args[0][0]
+        tools_cfg = saved["mcp_servers"]["github"]["tools"]
+        assert tools_cfg["include"] == ["delete_branch", "create_issue"]
+        assert "exclude" not in tools_cfg
 
 
 # ── Mixed targets ────────────────────────────────────────────────────────────

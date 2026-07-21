@@ -696,7 +696,7 @@ def cmd_mcp_list(args=None):
         if isinstance(tools_cfg, dict):
             include = tools_cfg.get("include")
             exclude = tools_cfg.get("exclude")
-            if include and isinstance(include, list):
+            if "include" in tools_cfg and isinstance(include, list):
                 tools_str = f"{len(include)} selected"
             elif exclude and isinstance(exclude, list):
                 tools_str = f"-{len(exclude)} excluded"
@@ -986,7 +986,7 @@ def cmd_mcp_configure(args):
 
     tool_names = [t[0] for t in all_tools]
 
-    if include and isinstance(include, list):
+    if isinstance(tools_cfg, dict) and "include" in tools_cfg and isinstance(include, list):
         include_set = set(include)
         pre_selected = {
             i for i, tn in enumerate(tool_names) if tn in include_set

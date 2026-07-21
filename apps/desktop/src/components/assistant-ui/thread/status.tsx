@@ -199,9 +199,29 @@ export const StreamStallIndicator: FC = () => {
   // bubbles simultaneously `running` and each render its own "Summarizing
   // thread" / "Hermes is thinking" row with the same timer (#68634). The
   // component's own contract above is tail-only ("the thinking indicator
-  // returns at the tail"), so gate on this being the last message in the
-  // thread and render nothing for non-tail bubbles.
-  const isLast = useAuiState(s => s.message.isLast)
+  // returns at the tail"), so gate on this being the LAST ASSISTANT-ROLE
+  // message. Plain `message.isLast` is the wrong invariant here: it means
+  // last message of any role, so a trailing `/steer` system note or a
+  // queued user prompt (both appended while the assistant is still
+  // running) would make the running bubble non-last and hide the
+  // indicator entirely. `s.thread.messages` is reachable from this
+  // message-scoped selector (useAuiState exposes the whole AssistantState,
+  // see its doc comment example `s.thread.isRunning`), so walk it from the
+  // tail to find the last assistant-role message and compare ids — still a
+  // single boolean return, so the leaf-only re-render behavior holds.
+  const isLastAssistantMessage = useAuiState(s => {
+    const { messages } = s.thread
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+
+      if (message.role === 'assistant') {
+        return message.id === s.message.id
+      }
+    }
+
+    return false
+  })
 
   // Timestamp of the activity that preceded the current quiet spell, set once
   // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
@@ -227,7 +247,7 @@ export const StreamStallIndicator: FC = () => {
   // A named wait doesn't have to earn the stall threshold first — we already
   // know what the turn is doing, so say it as soon as the label is ready rather
   // than leaving the transcript silent for STREAM_STALL_S.
-  const active = isLast && (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
+  const active = isLastAssistantMessage && (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the stream went quiet — the stall's own

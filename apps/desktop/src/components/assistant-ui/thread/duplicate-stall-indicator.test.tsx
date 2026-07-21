@@ -51,11 +51,14 @@ function stubOffsetDimension(
 stubOffsetDimension('offsetWidth', 'clientWidth', 800)
 stubOffsetDimension('offsetHeight', 'clientHeight', 600)
 
-// Regression test for #68634: every running assistant bubble mounts
+// Regression tests for #68634: every running assistant bubble mounts
 // StreamStallIndicator, so a reconnect that leaves a queued prompt behind can
 // produce TWO simultaneously "running" assistant bubbles — each rendering its
 // own "Summarizing thread" row. The indicator is documented as tail-only, so
-// only the LAST bubble should ever show it.
+// only the LAST ASSISTANT-ROLE bubble should ever show it — a trailing
+// user/system row (queued prompt, `/steer` note) must NOT suppress it, since
+// those are appended while the assistant is still running and are not
+// assistant messages themselves.
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const sessionId = 'session-68634'
@@ -66,6 +69,19 @@ function userMessage(id: string, text: string): ThreadMessage {
     role: 'user',
     content: [{ type: 'text', text }],
     attachments: [],
+    createdAt,
+    metadata: { custom: {} }
+  } as ThreadMessage
+}
+
+// Shape mirrors the `/steer` note appended by appendSessionTextMessage
+// (apps/desktop/src/app/session/hooks/use-prompt-actions/index.ts:623),
+// rendered as a codicon row by SystemMessage.
+function systemMessage(id: string, text: string): ThreadMessage {
+  return {
+    id,
+    role: 'system',
+    content: [{ type: 'text', text }],
     createdAt,
     metadata: { custom: {} }
   } as ThreadMessage
@@ -88,17 +104,17 @@ function runningAssistantMessage(id: string, text: string): ThreadMessage {
   } as ThreadMessage
 }
 
-function TwoRunningBubblesHarness() {
-  const messages: ThreadMessage[] = [
-    userMessage('user-1', 'Summarize this thread for me'),
-    runningAssistantMessage('assistant-1', 'Working on it'),
-    userMessage('user-2', 'hola?'),
-    runningAssistantMessage('assistant-2', '')
-  ]
-
+function Harness({ messages }: { messages: ThreadMessage[] }) {
+  // isRunning: false at the runtime level — per-message `status: {type:
+  // 'running'}` is what drives StreamStallIndicator mounting/gating.
+  // Passing isRunning: true here would make useExternalStoreRuntime
+  // auto-append a synthetic empty trailing assistant placeholder whenever
+  // the last message isn't already a running assistant (e.g. the "trailing
+  // user prompt" / "trailing system row" cases below), which would then be
+  // the real last-assistant-role message and hide behind isPlaceholder.
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages,
-    isRunning: true,
+    isRunning: false,
     onNew: async () => {}
   })
 
@@ -128,8 +144,61 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     vi.useRealTimers()
   })
 
-  it('renders exactly one "Summarizing thread" indicator when two bubbles are running', () => {
-    render(<TwoRunningBubblesHarness />)
+  it('renders exactly one indicator, on the later bubble, when two assistant bubbles are running with content', () => {
+    const { container } = render(
+      <Harness
+        messages={[
+          userMessage('user-1', 'Summarize this thread for me'),
+          runningAssistantMessage('assistant-1', 'Working on it'),
+          userMessage('user-2', 'hola?'),
+          runningAssistantMessage('assistant-2', 'On it too')
+        ]}
+      />
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+
+    const indicators = screen.getAllByRole('status', { name: 'Summarizing thread' })
+    expect(indicators.length).toBe(1)
+
+    const roots = container.querySelectorAll('[data-slot="aui_assistant-message-root"]')
+    expect(roots.length).toBe(2)
+    // The indicator must live under the LAST assistant root, not the first.
+    expect(roots[0]?.querySelector('[data-slot="aui_stream-stall"]')).toBeNull()
+    expect(roots[1]?.querySelector('[data-slot="aui_stream-stall"]')).not.toBeNull()
+  })
+
+  it('still renders the indicator when a queued user prompt trails the running assistant', () => {
+    render(
+      <Harness
+        messages={[
+          userMessage('user-1', 'Summarize this thread for me'),
+          runningAssistantMessage('assistant-1', 'Working on it'),
+          userMessage('user-2', 'hola?')
+        ]}
+      />
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+
+    const indicators = screen.getAllByRole('status', { name: 'Summarizing thread' })
+    expect(indicators.length).toBe(1)
+  })
+
+  it('still renders the indicator when a /steer system note trails the running assistant', () => {
+    render(
+      <Harness
+        messages={[
+          userMessage('user-1', 'Summarize this thread for me'),
+          runningAssistantMessage('assistant-1', 'Working on it'),
+          systemMessage('system-steer-1', 'steer:focus on the errors')
+        ]}
+      />
+    )
 
     act(() => {
       vi.advanceTimersByTime(5_000)

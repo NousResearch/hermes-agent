@@ -67,6 +67,43 @@ def make_agent_and_state():
     return acp_agent, state, fake, conn
 
 
+def test_acp_model_selection_preserves_explicit_provider(monkeypatch):
+    """ACP provider-qualified model IDs must not be re-detected as OpenRouter."""
+    from hermes_cli import models
+
+    detect_calls = []
+
+    def fake_detect_provider_for_model(model_name, current_provider):
+        detect_calls.append((model_name, current_provider))
+        return "openrouter", f"anthropic/{model_name}"
+
+    monkeypatch.setattr(models, "detect_provider_for_model", fake_detect_provider_for_model)
+
+    assert HermesACPAgent._resolve_model_selection(
+        "anthropic:claude-sonnet-5",
+        "anthropic",
+    ) == ("anthropic", "claude-sonnet-5")
+    assert detect_calls == []
+
+    assert HermesACPAgent._resolve_model_selection(
+        "anthropic:claude-sonnet-5",
+        "openrouter",
+    ) == ("anthropic", "claude-sonnet-5")
+    assert detect_calls == []
+
+    assert HermesACPAgent._resolve_model_selection(
+        "anthropic/claude-sonnet-5",
+        "anthropic",
+    ) == ("anthropic", "claude-sonnet-5")
+    assert detect_calls == []
+
+    assert HermesACPAgent._resolve_model_selection(
+        "claude-sonnet-5",
+        "anthropic",
+    ) == ("openrouter", "anthropic/claude-sonnet-5")
+    assert detect_calls == [("claude-sonnet-5", "anthropic")]
+
+
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
     captured = {}

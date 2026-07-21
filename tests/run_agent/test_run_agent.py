@@ -5228,11 +5228,13 @@ class TestRunConversation:
 
         The stop->length workaround must NOT apply to non-Ollama local
         servers that expose OpenAI-compatible /v1 endpoints (sglang, vLLM,
-        LM Studio, etc.).  A Chinese-text response ending without ASCII
-        punctuation should not be reclassified as truncated.
+        LM Studio, Tailscale boxes, etc.).  A Chinese-text response ending
+        without ASCII punctuation should not be reclassified as truncated.
         """
         self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:60000/v1"
+        # Use a non-localhost IP for sglang to avoid matching the
+        # localhost/127.0.0.1 Ollama signature heuristic (#60928).
+        agent.base_url = "http://192.168.1.100:60000/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "glm-5-fp8"
 
@@ -5340,13 +5342,53 @@ class TestRunConversation:
         third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
-    def test_zai_via_local_proxy_does_not_trigger_heuristic(self, agent):
-        """Issue #13971: a local LiteLLM proxy forwarding to remote Z.AI
-        must NOT be treated as an Ollama backend. provider='zai' on
-        localhost:8000 with no ollama/:11434 signature reports stop
-        correctly and the response should be delivered as-is."""
+    def test_ollama_cloud_glm_does_not_trigger_heuristic(self, agent):
+        """Ollama Cloud (ollama.com) must NOT trigger the stop->length heuristic.
+
+        #60928: the bare ``ollama`` substring previously matched
+        ``https://ollama.com/v1``, falsely reclassifying legitimate
+        Ollama Cloud ``stop`` responses as truncated.  The heuristic
+        is now scoped to localhost / 127.0.0.1 / port 11434 only.
+        """
         self._setup_agent(agent)
-        agent.base_url = "http://localhost:8000/v1"
+        agent.base_url = "https://ollama.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        normal_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, normal_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Must NOT continue — Ollama Cloud reports stop correctly.
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == "Based on the search results, the best next"
+
+    def test_zai_via_local_proxy_does_not_trigger_heuristic(self, agent):
+        """Issue #13971: a LiteLLM proxy forwarding to remote Z.AI
+        must NOT be treated as an Ollama backend. provider='zai' on
+        a non-localhost address with no :11434 signature reports stop
+        correctly and the response should be delivered as-is.
+
+        Uses a non-localhost IP (192.168.1.1) to avoid matching the
+        localhost Ollama signature heuristic (#60928)."""
+        self._setup_agent(agent)
+        agent.base_url = "http://192.168.1.1:8000/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.provider = "zai"
         agent.model = "glm-5-turbo"

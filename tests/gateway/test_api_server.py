@@ -632,6 +632,52 @@ class TestConcurrencyCap:
         assert adapter._concurrency_limited_response() is None
 
 
+class TestRuntimeStatusMetrics:
+    def test_completed_buffered_runs_are_not_reported_active(self, adapter):
+        adapter._run_statuses = {
+            "done": {"status": "completed"},
+            "failed": {"status": "failed"},
+        }
+        adapter._run_streams = {"done": object(), "failed": object()}
+        adapter._inflight_agent_runs = 0
+
+        assert adapter._api_server_status_payload()["active_runs"] == 0
+
+    def test_record_api_metrics_publishes_status(self, adapter):
+        adapter._running = True
+
+        with patch.object(adapter, "_write_runtime_status_safe") as mock_write:
+            adapter._record_api_metrics({"total_tokens": 17}, 0.125)
+
+        assert adapter._metrics_requests_today == 1
+        assert adapter._metrics_messages_today == 1
+        assert adapter._metrics_tokens_today == 17
+        mock_write.assert_called_once()
+        _, kwargs = mock_write.call_args
+        assert kwargs["platform_state"] == "connected"
+        metrics = kwargs["platform_metrics"]
+        assert metrics["metrics_today"]["requests"] == 1
+        assert metrics["metrics_today"]["messages"] == 1
+        assert metrics["metrics_today"]["tokens"] == 17
+        assert metrics["metrics_today"]["latency_p95_ms"] == 125.0
+        assert metrics["last_request_at"] is not None
+        assert metrics["last_heartbeat"] is not None
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_publishes_once_when_stopped(self, adapter):
+        adapter._running = True
+        calls = []
+
+        def publish_once():
+            calls.append(True)
+            adapter._running = False
+
+        with patch.object(adapter, "_publish_runtime_status", side_effect=publish_once):
+            await adapter._heartbeat_loop()
+
+        assert calls == [True]
+
+
 # ---------------------------------------------------------------------------
 # Helpers for HTTP tests
 # ---------------------------------------------------------------------------
@@ -798,6 +844,9 @@ class TestHealthDetailedEndpoint:
     @pytest.mark.asyncio
     async def test_health_detailed_returns_ok(self, adapter):
         """GET /health/detailed returns status, platform, and runtime fields."""
+        adapter._running = True
+        with patch.object(adapter, "_write_runtime_status_safe"):
+            adapter._record_api_metrics({"total_tokens": 9}, 0.02)
         app = _create_app(adapter)
         with patch("gateway.status.read_runtime_status", return_value={
             "gateway_state": "running",
@@ -813,7 +862,10 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
-                assert data["platforms"] == {"telegram": {"state": "connected"}}
+                assert data["platforms"]["telegram"] == {"state": "connected"}
+                assert data["platforms"]["api_server"]["metrics"]["metrics_today"]["requests"] == 1
+                assert data["metrics_today"]["tokens"] == 9
+                assert data["last_heartbeat"] is not None
                 assert data["active_agents"] == 2
                 # Derived busy/drainable: this endpoint is served BY the live
                 # gateway, so running + 2 agents ⇒ busy and drainable.
@@ -834,7 +886,7 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "degraded"
                 assert data["readiness"]["checks"]["gateway"]["status"] == "degraded"
                 assert data["gateway_state"] is None
-                assert data["platforms"] == {}
+                assert data["platforms"]["api_server"]["metrics"]["metrics_today"]["requests"] == 0
                 # No runtime file ⇒ state None ⇒ not busy, not drainable.
                 assert data["gateway_busy"] is False
                 assert data["gateway_drainable"] is False

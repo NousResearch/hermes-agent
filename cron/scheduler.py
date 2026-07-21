@@ -303,6 +303,11 @@ _CRON_WHOLE_RESPONSE_SILENCE_PHRASES = frozenset({
     "GMAIL: NO NEW ACTIONS",
 })
 
+# Internal status discriminator for the one failed-run class whose no-tools
+# fallback text remains safe and useful to deliver verbatim.  Do not broaden
+# this to arbitrary failures with a partial ``final_response``.
+_MAX_ITERATION_FAILURE_PREFIX = "Agent reached the iteration limit before task completion"
+
 
 def _is_cron_silence_response(text: str) -> bool:
     """Return True when a cron final response should suppress delivery.
@@ -3543,10 +3548,15 @@ def run_job(
                 or "agent reported failure"
             )
             raise RuntimeError(_err_text)
+        material_failure_error = None
         if max_iteration_summary:
+            material_failure_error = (
+                f"{_MAX_ITERATION_FAILURE_PREFIX} "
+                f"({turn_exit_reason}); fallback response preserved for delivery."
+            )
             logger.warning(
                 "Job '%s' reached the iteration limit but produced a final fallback response; "
-                "delivering the response instead of failing the cron run",
+                "preserving the response for delivery while marking the run failed",
                 job_name,
             )
 
@@ -3594,6 +3604,9 @@ def run_job(
 {logged_response}
 """
         
+        if material_failure_error:
+            logger.info("Job '%s' completed with a material failure", job_name)
+            return False, output, final_response, material_failure_error
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         
@@ -3828,10 +3841,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                     "(tool subprocess was killed mid-flight)."
                 )
 
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Deliver the final response to the origin/target chat.  A materially
+            # failed run may still carry a useful no-tools fallback report (for
+            # example after max-iteration exhaustion); preserve that report for
+            # delivery while keeping ``success=False`` for status accounting.
+            # Other failed jobs use the concise failure summary.  If the agent
+            # responded with [SILENT], skip delivery (but output is already saved
+            # above); genuine failed jobs without fallback text always deliver.
+            preserve_max_iteration_fallback = (
+                not success
+                and bool(final_response.strip())
+                and isinstance(error, str)
+                and error.startswith(_MAX_ITERATION_FAILURE_PREFIX)
+            )
+            deliver_content = (
+                final_response
+                if success or preserve_max_iteration_fallback
+                else _summarize_cron_failure_for_delivery(job, error)
+            )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

@@ -17,10 +17,15 @@ Two layers are tested:
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +184,59 @@ def test_flood_control_sets_can_edit_false():
         SendResult(success=False, error="flood_control:30.0", retryable=False),
     ]
     assert _simulate_progress_loop(results) is False
+
+
+# ---------------------------------------------------------------------------
+# 4. Real adapter lifecycle — a deleted/expired placeholder is terminal
+# ---------------------------------------------------------------------------
+
+def test_message_not_found_stops_markdown_fallback_without_error_noise(caplog):
+    """A stale placeholder is one idempotent failure, not two noisy edits."""
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter._bot = AsyncMock()
+    adapter._bot.edit_message_text.side_effect = Exception(
+        "Bad Request: Message to edit not found"
+    )
+    adapter._rich_messages_enabled = False
+    adapter._last_overflow_preview = {}
+
+    with caplog.at_level(
+        logging.DEBUG, logger="plugins.platforms.telegram.adapter"
+    ):
+        result = asyncio.run(
+            adapter.edit_message(
+                chat_id="-100123", message_id="42", content="done", finalize=True
+            )
+        )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_kind == "not_found"
+    assert adapter._bot.edit_message_text.await_count == 1
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_other_edit_errors_keep_existing_fallback_and_error_logging(caplog):
+    """The stale-placeholder special case must not hide unrelated edit errors."""
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter._bot = AsyncMock()
+    adapter._bot.edit_message_text.side_effect = Exception(
+        "Bad Request: message can't be edited"
+    )
+    adapter._rich_messages_enabled = False
+    adapter._last_overflow_preview = {}
+
+    with caplog.at_level(
+        logging.DEBUG, logger="plugins.platforms.telegram.adapter"
+    ):
+        result = asyncio.run(
+            adapter.edit_message(
+                chat_id="-100123", message_id="42", content="done", finalize=True
+            )
+        )
+
+    assert result.success is False
+    assert adapter._bot.edit_message_text.await_count == 2
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)

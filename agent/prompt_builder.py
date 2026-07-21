@@ -1152,7 +1152,18 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
-        host_lines.append(f"User home directory: {os.path.expanduser('~')}")
+        from hermes_constants import get_subprocess_home
+
+        account_home = os.path.expanduser("~")
+        terminal_home = get_subprocess_home() or account_home
+        hermes_home = get_hermes_home()
+        host_lines.append(f"User home directory: {account_home}")
+        host_lines.append(f"Terminal HOME: {terminal_home}")
+        host_lines.append(
+            f"Hermes state directory: {hermes_home} ($HERMES_HOME). "
+            "For Hermes skills/scripts/state use $HERMES_HOME; do not derive it "
+            "from $HOME or ~/.hermes when they differ."
+        )
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:

@@ -14295,6 +14295,29 @@ def main():
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
 
+    sessions_reconcile_telegram = sessions_subparsers.add_parser(
+        "reconcile-telegram-orphans",
+        help="Safely finalize old unowned Telegram group sessions",
+        description=(
+            "Find unended Telegram group sessions that are old, unrouted, and "
+            "not protected by a live process lease. Defaults to dry-run. "
+            "--apply creates and verifies an online state.db backup before a "
+            "single transactional update."
+        ),
+    )
+    sessions_reconcile_telegram.add_argument(
+        "--min-age-hours",
+        type=float,
+        default=1.0,
+        metavar="HOURS",
+        help="Only consider sessions at least HOURS old (default: 1)",
+    )
+    sessions_reconcile_telegram.add_argument(
+        "--apply",
+        action="store_true",
+        help="Create a verified backup and finalize the current candidates",
+    )
+
     sessions_repair = sessions_subparsers.add_parser(
         "repair",
         help="Repair a malformed state.db schema so hidden sessions reappear",
@@ -15048,6 +15071,45 @@ def main():
 
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
+
+        elif action == "reconcile-telegram-orphans":
+            from hermes_cli.session_reconcile import reconcile_telegram_group_orphans
+
+            min_age_hours = getattr(args, "min_age_hours", 1.0)
+            if min_age_hours < 0:
+                print("Error: --min-age-hours must be non-negative.")
+                db.close()
+                return
+            try:
+                report = reconcile_telegram_group_orphans(
+                    db,
+                    sessions_dir=get_hermes_home() / "sessions",
+                    min_age_seconds=min_age_hours * 3600,
+                    apply=bool(getattr(args, "apply", False)),
+                )
+            except Exception as exc:
+                print(f"Error: Telegram orphan reconciliation failed closed: {exc}")
+                db.close()
+                return
+
+            candidates = report["candidate_ids"]
+            if candidates:
+                print(f"Candidate Telegram group sessions: {len(candidates)}")
+                for session_id in candidates:
+                    print(f"  {session_id}")
+            else:
+                print("No orphaned Telegram group sessions found.")
+
+            if report["dry_run"]:
+                print("Dry run — no session state changed and no backup was created.")
+            else:
+                backup_path = report.get("backup_path")
+                if backup_path:
+                    print(f"Verified backup: {backup_path}")
+                print(
+                    f"Finalized {len(report['finalized_ids'])} session(s) "
+                    "with end_reason=orphan_reconcile."
+                )
 
         elif action == "optimize":
             db_path = db.db_path

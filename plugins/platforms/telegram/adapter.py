@@ -1190,6 +1190,32 @@ class TelegramAdapter(BasePlatformAdapter):
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
 
+    @staticmethod
+    def _is_stale_edit_placeholder_error(error: object) -> bool:
+        """Whether Telegram confirmed that an edit target no longer exists."""
+        text = str(error).lower()
+        return (
+            "message to edit not found" in text
+            or "message_id_invalid" in text
+        )
+
+    def _stale_edit_placeholder_result(
+        self, error: object, message_id: object
+    ) -> SendResult:
+        """Return a quiet terminal result for a deleted/expired placeholder."""
+        safe_error = _redact_telegram_error_text(error)
+        logger.debug(
+            "[%s] Progress edit target %s is stale; disabling edits for it",
+            self.name,
+            message_id,
+        )
+        return SendResult(
+            success=False,
+            error=safe_error,
+            retryable=False,
+            error_kind="not_found",
+        )
+
     def _prune_stale_dm_topic_binding(
         self, chat_id: Any, thread_id: Any,
     ) -> None:
@@ -1883,6 +1909,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # error must not be mistaken for a failed edit).
             await self._bot.do_api_request("editMessageText", api_kwargs=payload)
         except Exception as exc:
+            if self._is_stale_edit_placeholder_error(exc):
+                return self._stale_edit_placeholder_result(exc, message_id)
             if self._is_rich_fallback_error(exc):
                 if self._is_rich_capability_error(exc):
                     self._rich_send_disabled = True
@@ -4473,6 +4501,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
+                if self._is_stale_edit_placeholder_error(fmt_err):
+                    return self._stale_edit_placeholder_result(fmt_err, message_id)
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 safe_format_error = _redact_telegram_error_text(fmt_err)
                 logger.warning(
@@ -4492,6 +4522,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
                 return SendResult(success=True, message_id=message_id)
+            if self._is_stale_edit_placeholder_error(e):
+                return self._stale_edit_placeholder_result(e, message_id)
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
             # (e.g. MarkdownV2 escapes).  Same fix as the pre-flight path.
@@ -4648,6 +4680,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        if self._is_stale_edit_placeholder_error(fmt_err):
+                            return self._stale_edit_placeholder_result(
+                                fmt_err, message_id
+                            )
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",
@@ -4670,6 +4706,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # First chunk identical to current text — fall through to
                 # send continuations.
                 pass
+            elif self._is_stale_edit_placeholder_error(e):
+                return self._stale_edit_placeholder_result(e, message_id)
             else:
                 logger.error(
                     "[%s] Overflow split: first-chunk edit failed: %s",

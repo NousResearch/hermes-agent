@@ -1371,7 +1371,18 @@ def compress_context(
                 # in-place keeps and rotation has already reassigned to the new id):
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                # Persist the context fingerprint alongside the prompt: a
+                # NULL fingerprint reads as "legacy/stale inputs" to
+                # _restore_or_build_system_prompt (#68563), which would force
+                # a rebuild — and a guaranteed prefix-cache miss — on the
+                # first turn after every compression boundary.
+                from agent.conversation_loop import _compute_current_context_fingerprint
+
+                agent._session_db.update_system_prompt(
+                    agent.session_id,
+                    new_system_prompt,
+                    _compute_current_context_fingerprint(agent),
+                )
                 if in_place:
                     agent._last_flushed_db_idx = 0
                 else:

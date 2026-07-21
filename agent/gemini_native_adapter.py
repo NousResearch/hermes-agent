@@ -292,7 +292,12 @@ def _translate_tool_result_to_gemini(
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
         parsed = None
-    response = parsed if isinstance(parsed, dict) else {"output": content}
+    if isinstance(parsed, dict):
+        response = parsed
+    elif parsed is not None:
+        response = {"output": parsed}
+    else:
+        response = {"output": content}
     return {
         "functionResponse": {
             "name": name,

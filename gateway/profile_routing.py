@@ -57,6 +57,12 @@ class ProfileRoute:
     guild_id: Optional[str] = None
     chat_id: Optional[str] = None
     thread_id: Optional[str] = None
+    # Per-sender DM routing: match the sender's identity (WhatsApp number,
+    # Signal UUID, Telegram user_id, etc.) independently of chat_id. This
+    # enables routing different senders to different profiles even when
+    # every DM is its own chat (#68802).
+    from_number: Optional[str] = None
+    sender_id: Optional[str] = None
     enabled: bool = True
 
     @property
@@ -69,6 +75,8 @@ class ProfileRoute:
             s += 4
         if self.thread_id:
             s += 8
+        if self.from_number or self.sender_id:
+            s += 5
         return s
 
     def matches(
@@ -78,6 +86,7 @@ class ProfileRoute:
         chat_id: Optional[str] = None,
         thread_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
+        sender_id: Optional[str] = None,
     ) -> bool:
         """Return True if this route matches the given source fields.
 
@@ -88,6 +97,10 @@ class ProfileRoute:
         - Thread in channel: parent_chat_id == route.chat_id
         A route declaring both ``guild_id`` and ``chat_id`` requires both to
         match (a chat match alone does not satisfy a guild constraint).
+
+        ``sender_id`` matches against either ``from_number`` or ``sender_id``
+        on the route (whichever is set), enabling per-sender DM routing
+        on platforms where every DM is its own chat (#68802).
         """
         if not self.enabled:
             return False
@@ -98,6 +111,10 @@ class ProfileRoute:
         if self.chat_id and self.chat_id != chat_id and self.chat_id != parent_chat_id:
             return False
         if self.guild_id and self.guild_id != guild_id:
+            return False
+        if self.from_number and self.from_number != sender_id:
+            return False
+        if self.sender_id and self.sender_id != sender_id:
             return False
         return True
 
@@ -142,6 +159,8 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 guild_id=entry.get("guild_id"),
                 chat_id=entry.get("chat_id"),
                 thread_id=entry.get("thread_id"),
+                from_number=entry.get("from_number"),
+                sender_id=entry.get("sender_id"),
                 enabled=entry.get("enabled", True),
             )
         )
@@ -158,9 +177,10 @@ def match_profile_route(
     chat_id: Optional[str] = None,
     thread_id: Optional[str] = None,
     parent_chat_id: Optional[str] = None,
+    sender_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
     """Return the best-matching route, or None for no match."""
     for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id):
+        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id, sender_id=sender_id):
             return route
     return None

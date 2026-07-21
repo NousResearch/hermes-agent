@@ -91,7 +91,7 @@ POST /v1/responses               OpenAI Responses API (stateful)
 POST /v1/runs                    Start a run, returns run_id (202)
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
-POST /v1/runs/{id}/approval      Resolve a pending approval
+POST /v1/runs/{id}/approval      Resolve an exact pending approval by request_id
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
@@ -99,6 +99,12 @@ GET  /health, /health/detailed
 ```
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
+
+Runs approval events carry a stable `request_id` plus a fixed-category safe
+preview. Capability-aware clients should display only that preview and return
+the same ID with their decision; stale IDs fail closed instead of resolving the
+next queued request. The no-ID FIFO response remains available only for legacy
+clients.
 
 ---
 

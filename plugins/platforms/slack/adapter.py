@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 
@@ -459,6 +460,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        self._approval_state: Dict[str, str] = {}
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -3813,6 +3815,9 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            request_id = str((metadata or {}).get("approval_request_id") or "")
+            if not request_id:
+                request_id = uuid.uuid4().hex
             thread_ts = self._resolve_thread_ts(None, metadata)
 
             # Slack hard-caps a section block's text at 3000 chars; an
@@ -3835,7 +3840,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": {"type": "plain_text", "text": "Allow Once"},
                     "style": "primary",
                     "action_id": "hermes_approve_once",
-                    "value": session_key,
+                    "value": request_id,
                 },
             ]
             if not smart_denied:
@@ -3843,21 +3848,21 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
                     "action_id": "hermes_approve_session",
-                    "value": session_key,
+                    "value": request_id,
                 })
                 if allow_permanent:
                     actions.append({
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Always Allow"},
                         "action_id": "hermes_approve_always",
-                        "value": session_key,
+                        "value": request_id,
                     })
             actions.append({
                 "type": "button",
                 "text": {"type": "plain_text", "text": "Deny"},
                 "style": "danger",
                 "action_id": "hermes_deny",
-                "value": session_key,
+                "value": request_id,
             })
             blocks = [
                 {
@@ -3884,6 +3889,7 @@ class SlackAdapter(BasePlatformAdapter):
             msg_ts = result.get("ts", "")
             if msg_ts:
                 self._approval_resolved[msg_ts] = False
+                self._approval_state[request_id] = session_key
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -4177,7 +4183,8 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
-        session_key = action.get("value", "")
+        request_id = action.get("value", "")
+        session_key = self._approval_state.get(request_id, request_id)
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
@@ -4269,7 +4276,10 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             from tools.approval import resolve_gateway_approval
 
-            count = resolve_gateway_approval(session_key, choice)
+            if request_id in self._approval_state:
+                count = resolve_gateway_approval(session_key, choice, request_id=request_id)
+            else:
+                count = resolve_gateway_approval(session_key, choice)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count,
@@ -4282,7 +4292,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "Failed to resolve gateway approval from Slack button: %s", exc
             )
 
-        # (approval state already consumed by atomic pop above)
+        self._approval_state.pop(request_id, None)
 
     # ----- Thread context fetching -----
 

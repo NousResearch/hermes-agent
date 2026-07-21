@@ -126,6 +126,50 @@ The active model's editing capability is surfaced in the tool description at
 runtime, so the agent knows whether `image_url` will be honored before it
 calls the tool.
 
+## Router Backend for Custom Gateways
+
+The bundled `image_gen/router` backend lets you route `image_generate` calls to an OpenAI-compatible image gateway with multiple configured model aliases. The plugin auto-loads; activate it by setting `image_gen.provider`:
+
+```bash
+hermes config set image_gen.provider router
+```
+
+Configure aliases in `config.yaml`:
+
+```yaml
+image_gen:
+  provider: router
+  router:
+    default_model: nano-banana-pro
+    defaults:
+      provider: openai-compatible
+      base_url: https://your-gateway.example/v1
+      api_key_env: IMAGE_GATEWAY_API_KEY
+    models:
+      nano-banana-pro:
+        model: gemini-3-pro-image-preview
+        display: Nano Banana Pro
+        strengths: [text_rendering, chinese_text, poster, infographic]
+        default_params:
+          quality: high
+      gpt-image-2:
+        model: gpt-image-2
+        display: GPT Image 2
+        strengths: [photorealism, product_mockup, text_rendering]
+      flux-fast:
+        model: flux-kontext-lite
+        display: Flux Fast
+        strengths: [fast_draft, style_exploration]
+```
+
+Put credentials in `.env`:
+
+```env
+IMAGE_GATEWAY_API_KEY=<your-api-key>
+```
+
+When the router is active, the agent can pass optional routing hints (`model`, `intent`, `quality`, `style`, `text_heavy`) to select a configured alias for each call. The router supports `POST {base_url}/images/generations` and accepts `data[0].b64_json`, `data[0].url`, or `data[0].image_url` in responses.
+
 ## Aspect Ratios
 
 Every model accepts the same three aspect ratios from the agent's perspective. Internally, each model's native size spec is filled in automatically:

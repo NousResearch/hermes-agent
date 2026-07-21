@@ -187,21 +187,36 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
     except Exception:
         current_started_at = None
     if current_started_at is None:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return False
-        return True
+        # ``os.kill(pid, 0)`` sends CTRL_C_EVENT on Windows instead of acting
+        # as a harmless existence probe. Reuse the gateway's cross-platform
+        # helper, which prefers psutil and has platform-safe fallbacks.
+        from gateway.status import _pid_exists
+
+        return _pid_exists(pid)
     if started_at is None:
         return True
     try:
         return int(started_at) == int(current_started_at)
     except (TypeError, ValueError):
         return True
+
+
+def lookup_session_trigger_durability(
+    session_store: Any,
+    session_id: str,
+    trigger_identity: str,
+) -> Optional[bool]:
+    """Read trigger durability from the raw SessionDB on an off-loop worker.
+
+    SessionStore's convenience wrapper intentionally converts lookup failures
+    to ``False``. Recovery must preserve exceptions as indeterminate so a
+    locked or broken state.db cannot replay a turn whose side effects may
+    already have completed.
+    """
+    raw_db = getattr(session_store, "_db", None)
+    if raw_db is None:
+        return None
+    return bool(raw_db.has_platform_message_id(session_id, trigger_identity))
 
 
 def _is_corruption_error(exc: BaseException) -> bool:

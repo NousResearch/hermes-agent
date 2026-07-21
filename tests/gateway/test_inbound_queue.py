@@ -12,8 +12,14 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+import pytest
+
 from gateway.config import Platform
-from gateway.inbound_queue import GatewayInboxStore
+from gateway.inbound_queue import (
+    GatewayInboxStore,
+    _owner_alive,
+    lookup_session_trigger_durability,
+)
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -90,6 +96,47 @@ def _event(
 
 def _store(tmp_path, **kwargs) -> GatewayInboxStore:
     return GatewayInboxStore(hermes_home=tmp_path, **kwargs)
+
+
+def test_owner_alive_uses_cross_platform_pid_probe(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "gateway.status.get_process_start_time", lambda _pid: None
+    )
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda pid: calls.append(pid) or True,
+    )
+
+    assert _owner_alive(1234, None) is True
+    assert calls == [1234]
+
+
+def test_trigger_durability_lookup_preserves_indeterminate_db_errors():
+    class RawDB:
+        error = None
+
+        def has_platform_message_id(self, session_id, trigger_identity):
+            assert session_id == "session-1"
+            assert trigger_identity == "message-1"
+            if self.error is not None:
+                raise self.error
+            return True
+
+    raw_db = RawDB()
+    session_store = type("SessionStoreStub", (), {"_db": raw_db})()
+
+    assert (
+        lookup_session_trigger_durability(
+            session_store, "session-1", "message-1"
+        )
+        is True
+    )
+    raw_db.error = sqlite3.OperationalError("database is locked")
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        lookup_session_trigger_durability(
+            session_store, "session-1", "message-1"
+        )
 
 
 def test_database_uses_wal_full_sync_and_private_permissions(tmp_path):

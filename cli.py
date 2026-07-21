@@ -7243,7 +7243,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
-        self._invalidate_cli_queue_snapshot()
+        CLICommandsMixin._invalidate_cli_queue_snapshot(self)
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back

@@ -5326,14 +5326,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         def _trigger_is_durable(session_id: str, trigger_identity: str):
             try:
-                session_db = getattr(self.session_store, "_db", None)
-                if session_db is None:
-                    return None
-                # Call the raw DB method: SessionStore's convenience wrapper
-                # deliberately converts lookup failures to False, which would
-                # make a locked/broken state.db look like a missing trigger and
-                # replay a request whose side effects may already have run.
-                return session_db.has_platform_message_id(session_id, trigger_identity)
+                from gateway.inbound_queue import lookup_session_trigger_durability
+
+                return lookup_session_trigger_durability(
+                    self.session_store,
+                    session_id,
+                    trigger_identity,
+                )
             except Exception:
                 logger.warning(
                     "Could not verify recovered inbox trigger durability",
@@ -9221,7 +9220,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Start only after startup auto-resume is serialized. Missing-trigger
         # rows replay from their original payload; durable-trigger rows that
         # were not consumed by the existing resume path are continued fairly.
-        if self._inbox_store is not None:
+        if getattr(self, "_inbox_store", None) is not None:
             self._spawn_supervised(self._inbox_dispatcher, "durable_inbox_dispatcher")
 
         # Drain any recovered process watchers (from crash recovery checkpoint)

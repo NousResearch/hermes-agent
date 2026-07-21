@@ -75,6 +75,7 @@ export type CommandDispatchResponse =
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  battery?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
@@ -141,6 +142,13 @@ export interface ConfigSetResponse {
 
 export interface SetupStatusResponse {
   provider_configured?: boolean
+}
+
+export interface SystemBatteryResponse {
+  available?: boolean
+  category?: string
+  percent?: null | number
+  plugged?: null | boolean
 }
 
 // ── Session lifecycle ────────────────────────────────────────────────

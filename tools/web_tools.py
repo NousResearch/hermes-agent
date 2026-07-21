@@ -1257,10 +1257,13 @@ def _anthropic_web_search_schema_overrides() -> dict:
     if _get_search_backend() != "anthropic":
         return {}
     return {
-        "_anthropic_server_tool": {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 5,
+        "_hermes_server_tool": {
+            "api_mode": "anthropic_messages",
+            "definition": {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            },
         }
     }
 
@@ -1270,11 +1273,14 @@ def _anthropic_web_fetch_schema_overrides() -> dict:
     if _get_extract_backend() != "anthropic":
         return {}
     return {
-        "_anthropic_server_tool": {
-            "type": "web_fetch_20250910",
-            "name": "web_fetch",
-            "max_uses": 5,
-            "citations": {"enabled": True},
+        "_hermes_server_tool": {
+            "api_mode": "anthropic_messages",
+            "definition": {
+                "type": "web_fetch_20250910",
+                "name": "web_fetch",
+                "max_uses": 5,
+                "citations": {"enabled": True},
+            },
         }
     }
 

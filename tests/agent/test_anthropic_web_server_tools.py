@@ -2,11 +2,17 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.anthropic_adapter import (
+    _is_third_party_anthropic_endpoint,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
 )
 from agent.transports.anthropic import AnthropicTransport
+from agent.transports.bedrock import BedrockTransport
+from agent.transports.chat_completions import ChatCompletionsTransport
+from agent.transports.codex import ResponsesApiTransport
 
 
 def _tool(name: str, server_spec: dict) -> dict:
@@ -16,7 +22,10 @@ def _tool(name: str, server_spec: dict) -> dict:
             "name": name,
             "description": name,
             "parameters": {"type": "object", "properties": {}},
-            "_anthropic_server_tool": server_spec,
+            "_hermes_server_tool": {
+                "api_mode": "anthropic_messages",
+                "definition": server_spec,
+            },
         },
     }
 
@@ -39,7 +48,7 @@ def test_native_endpoint_replaces_web_functions_with_server_tools():
     ]
 
 
-def test_compatible_third_party_endpoint_keeps_local_function_tools():
+def test_compatible_third_party_endpoint_omits_server_only_tools():
     tools = [_tool("web_search", {
         "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
     })]
@@ -48,9 +57,55 @@ def test_compatible_third_party_endpoint_keeps_local_function_tools():
         tools, base_url="https://api.minimax.io/anthropic"
     )
 
-    assert converted[0]["name"] == "web_search"
-    assert converted[0]["input_schema"]["type"] == "object"
-    assert "type" not in converted[0]
+    assert converted == []
+
+
+def test_anthropic_native_endpoint_detection_uses_hostname_boundaries():
+    assert not _is_third_party_anthropic_endpoint("https://api.anthropic.com/v1")
+    assert _is_third_party_anthropic_endpoint(
+        "https://api.anthropic.com.example/v1"
+    )
+    assert _is_third_party_anthropic_endpoint(
+        "https://proxy.example/v1/api.anthropic.com"
+    )
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [ChatCompletionsTransport(), BedrockTransport(), ResponsesApiTransport()],
+)
+def test_server_only_tools_are_omitted_from_foreign_transports(transport):
+    ordinary = {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    server_only = _tool("web_search", {
+        "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
+    })
+
+    projected = transport.project_tools([ordinary, server_only])
+    converted = transport.convert_tools([ordinary, server_only])
+
+    assert projected == [ordinary]
+    assert "_hermes_server_tool" not in str(projected)
+    assert "web_search" not in str(converted)
+    assert "_hermes_server_tool" not in str(converted)
+
+
+def test_chat_completions_kwargs_never_leak_server_tool_metadata():
+    kwargs = ChatCompletionsTransport().build_kwargs(
+        model="example/model",
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[_tool("web_search", {
+            "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
+        })],
+    )
+
+    assert "tools" not in kwargs
+    assert "_hermes_server_tool" not in str(kwargs)
 
 
 def test_server_blocks_are_captured_and_replayed_in_original_order():
@@ -184,7 +239,9 @@ def test_dynamic_markers_follow_per_capability_selection(monkeypatch):
     search = web_tools._anthropic_web_search_schema_overrides()
     extract = web_tools._anthropic_web_fetch_schema_overrides()
 
-    assert search["_anthropic_server_tool"]["name"] == "web_search"
+    binding = search["_hermes_server_tool"]
+    assert binding["api_mode"] == "anthropic_messages"
+    assert binding["definition"]["name"] == "web_search"
     assert extract == {}
 
 

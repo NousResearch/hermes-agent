@@ -36,7 +36,7 @@ class AnthropicTransport(ProviderTransport):
         """Convert OpenAI tool schemas to Anthropic input_schema format."""
         from agent.anthropic_adapter import convert_tools_to_anthropic
 
-        return convert_tools_to_anthropic(tools)
+        return convert_tools_to_anthropic(self.project_tools(tools) or [])
 
     def build_kwargs(
         self,
@@ -62,6 +62,7 @@ class AnthropicTransport(ProviderTransport):
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
+        tools = self.project_tools(tools)
         return build_anthropic_kwargs(
             model=model,
             messages=messages,

@@ -27,7 +27,7 @@ class BedrockTransport(ProviderTransport):
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Bedrock Converse toolConfig."""
         from agent.bedrock_adapter import convert_tools_to_converse
-        return convert_tools_to_converse(tools)
+        return convert_tools_to_converse(self.project_tools(tools) or [])
 
     def build_kwargs(
         self,
@@ -50,6 +50,7 @@ class BedrockTransport(ProviderTransport):
 
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
+        tools = self.project_tools(tools)
 
         kwargs = build_converse_kwargs(
             model=model,

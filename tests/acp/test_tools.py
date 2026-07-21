@@ -128,6 +128,24 @@ class TestBuildToolTitle:
     def test_web_extract_title_handles_malformed_object(self):
         assert build_tool_title("web_extract", {"urls": [{"title": "missing"}]}) == "extract: ?"
 
+    def test_web_extract_title_handles_bare_dict_url(self):
+        # A single forwarded web_search result (not wrapped in a list) used to
+        # raise KeyError: 0 on urls[0].
+        title = build_tool_title("web_extract", {"urls": {"url": "https://example.com/a", "title": "A"}})
+        assert title == "extract: https://example.com/a"
+
+    def test_web_extract_title_handles_bare_href_dict_url(self):
+        title = build_tool_title("web_extract", {"urls": {"href": "https://example.org/b"}})
+        assert title == "extract: https://example.org/b"
+
+    def test_web_extract_title_handles_bare_string_url(self):
+        # A single URL string used to yield the garbage label "extract: h (+N)".
+        title = build_tool_title("web_extract", {"urls": "https://example.com/a"})
+        assert title == "extract: https://example.com/a"
+
+    def test_web_extract_title_handles_bare_malformed_dict(self):
+        assert build_tool_title("web_extract", {"urls": {"title": "no url"}}) == "extract: ?"
+
     def test_skill_view_title_includes_skill_name(self):
         title = build_tool_title("skill_view", {"name": "github-pitfalls"})
         assert title == "skill view (github-pitfalls)"

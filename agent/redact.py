@@ -118,7 +118,7 @@ _PREFIX_PATTERNS = [
 # an all-caps key is almost never prose/code.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)([^\r\n]+?)\2",
 )
 
 # Lowercase / dotted / hyphenated config keys from config files
@@ -586,7 +586,7 @@ def redact_sensitive_text(
     match.
     """
     if text is None:
-        return None
+        return ""
     if not isinstance(text, str):
         text = str(text)
     if not text:

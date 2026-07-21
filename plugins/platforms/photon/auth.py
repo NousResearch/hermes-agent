@@ -125,7 +125,22 @@ def _save_auth(data: Dict[str, Any]) -> None:
         stat.S_IRUSR | stat.S_IWUSR,
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        # os.fdopen() failed before taking ownership of the raw descriptor,
+        # so nothing else will ever close it — do it here, then drop the
+        # just-created temp file.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    try:
+        with fh:
             json.dump(data, fh, indent=2, sort_keys=True)
             fh.flush()
             os.fsync(fh.fileno())

@@ -103,8 +103,15 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
 
     Returns 1.0 for identical vectors, near 0.0 for random (unrelated) vectors,
     and -1.0 for perfectly anti-correlated vectors.
+
+    Returns 0.0 if the inputs have mismatched dimensions — a dimension mismatch
+    means the vectors were encoded with different ``hrr_dim`` settings and are
+    not comparable. Without this guard, ``np.cos(a - b)`` raises a broadcast
+    ValueError that crashes the entire retrieval pipeline (see #68682).
     """
     _require_numpy()
+    if a.shape != b.shape:
+        return 0.0
     return float(np.mean(np.cos(a - b)))
 
 

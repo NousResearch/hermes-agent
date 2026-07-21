@@ -13,6 +13,7 @@ pytest.importorskip("numpy")  # retrieval module imports numpy indirectly
 
 from plugins.memory.holographic.retrieval import FactRetriever
 from plugins.memory.holographic.store import MemoryStore
+from plugins.memory.holographic import holographic as hrr
 
 
 # ---------------------------------------------------------------------------
@@ -127,3 +128,31 @@ def test_prefetch_stopword_only_query_empty(retriever_with_facts):
     results = retriever_with_facts.search("the and of")
     # Either zero results or it errored-gracefully to [] — both are fine
     assert isinstance(results, list)
+
+
+# ---------------------------------------------------------------------------
+# similarity() dimension guard — regression for #68682
+#
+# The OLD formula `np.mean(np.cos(a - b))` raised ValueError on shape
+# mismatch, which crashed the entire retrieval pipeline when stored facts
+# had different hrr_dim settings. The guard returns 0.0 instead.
+# ---------------------------------------------------------------------------
+
+def test_similarity_matched_dims_unchanged():
+    """Same-dim pair still returns cosine similarity (no regression)."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    a = rng.uniform(-np.pi, np.pi, size=256)
+    assert abs(hrr.similarity(a, a) - 1.0) < 1e-9
+
+
+def test_similarity_mismatched_dims_returns_zero_not_crash():
+    """Different-dim pair returns 0.0 (no-crash sentinel) instead of ValueError."""
+    import numpy as np
+
+    a_256 = np.zeros(256)
+    b_1024 = np.zeros(1024)
+    # OLD code raised ValueError("operands could not be broadcast together")
+    result = hrr.similarity(a_256, b_1024)
+    assert result == 0.0

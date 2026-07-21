@@ -860,6 +860,84 @@ class HermesACPAgent(acp.Agent):
                 exc_info=True,
             )
 
+    def _schedule_mcp_late_refresh(self, state: SessionState) -> None:
+        """Refresh the agent's tool snapshot when background MCP discovery lands late.
+
+        ACP entry.py starts MCP tool discovery in a background daemon thread so a
+        slow/dead configured server can't block ``asyncio.run()``.  ``_make_agent``
+        briefly joins that thread (``wait_for_mcp_discovery``, bounded ~1.5s) so
+        already-spawning fast servers land in the snapshot — but a server slower
+        than the bound lands *after* the agent is built, leaving its tools absent
+        for the whole session.
+
+        This schedules an off-critical-path daemon that waits for discovery to
+        finish (bounded 30s), then rebuilds the snapshot via the shared
+        ``refresh_agent_mcp_tools`` helper — the same rebuild ``/reload-mcp``
+        performs, but automatic.  Mirrors the TUI late-refresh (PR #48403).
+
+        Cache safety: the rebuild only runs while the session is still
+        pre-first-turn (no API call made yet → nothing cached to invalidate).
+        Once the user has sent a message we leave the snapshot frozen rather
+        than break the cached prompt prefix mid-conversation; late tools then
+        require an explicit ``/reload-mcp`` (user-consented), exactly as today.
+        No-op when discovery already finished, when the join times out, when the
+        registry was unchanged, or when the session was closed while waiting.
+        """
+        try:
+            from hermes_cli.mcp_startup import mcp_discovery_in_flight
+        except Exception:
+            return
+        if not mcp_discovery_in_flight():
+            return
+
+        import threading
+
+        agent = state.agent
+        session_id = state.session_id
+
+        def _wait_then_refresh() -> None:
+            try:
+                from hermes_cli.mcp_startup import join_mcp_discovery
+
+                if not join_mcp_discovery(timeout=30.0):
+                    return
+
+                # Session may have been closed while we waited.
+                current = self.session_manager.get_session(session_id)
+                if current is None or current.agent is not agent:
+                    return
+
+                # Cache safety: never rebuild the tool list once the conversation
+                # has started — that would invalidate the cached prompt prefix.
+                if (
+                    int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+                    or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+                ):
+                    return
+
+                from tools.mcp_tool import refresh_agent_mcp_tools
+
+                added = refresh_agent_mcp_tools(agent)
+                if added:
+                    logger.info(
+                        "Session %s: late MCP refresh added %d tools: %s",
+                        session_id,
+                        len(added),
+                        ", ".join(sorted(added)),
+                    )
+            except Exception:
+                logger.debug(
+                    "Session %s: late MCP refresh failed",
+                    session_id,
+                    exc_info=True,
+                )
+
+        threading.Thread(
+            target=_wait_then_refresh,
+            name=f"acp-mcp-late-refresh-{session_id}",
+            daemon=True,
+        ).start()
+
     # ---- ACP lifecycle ------------------------------------------------------
 
     async def initialize(
@@ -1118,6 +1196,7 @@ class HermesACPAgent(acp.Agent):
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
@@ -1142,6 +1221,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
         # to the client via `session/update` notifications BEFORE responding,
@@ -1189,6 +1269,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must
         # complete before the response so clients receive the full transcript

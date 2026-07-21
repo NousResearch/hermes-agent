@@ -12691,8 +12691,14 @@ def _(rid, params: dict) -> dict:
         # but must not cost a multi-second MCP reconnect.
         try:
             cfg = _load_cfg()
+            # mcp_servers holds the server DEFINITIONS the classic CLI watches
+            # for auto-reload (cli.py::_check_config_mcp_changes) — omitting it
+            # meant editing a server bumped mtime but not mcp_rev, so the TUI
+            # skipped reload.mcp and new servers never connected until a manual
+            # /reload-mcp. `mcp` (settings) and `tools` (enable/disable) round
+            # out the MCP-relevant surface.
             rev_src = json.dumps(
-                {"mcp": cfg.get("mcp"), "tools": cfg.get("tools")},
+                {"mcp": cfg.get("mcp"), "mcp_servers": cfg.get("mcp_servers"), "tools": cfg.get("tools")},
                 sort_keys=True,
                 default=str,
             )
@@ -12879,6 +12885,11 @@ def _(rid, params: dict) -> dict:
 # and leave the registry half-built. Piggyback rather than queue — a reload
 # that arrives while one is running would just redo identical work.
 _mcp_reload_lock = threading.Lock()
+# Bumped once per SUCCESSFUL shutdown+discover. A follower that waited on the
+# lock only skips the redundant reload if this advanced while it waited — i.e.
+# the leader actually completed. If the leader threw (flapping server), the
+# follower sees no advance and re-runs the full reload itself.
+_mcp_reload_gen = 0
 
 
 def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
@@ -12980,28 +12991,47 @@ def _(rid, params: dict) -> dict:
                 )
             _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
 
-        # Serialize reloads. The LEADER (won the non-blocking acquire) holds
-        # the lock across shutdown+discover AND its own agent refresh —
-        # releasing after discover would let a second reload tear the registry
-        # down while this one is still reading it to rebuild the snapshot. A
-        # FOLLOWER (lock busy) waits, then — still holding the lock — refreshes
-        # ITS OWN session against the freshly-built registry (skipping the
-        # redundant shutdown/discover), so a coalesced session still gets an
-        # updated tool snapshot rather than silently keeping stale tools.
+        global _mcp_reload_gen
+
+        def _do_full_reload() -> None:
+            """shutdown+discover+refresh under the lock, then mark a completed
+            generation. The lock spans the refresh too: releasing after
+            discover would let a second reload tear the registry down while
+            this one is still reading it to rebuild the session snapshot."""
+            global _mcp_reload_gen
+
+            shutdown_mcp_servers()
+            discover_mcp_tools()
+            _refresh_session_agent()
+            _mcp_reload_gen += 1
+
+        # Serialize reloads. The LEADER (won the non-blocking acquire) runs the
+        # full reload. A FOLLOWER (lock busy) snapshots the generation, waits,
+        # then — still holding the lock — checks whether a reload actually
+        # COMPLETED while it waited: if so it just refreshes its own agent
+        # against the fresh registry (coalesced); if the leader threw (flapping
+        # server, no generation advance) it re-runs the full reload itself, so
+        # a failed leader can never leave a follower reporting a bogus success
+        # over an empty/partial registry.
         if _mcp_reload_lock.acquire(blocking=False):
             try:
-                shutdown_mcp_servers()
-                discover_mcp_tools()
-                _refresh_session_agent()
+                _do_full_reload()
             finally:
                 _mcp_reload_lock.release()
 
             return _finish_reload(rid, params, coalesced=False)
 
-        with _mcp_reload_lock:
-            _refresh_session_agent()
+        gen_before = _mcp_reload_gen
 
-        return _finish_reload(rid, params, coalesced=True)
+        with _mcp_reload_lock:
+            if _mcp_reload_gen > gen_before:
+                _refresh_session_agent()
+                coalesced = True
+            else:
+                _do_full_reload()
+                coalesced = False
+
+        return _finish_reload(rid, params, coalesced=coalesced)
     except Exception as e:
         return _err(rid, 5015, str(e))
 

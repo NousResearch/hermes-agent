@@ -34,6 +34,27 @@ describe('history timeline overlay model', () => {
     expect(state.selected).toBe(3)
   })
 
+  it('can default selection to the latest persisted branchable message when mixed with unpersisted local tail rows', () => {
+    const state = buildHistoryTimelineState(
+      [
+        { ...msg('user', 'persisted prompt'), dbId: 101 },
+        { ...msg('assistant', 'persisted answer'), dbId: 102 },
+        msg('user', 'optimistic retry draft'),
+        msg('assistant', 'optimistic streaming answer')
+      ],
+      { preferLatestPersistedBranchable: true }
+    )
+
+    expect(state.items).toMatchObject([
+      { dbId: 101, role: 'user' },
+      { dbId: 102, role: 'assistant' },
+      { role: 'user' },
+      { role: 'assistant' }
+    ])
+    expect(state.selected).toBe(1)
+    expect(state.items[state.selected]).toMatchObject({ dbId: 102, role: 'assistant' })
+  })
+
   it('drops gateway tool rows from the timeline while keeping system context read-only', () => {
     const transcript = toTranscriptMessages([
       { db_id: 201, role: 'system', text: 'system prompt' },

@@ -840,6 +840,38 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('/history selects a persisted message after refreshing history so Enter can branch', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        messages: [
+          { db_id: 101, role: 'user', text: 'persisted prompt' },
+          { db_id: 102, role: 'assistant', text: 'persisted answer' }
+        ]
+      })
+    )
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'user', text: 'persisted prompt' },
+          { role: 'assistant', text: 'persisted answer' },
+          { role: 'user', text: 'optimistic local tail' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/history')
+
+    await vi.waitFor(() => {
+      expect(getOverlayState().historyTimeline?.items[getOverlayState().historyTimeline?.selected ?? -1]).toMatchObject({
+        dbId: 102,
+        role: 'assistant'
+      })
+    })
+  })
+
   it('/history reports empty state without paging', () => {
     const ctx = buildCtx()
 

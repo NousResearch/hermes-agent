@@ -521,7 +521,9 @@ export const coreCommands: SlashCommand[] = [
             )
             const fresh = persisted.length ? [...persisted, ...localTail] : ctx.local.getHistoryItems()
 
-            patchOverlayState({ historyTimeline: buildHistoryTimelineState(fresh) })
+            patchOverlayState({
+              historyTimeline: buildHistoryTimelineState(fresh, { preferLatestPersistedBranchable: persisted.length > 0 })
+            })
           })
         )
         .catch(() => patchOverlayState({ historyTimeline: buildHistoryTimelineState(ctx.local.getHistoryItems()) }))

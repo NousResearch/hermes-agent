@@ -40,7 +40,14 @@ const oneLinePreview = (text: string): string => {
   return compact.length > MAX_PREVIEW ? `${compact.slice(0, MAX_PREVIEW).trimEnd()}…` : compact
 }
 
-export const buildHistoryTimelineState = (messages: Msg[]): HistoryTimelineOverlayState => {
+interface BuildHistoryTimelineOptions {
+  preferLatestPersistedBranchable?: boolean
+}
+
+export const buildHistoryTimelineState = (
+  messages: Msg[],
+  options: BuildHistoryTimelineOptions = {}
+): HistoryTimelineOverlayState => {
   const rawItems = messages.flatMap((msg, sourceIndex): HistoryTimelineItem[] => {
     if (msg.kind === 'intro' || (msg.role !== 'user' && msg.role !== 'assistant' && msg.role !== 'system')) {
       return []
@@ -65,7 +72,11 @@ export const buildHistoryTimelineState = (messages: Msg[]): HistoryTimelineOverl
   })
 
   const allItems = rawItems.map((item, index) => ({ ...item, ordinal: index + 1 }))
-  const selected = Math.max(0, allItems.length - 1)
+  const latestIndex = Math.max(0, allItems.length - 1)
+  const latestPersistedBranchableIndex = options.preferLatestPersistedBranchable
+    ? allItems.findLastIndex(item => item.actionable && typeof item.dbId === 'number')
+    : -1
+  const selected = latestPersistedBranchableIndex >= 0 ? latestPersistedBranchableIndex : latestIndex
 
   return {
     allItems,

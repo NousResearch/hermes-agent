@@ -1,3 +1,4 @@
+import contextvars
 import json
 import os
 import subprocess
@@ -130,6 +131,76 @@ def test_session_create_reclaims_lease_dropped_without_release(monkeypatch, tmp_
         assert len(active_session_registry_snapshot()) == 3
     finally:
         _clear_server_sessions()
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
+def test_concurrent_claim_does_not_reclaim_unpublished_in_flight_lease(monkeypatch, tmp_path):
+    """Regression for the #68920 review's sweep-vs-acquire race.
+
+    ``_claim_active_session_slot`` returns to its caller (the RPC handler)
+    BEFORE that caller publishes the new sid into ``server._sessions`` — the
+    dict-literal assignment is separate code, outside the claim call. If a
+    second claim's stale-lease sweep runs in exactly that gap, it would see
+    the first sid missing from ``_sessions`` and reclaim its brand-new
+    lease. Two real threads force thread A's claim to fully complete (lease
+    minted, sid deliberately left unpublished) before thread B's claim runs
+    its own sweep — an ``Event`` (no sleeps) makes the ordering
+    deterministic. The pending-claims set must protect A's lease through
+    that gap regardless of whether A ever actually publishes."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("max_concurrent_sessions: 5\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+    server._pending_active_session_claims.clear()
+
+    claim_a_done = threading.Event()
+    results: dict[str, tuple] = {}
+
+    def _claim_a():
+        # Deliberately never publishes "sid-a" into server._sessions —
+        # reproduces a claimer that crashed/lost a race before publishing.
+        results["a"] = server._claim_active_session_slot(
+            "key-a", live_session_id="sid-a", surface="tui"
+        )
+        claim_a_done.set()
+
+    def _claim_b():
+        claim_a_done.wait(timeout=5)
+        results["b"] = server._claim_active_session_slot(
+            "key-b", live_session_id="sid-b", surface="tui"
+        )
+
+    # A plain threading.Thread does NOT inherit the spawning thread's
+    # contextvars (unlike asyncio tasks) — copy_context() carries the
+    # HERMES_HOME override set above into each worker thread so _load_cfg()
+    # resolves the same tmp_path config instead of falling back to the
+    # real ~/.hermes/config.yaml.
+    ctx = contextvars.copy_context()
+    thread_a = threading.Thread(target=lambda: ctx.run(_claim_a))
+    thread_b = threading.Thread(target=lambda: ctx.run(_claim_b))
+    try:
+        thread_a.start()
+        thread_a.join(timeout=5)
+        thread_b.start()
+        thread_b.join(timeout=5)
+
+        lease_a, message_a = results["a"]
+        lease_b, message_b = results["b"]
+        assert message_a is None and lease_a is not None
+        assert message_b is None and lease_b is not None
+
+        snapshot = active_session_registry_snapshot()
+        assert {entry["session_id"] for entry in snapshot} == {"key-a", "key-b"}
+        lease_a.release()
+        lease_b.release()
+    finally:
+        server._pending_active_session_claims.clear()
         server._cfg_cache = None
         server._cfg_mtime = None
         server._cfg_path = None

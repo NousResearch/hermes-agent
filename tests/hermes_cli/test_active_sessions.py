@@ -371,7 +371,7 @@ def test_prune_stale_for_pid_reclaims_orphaned_same_pid_lease(tmp_path, monkeypa
         session_id="stale-key",
         surface="tui",
         config={"max_concurrent_sessions": 5},
-        metadata={"live_session_id": "sid-gone"},
+        metadata={"live_session_id": "sid-gone", "owner": "tui_gateway"},
     )
     assert message is None and stale_lease is not None
 
@@ -379,11 +379,13 @@ def test_prune_stale_for_pid_reclaims_orphaned_same_pid_lease(tmp_path, monkeypa
         session_id="live-key",
         surface="tui",
         config={"max_concurrent_sessions": 5},
-        metadata={"live_session_id": "sid-still-live"},
+        metadata={"live_session_id": "sid-still-live", "owner": "tui_gateway"},
     )
     assert message is None and live_lease is not None
 
-    reclaimed = active_sessions.prune_stale_for_pid(os.getpid(), {"sid-still-live"})
+    reclaimed = active_sessions.prune_stale_for_pid(
+        os.getpid(), {"sid-still-live"}, owner="tui_gateway"
+    )
 
     assert reclaimed == 1
     remaining = active_sessions.active_session_registry_snapshot()
@@ -410,17 +412,44 @@ def test_prune_stale_for_pid_ignores_other_pid_entries(tmp_path, monkeypatch):
                 "pid": other_pid,
                 "started_at": 1,
                 "updated_at": 1,
-                "metadata": {"live_session_id": "not-in-my-registry"},
+                "metadata": {"live_session_id": "not-in-my-registry", "owner": "tui_gateway"},
             }
         ],
     )
 
-    reclaimed = active_sessions.prune_stale_for_pid(os.getpid(), set())
+    reclaimed = active_sessions.prune_stale_for_pid(os.getpid(), set(), owner="tui_gateway")
 
     assert reclaimed == 0
     assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
         "other-proc-session"
     ]
+
+
+def test_prune_stale_for_pid_ignores_same_pid_lease_without_owner_tag(tmp_path, monkeypatch):
+    """A same-pid lease with no owner tag (or a different owner) — e.g. the
+    CLI's single whole-process lease sharing the desktop backend's PID —
+    must survive the sweep even though its live_session_id looks stale.
+    The owner tag is a structural guard, not an incidental one: reclaiming
+    based on live_session_id alone would silently release a live CLI
+    session's lease out from under it."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    cli_lease, message = active_sessions.try_acquire_active_session(
+        session_id="cli-key",
+        surface="cli",
+        config={"max_concurrent_sessions": 5},
+        metadata={"live_session_id": "not-in-tui-registry"},
+    )
+    assert message is None and cli_lease is not None
+
+    reclaimed = active_sessions.prune_stale_for_pid(os.getpid(), set(), owner="tui_gateway")
+
+    assert reclaimed == 0
+    assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
+        "cli-key"
+    ]
+    cli_lease.release()
 
 
 def test_prune_stale_for_pid_fails_open_on_error(tmp_path, monkeypatch):
@@ -432,4 +461,4 @@ def test_prune_stale_for_pid_fails_open_on_error(tmp_path, monkeypatch):
         lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
-    assert active_sessions.prune_stale_for_pid(os.getpid(), set()) == 0
+    assert active_sessions.prune_stale_for_pid(os.getpid(), set(), owner="tui_gateway") == 0

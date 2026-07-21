@@ -217,18 +217,29 @@ def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def prune_stale_for_pid(pid: int, live_session_ids: set[str]) -> int:
-    """Reclaim leases owned by ``pid`` whose live session no longer exists.
+def prune_stale_for_pid(pid: int, live_session_ids: set[str], *, owner: str) -> int:
+    """Reclaim leases owned by ``pid`` AND tagged ``metadata.owner == owner``
+    whose live session no longer exists.
 
     ``active_sessions.json`` is cross-process: a PID-alive entry owned by
     ANOTHER process can't be validated from here (that process's own
     in-memory session registry isn't visible to us), so only entries whose
-    ``pid`` matches the CURRENT process are checked. A same-pid entry is
-    reclaimed when its ``metadata.live_session_id`` is set but is not a
-    member of ``live_session_ids`` (the caller's current live session-id
-    registry, e.g. a desktop/TUI backend's in-memory session map) — that
-    combination means the in-process session the lease was minted for is
-    gone, but nothing on the release path ever ran to free the slot (e.g. a
+    ``pid`` matches the CURRENT process are even considered. Within that
+    same-pid set, the ``owner`` tag is a structural (not incidental) guard:
+    a CLI lease shares the desktop backend's PID (one ``hermes serve``
+    process serves both), but the CLI's ``_active_session_lease`` is a
+    single, whole-process-lifetime lease with no ``live_session_id`` /
+    ``owner`` concept of its own — an entry missing the exact ``owner`` tag
+    (or tagged for a different owner) is left alone regardless of whether
+    its ``live_session_id`` looks stale, so this sweep can never reclaim a
+    CLI/gateway lease by accident.
+
+    A same-pid, same-owner entry is reclaimed when its
+    ``metadata.live_session_id`` is set but is not a member of
+    ``live_session_ids`` (the caller's current live session-id registry,
+    e.g. a desktop/TUI backend's in-memory session map) — that combination
+    means the in-process session the lease was minted for is gone, but
+    nothing on the release path ever ran to free the slot (e.g. a
     replacement flow that dropped the old session without an explicit
     release).
 
@@ -251,10 +262,12 @@ def prune_stale_for_pid(pid: int, live_session_ids: set[str]) -> int:
                     entry_pid = None
                 if entry_pid == pid:
                     metadata = entry.get("metadata")
-                    live_id = metadata.get("live_session_id") if isinstance(metadata, dict) else None
-                    if live_id is not None and live_id not in live_session_ids:
-                        reclaimed += 1
-                        continue
+                    metadata = metadata if isinstance(metadata, dict) else {}
+                    if metadata.get("owner") == owner:
+                        live_id = metadata.get("live_session_id")
+                        if live_id is not None and live_id not in live_session_ids:
+                            reclaimed += 1
+                            continue
                 kept.append(entry)
             if reclaimed:
                 _write_entries(state_path, kept)

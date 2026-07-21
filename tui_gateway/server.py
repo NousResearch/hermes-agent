@@ -468,17 +468,49 @@ def _notify_session_boundary(
         pass
 
 
+# Structural owner tag for every lease this backend mints (see
+# _claim_active_session_slot). prune_stale_for_pid only ever reclaims
+# same-pid entries carrying this exact tag, so a CLI lease sharing the same
+# "hermes serve" pid (metadata without this tag, or none at all) can never
+# be swept by mistake.
+_ACTIVE_SESSION_OWNER = "tui_gateway"
+
+# Guards the {mark pending -> snapshot live ids -> prune -> acquire}
+# sequence in _claim_active_session_slot as one transaction, and the pending
+# set closes the gap prune_stale_for_pid's own file lock can't see: a lease
+# is written to active_sessions.json (and thus visible to a concurrent
+# claimer's prune) BEFORE the caller publishes its sid into _sessions (the
+# dict literal assignment happens in the RPC handler, after
+# _claim_active_session_slot has already returned). Without this, a second
+# thread's claim could run its sweep in exactly that gap and reclaim the
+# first thread's just-minted, not-yet-published lease (#68920 review).
+_active_session_claim_lock = threading.Lock()
+_pending_active_session_claims: set[str] = set()
+
+
 def _prune_stale_active_sessions_for_this_pid() -> None:
-    """Reclaim same-pid leases whose in-memory session is already gone.
+    """Reclaim same-pid, same-owner leases whose in-memory session is gone.
 
     Desktop/TUI session replacement (e.g. a superseding ``session.create``)
     can leave the OLD session's dict out of ``_sessions`` without ever
     calling ``_release_active_session_slot`` on it. Since every lease this
-    process minted carries the in-memory sid as ``metadata.live_session_id``
-    (see ``_claim_active_session_slot`` below), any lease owned by our own
-    pid whose sid is no longer a live key in ``_sessions`` is safe to
-    reclaim — sweeping it here, right before the next acquire, keeps a
-    single desktop process from starving itself at ``max_concurrent_sessions``.
+    process mints carries the in-memory sid as ``metadata.live_session_id``
+    and is tagged ``metadata.owner=_ACTIVE_SESSION_OWNER`` (see
+    ``_claim_active_session_slot`` below), any such lease whose sid is no
+    longer a live key in ``_sessions`` is safe to reclaim — sweeping it here,
+    right before the next acquire, keeps a single desktop process from
+    starving itself at ``max_concurrent_sessions``.
+
+    A sid pending publication (in ``_pending_active_session_claims``, added
+    by a claim still mid-flight — see below) counts as live even though it
+    is not in ``_sessions`` yet, closing the race where a concurrent claim's
+    sweep could otherwise reclaim a lease the FIRST claim just minted but
+    hasn't published. Once a pending sid does show up in ``_sessions`` it is
+    dropped from the pending set here (self-cleaning) so the set never grows
+    unbounded across a long-running gateway process; a claim that instead
+    fails/aborts before publishing is still cleared explicitly in
+    ``_claim_active_session_slot``.
+
     Best-effort: never blocks or fails the caller's acquire.
     """
     try:
@@ -486,7 +518,9 @@ def _prune_stale_active_sessions_for_this_pid() -> None:
 
         with _sessions_lock:
             live_ids = set(_sessions.keys())
-        prune_stale_for_pid(os.getpid(), live_ids)
+        _pending_active_session_claims.difference_update(live_ids)
+        live_ids |= _pending_active_session_claims
+        prune_stale_for_pid(os.getpid(), live_ids, owner=_ACTIVE_SESSION_OWNER)
     except Exception:
         logger.debug("Failed to prune stale active session leases", exc_info=True)
 
@@ -497,19 +531,34 @@ def _claim_active_session_slot(
     live_session_id: str,
     surface: str = "tui",
 ) -> tuple[Any, str | None]:
-    _prune_stale_active_sessions_for_this_pid()
-    try:
-        from hermes_cli.active_sessions import try_acquire_active_session
+    with _active_session_claim_lock:
+        _pending_active_session_claims.add(live_session_id)
+        try:
+            _prune_stale_active_sessions_for_this_pid()
+            try:
+                from hermes_cli.active_sessions import try_acquire_active_session
 
-        return try_acquire_active_session(
-            session_id=session_key,
-            surface=surface,
-            config=_load_cfg(),
-            metadata={"live_session_id": live_session_id},
-        )
-    except Exception as exc:
-        logger.warning("Failed to claim active session slot: %s", exc)
-        return None, None
+                lease, message = try_acquire_active_session(
+                    session_id=session_key,
+                    surface=surface,
+                    config=_load_cfg(),
+                    metadata={
+                        "live_session_id": live_session_id,
+                        "owner": _ACTIVE_SESSION_OWNER,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to claim active session slot: %s", exc)
+                lease, message = None, None
+        finally:
+            # No lease minted (or the attempt raised) — this sid was never
+            # written to the registry, so it can't leak protection forever.
+            # On success it stays pending until
+            # _prune_stale_active_sessions_for_this_pid observes it in
+            # _sessions (self-cleaning above).
+            if lease is None:
+                _pending_active_session_claims.discard(live_session_id)
+        return lease, message
 
 
 def _release_active_session_slot(session: dict | None) -> None:

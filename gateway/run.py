@@ -3328,6 +3328,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
 
+        # Strong refs to detached fatal-error handler tasks (see
+        # _handle_adapter_fatal_error) so the event loop can't GC them mid-run.
+        self._fatal_handler_tasks: set = set()
+
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
@@ -4378,7 +4382,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         If the error is retryable (e.g. network blip, DNS failure), queue the
         platform for background reconnection instead of giving up permanently.
+
+        The notification arrives on the failing adapter's own polling task,
+        and the disconnect inside the handler can cancel that task mid-flight:
+        disconnect()'s current-task guard misses it because
+        _safe_adapter_disconnect runs the close in a wrapper task. A cancelled
+        handler dies between the fatal log and the reconnect queue, silently
+        stranding the platform (observed 2026-07-21: telegram popped from
+        adapters but never queued after a travel network outage). Run the real
+        work in a detached task that adapter teardown cannot cancel.
         """
+        tasks = getattr(self, "_fatal_handler_tasks", None)
+        if tasks is None:
+            tasks = self._fatal_handler_tasks = set()
+        task = asyncio.create_task(self._handle_adapter_fatal_error_detached(adapter))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        # Await so callers that expect completion still get it — but through
+        # shield(): Task.cancel() on the caller also cancels the future it is
+        # awaiting (_fut_waiter), so a plain `await task` would tunnel the
+        # cancellation straight into the "detached" task. shield() absorbs
+        # it: the caller sees CancelledError, the handler runs to completion.
+        await asyncio.shield(task)
+
+    async def _handle_adapter_fatal_error_detached(
+        self, adapter: BasePlatformAdapter
+    ) -> None:
+        """Run the fatal handler; if the platform still ends up stranded
+        (not reconnected, not queued, not intentionally disabled), exit the
+        gateway with failure so the service manager restarts it instead of
+        leaving a silent partial outage."""
+        try:
+            await self._handle_adapter_fatal_error_impl(adapter)
+        except Exception:
+            logger.exception(
+                "Fatal-error handling for %s raised unexpectedly",
+                adapter.platform.value,
+            )
+        finally:
+            platform = adapter.platform
+            shutdown_event = getattr(self, "_shutdown_event", None)
+            stranded = (
+                adapter.fatal_error_retryable
+                and platform not in self.adapters
+                and platform not in getattr(self, "_failed_platforms", {})
+                and not (shutdown_event is not None and shutdown_event.is_set())
+            )
+            if stranded:
+                logger.error(
+                    "%s adapter was lost without entering the reconnection "
+                    "queue; exiting gateway so the service manager restarts it.",
+                    platform.value,
+                )
+                self._exit_reason = (
+                    f"{platform.value} adapter lost without reconnection queue"
+                )
+                self._exit_with_failure = True
+                await self.stop()
+
+    async def _handle_adapter_fatal_error_impl(self, adapter: BasePlatformAdapter) -> None:
         # Snapshot the current owner of this platform slot before doing
         # anything else. If it's neither this adapter nor empty, a different
         # adapter has already taken over (e.g. this is a delayed notification

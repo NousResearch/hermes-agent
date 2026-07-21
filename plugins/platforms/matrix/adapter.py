@@ -340,6 +340,7 @@ class _MatrixApprovalPrompt:
         self.state: str = "pending_expanded"  # pending_expanded|pending_summarized|terminal
         self.summary: str = ""
         self.summary_task: object | None = None
+        self.presentation_lock = asyncio.Lock()
 
 
 @dataclass
@@ -3712,26 +3713,39 @@ class MatrixAdapter(BasePlatformAdapter):
                 allow_session=prompt.allow_session,
                 smart_denied=prompt.smart_denied,
             )
-            # Re-check immediately before mutating presentation state.
-            if prompt.resolved or prompt.generation != expected_gen:
-                return
-            prompt.summary = summary
-            prompt.state = "pending_summarized"
-            prompt.generation += 1
             edit_meta = {"matrix_formatted_body": html_body} if html_body else None
-            try:
-                if prompt.resolved:
+            async with prompt.presentation_lock:
+                if (
+                    prompt.resolved
+                    or prompt.generation != expected_gen
+                    or prompt.state != "pending_expanded"
+                ):
                     return
-                await self.edit_message(
-                    prompt.chat_id,
-                    prompt.message_id,
-                    body,
-                    metadata=edit_meta,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("Matrix: approval summary edit failed: %s", exc)
+                try:
+                    result = await self.edit_message(
+                        prompt.chat_id,
+                        prompt.message_id,
+                        body,
+                        metadata=edit_meta,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("Matrix: approval summary edit failed: %s", exc)
+                    return
+                if not getattr(result, "success", False):
+                    logger.warning(
+                        "Matrix: approval summary edit failed: %s",
+                        getattr(result, "error", None) or "unknown edit failure",
+                    )
+                    return
+                # Resolution may have started while the homeserver edit was in flight.
+                # The finalizer waits on this lock and will reassert terminal content.
+                if prompt.resolved or prompt.generation != expected_gen:
+                    return
+                prompt.summary = summary
+                prompt.state = "pending_summarized"
+                prompt.generation += 1
 
         prompt.summary_task = loop.create_task(_runner())
 
@@ -3747,42 +3761,51 @@ class MatrixAdapter(BasePlatformAdapter):
         """Best-effort terminal card compaction after resolve/expire."""
         task = getattr(prompt, "summary_task", None)
         self._cancel_approval_summary_task(prompt)
-        # Let any in-flight summary edit attempt finish or cancel before we
-        # write the terminal body, then always reassert terminal content.
-        if task is not None:
+        # Await cancellation explicitly so CancelledError cannot skip terminal
+        # compaction and no summary replacement can land after the terminal one.
+        if task is not None and task is not asyncio.current_task():
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
-            except Exception:
-                try:
-                    await asyncio.wait([task], timeout=0.2)
-                except Exception:
-                    pass
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("Matrix: approval summary task failed during finalize: %s", exc)
         if not getattr(prompt, "command", ""):
-            return
-        if str(getattr(prompt, "state", "")).startswith("terminal_"):
-            # Already compacted (e.g. watcher + reaction both fired).
             return
         from plugins.platforms.matrix.approval_cards import format_terminal_compact
 
-        body, html_body = format_terminal_compact(
-            choice=choice,
-            command=prompt.command,
-            description=prompt.description,
-            actor=actor or "",
-            summary=getattr(prompt, "summary", "") or "",
-        )
-        prompt.state = f"terminal_{choice}"
-        prompt.generation += 1
-        edit_meta = {"matrix_formatted_body": html_body} if html_body else None
-        try:
-            await self.edit_message(
-                room_id,
-                target_event_id,
-                body,
-                metadata=edit_meta,
+        async with prompt.presentation_lock:
+            if str(getattr(prompt, "state", "")).startswith("terminal_"):
+                # Already compacted (e.g. watcher + reaction both fired).
+                return
+            body, html_body = format_terminal_compact(
+                choice=choice,
+                command=prompt.command,
+                description=prompt.description,
+                actor=actor or "",
+                summary=getattr(prompt, "summary", "") or "",
             )
-        except Exception as exc:
-            logger.debug("Matrix: terminal approval edit failed: %s", exc)
+            edit_meta = {"matrix_formatted_body": html_body} if html_body else None
+            try:
+                result = await self.edit_message(
+                    room_id,
+                    target_event_id,
+                    body,
+                    metadata=edit_meta,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Matrix: terminal approval edit failed: %s", exc)
+                return
+            if not getattr(result, "success", False):
+                logger.warning(
+                    "Matrix: terminal approval edit failed: %s",
+                    getattr(result, "error", None) or "unknown edit failure",
+                )
+                return
+            prompt.state = f"terminal_{choice}"
+            prompt.generation += 1
 
     def _schedule_approval_resolution_watch(self, prompt: "_MatrixApprovalPrompt") -> None:
         """Compact the card when the core queue resolves without a reaction."""

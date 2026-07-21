@@ -63,7 +63,7 @@ class TestApprovalCardFormatting:
             assert "♾️" not in text
             assert "always" not in text.lower()
 
-    def test_pending_summarized_keeps_command_in_details_not_plaintext(self):
+    def test_pending_summarized_keeps_self_contained_plaintext_fallback(self):
         text, html = format_pending_summarized(
             command="git reset --hard HEAD~1",
             description="git reset --hard (destroys uncommitted changes)",
@@ -71,8 +71,8 @@ class TestApprovalCardFormatting:
         )
         assert "Advisory interpretation" in text
         assert "Dangerous command requires approval" in text
-        # Plaintext stays compact for notifications; full command lives in HTML details.
-        assert "git reset --hard HEAD~1" not in text
+        # Plaintext clients cannot rely on formatted HTML or the original event.
+        assert "git reset --hard HEAD~1" in text
         assert html is not None
         assert "Dangerous command requires approval" in html
         assert "<details>" in html
@@ -92,7 +92,8 @@ class TestApprovalCardFormatting:
         assert "Approved once" in text
         assert "Advisory interpretation" in text
         assert "Restarts the example service" in text
-        assert "systemctl restart example.service" not in text
+        # Plaintext remains audit-complete even though formatted HTML collapses it.
+        assert "systemctl restart example.service" in text
         assert html is not None
         assert "<details>" in html
         assert html.index("Advisory interpretation") < html.index("<details>")
@@ -171,8 +172,28 @@ class TestMatrixApprovalCardLifecycle:
         content = sent["content"]
         assert content["body"].startswith("* ")
         assert content["formatted_body"].startswith("* ")
-        assert not content["m.new_content"]["body"].startswith("* ")
-        assert not content["m.new_content"]["formatted_body"].startswith("* ")
+        assert content["m.relates_to"] == {
+            "rel_type": "m.replace",
+            "event_id": "$approval",
+        }
+        new_content = content["m.new_content"]
+        assert not new_content["body"].startswith("* ")
+        assert not new_content["formatted_body"].startswith("* ")
+        for required in (
+            "Dangerous command requires approval",
+            "stop/restart system service",
+            "Advisory interpretation",
+            "Restarts the example service",
+            "systemctl restart example.service",
+            "✅ once",
+            "❌ deny",
+        ):
+            assert required in new_content["body"]
+        assert new_content["formatted_body"].index(
+            "Advisory interpretation"
+        ) < new_content["formatted_body"].index("<details>")
+        assert "<summary>Full command</summary>" in new_content["formatted_body"]
+        assert "systemctl restart example.service" in new_content["formatted_body"]
 
     @pytest.mark.asyncio
     async def test_send_exec_approval_uses_expanded_card_and_seeds_reactions(self, monkeypatch):
@@ -427,7 +448,7 @@ class TestMatrixApprovalCardLifecycle:
         edited = adapter.edit_message.await_args.args[2]
         assert "Approved once" in edited
         assert "Deletes the bounded directory" in edited
-        assert "rm -rf /tmp/x" not in edited
+        assert "rm -rf /tmp/x" in edited
         metadata = adapter.edit_message.await_args.kwargs.get("metadata") or {}
         edited_html = metadata.get("matrix_formatted_body") or ""
         assert edited_html.index("Advisory interpretation") < edited_html.index("<details>")
@@ -497,26 +518,18 @@ class TestMatrixApprovalCardLifecycle:
             "plugins.platforms.matrix.approval_cards.generate_command_summary",
             return_value="Says hello.",
         ):
-            # Drive the scheduled runner body directly via internal helper path.
             cfg = MatrixApprovalSummaryConfig(enabled=True, provider_policy="local_only")
-            # Manually run the inner logic of _schedule_approval_summary's task.
-            from plugins.platforms.matrix.approval_cards import format_pending_summarized
-
-            summary = "Says hello."
-            if prompt.resolved:
-                pass
-            else:
-                text, html = format_pending_summarized(
-                    command=prompt.command,
-                    description=prompt.description,
-                    summary=summary,
-                )
-                await adapter.edit_message(prompt.chat_id, prompt.message_id, text)
+            adapter._schedule_approval_summary(prompt, cfg)
+            task = prompt.summary_task
+            assert isinstance(task, asyncio.Task)
+            await task
 
         adapter.edit_message.assert_not_awaited()
+        assert prompt.state == "pending_expanded"
+        assert prompt.generation == 0
 
     @pytest.mark.asyncio
-    async def test_summary_success_collapses_command(self, monkeypatch):
+    async def test_summary_success_commits_after_replacement(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
         from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
         from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
@@ -528,7 +541,6 @@ class TestMatrixApprovalCardLifecycle:
                 extra={"homeserver": "https://matrix.example.org"},
             )
         )
-        adapter._client = types.SimpleNamespace()
         prompt = _MatrixApprovalPrompt(
             session_key="sess-1",
             chat_id="!room:example.org",
@@ -547,55 +559,155 @@ class TestMatrixApprovalCardLifecycle:
                 provider_policy="local_only",
                 local_timeout_seconds=90,
             )
-            # Invoke the async runner by scheduling and awaiting.
-            import asyncio
-
-            done = asyncio.Event()
-
-            async def _run():
-                from plugins.platforms.matrix.approval_cards import (
-                    format_pending_summarized,
-                    generate_command_summary,
-                )
-
-                summary = await asyncio.to_thread(
-                    generate_command_summary,
-                    command=prompt.command,
-                    description=prompt.description,
-                    timeout_seconds=cfg.effective_timeout_seconds,
-                    max_chars=cfg.max_chars,
-                )
-                assert summary
-                assert not prompt.resolved
-                text, html = format_pending_summarized(
-                    command=prompt.command,
-                    description=prompt.description,
-                    summary=summary,
-                    allow_permanent=prompt.allow_permanent,
-                    smart_denied=prompt.smart_denied,
-                )
-                prompt.summary = summary
-                prompt.state = "pending_summarized"
-                prompt.generation += 1
-                await adapter.edit_message(
-                    prompt.chat_id,
-                    prompt.message_id,
-                    text,
-                    metadata={"matrix_formatted_body": html} if html else None,
-                )
-                done.set()
-
-            await _run()
-            await done.wait()
+            adapter._schedule_approval_summary(prompt, cfg)
+            task = prompt.summary_task
+            assert isinstance(task, asyncio.Task)
+            await task
 
         assert prompt.state == "pending_summarized"
+        assert prompt.summary == "Restarts the example container."
+        assert prompt.generation == 1
         assert adapter.edit_message.await_count == 1
         body = adapter.edit_message.await_args.args[2]
+        assert "Dangerous command requires approval" in body
         assert "Advisory interpretation" in body
         assert "Restarts the example container" in body
-        # Notification plaintext stays compact; full command is HTML-only.
-        assert "docker restart example" not in body
+        assert "docker restart example" in body
+        assert "✅ once" in body
         meta = adapter.edit_message.await_args.kwargs.get("metadata") or {}
         html = meta.get("matrix_formatted_body") or ""
-        assert "<details>" in html
+        assert html.index("Advisory interpretation") < html.index("<details>")
+        assert "<summary>Full command</summary>" in html
         assert "docker restart example" in html
+
+    @pytest.mark.asyncio
+    async def test_summary_edit_failure_does_not_advance_presented_state(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        prompt = _MatrixApprovalPrompt(
+            session_key="sess-1",
+            chat_id="!room:example.org",
+            message_id="$target",
+            command="docker restart example",
+            description="container lifecycle",
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=types.SimpleNamespace(success=False, error="homeserver rejected edit")
+        )
+
+        with patch(
+            "plugins.platforms.matrix.approval_cards.generate_command_summary",
+            return_value="Restarts the example container.",
+        ):
+            cfg = MatrixApprovalSummaryConfig(enabled=True, provider_policy="local_only")
+            adapter._schedule_approval_summary(prompt, cfg)
+            task = prompt.summary_task
+            assert isinstance(task, asyncio.Task)
+            await task
+
+        assert adapter.edit_message.await_count == 1
+        assert prompt.state == "pending_expanded"
+        assert prompt.summary == ""
+        assert prompt.generation == 0
+
+    @pytest.mark.asyncio
+    async def test_resolution_race_writes_terminal_replacement_last(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        prompt = _MatrixApprovalPrompt(
+            session_key="sess-1",
+            chat_id="!room:example.org",
+            message_id="$target",
+            command="docker restart example",
+            description="container lifecycle",
+        )
+        summary_edit_started = asyncio.Event()
+        edits: list[str] = []
+
+        async def _edit_message(room_id, event_id, body, metadata=None):
+            if "Dangerous command requires approval" in body:
+                edits.append("summary")
+                summary_edit_started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    # Model a transport that completed the edit at cancellation time.
+                    return types.SimpleNamespace(success=True)
+            edits.append("terminal")
+            return types.SimpleNamespace(success=True)
+
+        adapter.edit_message = AsyncMock(side_effect=_edit_message)
+
+        with patch(
+            "plugins.platforms.matrix.approval_cards.generate_command_summary",
+            return_value="Restarts the example container.",
+        ):
+            cfg = MatrixApprovalSummaryConfig(enabled=True, provider_policy="local_only")
+            adapter._schedule_approval_summary(prompt, cfg)
+            await summary_edit_started.wait()
+            prompt.resolved = True
+            await adapter._finalize_matrix_approval_prompt(
+                prompt.chat_id,
+                prompt.message_id,
+                prompt,
+                choice="once",
+                actor="@user:example.org",
+            )
+
+        assert edits == ["summary", "terminal"]
+        assert prompt.state == "terminal_once"
+        assert prompt.summary == ""
+        assert prompt.generation == 1
+
+    @pytest.mark.asyncio
+    async def test_terminal_edit_failure_does_not_claim_compaction(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        prompt = _MatrixApprovalPrompt(
+            session_key="sess-1",
+            chat_id="!room:example.org",
+            message_id="$target",
+            command="docker restart example",
+            description="container lifecycle",
+            resolved=True,
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=types.SimpleNamespace(success=False, error="edit failed")
+        )
+
+        await adapter._finalize_matrix_approval_prompt(
+            prompt.chat_id,
+            prompt.message_id,
+            prompt,
+            choice="denied",
+            actor="@user:example.org",
+        )
+
+        assert prompt.state == "pending_expanded"
+        assert prompt.generation == 0

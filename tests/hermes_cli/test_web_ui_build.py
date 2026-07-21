@@ -486,3 +486,80 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "Web UI build failed" in out
         assert "vite ENOMEM" in out
         assert "Run manually" in out
+
+
+class TestBuildWebUIFlock:
+    """Cross-process build serialization (salvaged from PR #63455).
+
+    One process builds under an exclusive flock on <root>/.web_ui_build.lock;
+    contenders either serve the existing (possibly stale) dist or, when no
+    dist exists yet, block until the builder finishes. The staleness walk
+    itself runs inside _do_build_web_ui, i.e. under the lock, so a process
+    that queued behind a successful build skips the rebuild.
+    """
+
+    def test_contended_lock_with_dist_serves_stale_without_building(self, tmp_path):
+        import fcntl
+        from hermes_cli.main import _build_web_ui as build
+
+        web_dir, dist_dir = _make_web_dir(tmp_path)
+        _touch(dist_dir / "index.html")
+
+        lock_path = tmp_path / ".web_ui_build.lock"
+        holder = open(lock_path, "a")
+        try:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            with patch("hermes_cli.main._do_build_web_ui") as mock_do:
+                result = build(web_dir)
+        finally:
+            holder.close()
+
+        assert result is True
+        mock_do.assert_not_called()  # served existing dist, no second build
+
+    def test_uncontended_lock_builds_and_creates_lock_file(self, tmp_path):
+        from hermes_cli.main import _build_web_ui as build
+
+        web_dir, _ = _make_web_dir(tmp_path)
+        with patch("hermes_cli.main._do_build_web_ui", return_value=True) as mock_do:
+            result = build(web_dir)
+
+        assert result is True
+        mock_do.assert_called_once()
+        assert (tmp_path / ".web_ui_build.lock").exists()
+
+    def test_contended_lock_without_dist_waits_then_skips_fresh_build(self, tmp_path):
+        """First-ever build race: the waiter blocks, and once it acquires the
+        lock the callee's own staleness check (running under the lock) sees
+        the winner's output and skips a duplicate build."""
+        import fcntl
+        import threading
+        from hermes_cli.main import _build_web_ui as build
+
+        web_dir, dist_dir = _make_web_dir(tmp_path)
+        # No dist yet — contender must take the blocking-wait path.
+        lock_path = tmp_path / ".web_ui_build.lock"
+        holder = open(lock_path, "a")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+
+        def release_after_building():
+            # Simulate the winning process finishing its build.
+            _touch(dist_dir / ".vite" / "manifest.json")
+            _write_web_ui_build_stamp(tmp_path, web_dir)
+            holder.close()  # releases the flock
+
+        t = threading.Timer(0.2, release_after_building)
+        t.start()
+        try:
+            with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+                 patch("hermes_cli.main.subprocess.run") as mock_run:
+                result = build(web_dir)
+        finally:
+            t.join()
+
+        assert result is True
+        mock_run.assert_not_called()  # fresh after the wait -> no rebuild
+
+    def test_lock_file_is_gitignored(self):
+        gitignore = Path(__file__).resolve().parents[2] / ".gitignore"
+        assert ".web_ui_build.lock" in gitignore.read_text(encoding="utf-8")

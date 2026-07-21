@@ -65,6 +65,125 @@ import os
 import sys
 
 
+def _exit_after_oneshot(rc: object) -> None:
+    """Exit one-shot mode without letting late native finalizers change rc.
+
+    The SIGABRT this guards against (#30387, #43055) fires in a
+    native-extension finalizer during CPython's ``Py_FinalizeEx``, *after*
+    the response has printed. Flush streams, shut down file logging, then
+    ``os._exit`` past interpreter finalization. The ``atexit`` chain is
+    deliberately skipped — several handlers re-enter native code that may
+    be the abort source. Stateful cleanup is handled in ``_run_agent`` and
+    ``_cleanup_oneshot_runtime``.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    if rc is None:
+        exit_code = 0
+    elif isinstance(rc, int):
+        exit_code = rc
+    else:
+        exit_code = 1
+    os._exit(exit_code)
+
+
+_oneshot_cleanup_done = False
+
+
+def _cleanup_oneshot_runtime() -> None:
+    """Best-effort process-global cleanup before one-shot hard exit.
+
+    ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
+    session_db.close — all in ``_run_agent``'s finally block). This mirrors the
+    process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
+    be skipped by ``os._exit``.
+    """
+    global _oneshot_cleanup_done
+    if _oneshot_cleanup_done:
+        return
+    _oneshot_cleanup_done = True
+    try:
+        from tools.terminal_tool import cleanup_all_environments
+        cleanup_all_environments()
+    except Exception:
+        pass
+    try:
+        from tools.async_delegation import interrupt_all
+        interrupt_all(reason="oneshot shutdown")
+    except Exception:
+        pass
+    try:
+        from tools.browser_tool import _emergency_cleanup_all_sessions
+        _emergency_cleanup_all_sessions()
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except BaseException:
+        pass
+    try:
+        from agent.auxiliary_client import shutdown_cached_clients
+        shutdown_cached_clients()
+    except Exception:
+        pass
+
+
+def _run_and_exit_oneshot(
+    prompt: str,
+    *,
+    model: object = None,
+    provider: object = None,
+    toolsets: object = None,
+    usage_file: object = None,
+) -> None:
+    try:
+        from hermes_cli.oneshot import run_oneshot
+
+        rc = run_oneshot(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            usage_file=usage_file,
+        )
+    except KeyboardInterrupt:
+        rc = 130
+    except SystemExit as exc:
+        if exc.code is not None and not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+            rc = 1
+        else:
+            rc = exc.code
+    except BaseException:
+        # Defense-in-depth. ``run_oneshot`` already converts agent failures
+        # into an int return code and only re-raises KeyboardInterrupt /
+        # SystemExit (handled above). Anything still escaping here means
+        # ``run_oneshot`` itself malfunctioned — surface it on stderr but never
+        # fall through to normal interpreter teardown, which is the exact path
+        # that aborts with SIGABRT on AL2023 (the bug this routine fixes).
+        import traceback
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
+        rc = 1
+    try:
+        _cleanup_oneshot_runtime()
+    finally:
+        # The hard exit is the safety boundary for #43055. Even an interrupt
+        # during best-effort cleanup must not fall back into interpreter
+        # finalization, where the reported native SIGABRT occurs.
+        _exit_after_oneshot(rc)
+
+
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
@@ -1766,10 +1885,14 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    if not ext_dir:
-        _ensure_tui_workspace(tui_dir)
-
     # 1. Prebuilt bundle (nix / packaged release): just run it.
+    #
+    # This must run BEFORE _ensure_tui_workspace() below. A pip/pipx install
+    # ships hermes_cli/tui_dist/entry.js in the wheel but never ships ui-tui/
+    # at all (that directory only exists in a git checkout) — so requiring
+    # the workspace to exist first made every pip/pipx dashboard Chat tab
+    # connection hard-exit before it ever got a chance to try the bundled
+    # entry.js it already has. See #56665.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1782,6 +1905,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
+
+    # No prebuilt bundle available (or --dev, which never uses one) — we're
+    # about to npm install/build from source, so the workspace must exist.
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
@@ -1822,6 +1950,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 npm,
                 "install",
                 *npm_workspace_args,
+                # --include=dev: ui-tui's build toolchain (esbuild, typescript)
+                # lives in devDependencies. An inherited NODE_ENV=production
+                # (e.g. from a container shell or a parent TUI launch) or an
+                # npm `omit=dev` config would silently skip them and the TUI
+                # build would fail. See _run_npm_install_deterministic.
+                "--include=dev",
                 "--silent",
                 "--no-fund",
                 "--no-audit",
@@ -1997,6 +2131,39 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _safe_tui_cwd(env: Optional[dict] = None) -> str:
+    """Return a stable cwd value for the Node TUI child environment."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        candidate = ((env or {}).get("PWD") or os.environ.get("PWD") or "").strip()
+        if candidate and Path(candidate).is_dir():
+            return candidate
+        return str(PROJECT_ROOT)
+
+
+def _apply_tui_python_env(env: dict) -> None:
+    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
+    if not src_root or not Path(src_root).is_dir():
+        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+
+    cwd = str(env.get("HERMES_CWD") or "").strip()
+    if not cwd or not Path(cwd).is_dir():
+        env["HERMES_CWD"] = _safe_tui_cwd(env)
+
+    python = str(env.get("HERMES_PYTHON") or "").strip()
+    if os.path.dirname(python):
+        python_path = Path(python)
+        if not python_path.is_absolute():
+            python_path = Path(env["HERMES_CWD"]) / python_path
+        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
+    else:
+        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
+    if not python_is_executable:
+        env["HERMES_PYTHON"] = sys.executable
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -2030,11 +2197,6 @@ def _launch_tui(
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
-        "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
-    )
-    env.setdefault("HERMES_PYTHON", sys.executable)
-    env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
@@ -2058,6 +2220,8 @@ def _launch_tui(
             sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+
+    _apply_tui_python_env(env)
 
     if model:
         env["HERMES_MODEL"] = model
@@ -3003,6 +3167,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.models import (
         CANONICAL_PROVIDERS,
         _PROVIDER_LABELS,
+        _PROVIDER_ALIASES,
         group_providers,
         provider_group_for_slug,
     )
@@ -3026,7 +3191,30 @@ def select_provider_and_model(args=None):
     # resolves back to a concrete slug, so the dispatch chain below is
     # unchanged. Custom providers and the trailing actions stay flat.
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
-    grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
+    # Honor ``model_catalog.excluded_providers`` so the CLI ``hermes model``
+    # picker hides the same providers the gateway/TUI pickers do. A canonical
+    # provider is hidden if its slug OR any of its aliases appears in the
+    # exclusion list (case-insensitive), matching list_authenticated_providers'
+    # matching against hermes_id / alias / canonical slug.
+    _cli_excluded = {
+        str(p).strip().lower()
+        for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
+        if p
+    }
+    if _cli_excluded:
+        _alias_to_canon = _PROVIDER_ALIASES
+        _names_for: dict[str, set[str]] = {}
+        for _p in CANONICAL_PROVIDERS:
+            _names_for[_p.slug] = {_p.slug.lower()}
+        for _alias, _canon in _alias_to_canon.items():
+            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
+        _visible_slugs = [
+            p.slug for p in CANONICAL_PROVIDERS
+            if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
+        ]
+    else:
+        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group
     # if it's grouped, otherwise the active slug itself.
@@ -3251,6 +3439,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
+    ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
@@ -4832,6 +5021,25 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    ``--include=dev`` is forced on every invocation: the callers are frontend
+    builds (web UI / TUI / desktop workspaces), and those builds need the dev
+    toolchain (``tsc``, ``vite``, ``electron-builder`` — all
+    ``devDependencies``).  If the caller's environment has
+    ``NODE_ENV=production`` (or npm config ``omit=dev``) — which leaks in from
+    a shell profile, a container image, or the bundled TUI launcher that sets
+    ``NODE_ENV=production`` on its subprocess env — npm silently omits
+    devDependencies (exit 0, no error), so the build toolchain never installs
+    and the subsequent build dies with ``tsc: command not found`` (exit 127).
+    The flag overrides both the env var and npm config, unlike scrubbing
+    ``NODE_ENV`` from the environment which only fixes the env-leak case.
+
+    ``--no-save`` on the ``npm install`` fallback keeps it true to this
+    function's contract: never mutate ``package-lock.json``.  Without it, an
+    out-of-sync lockfile gets rewritten by the fallback, which drifts the
+    committed lockfile and makes every future ``npm ci`` fail — a
+    self-reinforcing cycle where web devDeps never install and a stale dist
+    is served on every update (PR #65595).
     """
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
@@ -4840,7 +5048,7 @@ def _run_npm_install_deterministic(
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        ci_cmd = [npm, "ci", "--include=dev", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -4855,7 +5063,7 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    install_cmd = [npm, "install", "--no-save", "--include=dev", *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,
@@ -4896,9 +5104,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import with_hermes_node_path
 
-    npm = find_node_executable("npm")
+    npm = _resolve_node_runtime_npm()
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
@@ -5636,7 +5844,7 @@ def cmd_gui(args: argparse.Namespace):
     except Exception:
         pass
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import with_hermes_node_path
 
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
@@ -5666,7 +5874,7 @@ def cmd_gui(args: argparse.Namespace):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = find_node_executable("npm")
+        npm = _resolve_node_runtime_npm()
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
@@ -5707,7 +5915,14 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
             print("→ Installing desktop workspace dependencies...")
-            nixos_env = _nixos_build_env()
+            # Put the Hermes-managed Node on PATH so npm's child scripts (which
+            # shell out to bare `node`, e.g. electron-winstaller's
+            # select-7z-arch.js) resolve it even when the parent PATH is
+            # stripped — the desktop updater chain (Desktop → hermes-setup →
+            # hermes update) loses shell PATH customizations. Wrapping the
+            # NixOS build env keeps its PYTHON hint while restoring managed Node
+            # ahead of a bare PATH (same idiom as the `hermes update` path).
+            nixos_env = with_hermes_node_path(_nixos_build_env())
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
@@ -6400,7 +6615,7 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    _update_node_dependencies()
+    node_failures = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
@@ -6439,7 +6654,15 @@ def _update_via_zip(args):
         logger.debug("Model catalog seed during zip update failed: %s", e)
 
     print()
-    print("✓ Update complete!")
+    if node_failures:
+        print(
+            "⚠ Update partially complete — Node.js dependencies for "
+            f"{', '.join(node_failures)} did not refresh."
+        )
+        print("  Code and Python deps are updated, but the dashboard/TUI may")
+        print("  be in a mixed state until the Node deps are rebuilt.")
+    else:
+        print("✓ Update complete!")
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -6448,7 +6671,14 @@ def _update_via_zip(args):
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
-    _kill_stale_dashboard_processes()
+    # Don't stop a working dashboard when the Node refresh failed — see the
+    # git-update path for rationale (#30271).
+    if node_failures:
+        print()
+        print("  ℹ Leaving running dashboard process(es) untouched because the")
+        print("    Node.js dependency refresh did not complete.")
+    else:
+        _kill_stale_dashboard_processes()
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8210,15 +8440,94 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
         logger.debug("Could not write npm lockfile hash cache")
 
 
-def _update_node_dependencies() -> None:
-    from hermes_constants import find_node_executable, with_hermes_node_path
+def _is_windows_npm_path(npm_path: str) -> bool:
+    """Return True if ``npm_path`` points at a Windows npm shim.
+
+    On WSL the Windows install dir is exposed through the ``/mnt/c`` drive
+    mount and PATH interop, so ``shutil.which("npm")`` can hand back
+    ``/mnt/c/Program Files/nodejs/npm`` (or the ``npm.cmd`` / ``npm.exe``
+    shim). Those are detected here by their ``.exe``/``.cmd``/``.bat``
+    suffix, a ``/mnt/`` drive-mount prefix, or an embedded backslash (a UNC
+    path). Callers use this only on a POSIX host — on native Windows an
+    ``npm.cmd`` shim is the correct executable.
+    """
+    low = npm_path.lower()
+    return (
+        low.endswith((".exe", ".cmd", ".bat"))
+        or low.startswith("/mnt/")
+        or "\\" in npm_path
+    )
+
+
+def _resolve_node_runtime_npm() -> str | None:
+    """Resolve an npm executable that belongs to the host's Node runtime.
+
+    On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed
+    through PATH interop. Running that Windows npm against the Linux checkout
+    operates over ``\\wsl.localhost\\...`` UNC paths and fails with EISDIR /
+    symlink errors in symlink-heavy trees like ``ui-tui`` (#30271). Refuse a
+    Windows npm on a POSIX host and re-scan PATH (skipping ``/mnt/*`` interop
+    entries) for a Linux-native npm. Returns the npm path, or ``None`` when
+    no suitable npm is reachable.
+    """
+    from hermes_constants import find_node_executable
 
     npm = find_node_executable("npm")
-    if not npm:
-        return
 
+    # On native Windows the platform npm (``npm.cmd``) is exactly what we
+    # want — only reject Windows shims when we're a POSIX/WSL process.
+    if _is_windows():
+        return npm
+
+    if not npm:
+        return None
+
+    if not _is_windows_npm_path(npm):
+        return npm
+
+    # The first resolution was a Windows npm. Re-scan PATH skipping the
+    # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native npm that
+    # came later on PATH is still found.
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory or directory.lower().startswith("/mnt/"):
+            continue
+        candidate = shutil.which("npm", path=directory)
+        if candidate and not _is_windows_npm_path(candidate):
+            return candidate
+    return None
+
+
+def _update_node_dependencies() -> list[str]:
+    """Refresh Node deps in the repo root and update workspaces.
+
+    Returns the list of labels whose npm install failed (empty on success),
+    so the caller can treat a Node refresh failure as a partial update rather
+    than silently reporting ``Update complete!`` (#30271).
+    """
     if not (PROJECT_ROOT / "package.json").exists():
-        return
+        return []
+
+    npm = _resolve_node_runtime_npm()
+    if not npm:
+        # If the only npm reachable inside this WSL shell is the Windows one,
+        # flag it loudly: silently skipping leaves ui-tui deps stale while the
+        # rest of the update proceeds, and running it would corrupt the tree.
+        from hermes_constants import is_wsl
+
+        path_npm = shutil.which("npm")
+        if is_wsl() and path_npm and _is_windows_npm_path(path_npm):
+            print("→ Updating Node.js dependencies...")
+            print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
+            print("    Install Node.js inside the WSL distro (nvm, or your distro's")
+            print("    package manager), then re-run `hermes update`.")
+            failed = ["repo root"]
+            if any(
+                (PROJECT_ROOT / workspace / "package.json").exists()
+                for workspace in ("ui-tui", "web")
+            ):
+                failed.append("ui-tui, web workspaces")
+            return failed
+        return []
 
     from hermes_constants import get_default_hermes_root
 
@@ -8228,7 +8537,7 @@ def _update_node_dependencies() -> None:
     shared_hermes_root = get_default_hermes_root()
     if not _npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
-        return
+        return []
 
     # With a single workspace lockfile the root install would cover ALL
     # workspaces — but apps/desktop pulls in Electron as a devDependency,
@@ -8238,7 +8547,17 @@ def _update_node_dependencies() -> None:
     # Desktop deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
+
+    def _partial_update_failure(*labels: str) -> list[str]:
+        print()
+        print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
+        print("    installation may be in a mixed state (updated code, stale Node")
+        print("    deps). Fix npm and re-run `hermes update`.")
+        return list(labels)
+
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+
+    from hermes_constants import with_hermes_node_path
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
@@ -8261,7 +8580,7 @@ def _update_node_dependencies() -> None:
         stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        return
+        return _partial_update_failure("repo root")
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
@@ -8276,11 +8595,13 @@ def _update_node_dependencies() -> None:
     if ws_result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
-    else:
-        print("  ⚠ npm workspace install failed")
-        stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
+        return []
+
+    print("  ⚠ npm workspace install failed")
+    stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
+    if stderr:
+        print(f"    {stderr.splitlines()[-1]}")
+    return _partial_update_failure("ui-tui, web workspaces")
 
 
 class _UpdateOutputStream:
@@ -8777,23 +9098,30 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
-def _run_pre_update_backup(args) -> None:
-    """Create a full zip backup of HERMES_HOME before running the update.
+_PRE_UPDATE_SNAPSHOT_KEEP = 1
 
-    Gated on ``updates.pre_update_backup`` in config (default false).  Off
-    by default because the zip can add minutes to every update on large
-    HERMES_HOME directories.  The ``--backup`` flag on ``hermes update``
-    opts in for a single run; ``--no-backup`` forces it off when config
-    has it enabled.  Never raises — a backup failure should not block the
-    update itself.
+# Per-file size cap for the pre-update quick snapshot. Anything larger is
+# skipped with a warning: the snapshot exists to protect small, hard-to-
+# regenerate state (pairing JSONs, cron jobs, config, auth) — not to copy a
+# multi-GB state.db on every update (observed: a 24 GB state.db added ~60s
+# of wall time and silently ate 24 GB of disk per update).
+_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
+
+
+def _resolve_pre_update_backup_mode(args) -> str:
+    """Resolve the pre-update backup mode: ``"off"``, ``"quick"``, or ``"full"``.
+
+    CLI flags win over config; ``--no-backup`` beats ``--backup`` when both
+    are set. Config accepts the mode strings plus legacy booleans:
+    ``true`` → ``full`` (the old zip behavior), ``false`` → ``off``
+    (an explicit opt-out now disables the quick snapshot too — previously
+    it ran unconditionally, ignoring the user's setting). A missing key
+    defaults to ``quick``.
     """
-    # CLI flags win over config.  --no-backup beats --backup if both are set.
     if getattr(args, "no_backup", False):
-        print("◆ Pre-update backup: skipped (--no-backup)")
-        print()
-        return
-
-    force_backup = bool(getattr(args, "backup", False))
+        return "off"
+    if getattr(args, "backup", False):
+        return "full"
 
     try:
         from hermes_cli.config import load_config
@@ -8806,19 +9134,76 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    # The default config ships with ``pre_update_backup: false`` (see
-    # ``hermes_cli/config.py``). Fall back to false if the key is missing
-    # so the default behaviour matches the shipped config: zipping a large
-    # HERMES_HOME can add minutes to every update. Users who want the
-    # #48200 safety net opt in via the config knob or ``--backup``.
-    enabled = updates_cfg.get("pre_update_backup", False)
-    keep = updates_cfg.get("backup_keep", 5)
+    raw = updates_cfg.get("pre_update_backup", "quick")
 
-    if not enabled and not force_backup:
-        # Silent by default — the backup is off, most users don't need to
-        # hear about it on every update.  They can opt in via --backup
-        # or by flipping the config knob.
-        return
+    if raw is True:
+        return "full"
+    if raw is False:
+        return "off"
+    mode = str(raw).strip().lower()
+    if mode in ("off", "false", "none", "disabled"):
+        return "off"
+    if mode in ("full", "zip", "true"):
+        return "full"
+    if mode == "quick":
+        return "quick"
+    logging.getLogger(__name__).warning(
+        "Unknown updates.pre_update_backup value %r — using 'quick'", raw
+    )
+    return "quick"
+
+
+def _run_pre_update_backup(args) -> Optional[str]:
+    """Run the pre-update safety backup and return the quick-snapshot id.
+
+    Single consolidated mechanism gated on ``updates.pre_update_backup``:
+
+    - ``off``   — nothing runs. Explicit user opt-out is honored fully.
+    - ``quick`` (default) — a state snapshot of critical small files
+      (pairing JSONs, cron jobs, config, auth; see ``_QUICK_STATE_FILES``)
+      under ``state-snapshots/``. Files over 1 GiB are skipped with a
+      warning so a bloated state.db can never stall the update
+      (issues #15733, #34600 are the reason this safety net exists).
+    - ``full``  — the quick snapshot PLUS a full zip of HERMES_HOME under
+      ``backups/`` (restorable via ``hermes import``; the #48200 wrong-path
+      wipe is the reason this level exists).
+
+    ``--backup`` forces ``full`` for one run; ``--no-backup`` forces ``off``.
+    Never raises — a backup failure should not block the update itself.
+
+    Returns the quick-snapshot id (used by the post-update cron-jobs
+    restore safety net), or ``None`` when mode is ``off`` or the snapshot
+    failed.
+    """
+    mode = _resolve_pre_update_backup_mode(args)
+
+    if mode == "off":
+        if getattr(args, "no_backup", False):
+            print("◆ Pre-update backup: skipped (--no-backup)")
+            print()
+        # Config-level off is silent — the user opted out; don't spam them
+        # on every update.
+        return None
+
+    snapshot_id = None
+    try:
+        from hermes_cli.backup import create_quick_snapshot
+
+        snapshot_id = create_quick_snapshot(
+            label="pre-update",
+            keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+            max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+        )
+        if snapshot_id:
+            print(f"◆ Pre-update snapshot: {snapshot_id}")
+    except Exception as exc:
+        # Never let a snapshot failure block an update.
+        logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
+
+    if mode != "full":
+        if snapshot_id:
+            print()
+        return snapshot_id
 
     try:
         from hermes_cli.backup import create_pre_update_backup
@@ -8827,24 +9212,31 @@ def _run_pre_update_backup(args) -> None:
             f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update."
         )
         print()
-        return
+        return snapshot_id
+
+    try:
+        from hermes_cli.config import load_config
+
+        _keep = (load_config() or {}).get("updates", {}).get("backup_keep", 5)
+    except Exception:
+        _keep = 5
 
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
     try:
-        out_path = create_pre_update_backup(keep=int(keep))
+        out_path = create_pre_update_backup(keep=int(_keep))
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
         print()
-        return
+        return snapshot_id
 
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
         print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
         print()
-        return
+        return snapshot_id
 
     try:
         size_bytes = out_path.stat().st_size
@@ -8873,9 +9265,9 @@ def _run_pre_update_backup(args) -> None:
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
-    print("  Disable:  omit --backup (backups are off by default)")
-    print("            set updates.pre_update_backup: false in config.yaml")
+    print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
+    return snapshot_id
 
 
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
@@ -9580,7 +9972,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
-    _run_pre_update_backup(args)
+    # Returns the quick-snapshot id (or None when disabled/failed); the
+    # post-update cron-jobs safety net uses it to detect job loss.
+    pre_update_snapshot_id = _run_pre_update_backup(args)
 
     _windows_gateway_resume = _pause_windows_gateways_for_update()
     if _windows_gateway_resume:
@@ -9865,23 +10259,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print(f"→ Found {commit_count} new commit(s)")
 
-        # Snapshot critical state (state.db, config, pairing JSONs, etc.)
-        # before pulling so a user can recover if something goes wrong.
-        # Issue #15733 reported missing pairing data after an update; even
-        # though `git pull` can't touch $HERMES_HOME, this is cheap
-        # belt-and-suspenders insurance and gives the user something to
-        # restore from via `/snapshot list` / `/snapshot restore <id>`.
-        pre_update_snapshot_id = None
-        try:
-            from hermes_cli.backup import create_quick_snapshot
-
-            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
-            if pre_update_snapshot_id:
-                print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
-        except Exception as exc:
-            # Never let a snapshot failure block an update.
-            logger.debug("Pre-update snapshot failed: %s", exc)
-
         print("→ Pulling updates...")
         update_succeeded = False
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
@@ -10074,7 +10451,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
+        node_failures = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last
@@ -10086,9 +10463,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        from hermes_constants import find_node_executable
-
-        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
+        if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Capture the (very loud) Electron/vite build output into
@@ -10097,9 +10472,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # covers a still-settling rebuild window the first wait didn't fully
             # catch — then surface the captured tail so the failure is
             # debuggable.
-            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+            #
+            # Start the build subprocess with the Hermes-managed Node on PATH:
+            # when `hermes update` runs inside the desktop updater chain
+            # (Desktop → hermes-setup → hermes update), the shell PATH
+            # customizations are lost, so a bare-PATH child would fail with
+            # `node: not found` before cmd_gui can self-heal.
+            from hermes_constants import with_hermes_node_path
+
+            _build_env = with_hermes_node_path()
+            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
             if build_result.returncode != 0:
-                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
                 tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
@@ -10376,7 +10760,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
-        print("✓ Update complete!")
+        if node_failures:
+            print(
+                "⚠ Update partially complete — Node.js dependencies for "
+                f"{', '.join(node_failures)} did not refresh."
+            )
+            print("  Code and Python deps are updated, but the dashboard/TUI may")
+            print("  be in a mixed state until the Node deps are rebuilt.")
+        else:
+            print("✓ Update complete!")
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -10469,7 +10861,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _ensure_user_systemd_env,
                 find_gateway_pids,
                 find_profile_gateway_processes,
-                launch_detached_profile_gateway_restart,
+                _prepare_profile_gateway_update_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
                 _wait_for_gateway_exit,
@@ -10651,6 +11043,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             restarted_services = []
             killed_pids = set()
             relaunched_profiles = []
+            externally_supervised_profiles = []
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -10982,7 +11375,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if proc.pid in manual_pids
             }
             for pid, proc in profile_processes.items():
-                if not launch_detached_profile_gateway_restart(proc.profile, pid):
+                restart_mode = _prepare_profile_gateway_update_restart(
+                    proc.profile, pid
+                )
+                if restart_mode is None:
                     continue
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
@@ -11022,7 +11418,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # live when the new gateway polls.
                 _wait_for_gateway_exit(timeout=5.0, force_after=None)
                 killed_pids.add(pid)
-                relaunched_profiles.append(proc.profile)
+                if restart_mode == "external-supervisor":
+                    externally_supervised_profiles.append(proc.profile)
+                else:
+                    relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
                 if pid in profile_processes:
@@ -11040,7 +11439,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if relaunched_profiles:
                     names = ", ".join(relaunched_profiles)
                     print(f"  ✓ Restarting manual gateway profile(s): {names}")
-                unmapped_count = len(killed_pids) - len(relaunched_profiles)
+                if externally_supervised_profiles:
+                    names = ", ".join(externally_supervised_profiles)
+                    print(
+                        "  ✓ Handed gateway profile(s) back to their external "
+                        f"supervisor: {names}"
+                    )
+                unmapped_count = (
+                    len(killed_pids)
+                    - len(relaunched_profiles)
+                    - len(externally_supervised_profiles)
+                )
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")
@@ -11134,7 +11543,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # silent frontend/backend mismatch.  We can't auto-restart it
         # (no saved launch args) but we can stop it, and a hint is
         # printed for the user to re-launch.
-        _kill_stale_dashboard_processes()
+        #
+        # Exception: if the Node dependency refresh failed, the rebuilt
+        # frontend the new backend expects may not exist, so stopping a
+        # working dashboard would leave the user with nothing running
+        # rather than a usable (if mixed) state (#30271). Leave it alone.
+        if node_failures:
+            print()
+            print("  ℹ Leaving running dashboard process(es) untouched because the")
+            print("    Node.js dependency refresh did not complete.")
+        else:
+            _kill_stale_dashboard_processes()
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -12038,6 +12457,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     try:
         from hermes_cli.config import load_config, save_config
+        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
 
         cfg = load_config()
         dash = cfg.setdefault("dashboard", {})
@@ -12048,6 +12468,16 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         basic["password"] = ""
         if not str(basic.get("secret", "") or "").strip():
             basic["secret"] = secret
+        # The bundled basic provider is a backend plugin that still honours
+        # plugins.disabled. Unblock it when we just wrote basic_auth so the
+        # discover_plugins(force=True) call below can register the provider
+        # (#54489). Surface the mutation so an operator who deliberately
+        # disabled it isn't surprised.
+        if ensure_basic_auth_plugin_enabled_in_config(cfg):
+            print(
+                "  ✓ Re-enabled the bundled 'basic' auth plugin "
+                "(was in plugins.disabled)"
+            )
         save_config(cfg)
     except Exception as exc:
         print(f"  ✗ Failed to write config.yaml: {exc}")
@@ -12210,6 +12640,23 @@ def cmd_dashboard(args):
     # cmd_chat does this in its own pre-dispatch block; the dashboard
     # backend is the desktop's primary entrypoint and needs the same.
     _sync_bundled_skills_quietly()
+
+    # Bridge terminal.* config into the TERMINAL_* env vars for THIS process,
+    # mirroring the CLI (cli.py env_mappings) and gateway (gateway/run.py
+    # _terminal_env_map) startup bridges. The dashboard/serve backend runs
+    # agents in-process (tui_gateway.ws → server._make_agent) and ticks cron
+    # jobs itself when desktop-spawned — without this bridge those consumers
+    # saw an unset TERMINAL_ENV and silently ran every command on the host
+    # even when config.yaml selects `terminal.backend: docker`
+    # (#63141, #54449, #61115, #65696). PTY chat spawns already bridge their
+    # child env copy; this covers the in-process consumers.
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env()
+    except Exception:
+        logger.debug("terminal config → env bridge failed for dashboard/serve",
+                     exc_info=True)
 
     if _headless_backend:
         # Don't build the SPA, and tell mount_spa() (read at web_server import
@@ -12669,16 +13116,12 @@ def _try_termux_fast_cli_launch() -> bool:
 
     if getattr(args, "oneshot", None):
         _prepare_agent_startup(args)
-        from hermes_cli.oneshot import run_oneshot
-
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-                usage_file=getattr(args, "usage_file", None),
-            )
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -14826,16 +15269,12 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
-        from hermes_cli.oneshot import run_oneshot
-
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-                usage_file=getattr(args, "usage_file", None),
-            )
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

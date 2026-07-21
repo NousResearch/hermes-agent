@@ -1480,6 +1480,26 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # ── Restore the primary's streaming preference ──
+        # ``_disable_streaming`` is agent-wide, so a fallback provider that
+        # rejected streaming leaves the flag stuck True and the restored
+        # primary would run non-streaming for the rest of the session.
+        # ``_try_activate_fallback`` snapshots the primary's value on the
+        # primary→fallback transition; put that exact value back instead of
+        # unconditionally re-enabling, so a disable the PRIMARY earned
+        # itself (e.g. Bedrock IAM streaming denial) stays sticky.
+        _saved_stream_disable = getattr(agent, "_primary_disable_streaming", None)
+        if _saved_stream_disable is not None:
+            agent._disable_streaming = _saved_stream_disable
+            agent._primary_disable_streaming = None
+
+        # NOTE: ``_unavailable_fallback_keys`` is intentionally NOT cleared
+        # here.  Entries are only added for chain entries that are locally
+        # unusable (missing key/env, unconfigured provider — see
+        # ``_fallback_entry_unavailable_without_network``) and the
+        # suppression is session-scoped by design; the gateway clears the
+        # set when the fallback config itself is reloaded.
+
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves
         # a fresh stream attempt before the breaker can trip again.

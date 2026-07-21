@@ -1716,6 +1716,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
+        if not getattr(agent, "_fallback_activated", False):
+            # Snapshot the PRIMARY's streaming preference at the moment we
+            # leave it.  ``_disable_streaming`` is a single agent-wide flag:
+            # a fallback provider that rejects streaming flips it to True,
+            # and without a snapshot ``restore_primary_runtime`` cannot tell
+            # a fallback-only stream failure from one the primary earned
+            # itself (e.g. a Bedrock IAM streaming denial that must stay
+            # sticky for the session).  Only captured on the primary→fallback
+            # transition — chain-switching between fallbacks must not
+            # overwrite the primary's saved value.
+            agent._primary_disable_streaming = bool(
+                getattr(agent, "_disable_streaming", False)
+            )
         agent._fallback_activated = True
 
         # Rebind the credential pool to the fallback provider when the provider

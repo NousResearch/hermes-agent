@@ -1152,6 +1152,89 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
     assert "7d 0h left" in out
 
 
+def test_get_custom_provider_names_includes_orphaned_custom_pools(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: configured-provider\n"
+        "custom_providers:\n"
+        "  - name: Configured Provider\n"
+        "    provider_key: configured-provider\n"
+        "    base_url: https://configured.example.com/v1\n"
+        "    api_key: sk-configured\n"
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom:configured-provider": [
+                    {
+                        "id": "cfg-1",
+                        "label": "configured",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "config:Configured Provider",
+                        "access_token": "sk-configured",
+                    }
+                ],
+                "custom:orphaned-provider": [
+                    {
+                        "id": "orph-1",
+                        "label": "orphaned",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-orphaned",
+                    }
+                ],
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import _get_custom_provider_names
+
+    assert _get_custom_provider_names() == [
+        ("Configured Provider", "custom:configured-provider", ""),
+        ("orphaned-provider", "custom:orphaned-provider", ""),
+    ]
+
+
+def test_pick_provider_accepts_orphaned_custom_pool_name(tmp_path, monkeypatch, capsys):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom:orphaned-provider": [
+                    {
+                        "id": "orph-1",
+                        "label": "orphaned",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-orphaned",
+                    }
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "orphaned-provider")
+
+    from hermes_cli.auth_commands import _pick_provider
+
+    assert _pick_provider("Provider to remove credential from") == "custom:orphaned-provider"
+
+    out = capsys.readouterr().out
+    assert "Custom endpoints: orphaned-provider" in out
+
+
 def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):
     """Removing an env-seeded credential should also clear the env var from .env
     so the entry doesn't get re-seeded on the next load_pool() call."""

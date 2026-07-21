@@ -39,22 +39,29 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "q
 
 def _get_custom_provider_names() -> list:
     """Return list of (display_name, pool_key, provider_key) tuples."""
+    configured: dict[str, tuple[str, str, str]] = {}
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
         config = load_config()
     except Exception:
-        return []
-    result = []
-    for entry in get_compatible_custom_providers(config):
-        if not isinstance(entry, dict):
+        config = None
+    if config is not None:
+        for entry in get_compatible_custom_providers(config):
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
+            provider_key = str(entry.get("provider_key", "") or "").strip()
+            configured[pool_key] = (name.strip(), pool_key, provider_key)
+    result = list(configured.values())
+    for pool_key in list_custom_pool_providers():
+        if pool_key in configured:
             continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
-        provider_key = str(entry.get("provider_key", "") or "").strip()
-        result.append((name.strip(), pool_key, provider_key))
+        suffix = pool_key[len(CUSTOM_POOL_PREFIX):] or pool_key
+        result.append((suffix, pool_key, ""))
     return result
 
 

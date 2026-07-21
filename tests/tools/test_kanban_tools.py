@@ -1803,7 +1803,15 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     conn = kb.connect()
     try:
         run1 = kb.latest_run(conn, worker_env)
-        kb._set_worker_pid(conn, worker_env, 98765)
+        task = kb.get_task(conn, worker_env)
+        assert run1 is not None and task is not None and task.claim_lock
+        assert kb._set_worker_pid(
+            conn,
+            worker_env,
+            98765,
+            expected_run_id=run1.id,
+            expected_claim_lock=task.claim_lock,
+        )
         monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [worker_env]

@@ -18,6 +18,23 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
+def _bind_worker_pid(conn, task_id: str, pid: int) -> bool:
+    """Test helper that exercises the production run/claim generation fence."""
+    row = conn.execute(
+        "SELECT current_run_id, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    assert row is not None and row["current_run_id"] is not None
+    assert row["claim_lock"]
+    return kb._set_worker_pid(
+        conn,
+        task_id,
+        pid,
+        expected_run_id=int(row["current_run_id"]),
+        expected_claim_lock=row["claim_lock"],
+    )
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -593,7 +610,7 @@ def test_staged_completion_clean_exit_is_protocol_violation_not_release(
             summary="Completion intent without a final worker turn.",
         )
         pid = 987654
-        kb._set_worker_pid(conn, parent, pid)
+        _bind_worker_pid(conn, parent, pid)
         kb._record_worker_exit(pid, _exited_status(0))
         conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
@@ -1621,7 +1638,7 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         def _signal(_pid, sig):
             killed.append(sig)
 
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
         # Rewind claim_expires so it looks stale.
         conn.execute(
             "UPDATE tasks SET claim_expires = ? WHERE id = ?",
@@ -1633,7 +1650,9 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
-        assert killed == [signal.SIGTERM]
+        # The worker is already dead. More importantly, reclaim never sends a
+        # PID-only signal when the captured process identity is unavailable.
+        assert killed == []
 
 
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
@@ -1650,7 +1669,7 @@ def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
 
         old_expires = int(time.time()) - 60
         conn.execute(
@@ -1690,7 +1709,7 @@ def test_stale_claim_with_live_pid_uses_env_ttl_override(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
         conn.execute(
             "UPDATE tasks SET claim_expires = ? WHERE id = ?",
             (int(time.time()) - 60, t),
@@ -1722,7 +1741,7 @@ def test_stale_claim_deferred_when_live_worker_survives_termination(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
 
         old_expires = int(time.time()) - 60
         # Heartbeat stale by > 1h so the live-pid EXTEND branch is skipped and
@@ -1773,7 +1792,7 @@ def test_stale_claim_reclaimed_when_termination_succeeds(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
         conn.execute(
             "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
             "WHERE id = ?",
@@ -1807,7 +1826,7 @@ def test_stale_claim_released_when_worker_not_host_local(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
         conn.execute(
             "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
             "WHERE id = ?",
@@ -1834,7 +1853,7 @@ def test_detect_stale_defers_when_live_worker_survives(kanban_home, monkeypatch)
     with kb.connect() as conn:
         t = kb.create_task(conn, title="wedged", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
@@ -1885,7 +1904,7 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        _bind_worker_pid(conn, t, 12345)
         old_expires = int(time.time()) - 3600
         hb_at = int(time.time()) - 1800
         conn.execute(
@@ -1916,19 +1935,16 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
 
     with kb.connect() as conn:
         task_ids = []
         for i in range(4):
             tid = kb.create_task(conn, title=f"task-{i}", assignee="a")
             host = _kb._claimer_id().split(":", 1)[0]
-            conn.execute(
-                "UPDATE tasks SET status='running', worker_pid=?, "
-                "claim_lock=? WHERE id=?",
-                (90000 + i, f"{host}:w{i}", tid),
-            )
+            assert kb.claim_task(conn, tid, claimer=f"{host}:w{i}") is not None
+            assert _bind_worker_pid(conn, tid, 90000 + i)
             task_ids.append(tid)
-        conn.commit()
 
         crashed = kb.detect_crashed_workers(conn)
         assert len(crashed) == 4
@@ -1947,19 +1963,16 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
 
     with kb.connect() as conn:
         task_ids = []
         for i in range(2):
             tid = kb.create_task(conn, title=f"iso-{i}", assignee="a")
             host = _kb._claimer_id().split(":", 1)[0]
-            conn.execute(
-                "UPDATE tasks SET status='running', worker_pid=?, "
-                "claim_lock=? WHERE id=?",
-                (80000 + i, f"{host}:w{i}", tid),
-            )
+            assert kb.claim_task(conn, tid, claimer=f"{host}:w{i}") is not None
+            assert _bind_worker_pid(conn, tid, 80000 + i)
             task_ids.append(tid)
-        conn.commit()
 
         crashed = kb.detect_crashed_workers(conn)
         assert len(crashed) == 2
@@ -1986,12 +1999,8 @@ def test_detect_crashed_workers_skips_freshly_claimed_tasks(
     with kb.connect() as conn:
         host = _kb._claimer_id().split(":", 1)[0]
         tid = kb.create_task(conn, title="grace test", assignee="a")
-        conn.execute(
-            "UPDATE tasks SET status='running', worker_pid=?, "
-            "claim_lock=?, started_at=? WHERE id=?",
-            (99999, f"{host}:w", int(now), tid),
-        )
-        conn.commit()
+        assert kb.claim_task(conn, tid, claimer=f"{host}:w") is not None
+        assert _bind_worker_pid(conn, tid, 99999)
 
         # With time = now (just claimed), grace period should suppress reclaim.
         crashed = kb.detect_crashed_workers(conn)
@@ -2017,12 +2026,9 @@ def test_detect_crashed_workers_grace_period_env_override(
     with kb.connect() as conn:
         host = _kb._claimer_id().split(":", 1)[0]
         tid = kb.create_task(conn, title="env override test", assignee="a")
-        conn.execute(
-            "UPDATE tasks SET status='running', worker_pid=?, "
-            "claim_lock=?, started_at=? WHERE id=?",
-            (99999, f"{host}:w", int(now), tid),
-        )
-        conn.commit()
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+        assert kb.claim_task(conn, tid, claimer=f"{host}:w") is not None
+        assert _bind_worker_pid(conn, tid, 99999)
 
         # 3s after claim: within 5s grace → no reclaim.
         monkeypatch.setattr(_kb.time, "time", lambda: now + 3)
@@ -2142,6 +2148,7 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
 
     with kb.connect() as conn:
         host = _kb._claimer_id().split(":", 1)[0]
@@ -2149,12 +2156,8 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
 
         for i in range(2):  # DEFAULT_FAILURE_LIMIT == 2
             pid = 60000 + i
-            conn.execute(
-                "UPDATE tasks SET status='running', worker_pid=?, "
-                "claim_lock=? WHERE id=?",
-                (pid, f"{host}:w{i}", tid),
-            )
-            conn.commit()
+            assert kb.claim_task(conn, tid, claimer=f"{host}:w{i}") is not None
+            assert _bind_worker_pid(conn, tid, pid)
             _kb._record_worker_exit(pid, _exited_status(1))  # generic failure
             kb.detect_crashed_workers(conn)
 
@@ -5251,7 +5254,7 @@ def test_detect_stale_returns_running_task_with_no_heartbeat(kanban_home, monkey
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-no-hb", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         # Rewind started_at so the task appears to have been running for 5 hours.
         five_hours_ago = int(time.time()) - (5 * 3600)
@@ -5283,7 +5286,7 @@ def test_detect_stale_returns_task_with_stale_heartbeat(kanban_home, monkeypatch
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-hb", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         heartbeat_2h_ago = int(time.time()) - (2 * 3600)
@@ -5316,7 +5319,7 @@ def test_detect_stale_skips_task_with_recent_heartbeat(kanban_home, monkeypatch)
     with kb.connect() as conn:
         t = kb.create_task(conn, title="alive-hb", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         heartbeat_now = int(time.time())  # heartbeat just happened
@@ -5347,7 +5350,7 @@ def test_detect_stale_skips_recently_started_task(kanban_home, monkeypatch):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="fresh", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         # Started only 1 hour ago — well within the 4h threshold.
         one_hour_ago = int(time.time()) - 3600
@@ -5375,7 +5378,7 @@ def test_detect_stale_skips_when_timeout_zero(kanban_home, monkeypatch):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="disabled", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
@@ -5402,7 +5405,7 @@ def test_detect_stale_skips_blocked_tasks(kanban_home, monkeypatch):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="blocked-task", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
@@ -5441,7 +5444,7 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-no-counter-tick", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
@@ -5498,7 +5501,7 @@ def test_detect_stale_is_run_fenced_when_same_lock_claims_new_retry(
         assert kb.claim_task(conn, task_id, claimer=claim_lock) is not None
         first_run = kb.latest_run(conn, task_id)
         assert first_run is not None
-        kb._set_worker_pid(conn, task_id, 111)
+        _bind_worker_pid(conn, task_id, 111)
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
             conn.execute(
@@ -5512,7 +5515,13 @@ def test_detect_stale_is_run_fenced_when_same_lock_claims_new_retry(
 
         replacement_run_id = None
 
-        def replace_attempt(_pid, _lock, *, signal_fn=None):
+        def replace_attempt(
+            _pid,
+            _lock,
+            *,
+            worker_birth_identity=None,
+            signal_fn=None,
+        ):
             nonlocal replacement_run_id
             with kb.write_txn(conn):
                 conn.execute(
@@ -5532,7 +5541,7 @@ def test_detect_stale_is_run_fenced_when_same_lock_claims_new_retry(
             replacement = kb.latest_run(conn, task_id)
             assert replacement is not None and replacement.id != first_run.id
             replacement_run_id = replacement.id
-            kb._set_worker_pid(conn, task_id, 222)
+            _bind_worker_pid(conn, task_id, 222)
             assert kb.heartbeat_worker(
                 conn,
                 task_id,

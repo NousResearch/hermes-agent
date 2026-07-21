@@ -51,6 +51,20 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _bind_worker_pid(conn, task_id: str, pid: int) -> bool:
+    """Bind a PID through the production run/claim generation fence."""
+    task = kb.get_task(conn, task_id)
+    assert task is not None and task.current_run_id is not None
+    assert task.claim_lock
+    return kb._set_worker_pid(
+        conn,
+        task_id,
+        pid,
+        expected_run_id=task.current_run_id,
+        expected_claim_lock=task.claim_lock,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Idempotency key
 # ---------------------------------------------------------------------------
@@ -944,13 +958,16 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
     SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
     killed = []
+    # Keep the PID alive until the timeout path delivers SIGTERM, then make
+    # the grace poll observe the process as gone.
+    import hermes_cli.kanban_db as _kb
+    state = {"alive": True}
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: state["alive"]
+
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
-
-    # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
-    import hermes_cli.kanban_db as _kb
-    original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+        state["alive"] = False
 
     try:
         conn = kb.connect()
@@ -961,7 +978,7 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             )
             # Spawn by hand: claim + set pid + set active run start to the past.
             kb.claim_task(conn, tid)
-            kb._set_worker_pid(conn, tid, os.getpid())   # any live pid works
+            _bind_worker_pid(conn, tid, os.getpid())   # any live pid works
             # Backdate both the task-level first-start timestamp and the active
             # run timestamp so elapsed > limit under the per-run runtime model.
             old_started = int(time.time()) - 30
@@ -1020,7 +1037,7 @@ def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
             )
             for expected_failures in (1, 2):
                 kb.claim_task(conn, tid)
-                kb._set_worker_pid(conn, tid, os.getpid())
+                _bind_worker_pid(conn, tid, os.getpid())
                 _age_active_run(conn, tid)
                 timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None)
                 assert tid in timed_out
@@ -1045,7 +1062,7 @@ def test_max_runtime_none_means_no_cap(kanban_home):
     try:
         tid = kb.create_task(conn, title="uncapped", assignee="worker")
         kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, os.getpid())
+        _bind_worker_pid(conn, tid, os.getpid())
         # Backdate aggressively; no cap means we don't care.
         with kb.write_txn(conn):
             conn.execute(
@@ -1094,7 +1111,7 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
             max_runtime_seconds=1,
         )
         kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, os.getpid())
+        _bind_worker_pid(conn, tid, os.getpid())
         old_started = int(time.time()) - 30
         with kb.write_txn(conn):
             conn.execute(
@@ -1230,7 +1247,10 @@ def test_spawned_event_emitted_with_pid(kanban_home, all_assignees_spawnable):
         events = kb.list_events(conn, tid)
         spawned = [e for e in events if e.kind == "spawned"]
         assert len(spawned) == 1
-        assert spawned[0].payload == {"pid": 98765}
+        assert spawned[0].payload == {
+            "pid": 98765,
+            "birth_identity": "unavailable:98765",
+        }
     finally:
         conn.close()
 
@@ -1497,7 +1517,7 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
 
         # Attempt 2: claim then crash (simulated: pid dead).
         kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, 98765)
+        _bind_worker_pid(conn, tid, 98765)
         original_alive = _kb._pid_alive
         _kb._pid_alive = lambda pid: False
         try:
@@ -1528,7 +1548,7 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
 
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
-        kb._set_worker_pid(conn, tid, 98765)
+        _bind_worker_pid(conn, tid, 98765)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -1569,7 +1589,7 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
 
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
-        kb._set_worker_pid(conn, tid, 98765)
+        _bind_worker_pid(conn, tid, 98765)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -4171,15 +4191,17 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
                 state["alive"] = False
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+        monkeypatch.setattr(_kb, "_process_identity", lambda _pid: "test-birth")
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, future, 12345, t),
+            "worker_pid=?, worker_birth_identity=? WHERE id=?",
+            (lock, future, 12345, "test-birth", t),
         )
         conn.execute(
             "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
-            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
-            (t, lock, future, 12345, int(time.time())),
+            "worker_pid, worker_birth_identity, started_at) "
+            "VALUES (?, 'running', ?, ?, ?, ?, ?)",
+            (t, lock, future, 12345, "test-birth", int(time.time())),
         )
         run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
@@ -4313,7 +4335,7 @@ def test_enforce_max_runtime_increments_consecutive_failures(kanban_home, monkey
             max_runtime_seconds=1,
         )
         kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, os.getpid())
+        _bind_worker_pid(conn, tid, os.getpid())
         # Since PR #19473 (salvaged) changed enforce_max_runtime to read
         # from task_runs.started_at (per-attempt) rather than
         # tasks.started_at (lifetime), we need to backdate BOTH to
@@ -4366,44 +4388,24 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
             max_runtime_seconds=1,
         )
         # Drop the failure_limit to 3 so we don't need 5 timeouts.
-        # This uses the module-level DEFAULT; we simulate by calling
-        # _record_task_failure directly with a tight limit.
+        monkeypatch.setattr(_kb, "DEFAULT_FAILURE_LIMIT", 3)
         for _ in range(3):
-            # Fresh claim + "started long ago" each iteration.
+            # Exercise the real claim + fenced PID-bind path for each attempt.
+            kb.claim_task(conn, tid)
+            _bind_worker_pid(conn, tid, os.getpid())
             with kb.write_txn(conn):
+                started = int(time.time()) - 30
                 conn.execute(
-                    "UPDATE tasks SET status='running', claim_lock=?, "
-                    "claim_expires=?, worker_pid=?, started_at=? "
-                    "WHERE id=?",
-                    (
-                        f"{_kb._claimer_id().split(':', 1)[0]}:lock",
-                        int(time.time()) + 3600,
-                        os.getpid(),
-                        int(time.time()) - 30,
-                        tid,
-                    ),
+                    "UPDATE tasks SET started_at=? WHERE id=?",
+                    (started, tid),
                 )
                 conn.execute(
-                    "INSERT INTO task_runs (task_id, status, claim_lock, "
-                    "claim_expires, worker_pid, started_at) "
-                    "VALUES (?, 'running', ?, ?, ?, ?)",
-                    (
-                        tid,
-                        f"{_kb._claimer_id().split(':', 1)[0]}:lock",
-                        int(time.time()) + 3600,
-                        os.getpid(),
-                        int(time.time()) - 30,
-                    ),
-                )
-                rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                conn.execute(
-                    "UPDATE tasks SET current_run_id=? WHERE id=?",
-                    (rid, tid),
+                    "UPDATE task_runs SET started_at=? "
+                    "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+                    (started, tid),
                 )
             state["sent_term"] = False
-            # Lower the threshold by monkeypatching the default.
-            monkeypatch.setattr(_kb, "DEFAULT_FAILURE_LIMIT", 3)
-            kb.enforce_max_runtime(conn, signal_fn=_signal)
+            assert tid in kb.enforce_max_runtime(conn, signal_fn=_signal)
 
         final = kb.get_task(conn, tid)
         # After 3 consecutive timeouts with failure_limit=3, task should
@@ -4430,7 +4432,7 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
     try:
         tid = kb.create_task(conn, title="crashy", assignee="worker")
         kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, 99999)  # fake pid — not alive
+        _bind_worker_pid(conn, tid, 99999)  # fake pid — not alive
 
         kb.detect_crashed_workers(conn)
 
@@ -4456,7 +4458,7 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     host_prefix = _kb._claimer_id().split(":", 1)[0]
     claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
     assert claimed is not None, "task was not claimable for the next attempt"
-    _kb._set_worker_pid(conn, tid, fake_pid)
+    _bind_worker_pid(conn, tid, fake_pid)
     _kb._record_worker_exit(fake_pid, raw_status)
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda p: False
@@ -4701,7 +4703,7 @@ def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
         host_prefix = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
         fake_pid = 999997
-        kb._set_worker_pid(conn, tid, fake_pid)
+        _bind_worker_pid(conn, tid, fake_pid)
 
         # W_EXITCODE(1, 0) == 256 — WIFEXITED True, WEXITSTATUS == 1.
         _kb._record_worker_exit(fake_pid, 256)
@@ -4772,7 +4774,7 @@ def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-dispatch", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
+        _bind_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
@@ -4804,7 +4806,7 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         kb.claim_task(conn, t)
         # Claim sets worker_pid to 0 initially. Set it to os.getpid() so the
         # crash detector sees a live PID and skips it.
-        kb._set_worker_pid(conn, t, os.getpid())
+        _bind_worker_pid(conn, t, os.getpid())
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):

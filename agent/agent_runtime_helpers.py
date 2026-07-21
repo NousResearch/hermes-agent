@@ -971,10 +971,11 @@ def recover_with_credential_pool(
         return False, has_retried_429
 
     if effective_reason == FailoverReason.rate_limit:
-        # If current credential is already marked exhausted, skip retry and
-        # rotate immediately. This prevents the "cancel-between-429s" trap
-        # where has_retried_429 (a local var) gets reset on each new prompt,
-        # causing the pool to retry the same exhausted credential forever.
+        # FIX: On first 429, immediately mark exhausted and rotate instead
+        # of retrying the same key. The old logic set has_retried_429=True
+        # on first 429 and only rotated on second 429, but has_retried_429
+        # is a local var reset per-prompt, so single-429 prompts never
+        # triggered rotation.
         current_entry = pool.current()
         current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
         if current_last_status == STATUS_EXHAUSTED:
@@ -1004,9 +1005,17 @@ def recover_with_credential_pool(
                 or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
-        if not has_retried_429 and not usage_limit_reached:
-            return False, True
+        # FIX: Always mark exhausted and rotate on first 429.
+        # The old `if not has_retried_429` guard was meant to retry once
+        # before rotating, but has_retried_429 resets per-prompt, causing
+        # the same key to be retried forever across prompts.
         rotate_status = status_code if status_code is not None else 429
+        _ra().logger.info(
+            "Credential %s (rate limit) — marking exhausted and rotating (has_retried_429=%s, usage_limit=%s)",
+            getattr(current_entry, "id", "?") if current_entry else "none",
+            has_retried_429,
+            usage_limit_reached,
+        )
         next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
         if next_entry is not None:
             _ra().logger.info(

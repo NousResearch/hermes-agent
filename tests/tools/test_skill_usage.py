@@ -181,6 +181,7 @@ def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypa
     from tools.skill_usage import (
         STATE_ACTIVE,
         STATE_ARCHIVED,
+        STATE_STALE,
         record_created,
         set_state,
     )
@@ -194,6 +195,8 @@ def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypa
     )
 
     record_created("my-skill", agent_created=True)
+    set_state("my-skill", STATE_STALE)
+    set_state("my-skill", STATE_STALE)
     set_state("my-skill", STATE_ARCHIVED)
     set_state("my-skill", STATE_ARCHIVED)
     set_state("my-skill", STATE_ACTIVE)
@@ -201,6 +204,7 @@ def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypa
 
     assert [event["action"] for event in events] == [
         "created",
+        "stale",
         "archived",
         "restored",
     ]

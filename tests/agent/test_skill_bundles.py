@@ -200,6 +200,29 @@ class TestBuildBundleInvocationMessage:
         assert "Skill B content." in msg
         assert "combo" in msg
 
+    def test_forwards_task_id_to_each_loaded_skill(self, bundles_env, monkeypatch):
+        bundles_dir, skills_dir = bundles_env
+        _make_skill(skills_dir, "skill-a")
+        _make_skill(skills_dir, "skill-b")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a", "skill-b"])
+        scan_bundles()
+        calls = []
+        monkeypatch.setattr(
+            "tools.skill_usage.bump_use",
+            lambda skill_name, **kwargs: calls.append((skill_name, kwargs)),
+        )
+
+        result = build_bundle_invocation_message(
+            "/combo",
+            task_id="task-bundle",
+        )
+
+        assert result is not None
+        assert calls == [
+            ("skill-a", {"task_id": "task-bundle"}),
+            ("skill-b", {"task_id": "task-bundle"}),
+        ]
+
     def test_skips_missing_skills(self, bundles_env):
         bundles_dir, skills_dir = bundles_env
         _make_skill(skills_dir, "skill-a")

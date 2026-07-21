@@ -563,6 +563,79 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
+    def test_successful_mutations_emit_lifecycle_with_correlation(self, tmp_path):
+        with (
+            _skill_dir(tmp_path),
+            patch("tools.skill_provenance.is_background_review", return_value=False),
+            patch("tools.skill_usage.record_created") as record_created,
+            patch("tools.skill_usage.bump_patch") as bump_patch,
+        ):
+            created = json.loads(skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+                task_id="task-mutation",
+                session_id="session-mutation",
+            ))
+            patched = json.loads(skill_manage(
+                action="patch",
+                name="test-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+                task_id="task-mutation",
+                session_id="session-mutation",
+            ))
+            edited = json.loads(skill_manage(
+                action="edit",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT_2,
+                task_id="task-mutation",
+                session_id="session-mutation",
+            ))
+
+        assert created["success"] is True
+        assert patched["success"] is True
+        assert edited["success"] is True
+        record_created.assert_called_once_with(
+            "test-skill",
+            agent_created=False,
+            task_id="task-mutation",
+            session_id="session-mutation",
+        )
+        assert [call.kwargs for call in bump_patch.call_args_list] == [
+            {
+                "action": "patch",
+                "task_id": "task-mutation",
+                "session_id": "session-mutation",
+            },
+            {
+                "action": "edit",
+                "task_id": "task-mutation",
+                "session_id": "session-mutation",
+            },
+        ]
+        assert all(call.args == ("test-skill",) for call in bump_patch.call_args_list)
+
+    def test_failed_mutations_do_not_emit_lifecycle(self, tmp_path):
+        with (
+            _skill_dir(tmp_path),
+            patch("tools.skill_usage.record_created") as record_created,
+            patch("tools.skill_usage.bump_patch") as bump_patch,
+        ):
+            create_result = json.loads(skill_manage(
+                action="create",
+                name="test-skill",
+            ))
+            patch_result = json.loads(skill_manage(
+                action="patch",
+                name="test-skill",
+            ))
+
+        assert create_result["success"] is False
+        assert patch_result["success"] is False
+        record_created.assert_not_called()
+        bump_patch.assert_not_called()
+
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW

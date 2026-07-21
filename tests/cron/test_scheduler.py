@@ -3053,12 +3053,20 @@ class TestBuildJobPromptBumpUse:
 
         with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
              patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
+            _build_job_prompt({
+                "id": "cron-task",
+                "skills": ["alpha", "beta"],
+                "prompt": "go",
+            })
 
         assert mock_bump.call_count == 2
         calls = [c[0][0] for c in mock_bump.call_args_list]
         assert "alpha" in calls
         assert "beta" in calls
+        assert all(
+            call.kwargs == {"task_id": "cron-task"}
+            for call in mock_bump.call_args_list
+        )
 
     def test_bump_use_not_called_for_missing_skill(self):
         """bump_use is NOT called when a skill fails to load."""

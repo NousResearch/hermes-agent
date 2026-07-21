@@ -1445,10 +1445,12 @@ DEFAULT_CONFIG = {
 
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
-    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    # hard stops are enabled by default to prevent infinite retry loops that
+    # waste API tokens (e.g. 90 retries of the same failing command). Users
+    # who prefer unlimited retries can opt out via config.yaml.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
-        "hard_stop_enabled": False,
+        "hard_stop_enabled": True,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,

@@ -1086,6 +1086,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Per-task skill promotion: names re-promoted to full descriptions in the
+    # child's compact skills index (see agent/system_prompt.py). None/empty =
+    # pure names-only index.
+    skills: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1403,6 +1407,12 @@ def _build_child_agent(
         **child_optional_kwargs,
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Per-task skill promotion (see agent/system_prompt.py): names the brief
+    # wants re-promoted to full descriptions in the child's compact index.
+    # Set BEFORE the first request — the system prompt is built lazily.
+    child._delegate_skills = tuple(
+        s.strip() for s in (skills or []) if isinstance(s, str) and s.strip()
+    )
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
@@ -2430,6 +2440,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    skills: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2532,7 +2543,9 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {"goal": goal, "context": context, "role": top_role, "skills": skills}
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2606,6 +2619,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                skills=(t.get("skills") if "skills" in t else skills),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3563,6 +3577,11 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Per-task skill promotion override. See top-level 'skills'.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3586,6 +3605,18 @@ DELEGATE_TASK_SCHEMA = {
                     "the work finishes; just continue working in the meantime. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
+                ),
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Skill names to promote in the subagent's skill index. "
+                    "Subagents get a compact names-only index by default; "
+                    "skills named here keep their full descriptions so the "
+                    "child loads them reliably. Pass the skills the task's "
+                    "domain needs (e.g. ['systematic-debugging']). The child "
+                    "can still browse/load ANY skill via skills_list/skill_view."
                 ),
             },
         },
@@ -3648,6 +3679,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        skills=args.get("skills"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

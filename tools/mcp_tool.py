@@ -3899,6 +3899,15 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "end of file",
 )
 
+# Upper bound on exception-graph nodes inspected by
+# ``_is_session_expired_error``. The visited-identity set already breaks
+# cycles across ``exceptions`` / ``__cause__`` / ``__context__``; the
+# budget additionally bounds pathological acyclic graphs (e.g. deeply
+# chained retries) so classification always terminates promptly. Kept
+# comfortably above ``sys.getrecursionlimit()`` so legitimately deep
+# wrapper stacks (task-group nesting) are still fully scanned.
+_EXC_TRAVERSAL_MAX_NODES = 10_000
+
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """Return True if ``exc`` looks like an MCP transport session expiry.
@@ -3929,18 +3938,29 @@ def _is_session_expired_error(exc: BaseException) -> bool:
         transport_error_types = ()
 
     # ExceptionGroup trees can be arbitrarily deep or even cyclic when custom
-    # exceptions expose ``exceptions``. Traverse once, iteratively, and inspect
-    # every reachable node so user interruption always overrides transport
-    # markers or types found elsewhere in the graph.
-    stack = [exc]
+    # exceptions expose ``exceptions``, and chained exceptions
+    # (``raise X from Y`` / implicit ``__context__``) can likewise form
+    # cycles when handlers re-raise previously seen exceptions. Traverse
+    # once, iteratively, with an identity-visited set AND a bounded node
+    # budget so classification can never spin, and inspect every reachable
+    # node so user interruption always overrides transport markers or types
+    # found elsewhere in the graph. The chain traversal matters for real
+    # failures: SDK wrappers often raise a generic RuntimeError *from* the
+    # message-less ClosedResourceError, leaving the transport signal only
+    # reachable via ``__cause__``.
+    stack: "list[BaseException | None]" = [exc]
     seen: set[int] = set()
     transport_error_found = False
-    while stack:
+    budget = _EXC_TRAVERSAL_MAX_NODES
+    while stack and budget > 0:
         current = stack.pop()
+        if current is None:
+            continue
         identity = id(current)
         if identity in seen:
             continue
         seen.add(identity)
+        budget -= 1
 
         if isinstance(current, InterruptedError):
             return False
@@ -3956,6 +3976,8 @@ def _is_session_expired_error(exc: BaseException) -> bool:
             transport_error_found = True
 
         stack.extend(getattr(current, "exceptions", ()))
+        stack.append(getattr(current, "__cause__", None))
+        stack.append(getattr(current, "__context__", None))
 
     return transport_error_found
 

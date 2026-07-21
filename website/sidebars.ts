@@ -727,6 +727,7 @@ const sidebars: SidebarsConfig = {
         'guides/aws-bedrock',
         'guides/google-vertex',
         'guides/azure-foundry',
+        'guides/upstash-box',
         'guides/xai-grok-oauth',
         'guides/oauth-over-ssh',
         'guides/microsoft-graph-app-registration',

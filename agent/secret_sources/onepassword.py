@@ -607,6 +607,24 @@ class OnePasswordSource(SecretSource):
         result.warnings.extend(fetch_warnings)
         return result
 
+    def remediation(self, kind, cfg: dict) -> str:
+        if kind in (ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
+            token_env = _DEFAULT_TOKEN_ENV
+            if isinstance(cfg, dict):
+                token_env = str(cfg.get("service_account_token_env") or token_env)
+            return (
+                "Run `hermes secrets onepassword token` to paste a fresh "
+                f"service-account token ({token_env}), or `op signin` for an "
+                "interactive session."
+            )
+        if kind == ErrorKind.BINARY_MISSING:
+            return (
+                "Install the 1Password CLI "
+                "(https://developer.1password.com/docs/cli/get-started/) or "
+                "set secrets.onepassword.binary_path."
+            )
+        return super().remediation(kind, cfg)
+
 
 def _classify_op_error(message: str) -> ErrorKind:
     """Best-effort mapping of op failure text onto the shared taxonomy."""
@@ -633,11 +651,21 @@ def _classify_op_error(message: str) -> ErrorKind:
 # ---------------------------------------------------------------------------
 
 
+def clear_caches(home_path: Optional[Path] = None) -> None:
+    """Drop in-process AND disk caches.
+
+    Used after a token rotation (`hermes secrets onepassword token`) so
+    the next startup resolves fresh with the new credential instead of
+    serving values cached under the old token's fingerprint.
+    """
+    _CACHE.clear()
+    _DISK_CACHE.clear(home_path)
+
+
 def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     """Clear in-process AND disk caches.
 
     Tests can pass ``home_path`` to scope the disk cleanup to a tmpdir.
     Without it we fall back to the same default resolution as the writer.
     """
-    _CACHE.clear()
-    _DISK_CACHE.clear(home_path)
+    clear_caches(home_path)

@@ -1,6 +1,7 @@
 import { type QueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
+import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { manualPickRemoved } from '@/lib/model-options'
@@ -9,17 +10,15 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  getComposerSelectionGeneration,
   getCurrentModelSource,
+  markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
 } from '@/store/session'
+import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
-
-interface ModelSelection {
-  model: string
-  provider: string
-}
 
 interface ModelControlsOptions {
   queryClient: QueryClient
@@ -29,6 +28,7 @@ interface ModelControlsOptions {
 export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const profileRefreshEpochRef = useRef(0)
 
   // All callbacks here read reactive session state from the store (.get())
   // rather than capturing it as a prop. The actions bag in wiring.tsx mutates
@@ -36,10 +36,10 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // callbacks once and never re-evaluate — a captured prop would be stale
   // forever. The store read is always current.
   const updateModelOptionsCache = useCallback(
-    (provider: string, model: string, includeGlobal: boolean) => {
+    (sessionId: null | string, provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', $activeSessionId.get() || 'global'], patch)
+      queryClient.setQueryData<ModelOptionsResponse>(['model-options', sessionId || 'global'], patch)
 
       if (includeGlobal) {
         queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
@@ -55,6 +55,14 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // draft / session events. A live session owns the footer, so skip entirely.
   const refreshCurrentModel = useCallback(
     async (force = false) => {
+      // A forced profile swap opens a new intent epoch; an older in-flight
+      // response for a previous profile must stand down when it resolves.
+      if (force) {
+        profileRefreshEpochRef.current += 1
+      }
+
+      const profileRefreshEpoch = profileRefreshEpochRef.current
+
       try {
         if ($activeSessionId.get()) {
           return
@@ -79,9 +87,18 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           return
         }
 
+        // Snapshot the selection generation before awaiting so a picker click
+        // that lands while getGlobalModelInfo is in flight wins over this older
+        // default — value comparisons alone miss re-selecting the same row.
+        const selectionGeneration = getComposerSelectionGeneration()
         const result = await getGlobalModelInfo()
 
-        if ($activeSessionId.get() || keepManualPick()) {
+        if (
+          profileRefreshEpochRef.current !== profileRefreshEpoch ||
+          $activeSessionId.get() ||
+          getComposerSelectionGeneration() !== selectionGeneration ||
+          keepManualPick()
+        ) {
           return
         }
 
@@ -109,21 +126,39 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // it's scoped to that session via config.set. It NEVER writes the profile
   // default — that lives in Settings → Model — so picking a model here can't
   // silently mutate global config.
+  //
+  // `selection.sessionId` targets a specific surface (tile). When omitted, the
+  // primary `$activeSessionId` is used (overlay / legacy callers). A tile
+  // switch must not touch the primary globals — and must not be blocked by a
+  // busy primary turn.
   const selectModel = useCallback(
     async (selection: ModelSelection): Promise<boolean> => {
-      // Snapshot for rollback: the switch is applied optimistically, so a
-      // failure must restore the prior model/provider (store + query cache)
-      // rather than leave the UI showing a model the backend never selected.
-      const prevModel = $currentModel.get()
-      const prevProvider = $currentProvider.get()
+      const primaryRuntimeId = $activeSessionId.get()
+      const liveSessionId = 'sessionId' in selection ? (selection.sessionId ?? null) : primaryRuntimeId
+      const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
+
+      const prevModel = touchesPrimary ? $currentModel.get() : ($sessionStates.get()[liveSessionId!]?.model ?? '')
+
+      const prevProvider = touchesPrimary
+        ? $currentProvider.get()
+        : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
+
       const prevSource = getCurrentModelSource()
 
-      const liveSessionId = $activeSessionId.get()
+      if (touchesPrimary) {
+        setCurrentModel(selection.model)
+        setCurrentProvider(selection.provider)
+        markComposerSelectionManual()
+      } else if (liveSessionId) {
+        // Optimistic tile paint — session.info will confirm; rollback on error.
+        sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+          ...state,
+          model: selection.model,
+          provider: selection.provider
+        }))
+      }
 
-      setCurrentModel(selection.model)
-      setCurrentProvider(selection.provider)
-      setCurrentModelSource('manual')
-      updateModelOptionsCache(selection.provider, selection.model, !liveSessionId)
+      updateModelOptionsCache(liveSessionId, selection.provider, selection.model, touchesPrimary && !liveSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
@@ -142,10 +177,19 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
 
         return true
       } catch (err) {
-        setCurrentModel(prevModel)
-        setCurrentProvider(prevProvider)
-        setCurrentModelSource(prevSource)
-        updateModelOptionsCache(prevProvider, prevModel, !liveSessionId)
+        if (touchesPrimary) {
+          setCurrentModel(prevModel)
+          setCurrentProvider(prevProvider)
+          setCurrentModelSource(prevSource)
+        } else if (liveSessionId) {
+          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+            ...state,
+            model: prevModel,
+            provider: prevProvider
+          }))
+        }
+
+        updateModelOptionsCache(liveSessionId, prevProvider, prevModel, touchesPrimary && !liveSessionId)
         notifyError(err, copy.modelSwitchFailed)
 
         return false

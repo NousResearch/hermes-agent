@@ -25,6 +25,7 @@ import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth 
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
@@ -44,7 +45,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
 }
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
+export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -330,7 +331,13 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
   )
 }
 
-export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
+export function ProvidersSettings({
+  onClose,
+  onConfigSaved,
+  onMainModelChanged,
+  onViewChange,
+  view
+}: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
@@ -430,7 +437,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const hasOauth = oauthProviders.length > 0
   // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
   // providers there's nothing for the "Accounts" view to show, so fall to keys.
-  const showApiKeys = view === 'keys' || !hasOauth
+  const showApiKeys = view === 'keys' || (!hasOauth && view !== 'custom-endpoints')
 
   const keyGroups = buildProviderKeyGroups(vars)
 
@@ -483,6 +490,10 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
     )
   }
 
+  if (view === 'custom-endpoints') {
+    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+  }
+
   return (
     <SettingsContent>
       <OAuthPicker
@@ -508,6 +519,8 @@ interface ProviderKeyGroup {
 
 interface ProvidersSettingsProps {
   onClose: () => void
+  onConfigSaved?: () => void
+  onMainModelChanged?: (provider: string, model: string) => void
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

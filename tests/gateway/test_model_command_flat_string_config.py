@@ -159,11 +159,11 @@ async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
-    """A plain ``/model X`` (no --global) now persists to config.yaml.
+async def test_model_no_flag_is_session_scoped_by_default(tmp_path, monkeypatch):
+    """A plain ``/model X`` (no --global) does NOT persist to config.yaml.
 
-    This is the user-facing fix: switching models in one session survives
-    into the next without re-typing the switch every time.
+    This is the user-facing fix: switches are session-scoped unless the user
+    opts in with ``--global`` or sets ``model.persist_switch_by_default: true``.
     """
     cfg_path = _setup_isolated_home(
         tmp_path,
@@ -178,7 +178,7 @@ async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
     assert result is not None
     assert "gpt-5.5" in result
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["default"] == "gpt-5.5"
+    assert written["model"]["default"] == "old-model"
 
 
 @pytest.mark.asyncio

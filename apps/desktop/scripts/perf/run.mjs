@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url'
 
 import { withCpuProfile } from './lib/cdp.mjs'
 import { compareScenario, loadBaseline, updateBaseline } from './lib/baseline.mjs'
-import { attach, startIsolatedInstance } from './lib/launch.mjs'
+import { attach, buildProdRenderer, coldStartSamples, startIsolatedInstance } from './lib/launch.mjs'
 import { cpuProfileTopSelf, median } from './lib/stats.mjs'
 import { CI_SCENARIOS, SCENARIOS } from './scenarios/index.mjs'
 
@@ -111,52 +111,89 @@ async function main() {
   const runs = Number(flags.runs ?? 1)
   const port = Number(flags.port ?? 9222)
   const devPort = Number(flags['dev-port'] ?? 5174)
+  const prod = 'prod' in flags
   const cpuProfile = 'cpuprofile' in flags
   const cpuProfileDir = typeof flags.cpuprofile === 'string' ? flags.cpuprofile : HERE
 
-  const connection = flags.spawn
-    ? await startIsolatedInstance({ port, devPort })
-    : await attach({ port, match: String(devPort) })
+  const coldNames = names.filter(n => SCENARIOS[n].tier === 'cold')
+  const liveNames = names.filter(n => SCENARIOS[n].tier !== 'cold')
 
-  const { cdp, teardown } = connection
+  // ci + cold metrics are stable enough to gate against the baseline; backend
+  // scenarios vary too much with the live environment, so they're report-only.
+  const GATED = new Set(['ci', 'cold'])
+  const baseline = loadBaseline(BASELINE_PATH)
   const results = []
   let regressed = false
 
-  try {
-    const baseline = loadBaseline(BASELINE_PATH)
+  const record = (name, tier, metrics, detail) => {
+    const comparison = GATED.has(tier) ? compareScenario(name, metrics, baseline) : null
+    regressed = regressed || Boolean(comparison?.regressed)
+    results.push({ name, tier, metrics, detail })
+    printMetrics(name, metrics, comparison)
+  }
 
-    for (const name of names) {
-      const scenario = SCENARIOS[name]
-      const perRun = []
-      let detail = null
-
-      for (let i = 0; i < runs; i++) {
-        if (cpuProfile && i === 0) {
-          const { result, profile } = await withCpuProfile(cdp, () => scenario.run(cdp, flags))
-          const out = join(cpuProfileDir, `${name}-${Date.now()}.cpuprofile`)
-          writeFileSync(out, JSON.stringify(profile))
-          console.log(`\n[cpuprofile] wrote ${out}`)
-          console.log('[cpuprofile] top self-time (ms):')
-          for (const r of cpuProfileTopSelf(profile, 15)) {
-            console.log(`   ${r.ms.toFixed(1).padStart(7)}  ${r.name.padEnd(38)}  ${r.url}:${r.line}`)
-          }
-          perRun.push(result.metrics)
-          detail = result.detail
-        } else {
-          const result = await scenario.run(cdp, flags)
-          perRun.push(result.metrics)
-          detail = result.detail
-        }
-      }
-
-      const metrics = medianMetrics(perRun)
-      const comparison = scenario.tier === 'ci' ? compareScenario(name, metrics, baseline) : null
-      regressed = regressed || Boolean(comparison?.regressed)
-      results.push({ name, tier: scenario.tier, metrics, detail })
-      printMetrics(name, metrics, comparison)
+  if (prod) {
+    if (!flags.spawn) {
+      console.error('--prod requires --spawn (it builds and launches an isolated production renderer)')
+      process.exit(2)
     }
-  } finally {
-    teardown()
+
+    console.log('[perf] building production renderer with the probe (VITE_PERF_PROBE=1)…')
+    await buildProdRenderer()
+  }
+
+  // Cold start measures the launch itself → a fresh spawn per run.
+  if (coldNames.length) {
+    if (!flags.spawn) {
+      console.error('cold-start requires --spawn (it measures a fresh launch)')
+      process.exit(2)
+    }
+
+    // Representative WARM-cache samples (see coldStartSamples). Pass --cold-fresh
+    // to instead measure the worst-case first-launch (cold code cache).
+    const perRun = await coldStartSamples({ runs, port, devPort, prod, warm: !('cold-fresh' in flags) })
+
+    record('cold-start', 'cold', medianMetrics(perRun), { runs, warm: !('cold-fresh' in flags) })
+  }
+
+  // Steady-state scenarios share one persistent connection.
+  if (liveNames.length) {
+    const connection = flags.spawn
+      ? await startIsolatedInstance({ port, devPort, prod })
+      : await attach({ port, match: prod ? undefined : String(devPort) })
+
+    const { cdp, teardown } = connection
+
+    try {
+      for (const name of liveNames) {
+        const scenario = SCENARIOS[name]
+        const perRun = []
+        let detail = null
+
+        for (let i = 0; i < runs; i++) {
+          if (cpuProfile && i === 0) {
+            const { result, profile } = await withCpuProfile(cdp, () => scenario.run(cdp, flags))
+            const out = join(cpuProfileDir, `${name}-${Date.now()}.cpuprofile`)
+            writeFileSync(out, JSON.stringify(profile))
+            console.log(`\n[cpuprofile] wrote ${out}`)
+            console.log('[cpuprofile] top self-time (ms):')
+            for (const r of cpuProfileTopSelf(profile, 15)) {
+              console.log(`   ${r.ms.toFixed(1).padStart(7)}  ${r.name.padEnd(38)}  ${r.url}:${r.line}`)
+            }
+            perRun.push(result.metrics)
+            detail = result.detail
+          } else {
+            const result = await scenario.run(cdp, flags)
+            perRun.push(result.metrics)
+            detail = result.detail
+          }
+        }
+
+        record(name, scenario.tier, medianMetrics(perRun), detail)
+      }
+    } finally {
+      teardown()
+    }
   }
 
   if (flags.json) {
@@ -165,7 +202,7 @@ async function main() {
   }
 
   if (flags['update-baseline']) {
-    updateBaseline(BASELINE_PATH, results.filter(r => r.tier === 'ci'))
+    updateBaseline(BASELINE_PATH, results.filter(r => GATED.has(r.tier)))
     console.log(`\nupdated ${BASELINE_PATH}`)
     return
   }

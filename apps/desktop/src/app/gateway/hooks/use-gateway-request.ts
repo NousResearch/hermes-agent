@@ -69,9 +69,10 @@ export function useGatewayRequest() {
         setConnection(conn)
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // and short-lived, so the cached conn.wsUrl ticket is dead here;
-        // resolveGatewayWsUrl() throws a reauth error in OAuth mode rather than
-        // connecting with a stale ticket. Stash it so requestGateway can show
-        // the actionable "sign in again" message.
+        // resolveGatewayWsUrl() never connects with a stale ticket. An explicit
+        // auth rejection becomes a reauth error; transport failures remain
+        // retryable. Stash only the former so requestGateway can show the
+        // actionable "sign in again" message.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await existing.connect(wsUrl)
 

@@ -110,6 +110,7 @@ class MyVaultSource(SecretSource):
 | `protected_env_vars(cfg)` | empty | You have a bootstrap token (you almost certainly do) |
 | `fetch_timeout_seconds(cfg)` | 120s | Your backend needs a different budget |
 | `config_schema()` | `{}` | Declare config keys for setup surfaces |
+| `remediation(kind, cfg)` | generic per-`ErrorKind` hints | You want failure warnings to point at your own fix-it command (e.g. the bundled sources return `Run hermes secrets <name> token…` for `AUTH_FAILED`). Must be a pure kind→string mapping: no I/O, never raises. Return `""` to suppress the hint. |
 
 ## Subprocess safety: use `run_secret_cli()`
 

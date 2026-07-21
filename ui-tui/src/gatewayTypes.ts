@@ -45,7 +45,7 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
@@ -641,7 +641,12 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload: { already_streamed?: boolean; text: string }
+      session_id?: string
+      type: 'message.interim'
+    }
+  | {
+      payload?: { reasoning?: string; rendered?: string; response_previewed?: boolean; text?: string; usage?: Usage }
       session_id?: string
       type: 'message.complete'
     }

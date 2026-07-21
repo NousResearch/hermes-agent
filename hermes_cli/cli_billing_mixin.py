@@ -382,7 +382,7 @@ class CLIBillingMixin:
             if allow_stepup:
                 self._subscription_handle_scope_required(state, retry=("preview", tier_id))
             else:
-                print("  Terminal billing still isn't enabled for this org — enable it on the portal, then retry.")
+                print("  Remote Spending still isn't active for this terminal — the authorization didn't take. Retry, or make this change on the portal.")
             return
         except BillingError as exc:
             self._subscription_render_error(state, exc)
@@ -562,12 +562,12 @@ class CLIBillingMixin:
             if allow_stepup:
                 self._subscription_handle_scope_required(state, retry=action, idempotency_key=key)
             else:
-                print("  Terminal billing still isn't enabled for this org — enable it on the portal, then retry.")
+                print("  Remote Spending still isn't active for this terminal — the authorization didn't take. Retry, or make this change on the portal.")
         except BillingError as exc:
             self._subscription_render_error(state, exc)
 
     def _subscription_handle_scope_required(self, state, *, retry, idempotency_key=None):
-        """insufficient_scope → grant terminal billing (step-up), then replay `retry`.
+        """insufficient_scope → allow remote spending (step-up), then replay `retry`.
 
         Mirrors _billing_handle_scope_required: the classic CLI calls
         step_up_nous_billing_scope directly (it opens the browser + blocks), then
@@ -577,34 +577,34 @@ class CLIBillingMixin:
 
         print()
         print("  ! One-time setup")
-        _cprint(f"  {_d('To change your plan from the terminal, enable terminal billing once. It opens your browser to authorize, then your change picks up right here.')}")
+        _cprint(f"  {_d('To change your plan from the terminal, allow Remote Spending once. It opens your browser to authorize, then your change picks up right here.')}")
         if not getattr(self, "_app", None):
-            print("  Run `hermes portal` and enable terminal billing, then re-run /subscription.")
+            print("  Run `hermes portal` and allow Remote Spending, then re-run /subscription.")
             return
         confirm_choices = [
-            ("yes", "Enable terminal billing", "open your browser to authorize"),
+            ("yes", "Allow Remote Spending", "open your browser to authorize"),
             ("no", "Not now", "cancel"),
         ]
         raw = self._prompt_text_input_modal(
-            title="Enable terminal billing",
+            title="Allow Remote Spending",
             detail="Opens your browser to authorize this terminal.",
             choices=confirm_choices,
         )
         if self._normalize_slash_confirm_choice(raw, confirm_choices) != "yes":
-            print("  No change made. Enable terminal billing when you're ready.")
+            print("  No change made. Allow Remote Spending when you're ready.")
             return
-        print("  Opening your browser to enable terminal billing…")
+        print("  Opening your browser to allow Remote Spending…")
         try:
             from hermes_cli.auth import step_up_nous_billing_scope
 
             granted = step_up_nous_billing_scope(open_browser=True)
         except Exception as exc:
-            print(f"  Couldn't enable terminal billing: {exc}")
+            print(f"  Couldn't allow Remote Spending: {exc}")
             return
         if not granted:
-            print("  Couldn't enable terminal billing — an org admin or owner has to approve it for this org.")
+            print("  Couldn't allow Remote Spending — an org admin or owner has to approve it for this org.")
             return
-        _cprint(f"  {_DIM}✓ Terminal billing enabled.{_RST}")
+        _cprint(f"  {_DIM}✓ Remote Spending allowed.{_RST}")
         # Bust the 30s token cache so the replay uses the freshly-scoped token. The
         # cache still holds the pre-grant unscoped token, and _request only busts it
         # on a 401 (not a 403 scope denial) — without this, the replay would 403
@@ -637,7 +637,7 @@ class CLIBillingMixin:
         msg = str(exc) or "Something went wrong."
         if code == "insufficient_scope":
             # Defensive: the flow routes scope to the step-up before reaching here.
-            _cprint("  🟡 Terminal billing isn't enabled. Enable it, then retry.")
+            _cprint("  🟡 Remote Spending isn't allowed yet. Allow it, then retry.")
         elif code in ("subscription_mutation_rejected", "preview_rejected"):
             _cprint(f"  🟡 {msg}")
         else:
@@ -661,11 +661,11 @@ class CLIBillingMixin:
             _cprint(f"  Portal: {_url}")
 
     # ------------------------------------------------------------------
-    # /billing — Phase 2b terminal billing (CLI surface, all 5 screens)
+    # /billing — Phase 2b Remote Spending (CLI surface, all 5 screens)
     # ------------------------------------------------------------------
 
     def _show_billing(self, command: str = "/topup"):
-        """`/topup` — terminal billing for Nous (one interactive modal).
+        """`/topup` — Remote Spending for Nous (one interactive modal).
 
         ZERO sub-commands: any argument is ignored. Bare ``/topup`` always
         opens the Overview (Screen 1), whose numbered menu is the *only* way to
@@ -710,7 +710,7 @@ class CLIBillingMixin:
 
         Dollars-only (no "credits") — mirrors the TUI /topup overlay: balance
         leads in the title, the shared plan + top-up bars render below, then the
-        reordered menu (Add funds first). No scope preflight — terminal billing
+        reordered menu (Add funds first). No scope preflight — remote spending
         is discovered reactively when a charge 403s insufficient_scope.
         """
         from cli import _cprint, _b, _d
@@ -762,8 +762,11 @@ class CLIBillingMixin:
             self._billing_portal_hint(state)
             return
         if not state.cli_billing_enabled:
-            _cprint(f"  {_d('Terminal billing is turned off for this org.')}")
-            self._billing_portal_hint(state, reason="Enable it on the portal to add funds here.")
+            _cprint(f"  {_d('Remote spending is off for this org.')}")
+            self._billing_portal_hint(
+                state,
+                reason="A billing admin can turn it on from the portal's Hermes Agent page to add funds here.",
+            )
             return
 
         # A missing card does NOT gate the whole overview — the org may already have
@@ -778,7 +781,7 @@ class CLIBillingMixin:
             return
 
         # Add funds first, then settings, then the scopeless browser handoff.
-        # No "Enable terminal billing" item — that's discovered at pay time.
+        # No "Allow Remote Spending" item — that's discovered at pay time.
         # "Add funds" charges in-terminal against the org's portal-saved card
         # (server-held via POST /charge — no card ref leaves the client). A
         # missing card is NOT gated here: the buy flow reacts to the server's
@@ -856,8 +859,11 @@ class CLIBillingMixin:
             return False
         if not state.cli_billing_enabled:
             print()
-            _cprint(f"  💳 {_d('Terminal billing is turned off for this org.')}")
-            self._billing_portal_hint(state, reason="Enable it on the portal first.")
+            _cprint(f"  💳 {_d('Remote spending is off for this org.')}")
+            self._billing_portal_hint(
+                state,
+                reason="A billing admin can turn it on from the portal's Hermes Agent page before adding funds.",
+            )
             return False
         return True
 
@@ -1033,7 +1039,7 @@ class CLIBillingMixin:
         try:
             result = post_charge(amount_usd=amount, idempotency_key=key)
         except BillingScopeRequired:
-            # In-flight reauth: enable terminal billing, then resume THIS charge
+            # In-flight reauth: allow remote spending, then resume THIS charge
             # (press-Enter beat) — no command re-run. Reuses the same idem key.
             self._billing_handle_scope_required(state, amount=amount, idempotency_key=key)
             return
@@ -1129,7 +1135,7 @@ class CLIBillingMixin:
             print("  💳 No card on file — top up and manage billing on the portal.")
         elif code in ("cli_billing_disabled", "remote_spending_disabled") or \
                 getattr(exc, "code", None) == "remote_spending_disabled":
-            print("  Terminal billing is off for this account — an admin must enable it on the portal.")
+            print("  Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page.")
         elif code == "role_required":
             print("  Adding funds needs an org admin/owner. Ask an admin, or manage on the portal.")
         elif code == "idempotency_conflict":
@@ -1146,8 +1152,8 @@ class CLIBillingMixin:
             print(f"  🟡 Too many charges right now{mins}. This isn't a payment failure.")
         elif code == "insufficient_scope":
             # Never leak the raw billing:manage scope (the post-grant replay can
-            # re-raise it if the grant raced) — the concept is "terminal billing".
-            print("  🔴 Terminal billing needs approval — run /topup to enable it, then retry.")
+            # re-raise it if the grant raced) — the concept is "Remote Spending".
+            print("  🔴 Remote Spending needs approval — run /topup to allow it, then retry.")
         else:
             print(f"  🔴 {exc}")
         if portal_url:
@@ -1156,9 +1162,9 @@ class CLIBillingMixin:
     def _billing_handle_scope_required(self, state, *, amount=None, idempotency_key=None):
         """403 insufficient_scope → in-flight reauth, then resume the held charge.
 
-        The buy path discovers terminal billing isn't enabled only when the
-        charge 403s — there is no preflight. We enable it in-flight ("Enable
-        terminal billing" → browser device-flow), then on return ask the user to
+        The buy path discovers remote spending isn't allowed only when the
+        charge 403s — there is no preflight. We allow it in-flight ("Allow
+        Remote Spending" → browser device-flow), then on return ask the user to
         press Enter to resume the held ``amount`` (reusing ``idempotency_key`` so
         the resumed charge collapses with the original). Never leaks the raw
         billing:manage scope.
@@ -1170,33 +1176,33 @@ class CLIBillingMixin:
         amount_str = format_money(amount) if amount is not None else "your top-up"
         print()
         print("  ! One-time setup")
-        _cprint(f"  {_d(f'To charge this terminal, enable terminal billing once. It opens your browser to authorize, then {amount_str} picks up right here.')}")
+        _cprint(f"  {_d(f'To charge from this terminal, allow Remote Spending once. It opens your browser to authorize, then {amount_str} picks up right here.')}")
         if not getattr(self, "_app", None):
-            print("  Run `hermes portal` and enable terminal billing, then retry.")
+            print("  Run `hermes portal` and allow Remote Spending, then retry.")
             return
         confirm_choices = [
-            ("yes", "Enable terminal billing", "open your browser to authorize"),
+            ("yes", "Allow Remote Spending", "open your browser to authorize"),
             ("no", "Not now", "cancel"),
         ]
         raw = self._prompt_text_input_modal(
-            title="Enable terminal billing",
+            title="Allow Remote Spending",
             detail="Opens your browser to authorize this terminal.",
             choices=confirm_choices,
         )
         choice = self._normalize_slash_confirm_choice(raw, confirm_choices)
         if choice != "yes":
-            print("  No charge made. Run /topup when you want to enable terminal billing.")
+            print("  No charge made. Run /topup when you want to allow Remote Spending.")
             return
-        print("  Opening your browser to enable terminal billing…")
+        print("  Opening your browser to allow Remote Spending…")
         try:
             from hermes_cli.auth import step_up_nous_billing_scope
 
             granted = step_up_nous_billing_scope(open_browser=True)
         except Exception as exc:
-            print(f"  Couldn't enable terminal billing: {exc}")
+            print(f"  Couldn't allow Remote Spending: {exc}")
             return
         if not granted:
-            print("  Couldn't enable terminal billing — an org admin or owner has to approve it. Your card was not charged.")
+            print("  Couldn't allow Remote Spending — an org admin or owner has to approve it. Your card was not charged.")
             return
 
         # Granted. The token now carries the scope, but the ORG kill-switch
@@ -1206,7 +1212,7 @@ class CLIBillingMixin:
 
         fresh = build_billing_state()
         if not (fresh.logged_in and fresh.cli_billing_enabled):
-            print("  Terminal billing was enabled for this terminal, but it's still turned off for this org. Enable it in the portal, then run /topup again.")
+            print("  Remote Spending is allowed for this terminal, but it's still off for this org. A billing admin can turn it on from the portal's Hermes Agent page, then run /topup again.")
             self._billing_portal_hint(fresh)
             return
 
@@ -1214,7 +1220,7 @@ class CLIBillingMixin:
         # file. If there's none, this is a half-done state: say so and route to the
         # portal to top up / manage billing, rather than a bare "✓ enabled" that reads as done.
         if fresh.card is None:
-            print("  ✓ Terminal billing enabled — but there's no card on file yet.")
+            print("  ✓ Remote Spending allowed — but there's no card on file yet.")
             _cprint(f"  {_d('Top up and manage billing on the portal to continue.')}")
             self._billing_portal_hint(fresh)
             return
@@ -1222,12 +1228,12 @@ class CLIBillingMixin:
         # Nothing to resume (scope-required hit outside a charge, e.g. auto-reload
         # config) → just tell the user it's ready.
         if amount is None:
-            print("  ✓ Terminal billing enabled. Run /topup to continue.")
+            print("  ✓ Remote Spending allowed. Run /topup to continue.")
             return
 
         # Press-Enter beat: the user is back from the browser; resume the held
         # purchase on an explicit confirm (reassuring, not silent).
-        print("  ✓ Terminal billing enabled.")
+        print("  ✓ Remote Spending allowed.")
         resume_choices = [
             ("resume", f"Resume {format_money(amount)} top-up", "finish the held purchase"),
             ("cancel", "Cancel", "do not charge"),

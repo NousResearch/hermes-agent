@@ -596,6 +596,7 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 _ACTIVE_META_KEY = "active_id"
+_DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
 
 def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
@@ -618,6 +619,53 @@ def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
     return row["value"] if row else None
 
 
+def get_discovery_policy_key(conn: sqlite3.Connection) -> Optional[str]:
+    row = conn.execute(
+        "SELECT value FROM project_meta WHERE key = ?", (_DISCOVERY_POLICY_META_KEY,)
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def reconcile_discovered_repos_policy(
+    conn: sqlite3.Connection,
+    policy_key: str,
+    *,
+    preserve_unversioned: bool = False,
+) -> bool:
+    """Clear cached scan rows when their discovery policy changes.
+
+    Existing pre-policy rows are retained only for the backward-compatible
+    default policy. Returns whether rows were cleared.
+    """
+    current = get_discovery_policy_key(conn)
+    if current == policy_key:
+        return False
+
+    cleared = current is not None or not preserve_unversioned
+    with write_txn(conn):
+        if cleared:
+            conn.execute("DELETE FROM discovered_repos")
+        conn.execute(
+            "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_DISCOVERY_POLICY_META_KEY, policy_key),
+        )
+    return cleared
+
+
+def clear_discovered_repos(
+    conn: sqlite3.Connection, *, policy_key: Optional[str] = None
+) -> None:
+    with write_txn(conn):
+        conn.execute("DELETE FROM discovered_repos")
+        if policy_key is not None:
+            conn.execute(
+                "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_DISCOVERY_POLICY_META_KEY, policy_key),
+            )
+
+
 # ---------------------------------------------------------------------------
 # Discovered repos (filesystem scan cache)
 # ---------------------------------------------------------------------------
@@ -628,6 +676,7 @@ def record_discovered_repos(
     repos: Iterable[tuple[str, Optional[str]]],
     *,
     replace: bool = False,
+    policy_key: Optional[str] = None,
 ) -> int:
     """Persist scanned git repo roots into the cache.
 
@@ -655,6 +704,12 @@ def record_discovered_repos(
                 "ON CONFLICT(root) DO UPDATE SET label = excluded.label, "
                 "last_seen = excluded.last_seen",
                 rows,
+            )
+        if policy_key is not None:
+            conn.execute(
+                "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_DISCOVERY_POLICY_META_KEY, policy_key),
             )
     return len(rows)
 

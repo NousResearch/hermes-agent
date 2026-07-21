@@ -15,11 +15,11 @@ Usage (from a checkout that still has the base ref available):
         --output diff.md [--repo-root .]
 
 Reads every ``package-lock.json`` tracked at either ref (top-level and
-nested — the repo has several), diffs each, and writes a Markdown report
-to ``--output``. Exits 0 always; an empty report file means "no version
-changes" (the caller uses that to decide whether to post/update the PR
-comment). The report embeds ``COMMENT_MARKER`` so the workflow can find
-and update its own previous comment instead of stacking new ones.
+nested — the repo has several), diffs each, and writes a Markdown fragment
+to ``--output``. Exits 0 always; an empty output file means "no version
+changes" (the caller uses that to decide whether to include the section).
+The fragment is consumed by ``scripts/ci/assemble_review_comment.py``,
+which wraps it in a section with a header and action note.
 """
 
 from __future__ import annotations
@@ -28,9 +28,6 @@ import argparse
 import json
 import subprocess
 import sys
-
-# Hidden marker used to locate the bot's previous comment for in-place update.
-COMMENT_MARKER = "<!-- hermes-lockfile-diff -->"
 
 
 def parse_lockfile(text: str) -> dict[str, str]:
@@ -79,21 +76,24 @@ def _display_name(path: str) -> str:
 
 
 def render_markdown(diffs: dict[str, dict[str, list]]) -> str:
-    """Render per-lockfile diffs as a Markdown PR comment body.
+    """Render per-lockfile diffs as a Markdown fragment.
 
     ``diffs`` maps lockfile repo-path → the output of :func:`diff_locks`.
     Lockfiles with no version changes are omitted. Returns ``""`` when
-    nothing changed anywhere (caller skips commenting entirely).
+    nothing changed anywhere (caller skips the section entirely).
+
+    The output is a fragment — per-lockfile ``####`` subsections with
+    tables — not a standalone comment. The ``assemble_review_comment``
+    script wraps this in a section with its own header and action note,
+    so no top-level header or comment marker is emitted here.
     """
     sections = []
-    total = 0
     for lockfile, d in sorted(diffs.items()):
         added, removed, updated = d["added"], d["removed"], d["updated"]
         n = len(added) + len(removed) + len(updated)
         if n == 0:
             continue
-        total += n
-        lines = [f"### `{lockfile}`", ""]
+        lines = [f"#### `{lockfile}`", ""]
         lines.append("| Package | Before | After |")
         lines.append("| --- | --- | --- |")
         for path, old, new in updated:
@@ -107,13 +107,7 @@ def render_markdown(diffs: dict[str, dict[str, list]]) -> str:
     if not sections:
         return ""
 
-    header = (
-        f"{COMMENT_MARKER}\n"
-        f"## ⚠️ `package-lock.json` changes ({total} package"
-        f"{'s' if total != 1 else ''})\n\n"
-        "This PR changes locked npm dependency versions."
-    )
-    return header + "\n" + "\n\n".join(sections) + "\n"
+    return "\n\n".join(sections) + "\n"
 
 
 def _git_show(ref: str, path: str, repo_root: str) -> str | None:

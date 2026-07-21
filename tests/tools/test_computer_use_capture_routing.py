@@ -465,4 +465,116 @@ class TestBugReproductionAnchor:
         # 'No endpoints found that support image input' on the reporter's
         # main provider in #24015.
         assert "data:image" not in resp
+
+
+# ---------------------------------------------------------------------------
+# Elements cap parity: aux-vision path must honour max_elements (#22865 shape)
+# ---------------------------------------------------------------------------
+
+class TestAuxVisionElementsCap:
+    """Regression: _route_capture_through_aux_vision must respect the
+    max_elements cap that _capture_response computes.
+
+    Prior to the fix, the aux-vision path returned cap.elements verbatim
+    (all 600 on a dense UI) while the AX path correctly sliced to
+    visible_elements[:max_elements]. Dense SOM captures routed via
+    auxiliary.vision therefore produced oversized tool results that could
+    exhaust session context — the same #22865 shape as the AX-path fix.
+    """
+
+    def _make_dense_capture(self, count: int):
+        from tools.computer_use.backend import CaptureResult, UIElement
+
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"btn-{i}",
+                      bounds=(0, i * 10, 80, 10))
+            for i in range(count)
+        ]
+        return CaptureResult(
+            mode="som",
+            width=1280,
+            height=800,
+            png_b64=(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+                "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+            ),
+            elements=elements,
+            app="Electron",
+            window_title="Dense UI",
+        )
+
+    def test_aux_vision_caps_elements_at_default_for_dense_som(
+        self, tmp_cache_dir,
+    ):
+        """600-element SOM routed via aux vision must not dump all 600 into JSON."""
+        from tools.computer_use import tool as cu_tool
+
+        cap = self._make_dense_capture(600)
+
+        def _fake_run_async(_coro):
+            return json.dumps({"success": True, "analysis": "dense UI"})
+
+        fake_vat = MagicMock(return_value="<coro>")
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=True), \
+             patch("model_tools._run_async", side_effect=_fake_run_async), \
+             patch("tools.vision_tools.vision_analyze_tool",
+                   new_callable=lambda: fake_vat):
+            resp = cu_tool._capture_response(cap)
+
+        body = json.loads(resp)
+        assert len(body["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
+        assert body["total_elements"] == 600
+        assert body["truncated_elements"] == 600 - cu_tool._DEFAULT_MAX_ELEMENTS
+
+    def test_aux_vision_honors_explicit_max_elements_override(
+        self, tmp_cache_dir,
+    ):
+        """Caller-supplied max_elements must flow through to the aux-vision path."""
+        from tools.computer_use import tool as cu_tool
+
+        cap = self._make_dense_capture(300)
+
+        def _fake_run_async(_coro):
+            return json.dumps({"success": True, "analysis": "dense UI"})
+
+        fake_vat = MagicMock(return_value="<coro>")
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=True), \
+             patch("model_tools._run_async", side_effect=_fake_run_async), \
+             patch("tools.vision_tools.vision_analyze_tool",
+                   new_callable=lambda: fake_vat):
+            resp = cu_tool._capture_response(cap, max_elements=50)
+
+        body = json.loads(resp)
+        assert len(body["elements"]) == 50
+        assert body["total_elements"] == 300
+        assert body["truncated_elements"] == 250
+
+    def test_aux_vision_no_truncated_field_when_under_cap(
+        self, tmp_cache_dir,
+    ):
+        """Small captures must not surface a truncated_elements field."""
+        from tools.computer_use import tool as cu_tool
+
+        cap = self._make_dense_capture(5)
+
+        def _fake_run_async(_coro):
+            return json.dumps({"success": True, "analysis": "small UI"})
+
+        fake_vat = MagicMock(return_value="<coro>")
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=True), \
+             patch("model_tools._run_async", side_effect=_fake_run_async), \
+             patch("tools.vision_tools.vision_analyze_tool",
+                   new_callable=lambda: fake_vat):
+            resp = cu_tool._capture_response(cap)
+
+        body = json.loads(resp)
+        assert len(body["elements"]) == 5
+        assert body["total_elements"] == 5
+        assert "truncated_elements" not in body
         assert "image_url" not in resp

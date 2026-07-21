@@ -571,9 +571,16 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             _click_join(page, state)
 
             # Install caption observer and attempt to enable captions.
+            # Try the synthetic 'c' keystroke first (cheap, fire-and-forget);
+            # then a real Playwright click on the 'Turn on captions' button
+            # (trusted event, ignores synthetic events in modern Meet).
             try:
                 page.evaluate(_enable_captions_js())
                 state.set(captions_enabled_attempted=True)
+            except Exception:
+                pass
+            try:
+                _click_enable_captions(page, state)
             except Exception:
                 pass
             try:
@@ -835,6 +842,28 @@ def _click_join(page, state: _BotState) -> None:
                 break
         except Exception:
             continue
+
+
+def _click_enable_captions(page, state: _BotState) -> bool:
+    """Click the 'Turn on captions' button via Playwright.
+
+    Polls for up to 30s. Meet's captions button only renders once the bot
+    is actually in the call (post-lobby, post-prejoin). We use a real click
+    via Playwright so the resulting event is trusted (isTrusted=true);
+    Meet ignores synthetic keystrokes for app-level shortcuts.
+    """
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        for label in ("Turn on captions", "Captions"):
+            try:
+                btn = page.get_by_role("button", name=label, exact=False).first
+                if btn.count() and btn.is_visible():
+                    btn.click(timeout=3_000)
+                    return True
+            except Exception:
+                continue
+        time.sleep(0.5)
+    return False
 
 
 def _parse_duration(raw: str) -> Optional[float]:

@@ -83,19 +83,8 @@ def _iter_ledger_events(root: Path):
 
 
 def _find_fact_event(root: Path, fact_id: str) -> dict[str, Any] | None:
-    current_path = root / "views" / "current.jsonl"
-    if current_path.exists():
-        for raw_line in current_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                break
-            if str(event.get("fact_id") or "") == fact_id:
-                return event
-
+    # Projection rows intentionally omit evidence and fact kind. Retraction must
+    # use the canonical ledger event so the appended event remains schema-valid.
     for _ledger_file, event in _iter_ledger_events(root):
         if str(event.get("fact_id") or "") == fact_id:
             return event

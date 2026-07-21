@@ -45,6 +45,17 @@ def test_append_event_rejects_schema_invalid_event(tmp_path, ledger_mod):
     assert out["reason"] == "invalid_ledger_event"
 
 
+def test_append_event_rejects_non_rfc3339_timestamp_before_partitioning(tmp_path, ledger_mod):
+    store = ledger_mod.LedgerStore(tmp_path)
+    event = _valid_event("evt_compact_time")
+    event["occurred_at"] = "20260720T233000Z"
+
+    out = store.append_event(event=event, event_key="compact-time")
+
+    assert out["status"] == "rejected"
+    assert list((tmp_path / "ledger").glob("*.jsonl")) == []
+
+
 def test_append_event_is_idempotent_by_event_key(tmp_path, ledger_mod):
     store = ledger_mod.LedgerStore(tmp_path)
     event = _valid_event("evt_1")

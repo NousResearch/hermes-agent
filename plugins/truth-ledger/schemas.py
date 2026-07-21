@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -11,13 +12,16 @@ from jsonschema import Draft202012Validator, FormatChecker
 SCHEMAS_DIR = Path(__file__).with_name("schemas")
 
 _FORMAT_CHECKER = FormatChecker()
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
 
 
 @_FORMAT_CHECKER.checks("date-time", raises=(TypeError, ValueError))
 def _is_rfc3339_datetime(value: object) -> bool:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or _RFC3339_RE.fullmatch(value) is None:
         return False
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
     return parsed.tzinfo is not None
 
 _SCHEMA_FILES = {

@@ -256,3 +256,19 @@ def test_schema_format_fields_are_normative(schemas_mod):
 
     with pytest.raises(ValueError, match="date-time"):
         schemas_mod.validate_document("source-envelope.v1", envelope)
+
+
+@pytest.mark.parametrize(
+    "invalid_timestamp",
+    [
+        "20260720T233000Z",
+        "2026-W30-1T23:30:00Z",
+        "2026-07-20T23:30:00,123Z",
+    ],
+)
+def test_schema_rejects_non_rfc3339_datetime_variants(schemas_mod, invalid_timestamp):
+    event = _sample_ledger_event()
+    event["occurred_at"] = invalid_timestamp
+
+    with pytest.raises(ValueError, match="date-time"):
+        schemas_mod.validate_document("ledger-event.v1", event)

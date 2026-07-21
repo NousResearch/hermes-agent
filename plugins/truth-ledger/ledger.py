@@ -4,6 +4,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -15,13 +16,16 @@ from typing import Any, Dict, List
 from jsonschema import Draft202012Validator, FormatChecker
 
 _FORMAT_CHECKER = FormatChecker()
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
 
 
 @_FORMAT_CHECKER.checks("date-time", raises=(TypeError, ValueError))
 def _is_rfc3339_datetime(value: object) -> bool:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or _RFC3339_RE.fullmatch(value) is None:
         return False
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
     return parsed.tzinfo is not None
 
 
@@ -91,12 +95,13 @@ class LedgerStore:
 
         for d in (self.ledger_dir, self.state_dir, self.locks_dir, self.errors_dir):
             _mkdir_private(d)
-        self._init_db()
+        with _FileLock(self.append_lock, timeout_seconds=5.0):
+            self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=250")
         return conn
 
     def _init_db(self) -> None:

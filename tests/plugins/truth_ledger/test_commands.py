@@ -93,6 +93,21 @@ def test_retract_appends_event_and_never_rewrites_history(tmp_path):
     assert list(Draft202012Validator(schema).iter_errors(appended)) == []
 
 
+def test_retract_uses_canonical_ledger_event_after_projection_rebuild(tmp_path):
+    mod = _load_commands_module()
+    root = tmp_path / "truth-ledger"
+    _seed_active_fact(root, fact_id="fact_projected")
+    mod.rebuild_views(root=root, apply=True)
+
+    dry = mod.retract_fact(root=root, fact_id="fact_projected", apply=False)
+    applied = mod.retract_fact(root=root, fact_id="fact_projected", apply=True)
+
+    assert dry["target_key"] == "profile.reply_style"
+    assert dry["target_subject"] == "platform-user:cli:u1"
+    assert applied["ok"] is True
+    assert applied["appended"] is True
+
+
 def test_retract_rejects_bad_fact_ids(tmp_path):
     mod = _load_commands_module()
     root = tmp_path / "truth-ledger"

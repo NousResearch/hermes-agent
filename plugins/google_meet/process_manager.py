@@ -187,8 +187,96 @@ def start(
     return {"ok": True, **record}
 
 
+# ---------------------------------------------------------------------------
+# Admission verdicts — used by ``status()`` and ``wait_for_join()`` so every
+# consumer (CLI, agent tool, user auto-join scripts) reads from the same
+# truth table instead of re-implementing it.  See issue #24826: the original
+# Pamela auto-join script trusted ``meet join``'s exit code and treated a
+# silent denial as success because nothing on the success path actually
+# verified admission.
+# ---------------------------------------------------------------------------
+
+# leave_reason values emitted by meet_bot when admission fails / never
+# happens.  All non-success exits are listed explicitly so a future
+# rename in meet_bot trips a test before silently misclassifying a
+# failure as success.
+DENIAL_LEAVE_REASONS = frozenset({
+    "denied",
+    "lobby_timeout",
+    "page_closed",
+    "duration_expired",  # legitimate but never reached in_call
+})
+
+
+def _classify_admission(bot_status: Dict[str, Any], *, alive: bool) -> Dict[str, Any]:
+    """Derive ``joined`` / ``admissionState`` / ``error`` from raw bot status.
+
+    The bot writes ``inCall`` / ``joinedAt`` / ``error`` / ``leaveReason``
+    independently as it runs; the admission verdict is a function of all of
+    those plus whether the bot process is still alive.  Centralising it
+    here means the CLI exit code, the agent tool result, and the user-facing
+    status payload can never disagree.
+
+    Returns ``{"joined", "admissionState", "error"}`` where
+    ``admissionState`` is one of:
+
+      * ``"joined"`` — confirmed in the call
+      * ``"waiting"`` — bot is alive, no error, not yet admitted
+      * ``"denied"`` — host denied admission
+      * ``"lobby_timeout"`` — host never admitted within the lobby budget
+      * ``"failed"`` — bot exited / errored before admission
+    """
+    in_call = bool(bot_status.get("inCall"))
+    joined_at = bot_status.get("joinedAt")
+    error = bot_status.get("error")
+    leave_reason = (bot_status.get("leaveReason") or "").strip() or None
+    exited = bool(bot_status.get("exited"))
+
+    # Confirmed admission: bot reports inCall AND no error has surfaced.
+    # joinedAt alone is sufficient too (in_call may be flipped back to
+    # False after a clean leave, but joinedAt sticks for the session).
+    confirmed = (in_call or joined_at is not None) and not error
+
+    if confirmed:
+        return {"joined": True, "admissionState": "joined", "error": None}
+
+    if leave_reason == "denied" or (error and "denied" in error.lower()):
+        return {
+            "joined": False,
+            "admissionState": "denied",
+            "error": error or "host denied admission",
+        }
+
+    if leave_reason == "lobby_timeout" or (error and "lobby" in error.lower()):
+        return {
+            "joined": False,
+            "admissionState": "lobby_timeout",
+            "error": error or "lobby timeout — host never admitted",
+        }
+
+    if leave_reason in DENIAL_LEAVE_REASONS or error or exited or not alive:
+        return {
+            "joined": False,
+            "admissionState": "failed",
+            "error": error or (
+                f"bot exited before admission (leaveReason={leave_reason!r})"
+                if leave_reason else
+                "bot exited before admission"
+            ),
+        }
+
+    return {"joined": False, "admissionState": "waiting", "error": None}
+
+
 def status() -> Dict[str, Any]:
-    """Return the current meeting state, or ``{"ok": False, "reason": ...}``."""
+    """Return the current meeting state, or ``{"ok": False, "reason": ...}``.
+
+    The returned dict is a superset of whatever the bot wrote to its
+    ``status.json``, augmented with three derived top-level fields:
+    ``joined`` (bool), ``admissionState`` (str), and a normalised ``error``.
+    Consumers should prefer these over recomputing the truth table — see
+    ``_classify_admission``.
+    """
     active = _read_active()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
@@ -204,6 +292,8 @@ def status() -> Dict[str, Any]:
         except Exception:
             pass
 
+    admission = _classify_admission(bot_status, alive=alive)
+
     return {
         "ok": True,
         "alive": alive,
@@ -213,7 +303,64 @@ def status() -> Dict[str, Any]:
         "startedAt": active.get("started_at"),
         "outDir": active.get("out_dir"),
         **bot_status,
+        # Derived fields go LAST so they always win over a future bot
+        # status.json that happens to ship a same-named key.  This keeps
+        # the truth-table single-sourced in ``_classify_admission``.
+        **admission,
     }
+
+
+# Default upper bound for ``wait_for_join`` — must comfortably cover Meet's
+# default lobby behaviour (host needs to click Admit) without blocking the
+# caller indefinitely on a stalled / orphaned bot.  Override per-call when
+# wiring this into a longer-running cron or a hands-on agent turn.
+DEFAULT_JOIN_WAIT_S = 90.0
+_JOIN_POLL_INTERVAL_S = 1.0
+
+
+def wait_for_join(
+    *,
+    timeout: float = DEFAULT_JOIN_WAIT_S,
+    poll_interval: float = _JOIN_POLL_INTERVAL_S,
+    sleep=time.sleep,
+    now=time.monotonic,
+) -> Dict[str, Any]:
+    """Block until the bot is admitted, denied, exits, or ``timeout`` elapses.
+
+    Returns the same shape as :func:`status` plus a final ``waitOutcome``
+    field, which is one of: ``"joined"``, ``"denied"``, ``"lobby_timeout"``,
+    ``"failed"``, ``"timeout"``, ``"no_active"``.  Callers (the CLI exit-code
+    layer, the optional ``meet_join(wait=True)`` tool path, and external
+    cron scripts that want to verify admission before recording an event as
+    "joined") should branch on ``waitOutcome`` rather than re-deriving it.
+
+    ``sleep`` and ``now`` are injected so tests can drive the poll loop
+    deterministically without real time passing.
+    """
+    deadline = now() + max(0.0, timeout)
+    last: Dict[str, Any] = {"ok": False, "reason": "no active meeting"}
+    while True:
+        last = status()
+        if not last.get("ok"):
+            return {**last, "waitOutcome": "no_active"}
+
+        admission_state = last.get("admissionState")
+        if admission_state == "joined":
+            return {**last, "waitOutcome": "joined"}
+        if admission_state in ("denied", "lobby_timeout", "failed"):
+            return {**last, "waitOutcome": admission_state}
+
+        if now() >= deadline:
+            return {
+                **last,
+                "waitOutcome": "timeout",
+                "error": last.get("error") or (
+                    f"timed out after {timeout:.0f}s waiting for admission "
+                    "(bot still alive but lobby state has not resolved)"
+                ),
+            }
+
+        sleep(poll_interval)
 
 
 def transcript(last: Optional[int] = None) -> Dict[str, Any]:

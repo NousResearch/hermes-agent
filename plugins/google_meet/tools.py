@@ -136,6 +136,28 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                     "approved via `hermes meet node approve`."
                 ),
             },
+            "wait_for_admission": {
+                "type": "boolean",
+                "description": (
+                    "When true, block until the bot is admitted to the "
+                    "meeting (or denied / lobby-timeout) before returning. "
+                    "Returns success only when admission is confirmed; "
+                    "otherwise returns the denial reason in the response. "
+                    "Default false to preserve the historical async "
+                    "spawn-and-return behaviour where the agent must poll "
+                    "with meet_status. Set true for short-turn workflows "
+                    "(scheduled join, calendar auto-join) where you need "
+                    "to know the outcome before continuing."
+                ),
+            },
+            "wait_seconds": {
+                "type": "number",
+                "description": (
+                    "Upper bound (seconds) for wait_for_admission. Default "
+                    "90s. Ignored when wait_for_admission is false."
+                ),
+                "minimum": 1,
+            },
         },
         "required": ["url"],
         "additionalProperties": False,
@@ -275,6 +297,21 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         duration=str(args.get("duration")) if args.get("duration") else None,
         mode=mode,
     )
+    if not res.get("ok"):
+        return _json({"success": False, **res})
+
+    # Issue #24826: synchronous-admission opt-in.  When the caller passes
+    # wait_for_admission=true, fold the post-spawn poll into the tool
+    # response so the agent's "did the join succeed?" check matches what
+    # the user observes (no more silent denials reported as success).
+    if bool(args.get("wait_for_admission")):
+        try:
+            timeout = float(args.get("wait_seconds") or pm.DEFAULT_JOIN_WAIT_S)
+        except (TypeError, ValueError):
+            timeout = pm.DEFAULT_JOIN_WAIT_S
+        verdict = pm.wait_for_join(timeout=timeout)
+        return _json({"success": bool(verdict.get("joined")), **verdict})
+
     return _json({"success": bool(res.get("ok")), **res})
 
 

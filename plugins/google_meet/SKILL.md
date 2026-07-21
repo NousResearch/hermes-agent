@@ -83,19 +83,20 @@ Run `hermes meet setup` to preflight local prereqs.
 
 ## Flow
 
-1. **Join** — call `meet_join(url=..., mode=..., node=...)`. Returns immediately.
-2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
-3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
-4. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
-5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave.
-6. **Follow up** — read `meet_transcript()` in full, summarize, and use regular tools to send the recap, file issues, schedule followups.
+1. **Join** — call `meet_join(url=..., mode=..., node=...)`. Returns immediately by default; pass `wait_for_admission=true` (with optional `wait_seconds`) to block until the bot is admitted (or denied) before returning.
+2. **Verify admission** — if you did NOT pass `wait_for_admission=true`, poll `meet_status()` and check the `joined` (bool) / `admissionState` ("joined" / "waiting" / "denied" / "lobby_timeout" / "failed") fields. NEVER assume `meet_join` returning success means the bot got into the call — it only means the subprocess started.
+3. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
+4. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
+5. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
+6. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave.
+7. **Follow up** — read `meet_transcript()` in full, summarize, and use regular tools to send the recap, file issues, schedule followups.
 
 ## Tool reference
 
 | Tool | Parameters | Use |
 |---|---|---|
-| `meet_join` | `url`, `mode?`, `guest_name?`, `duration?`, `headed?`, `node?` | Start bot |
-| `meet_status` | `node?` | Liveness + progress |
+| `meet_join` | `url`, `mode?`, `guest_name?`, `duration?`, `headed?`, `node?`, `wait_for_admission?`, `wait_seconds?` | Start bot. When `wait_for_admission=true`, returns success only after admission is confirmed (or denied/timeout). |
+| `meet_status` | `node?` | Liveness + progress + `joined` / `admissionState` derived verdict |
 | `meet_transcript` | `last?`, `node?` | Read captions |
 | `meet_leave` | `node?` | Close bot |
 | `meet_say` | `text`, `node?` | Speak in realtime meeting |
@@ -119,6 +120,8 @@ Run `hermes meet setup` to preflight local prereqs.
 
 | Key | Meaning |
 |---|---|
+| `joined` | **Derived bool** — true only when admission is confirmed AND no error. Prefer this over reading `inCall` / `joinedAt` separately. |
+| `admissionState` | **Derived enum** — `joined` / `waiting` / `denied` / `lobby_timeout` / `failed`. The single source of truth for "did the bot make it in?". |
 | `inCall` | Past the lobby. False while waiting for admission. |
 | `lobbyWaiting` | Clicked "Ask to join", waiting on host. |
 | `joinAttemptedAt` / `joinedAt` | Timestamps for lobby-click and actual admission. |
@@ -129,7 +132,7 @@ Run `hermes meet setup` to preflight local prereqs.
 | `audioBytesOut` / `lastAudioOutAt` | How much PCM the OpenAI session has produced. |
 | `lastBargeInAt` | Timestamp of the most recent `response.cancel` sent. |
 | `leaveReason` | `duration_expired`, `lobby_timeout`, `denied`, `page_closed`, or null. |
-| `error` | Last error (soft — bot may still be running). |
+| `error` | Normalised error message — surfaced for `denied` / `lobby_timeout` / `failed` admission states. |
 
 ## Transcript location
 

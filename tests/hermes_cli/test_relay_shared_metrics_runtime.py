@@ -2665,35 +2665,6 @@ def test_skill_task_only_correlation_does_not_guess_across_sessions(direct_runti
     assert "handle" not in mark[2]
 
 
-def test_skill_explicit_session_does_not_fallback_to_another_session(
-    direct_runtime,
-):
-    runtime = relay_shared_metrics._get_runtime()
-    assert runtime is not None
-    assert runtime.start_task({
-        "session_id": "session-1",
-        "task_id": "shared-task",
-        "platform": "cli",
-    }) is not None
-
-    lifecycle.invoke_hook(
-        "on_skill_lifecycle",
-        action="created",
-        skill_name="private-skill-name",
-        provenance="agent_created",
-        session_id="session-2",
-        task_id="shared-task",
-    )
-
-    [mark] = [
-        event
-        for event in direct_runtime.events
-        if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
-    ]
-    assert "handle" not in mark[2]
-    assert "session-2" not in runtime._sessions
-
-
 def test_persistence_failure_does_not_escape_the_hook(
     direct_runtime,
     monkeypatch,

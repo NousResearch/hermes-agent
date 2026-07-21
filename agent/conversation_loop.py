@@ -102,6 +102,24 @@ _API_CALL_MODULES = frozenset({
 })
 
 
+def _is_eager_fallback_transport_reason(reason: FailoverReason) -> bool:
+    """True for transport/server-error reasons eligible for eager fallback.
+
+    Used by the main retry loop's ``_should_fallback`` gate: these reasons
+    get one retry first (transient hiccups recover), then fail over to
+    ``fallback_providers`` once ``retry_count >= 2`` — instead of only
+    reaching a configured fallback chain via the separate max-retry-
+    exhaustion fallback attempt later in the same loop. Extracted to a
+    plain function so the reason set is unit-testable without driving the
+    full conversation loop.
+    """
+    return reason in {
+        FailoverReason.timeout,
+        FailoverReason.overloaded,
+        FailoverReason.server_error,
+    }
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -3323,20 +3341,25 @@ def run_conversation(
                     # is exhausted or didn't help.
 
                 # Eager fallback for rate-limit errors (429 or quota exhaustion)
-                # and transport errors (connection failure / timeout / provider
-                # overloaded).  Rate limits and billing: switch immediately —
-                # the primary provider won't recover within the retry window.
-                # Transport errors: allow 1 retry first (transient hiccups
-                # recover), then fall back if the provider is truly unreachable.
+                # and transport/server errors (connection failure / timeout /
+                # provider overloaded / 500-502 internal server error).
+                # Rate limits and billing: switch immediately — the primary
+                # provider won't recover within the retry window.
+                # Transport/server errors: allow 1 retry first (transient
+                # hiccups recover), then fall back if the provider keeps
+                # failing. server_error (500/502) joining this set moves its
+                # failover earlier (after 2 retries, matching timeout/
+                # overloaded) instead of waiting for the max-retry-exhaustion
+                # fallback attempt further down this loop — a primary that's
+                # erroring with 500s now hands off sooner rather than
+                # spending its whole retry budget on a provider that's
+                # already failing.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
-                _is_transport_failure = classified.reason in {
-                    FailoverReason.timeout,
-                    FailoverReason.overloaded,
-                }
+                _is_transport_failure = _is_eager_fallback_transport_reason(classified.reason)
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
                 # is excluded from `is_rate_limited` — the gate for the adaptive
@@ -3381,6 +3404,10 @@ def run_conversation(
                         elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif classified.reason == FailoverReason.server_error:
+                            agent._buffer_status(
+                                "⚠️ Provider server error — switching to fallback provider..."
                             )
                         elif _is_transport_failure:
                             agent._buffer_status(

@@ -14,6 +14,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
+import { getViewportSnapshot } from '../lib/viewportStore.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
@@ -82,7 +83,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
-  const { appendMessage, panel, setHistoryItems } = ctx.transcript
+  const { appendMessage, panel, scrollRef, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
   const { submitRef } = ctx.submission
   const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
@@ -118,6 +119,38 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
     })
     patchOverlayState({ clarify: null })
+  }
+
+  const transcriptAtBottom = () =>
+    getViewportSnapshot(scrollRef?.current).atBottom
+
+  const snapStickyTranscriptToBottom = () => {
+    // Capture the pre-commit bottom-pinned state before the final-history
+    // layout update changes geometry.  The deferred callback uses a
+    // manual-scroll timestamp guard (same pattern as scheduleResumeScrollToBottom
+    // in useSessionLifecycle.ts) so a user scroll between capture and callback
+    // prevents the yank.
+    const wasAtBottom = transcriptAtBottom()
+
+    if (!wasAtBottom) {
+      return
+    }
+
+    const scheduledAt = Date.now()
+
+    setTimeout(() => {
+      const scroll = scrollRef?.current
+
+      if (!scroll) {
+        return
+      }
+
+      const manuallyScrolledAfterSnap = scroll.getLastManualScrollAt() > scheduledAt
+
+      if (!manuallyScrolledAfterSnap) {
+        scroll.scrollToBottom()
+      }
+    }, 0)
   }
 
   // Inject the disk-save callback into turnController so recordMessageComplete
@@ -962,6 +995,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
+          snapStickyTranscriptToBottom()
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')

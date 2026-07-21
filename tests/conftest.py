@@ -523,9 +523,10 @@ def _ensure_current_event_loop(request):
 #    a hard ``RuntimeError`` so the offending test gets a stack trace
 #    instead of silently murdering the real gateway.
 #  • ``subprocess.run`` / ``subprocess.Popen`` / ``call`` / ``check_call`` /
-#    ``check_output`` reject any ``systemctl ... <verb> hermes-gateway``
-#    invocation that would mutate the live unit. Read-only systemctl
-#    calls (``status``, ``show``, ``list-units``) still pass through.
+#    ``check_output`` reject mutating systemd/launchd commands, detached
+#    Hermes gateway spawns, and process-killer commands targeting a foreign
+#    PID. Read-only service-manager calls still pass through outside updater
+#    tests.
 #
 # We intentionally do NOT stub ``find_gateway_pids`` / ``_scan_gateway_pids``
 # here — tests of those functions themselves need the real implementation.
@@ -535,6 +536,295 @@ def _ensure_current_event_loop(request):
 # delivery is harmless.
 
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
+
+
+def _guard_cmd_to_string(cmd) -> str:
+    """Render an argv/string for pure, side-effect-free guard inspection."""
+    if cmd is None:
+        return ""
+    if isinstance(cmd, (bytes, bytearray)):
+        try:
+            return bytes(cmd).decode(errors="replace")
+        except Exception:
+            return ""
+    if isinstance(cmd, str):
+        return cmd
+    if isinstance(cmd, (list, tuple)):
+        try:
+            return " ".join(_guard_token_to_string(token) for token in cmd)
+        except Exception:
+            return ""
+    return str(cmd)
+
+
+def _guard_token_to_string(token) -> str:
+    """Normalize one argv element without collapsing bytes into ``b'...'``."""
+    if isinstance(token, (bytes, bytearray)):
+        return bytes(token).decode(errors="replace")
+    return str(token)
+
+
+def _guard_tokens(cmd) -> list[str]:
+    import shlex
+
+    if isinstance(cmd, (list, tuple)):
+        try:
+            return [_guard_token_to_string(token) for token in cmd]
+        except Exception:
+            return []
+    rendered = _guard_cmd_to_string(cmd)
+    try:
+        return shlex.split(rendered)
+    except ValueError:
+        return rendered.split()
+
+
+def _guard_command_variants(cmd) -> list[list[str]]:
+    """Return argv plus recursively parsed shell-wrapper payloads."""
+    import base64
+
+    posix_shells = {"sh", "bash", "dash", "zsh", "ash", "ksh"}
+    windows_shells = {"cmd", "powershell", "pwsh"}
+    protected_hints = ("hermes", "gateway")
+    variants: list[list[str]] = []
+    pending = [(_guard_tokens(cmd), 0)]
+    while pending:
+        tokens, depth = pending.pop()
+        if not tokens:
+            continue
+        variants.append(tokens)
+        if depth >= 5:
+            continue
+        for index, token in enumerate(tokens):
+            head = _guard_executable(token)
+            args = tokens[index + 1:]
+            payload = None
+            if head in posix_shells:
+                for position, flag in enumerate(args[:-1]):
+                    if (
+                        flag.startswith("-")
+                        and not flag.startswith("--")
+                        and "c" in flag[1:].lower()
+                    ):
+                        payload = args[position + 1]
+                        break
+            elif head == "cmd":
+                for position, flag in enumerate(args[:-1]):
+                    if flag.lower() in {"/c", "/k"}:
+                        payload = args[position + 1]
+                        break
+            elif head in windows_shells:
+                for position, flag in enumerate(args[:-1]):
+                    normalized_flag = flag.lower()
+                    if normalized_flag in {"-command", "/command", "-c"}:
+                        payload = args[position + 1]
+                        break
+                    if normalized_flag in {"-encodedcommand", "-e", "-enc"}:
+                        encoded_payload = args[position + 1]
+                        try:
+                            payload = base64.b64decode(
+                                encoded_payload, validate=True
+                            ).decode("utf-16-le")
+                        except (UnicodeDecodeError, ValueError):
+                            if any(hint in encoded_payload.lower() for hint in protected_hints):
+                                pending.append(
+                                    (["__guard_decode_failure__", encoded_payload], depth + 1)
+                                )
+                        break
+            if payload is not None:
+                pending.append((_guard_tokens(payload), depth + 1))
+    return variants
+
+
+def _guard_executable(token: str) -> str:
+    executable = token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    return executable[:-4] if executable.endswith(".exe") else executable
+
+
+def _is_service_manager_command(cmd) -> bool:
+    """True for a systemd or launchd command, irrespective of its verb."""
+    return any(
+        _guard_executable(token) in {"systemctl", "launchctl"}
+        for tokens in _guard_command_variants(cmd)
+        for token in tokens
+    )
+
+
+def _is_service_manager_mutation_command(cmd) -> bool:
+    """Fail closed for non-read-only verbs targeting a Hermes service."""
+    hermes_tokens = (
+        "hermes-gateway",
+        "hermes.service",
+        "ai.hermes.gateway",
+        "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
+        "gateway/run.py",
+        "hermes gateway",
+    )
+    read_only_verbs = {
+        "status", "show", "cat", "list-units", "list", "is-active",
+        "is-enabled", "is-failed", "is-system-running", "print", "blame",
+        "get-default",
+    }
+    option_values = {
+        "--property", "--type", "--state", "--output", "--lines",
+        "--job-mode", "--signal", "--kill-whom", "--what", "--host",
+        "--machine", "--root", "--image", "--firmware-setup", "--timestamp",
+    }
+    short_options_with_values = {"-p", "-t", "-o", "-n", "-h", "-m"}
+    known_flag_options = {
+        "--all", "--ask-password", "--force", "--full", "--global", "--help",
+        "--legend", "--no-ask-password", "--no-block", "--no-legend", "--no-pager",
+        "--no-reload", "--now", "--plain", "--quiet", "--recursive", "--reverse",
+        "--runtime", "--system", "--user", "--version", "-a", "-f", "-l", "-q",
+        "-r",
+    }
+
+    def _positional_verb(tokens, manager_index):
+        position = manager_index + 1
+        while position < len(tokens):
+            token = tokens[position]
+            lowered = token.lower()
+            if token == "--":
+                return tokens[position + 1].lower() if position + 1 < len(tokens) else None
+            if not token.startswith("-"):
+                return lowered
+            if "=" in token:
+                option = lowered.split("=", 1)[0]
+                if option in option_values or option in known_flag_options:
+                    position += 1
+                    continue
+                return None
+            if lowered in option_values or lowered in short_options_with_values:
+                if position + 1 >= len(tokens):
+                    return None
+                position += 2
+                continue
+            if lowered in known_flag_options:
+                position += 1
+                continue
+            return None
+        return None
+
+    for tokens in _guard_command_variants(cmd):
+        low = " ".join(tokens).lower()
+        if tokens and tokens[0] == "__guard_decode_failure__":
+            if any(marker in low for marker in hermes_tokens):
+                return True
+            continue
+        if not any(marker in low for marker in hermes_tokens):
+            continue
+        if _guard_executable(tokens[0]) in {
+            "stop-service", "start-service", "restart-service", "set-service",
+            "remove-service",
+        }:
+            return True
+        for index, token in enumerate(tokens):
+            if _guard_executable(token) not in {"systemctl", "launchctl"}:
+                continue
+            verb = _positional_verb(tokens, index)
+            if verb not in read_only_verbs:
+                return True
+    return False
+
+
+def _is_detached_gateway_spawn(name: str, cmd) -> bool:
+    """Classify detached gateway launches without executing the command."""
+    if name != "Popen":
+        return False
+    for tokens in _guard_command_variants(cmd):
+        lower_tokens = [token.lower() for token in tokens]
+        if "gateway" not in lower_tokens or "run" not in lower_tokens:
+            continue
+        low = " ".join(tokens).lower()
+        if any(
+            marker in low
+            for marker in ("hermes_cli.main", "hermes_cli/main.py", "gateway/run.py")
+        ):
+            return True
+        if any(_guard_executable(token) == "hermes" for token in tokens):
+            return True
+    return False
+
+
+def _is_process_killer_command(cmd, *, is_own_subtree) -> bool:
+    """Classify process-killer argv, including Windows PID/image kills."""
+    process_killers = {"pkill", "killall", "taskkill", "skill", "fuser", "kill", "killpg"}
+    for tokens in _guard_command_variants(cmd):
+        if not tokens:
+            continue
+        heads = [_guard_executable(token) for token in tokens]
+        low = " ".join(tokens).lower()
+        for index, head in enumerate(heads):
+            if head not in process_killers:
+                continue
+            if head == "taskkill":
+                upper_tokens = [part.upper() for part in tokens]
+                for flag in ("/IM", "-IM"):
+                    if flag not in upper_tokens:
+                        continue
+                    image_index = upper_tokens.index(flag) + 1
+                    image = tokens[image_index].lower() if image_index < len(tokens) else ""
+                    if "hermes-gateway" in image or image.startswith("python"):
+                        return True
+                try:
+                    pid_index = next(
+                        position + 1
+                        for position, part in enumerate(upper_tokens)
+                        if part in {"/PID", "-PID"}
+                    )
+                    target_pid = int(tokens[pid_index])
+                except (StopIteration, ValueError, IndexError):
+                    target_pid = None
+                if target_pid is not None and not is_own_subtree(target_pid):
+                    return True
+                continue
+            if head in {"kill", "killpg"}:
+                args = tokens[index + 1:]
+                if head == "killpg":
+                    if args and args[0] == "--":
+                        args = args[1:]
+                    if not args:
+                        return True
+                    try:
+                        target_pid = int(args[0])
+                    except ValueError:
+                        return True
+                    if target_pid <= 0 or not is_own_subtree(target_pid):
+                        return True
+                    continue
+
+                position = 0
+                if args and args[0] == "--":
+                    position = 1
+                elif args and args[0].startswith("-"):
+                    signal_option = args[0]
+                    if signal_option.lower() in {"-s", "-n"}:
+                        position = 2
+                    elif signal_option[1:].isalnum():
+                        position = 1
+                    else:
+                        return True
+                if position < len(args) and args[position] == "--":
+                    position += 1
+                targets = args[position:]
+                if not targets:
+                    return True
+                for target in targets:
+                    try:
+                        target_pid = int(target)
+                    except ValueError:
+                        return True
+                    if target_pid <= 0 or not is_own_subtree(target_pid):
+                        return True
+                continue
+            if (
+                "hermes" in low
+                or "gateway" in low
+                or ("python" in low and "-f" in tokens)
+            ):
+                return True
+    return False
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -556,7 +846,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
 
 
 @pytest.fixture(autouse=True)
-def _live_system_guard(request, monkeypatch):
+def _live_system_guard(request, monkeypatch, _hermetic_environment):
     """Block real os.kill / systemctl / gateway-pid scans during tests.
 
     See block comment above for the why. Tests that genuinely need
@@ -582,8 +872,110 @@ def _live_system_guard(request, monkeypatch):
         return
 
     import os as _os
-    import shlex as _shlex
     import subprocess as _subprocess
+
+    # ``cmd_update`` discovers and restarts gateways after otherwise-mocked
+    # git/dependency work.  Keep discovery tests real, but return inert values
+    # for the entire updater stack so a missing mock cannot find a developer's
+    # running gateway or schedule a detached restart watcher.
+    from pathlib import Path as _Path
+
+    def _inside_cmd_update() -> bool:
+        frame = sys._getframe(1)
+        while frame is not None:
+            if (
+                frame.f_code.co_name in {"cmd_update", "_cmd_update_impl"}
+                and frame.f_globals.get("__name__") == "hermes_cli.main"
+            ):
+                return True
+            frame = frame.f_back
+        return False
+
+    def _inert_during_update(real, inert):
+        def _guarded(*args, **kwargs):
+            if _inside_cmd_update():
+                return inert()
+            return _guarded.__wrapped__(*args, **kwargs)
+
+        _guarded.__wrapped__ = real
+        _guarded._live_system_guard_inert = True
+        _guarded.__name__ = getattr(real, "__name__", "_guarded")
+        return _guarded
+
+    # Do not import ``hermes_cli.main`` here: importing it resolves profiles,
+    # dotenv/config, and logging for every test-file subprocess. An updater
+    # test has it loaded at collection time, so only then load the mutation
+    # boundaries that need updater-scoped inerting.
+    if "hermes_cli.main" in sys.modules:
+        from hermes_cli import gateway as _gateway
+        from hermes_cli import gateway_windows as _gateway_windows
+        from gateway import status as _gateway_status
+
+        def _inert_unit_refresh(path_getter):
+            def _guarded_refresh(*args, **kwargs):
+                target = path_getter(*args, **kwargs).resolve()
+                hermes_home = _Path(os.environ["HERMES_HOME"]).resolve()
+                if target != hermes_home and hermes_home not in target.parents:
+                    raise RuntimeError(
+                        "tests/conftest.py live-system guard: blocked updater "
+                        f"unit write to non-test path {target}"
+                    )
+                return False
+
+            return _guarded_refresh
+
+        for _name, _inert in (
+            ("find_gateway_pids", list),
+            ("_scan_gateway_pids", list),
+            ("_get_service_pids", set),
+            ("find_profile_gateway_processes", list),
+            ("supports_systemd_services", lambda: False),
+            ("is_macos", lambda: False),
+            ("_ensure_user_systemd_env", lambda: None),
+            ("launchd_restart", lambda: None),
+            ("get_launchd_label", lambda: "ai.hermes.gateway"),
+            (
+                "get_launchd_plist_path",
+                lambda: _Path("/definitely-not-a-real-hermes-launchd.plist"),
+            ),
+            ("launch_detached_profile_gateway_restart", lambda: False),
+            ("launch_detached_gateway_restart_by_cmdline", lambda: False),
+            ("_capture_gateway_argv", lambda: None),
+            (
+                "refresh_systemd_unit_if_needed",
+                _inert_unit_refresh(
+                    lambda *args, **kwargs: _gateway.get_systemd_unit_path(
+                        system=kwargs.get("system", args[0] if args else False)
+                    )
+                ),
+            ),
+            (
+                "refresh_launchd_plist_if_needed",
+                _inert_unit_refresh(lambda *args, **kwargs: _gateway.get_launchd_plist_path()),
+            ),
+        ):
+            monkeypatch.setattr(
+                _gateway,
+                _name,
+                _inert_during_update(getattr(_gateway, _name), _inert),
+            )
+        for _name, _inert in (
+            ("is_installed", lambda: False),
+            ("_spawn_detached", lambda: None),
+        ):
+            monkeypatch.setattr(
+                _gateway_windows,
+                _name,
+                _inert_during_update(getattr(_gateway_windows, _name), _inert),
+            )
+        monkeypatch.setattr(
+            _gateway_status,
+            "terminate_pid",
+            _inert_during_update(_gateway_status.terminate_pid, lambda: None),
+        )
+
+    # Follow-up: psutil.Process.terminate/kill/send_signal are intentionally
+    # out of scope; updater termination is inerted above via terminate_pid.
 
     test_pid = _os.getpid()
     # Capture the test process's existing children at fixture start —
@@ -606,6 +998,11 @@ def _live_system_guard(request, monkeypatch):
         if pid == 0:
             return True
         if pid < 0:
+            return False
+        # PID 1 is the self-test's designated foreign PID.  A namespaced
+        # pytest runner can itself be PID 1, but treating init as an owned
+        # child would turn the guard's foreign-PID proof into a real killpg.
+        if pid == 1:
             return False
         if pid == test_pid or pid in _initial_children:
             return True
@@ -662,6 +1059,14 @@ def _live_system_guard(request, monkeypatch):
             # Signal 0 is a pure liveness probe — never destructive.
             if int(sig) == 0:
                 return real_killpg(pgid, sig, *args, **kwargs)
+            # In a PID namespace pytest can share init's group.  PID 1 is
+            # nevertheless the foreign-PID safety sentinel and must never be
+            # considered an owned test group for destructive signals.
+            if int(pgid) == 1:
+                raise RuntimeError(
+                    f"tests/conftest.py live-system guard: blocked "
+                    f"os.killpg({pgid}, {sig}) — PID 1 is always foreign."
+                )
             if int(pgid) == own_pgid or _is_own_subtree(int(pgid)):
                 return real_killpg(pgid, sig, *args, **kwargs)
             raise RuntimeError(
@@ -673,87 +1078,24 @@ def _live_system_guard(request, monkeypatch):
         monkeypatch.setattr(_os, "killpg", _guarded_killpg)
 
     # ── Subprocess command-string inspection (whole-line) ──────────
-    _HERMES_TOKENS = (
-        "hermes-gateway",
-        "hermes.service",
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "gateway/run.py",
-        "hermes gateway",
-    )
-    _MUTATING_VERBS = (
-        "restart", "start", "stop", "kill", "reload",
-        "reset-failed", "enable", "disable", "mask", "unmask",
-        "daemon-reload", "try-restart", "reload-or-restart",
-    )
-    _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
-
-    def _cmd_to_string(cmd) -> str:
-        if cmd is None:
-            return ""
-        if isinstance(cmd, (bytes, bytearray)):
-            try:
-                return bytes(cmd).decode(errors="replace")
-            except Exception:
-                return ""
-        if isinstance(cmd, str):
-            return cmd
-        if isinstance(cmd, (list, tuple)):
-            try:
-                return " ".join(str(t) for t in cmd)
-            except Exception:
-                return ""
-        return str(cmd)
-
-    def _matches_hermes_gateway(cmd_str: str) -> bool:
-        low = cmd_str.lower()
-        return any(tok in low for tok in _HERMES_TOKENS)
-
-    def _is_blocked_systemctl(cmd) -> bool:
-        cmd_str = _cmd_to_string(cmd)
-        if "systemctl" not in cmd_str:
-            return False
-        if not _matches_hermes_gateway(cmd_str):
-            return False
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
-        return any(verb in tokens for verb in _MUTATING_VERBS)
-
-    def _is_process_killer(cmd) -> bool:
-        cmd_str = _cmd_to_string(cmd)
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
-        if not tokens:
-            return False
-        for tok in tokens:
-            head = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if head in _PROCESS_KILLERS:
-                low = cmd_str.lower()
-                # pkill -f pattern: catch hermes-themed patterns + a
-                # plain "python" -f which would catch the live gateway
-                # whose cmdline contains "python -m hermes_cli.main".
-                if (
-                    "hermes" in low
-                    or "gateway" in low
-                    or ("python" in low and "-f" in tokens)
-                ):
-                    return True
-        return False
-
     def _check_subprocess_cmd(name, cmd):
-        if _is_blocked_systemctl(cmd):
+        if _is_service_manager_mutation_command(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — would mutate the "
-                "live hermes-gateway systemd unit. Mock "
+                "live hermes-gateway service definition. Mock "
                 "subprocess.run / _run_systemctl in the test, or "
                 "mark with @pytest.mark.live_system_guard_bypass."
             )
-        if _is_process_killer(cmd):
+        if _is_detached_gateway_spawn(name, cmd):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) — would launch a Hermes "
+                "gateway outside the test process lifecycle. Mock Popen "
+                "in the test, or mark with "
+                "@pytest.mark.live_system_guard_bypass."
+            )
+        if _is_process_killer_command(cmd, is_own_subtree=_is_own_subtree):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — process-killer command "
@@ -771,7 +1113,7 @@ def _live_system_guard(request, monkeypatch):
         # tree (PPid=1) and nearly impossible to trace without explicit
         # inotify/SHA watchdogs.  Any test that legitimately needs to exercise
         # the update-spawn path must mock subprocess.Popen explicitly.
-        cmd_str = _cmd_to_string(cmd)
+        cmd_str = _guard_cmd_to_string(cmd)
         low = cmd_str.lower()
         if "update" in low and (
             # hermes update / hermes update --gateway / setsid bash -c ... hermes update
@@ -799,9 +1141,12 @@ def _live_system_guard(request, monkeypatch):
 
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
+            if name == "run" and _inside_cmd_update() and _is_service_manager_command(cmd):
+                return _subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
             _check_subprocess_cmd(name, cmd)
-            return real(cmd, *args, **kwargs)
+            return _guarded.__wrapped__(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
+        _guarded.__wrapped__ = real
         # Make the wrapper subscriptable like the wrapped callable when
         # the wrapped object is. ``subprocess.Popen[bytes]`` is used as
         # a type annotation in third-party packages (mcp, etc.); replacing

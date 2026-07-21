@@ -29,6 +29,19 @@ import pytest
 FOREIGN_PID = 1
 
 
+def _record_guarded_run(monkeypatch):
+    """Replace only the guarded run wrapper's native delegate with a recorder."""
+    calls = []
+
+    def _native_recorder(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert hasattr(subprocess.run, "__wrapped__"), "run wrapper is not installed"
+    monkeypatch.setattr(subprocess.run, "__wrapped__", _native_recorder)
+    return calls
+
+
 # ──────────────────── fail-closed self-protection ──────────────
 #
 # This file executes REAL kill primitives — os.kill(-1, SIGTERM), os.killpg,
@@ -159,6 +172,21 @@ def test_subprocess_run_sh_c_systemctl_blocked():
         subprocess.run(["sh", "-c", "systemctl --user stop hermes-gateway"])
 
 
+def test_subprocess_shell_wrapper_variants_are_blocked_before_execution():
+    for command in (
+        ["bash", "-lc", "systemctl restart hermes-gateway"],
+        ["cmd.exe", "/c", "systemctl stop hermes-gateway"],
+        ["powershell", "-Command", "Stop-Service hermes-gateway"],
+    ):
+        with pytest.raises(RuntimeError, match="live-system guard"):
+            subprocess.run(command)
+
+
+def test_popen_sh_c_detached_gateway_spawn_is_blocked_before_execution():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.Popen(["sh", "-c", "hermes gateway run &"])
+
+
 def test_subprocess_run_setsid_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.run(["setsid", "systemctl", "kill", "hermes-gateway"])
@@ -175,6 +203,12 @@ def test_subprocess_run_string_shell_true_blocked():
 def test_subprocess_popen_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.Popen(["systemctl", "--user", "stop", "hermes-gateway"])
+
+
+def test_patched_popen_rejects_detached_gateway_before_native_execution():
+    """The installed Popen wrapper must reject the spawn before its superclass."""
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.Popen(["hermes", "gateway", "run"], start_new_session=True)
 
 
 def test_subprocess_call_systemctl_blocked():
@@ -275,81 +309,147 @@ def test_subprocess_killall_hermes_blocked():
         subprocess.run(["killall", "hermes"])
 
 
+def test_patched_run_rejects_launchctl_gateway_mutations_before_native_execution():
+    """The patched run wrapper blocks both launchd mutations without a native call."""
+    for command in (
+        ["launchctl", "kickstart", "gui/501/ai.hermes.gateway"],
+        ["launchctl", "bootout", "gui/501/ai.hermes.gateway"],
+    ):
+        with pytest.raises(RuntimeError, match="live-system guard"):
+            subprocess.run(command)
+
+
+def test_patched_run_rejects_taskkill_foreign_pid_before_native_execution():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["taskkill", "/PID", str(FOREIGN_PID), "/T", "/F"])
+
+
+def test_patched_run_rejects_taskkill_hermes_image_before_native_execution():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["taskkill.exe", "/IM", "hermes-gateway.exe", "/F"])
+
+
+def test_patched_run_rejects_negative_kill_targets_before_native_execution():
+    for command in (
+        ["kill", "-9", "-1"],
+        ["kill", "-9", "-987654321"],
+        ["killpg", str(FOREIGN_PID), "9"],
+    ):
+        with pytest.raises(RuntimeError, match="live-system guard"):
+            subprocess.run(command)
+
+
+def test_patched_run_rejects_non_read_only_systemctl_verbs_before_execution():
+    for command in (
+        ["systemctl", "reenable", "hermes-gateway.service"],
+        ["systemctl", "set-property", "hermes-gateway.service", "CPUQuota=1%"],
+    ):
+        with pytest.raises(RuntimeError, match="live-system guard"):
+            subprocess.run(command)
+
+
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
-def test_systemctl_status_passes_through():
+def test_systemctl_status_passes_through(monkeypatch):
     """Read-only systemctl probes (status/show/list-units) are fine."""
-    # Run with check=False so we don't fail on the gateway's exit code.
+    calls = _record_guarded_run(monkeypatch)
     r = subprocess.run(
         ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert r is not None  # Did not raise — the guard let it through.
+    assert r.returncode == 0
+    assert len(calls) == 1
 
 
-def test_systemctl_show_passes_through():
+def test_systemctl_show_passes_through(monkeypatch):
+    calls = _record_guarded_run(monkeypatch)
     r = subprocess.run(
         ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert r is not None
+    assert r.returncode == 0
+    assert len(calls) == 1
 
 
-def test_systemctl_list_units_passes_through():
+def test_required_pass_through_commands_are_delegated_without_execution(monkeypatch):
+    calls = _record_guarded_run(monkeypatch)
+    for command in (
+        ["bash", "-lc", "echo hello"],
+        ["kill", "-TERM", str(os.getpid())],
+        ["systemctl", "--user", "status", "hermes-gateway"],
+        ["systemctl", "show", "--property=Restart", "hermes-gateway"],
+        ["taskkill", "/IM", "notepad.exe", "/F"],
+    ):
+        assert subprocess.run(command).returncode == 0
+    assert len(calls) == 5
+
+
+def test_systemctl_list_units_passes_through(monkeypatch):
+    calls = _record_guarded_run(monkeypatch)
     r = subprocess.run(
         ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert r is not None
+    assert r.returncode == 0
+    assert len(calls) == 1
 
 
-def test_systemctl_unrelated_unit_passes_through():
+def test_systemctl_unrelated_unit_passes_through(monkeypatch):
     """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
-    # Use --dry-run so we don't actually try to restart anything; just
-    # verify the guard doesn't block the call. systemctl supports
-    # --dry-run via the privileged API; on user scope it usually fails
-    # quickly without side effects.
+    calls = _record_guarded_run(monkeypatch)
     r = subprocess.run(
         ["systemctl", "--user", "show", "fake-not-real-unit"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert r is not None
-
-
-def test_kill_own_subtree_passes_through():
-    """We CAN kill our own children — guard recognizes them via psutil."""
-    p = subprocess.Popen(["sleep", "30"])
-    try:
-        os.kill(p.pid, signal.SIGTERM)
-    finally:
-        p.wait(timeout=2)
-    # SIGTERM = 15; subprocess returncode is -15 on POSIX.
-    assert p.returncode in {-signal.SIGTERM, 128 + int(signal.SIGTERM)}
-
-
-def test_subprocess_pkill_with_unrelated_pattern_passes_through():
-    """``pkill -f some-unrelated-pattern`` (no hermes/python) is fine."""
-    # We don't actually run pkill — just verify the guard would let it
-    # through by inspecting the matcher. Re-implementing the check here
-    # would duplicate the guard; instead spawn a noop to confirm no raise.
-    # Use 'true' so it succeeds quickly.
-    r = subprocess.run(["true"], capture_output=True)
     assert r.returncode == 0
+    assert len(calls) == 1
 
 
-def test_normal_subprocess_run_passes_through():
+def test_external_kill_of_own_subtree_passes_through(monkeypatch):
+    """A numeric external kill of this test process is delegated, never run natively."""
+    calls = _record_guarded_run(monkeypatch)
+    r = subprocess.run(["kill", "-0", str(os.getpid())])
+    assert r.returncode == 0
+    assert len(calls) == 1
+
+
+def test_launchctl_print_passes_through(monkeypatch):
+    calls = _record_guarded_run(monkeypatch)
+    r = subprocess.run(["launchctl", "print", "gui/501/ai.hermes.gateway"])
+    assert r.returncode == 0
+    assert len(calls) == 1
+
+
+def test_taskkill_benign_image_passes_through(monkeypatch):
+    calls = _record_guarded_run(monkeypatch)
+    r = subprocess.run(["taskkill.exe", "/IM", "notepad.exe"])
+    assert r.returncode == 0
+    assert len(calls) == 1
+
+
+def test_subprocess_pkill_with_unrelated_pattern_passes_through(monkeypatch):
+    """``pkill -f some-unrelated-pattern`` (no hermes/python) is fine."""
+    calls = _record_guarded_run(monkeypatch)
+    r = subprocess.run(["pkill", "-f", "some-unrelated-pattern"], capture_output=True)
+    assert r.returncode == 0
+    assert len(calls) == 1
+
+
+def test_normal_subprocess_run_passes_through(monkeypatch):
     """Plain non-systemctl subprocess.run should work normally."""
+    calls = _record_guarded_run(monkeypatch)
     r = subprocess.run(["echo", "hello"], capture_output=True, text=True)
-    assert r.stdout.strip() == "hello"
+    assert r.returncode == 0
+    assert len(calls) == 1
 
 
 # ──────────────────── bypass marker ─────────────────────────────
@@ -360,10 +460,7 @@ def test_bypass_marker_disables_guard():
     """The bypass marker exists for tests that genuinely need real signal delivery
     (e.g. PTY tests SIGINTing their own child). Verify it works.
 
-    We use it harmlessly here by signaling our own PID 0 (own group) so we
-    don't actually kill anything — but the call goes through real os.kill.
+    No signal is sent: the raw builtin identity is enough to prove bypass.
     """
-    # With bypass, the guard yields without installing the monkeypatch,
-    # so we get the real os.kill. Calling os.kill(os.getpid(), 0) just
-    # checks that the PID exists — harmless.
-    os.kill(os.getpid(), 0)  # No exception — guard is OFF.
+    # With bypass, the guard yields without installing the monkeypatch.
+    assert isinstance(os.kill, types.BuiltinFunctionType)

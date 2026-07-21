@@ -144,10 +144,11 @@ If a job ran and failed, you may see error context in:
 ### Check 2: Common error patterns
 
 **"No such file or directory" for scripts**
-The `script` path must be an absolute path (or relative to the Hermes config directory). Verify:
+The `script` path must be relative to `~/.hermes/scripts/`. Verify:
 ```bash
 ls ~/.hermes/scripts/your-script.py   # Must exist
-hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
+hermes cron edit <job_id> --script your-script.py
+# `scripts/your-script.py` is also accepted and normalized before storage.
 ```
 
 **"Skill not found" at job execution**

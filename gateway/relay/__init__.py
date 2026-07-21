@@ -45,6 +45,31 @@ def relay_url() -> Optional[str]:
     return None
 
 
+def relay_authorization_is_upstream() -> bool:
+    """Whether relay inbound may bypass local platform authorization.
+
+    Team Gateway remains trusted by default for backwards compatibility. Local
+    ingress connectors set ``gateway.relay_authorization_is_upstream: false`` in
+    config.yaml so Slack's normal allowlist/pairing logic remains authoritative.
+    This is intentionally config-only: it is behavioral policy, not a secret.
+    """
+    try:
+        from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+        gateway = _load_gateway_config().get("gateway") or {}
+        value = gateway.get("relay_authorization_is_upstream", True)
+    except Exception:  # noqa: BLE001 - config absence must preserve old behaviour
+        return True
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    return True
+
+
 def relay_platform_identities() -> list[tuple[str, str]]:
     """The (platform, bot_id) pairs this gateway fronts over the relay (Phase 1.5).
 
@@ -815,6 +840,7 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
                 identities=relay_platform_identities(),
                 gateway_id=gateway_id,
                 upgrade_secret=upgrade_secret,
+                authorization_is_upstream=relay_authorization_is_upstream(),
                 # Phase 5 §5.3: re-dial + re-handshake after an unexpected socket
                 # close so a gateway that went idle/suspended re-establishes its
                 # relay socket — which triggers the connector's buffered-flip drain

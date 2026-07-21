@@ -77,6 +77,13 @@ class GatewayAuthorizationMixin:
         """Resolve the live adapter for an inbound ``SessionSource``."""
         if source is None:
             return None
+        # Relay-delivered events preserve their underlying platform for session
+        # keying and authorization, but responses must leave through the one
+        # process-level RelayAdapter.  Never consult a profile adapter map here:
+        # multiplex mode intentionally owns one relay connection per process.
+        if getattr(source, "delivered_via_relay", False) is True:
+            adapters = getattr(self, "adapters", None) or {}
+            return adapters.get(Platform.RELAY)
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
         return self._authorization_adapter(

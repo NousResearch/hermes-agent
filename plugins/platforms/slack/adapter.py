@@ -502,6 +502,60 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        # Optional out-of-process ingress admission hook. When installed it is
+        # authoritative: the connector, not this adapter's legacy participation
+        # caches/session lookup, decides whether an event reaches Hermes.
+        self._external_admission_handler: Optional[Any] = None
+        self._external_reaction_handler: Optional[Any] = None
+
+    def set_external_admission_handler(self, handler: Optional[Any]) -> None:
+        """Install an authoritative async/sync raw-event admission callback."""
+        self._external_admission_handler = handler
+
+    def set_external_reaction_handler(self, handler: Optional[Any]) -> None:
+        """Install the optional sidecar reaction trigger callback."""
+        self._external_reaction_handler = handler
+
+    async def _handle_reaction_added(
+        self, event: dict, body: Optional[dict] = None
+    ) -> None:
+        handler = self._external_reaction_handler
+        if handler is None:
+            return
+        result = handler(event, body=body)
+        if asyncio.iscoroutine(result):
+            await result
+
+    async def dispatch_reaction_trigger(
+        self, event: dict, *, body: Optional[dict] = None
+    ) -> None:
+        """Turn an admitted message reaction into a one-shot thread trigger."""
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") != "message":
+            return
+        channel_id = str(item.get("channel") or "")
+        message_ts = str(item.get("ts") or "")
+        user_id = str(event.get("user") or "")
+        team_id = self._event_team_id(event, body)
+        bot_user_id = self._team_bot_user_ids.get(team_id) or self._bot_user_id or ""
+        if not channel_id or not message_ts or not user_id or not bot_user_id:
+            return
+        reaction = str(event.get("reaction") or "").strip().strip(":")
+        event_ts = str(event.get("event_ts") or event.get("ts") or time.time())
+        synthetic = {
+            "text": (
+                f"[Slack reaction trigger :{reaction}:] <@{bot_user_id}> "
+                "Respond to the reacted message using its thread context."
+            ),
+            "user": user_id,
+            "channel": channel_id,
+            "channel_type": "im" if channel_id.startswith("D") else "channel",
+            "team": team_id,
+            "ts": event_ts,
+            "thread_ts": message_ts,
+            "_slack_ingress_reaction_trigger": True,
+        }
+        await self._handle_slack_message(synthetic, body)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1148,13 +1202,11 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_file_change(event, say):
                 pass
 
-            # Reactions are useful lightweight acknowledgements in Slack, but
-            # Hermes does not currently need to route them into the agent loop.
-            # Ack the events explicitly so high-traffic channels do not fill
-            # gateway.error.log with Slack Bolt "Unhandled request" warnings.
+            # Reactions stay no-op in direct mode. An out-of-process ingress may
+            # install a policy hook for owner-only emoji triggers.
             @self._app.event("reaction_added")
-            async def handle_reaction_added(event, say):
-                pass
+            async def handle_reaction_added(event, say, body):
+                await self._handle_reaction_added(event, body)
 
             @self._app.event("reaction_removed")
             async def handle_reaction_removed(event, say):
@@ -3356,6 +3408,7 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
+        external_admission = self._external_admission_handler
         if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
@@ -3365,6 +3418,26 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
+        if external_admission is not None:
+            try:
+                admitted = external_admission(
+                    event,
+                    body=payload,
+                    team_id=str(team_id or ""),
+                    bot_user_id=str(bot_uid or ""),
+                    is_one_to_one_dm=is_one_to_one_dm,
+                )
+                if asyncio.iscoroutine(admitted):
+                    admitted = await admitted
+            except Exception:
+                logger.warning(
+                    "[Slack] External ingress admission failed closed",
+                    exc_info=True,
+                )
+                return
+            if admitted is not True:
+                return
+        elif not is_one_to_one_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
@@ -3399,7 +3472,11 @@ class SlackAdapter(BasePlatformAdapter):
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
             # defeat the feature (and re-enable agent-to-agent ack loops).
-            if event_thread_ts and not self._slack_strict_mention():
+            if (
+                external_admission is None
+                and event_thread_ts
+                and not self._slack_strict_mention()
+            ):
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[

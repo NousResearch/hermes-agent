@@ -17,10 +17,127 @@ for reinstall when scopes/commands change.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
+
+
+def _slack_ingress_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize bounded ingress policy settings from ``config.yaml``."""
+    root = config if isinstance(config, dict) else {}
+    ingress: dict[str, Any] = {}
+    slack = root.get("slack")
+    if isinstance(slack, dict) and isinstance(slack.get("ingress"), dict):
+        ingress = slack["ingress"]
+    else:
+        platforms = root.get("platforms")
+        platform_slack = platforms.get("slack") if isinstance(platforms, dict) else None
+        extra = platform_slack.get("extra") if isinstance(platform_slack, dict) else None
+        if isinstance(extra, dict) and isinstance(extra.get("ingress"), dict):
+            ingress = extra["ingress"]
+
+    try:
+        ttl_days = float(ingress.get("follow_ttl_days", 30))
+        max_threads = int(ingress.get("max_followed_threads", 10_000))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Slack ingress TTL and thread cap must be numeric") from exc
+    if ttl_days <= 0 or max_threads <= 0:
+        raise ValueError("Slack ingress TTL and thread cap must be positive")
+
+    def _tokens(value: Any, *, strip_colons: bool = False) -> set[str]:
+        if isinstance(value, str):
+            values = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            values = value
+        else:
+            values = ()
+        result: set[str] = set()
+        for item in values:
+            token = str(item).strip()
+            if strip_colons:
+                token = token.strip(":").lower()
+            if token:
+                result.add(token)
+        return result
+
+    return {
+        "ttl_seconds": ttl_days * 24 * 60 * 60,
+        "max_threads": max_threads,
+        "reaction_user_ids": _tokens(ingress.get("reaction_user_ids")),
+        "reaction_names": _tokens(
+            ingress.get("reaction_names"), strip_colons=True
+        ),
+    }
+
+
+def slack_ingress_command(args) -> int:
+    """Run the machine-singleton Slack ingress/Relay sidecar."""
+    from gateway.config import Platform, load_gateway_config
+    from hermes_cli.config import load_config
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    from plugins.platforms.slack.adapter import SlackAdapter
+    from plugins.platforms.slack.ingress import (
+        FollowStore,
+        SlackIngressPolicy,
+        SlackIngressServer,
+    )
+
+    hermes_home = get_hermes_home()
+    try:
+        settings = _slack_ingress_settings(load_config())
+        gateway_config = load_gateway_config()
+        slack_config = gateway_config.platforms.get(Platform.SLACK)
+        if slack_config is not None and slack_config.enabled:
+            raise RuntimeError(
+                "set slack.enabled: false before starting the ingress sidecar; "
+                "the Gateway and sidecar must not both own Slack Socket Mode"
+            )
+        if slack_config is None or not slack_config.token:
+            raise RuntimeError(
+                "SLACK_BOT_TOKEN is required for `hermes slack ingress`"
+            )
+        state_path = Path(
+            getattr(args, "state", None) or hermes_home / "slack-ingress.db"
+        ).expanduser()
+        policy = SlackIngressPolicy(
+            FollowStore(
+                state_path,
+                ttl_seconds=settings["ttl_seconds"],
+                max_threads=settings["max_threads"],
+            ),
+            reaction_user_ids=settings["reaction_user_ids"],
+            reaction_names=settings["reaction_names"],
+        )
+        server = SlackIngressServer(
+            SlackAdapter(slack_config),
+            policy,
+            host=str(getattr(args, "host", "127.0.0.1")),
+            port=int(getattr(args, "port", 8791)),
+            lock_path=get_default_hermes_root() / "slack-ingress.lock",
+        )
+
+        async def _serve() -> None:
+            await server.start()
+            print(
+                f"Slack ingress listening at {server.url}/relay; "
+                "Slack connects only after the Gateway Relay handshake.",
+                file=sys.stderr,
+            )
+            try:
+                await server.wait_closed()
+            finally:
+                await server.stop()
+
+        asyncio.run(_serve())
+    except KeyboardInterrupt:
+        return 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Slack ingress failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _build_full_manifest(
@@ -86,6 +203,7 @@ def _build_full_manifest(
         "im:write",
         "mpim:history",
         "mpim:read",
+        "reactions:read",
         "users:read",
     ]
 
@@ -95,6 +213,7 @@ def _build_full_manifest(
         "message.groups",
         "message.im",
         "message.mpim",
+        "reaction_added",
     ]
 
     if messaging_experience == "assistant":

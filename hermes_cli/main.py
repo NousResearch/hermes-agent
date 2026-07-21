@@ -4490,6 +4490,11 @@ def cmd_slack(args):
 
         return slack_manifest_command(args)
 
+    if sub == "ingress":
+        from hermes_cli.slack_cli import slack_ingress_command
+
+        return slack_ingress_command(args)
+
     print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
     return 1
 

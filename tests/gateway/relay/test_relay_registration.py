@@ -64,3 +64,16 @@ def test_create_adapter_yields_relay_adapter():
     assert isinstance(adapter, RelayAdapter)
     # Placeholder descriptor until handshake negotiates the real one.
     assert adapter.descriptor.platform == "relay"
+
+
+def test_registration_can_keep_authorization_local(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.relay.relay_authorization_is_upstream",
+        lambda: False,
+    )
+    register_relay_adapter(url="ws://127.0.0.1:9999")
+
+    adapter = platform_registry.create_adapter("relay", PlatformConfig())
+
+    assert adapter is not None
+    assert adapter._transport._authorization_is_upstream is False

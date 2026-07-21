@@ -191,6 +191,13 @@ class SessionSource:
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
 
+    # Internal, wire-INVISIBLE transport signal: True when this event arrived
+    # through a RelayAdapter. It selects relay egress while preserving the
+    # underlying platform for session keys and platform-specific authorization.
+    # This is distinct from upstream authorization: an on-device ingress may use the
+    # relay transport while intentionally keeping Gateway allowlist/pairing checks.
+    delivered_via_relay: bool = False
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket

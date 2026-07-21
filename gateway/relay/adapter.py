@@ -513,6 +513,37 @@ class RelayAdapter(BasePlatformAdapter):
             error=result.get("error"),
         )
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Proxy an edit through the same scoped underlying-platform route."""
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "edit",
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "finalize": bool(finalize),
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id"),
+            error=result.get("error"),
+            retryable=bool(result.get("retryable", False)),
+            retry_after=result.get("retry_after"),
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
         if self._transport is None:

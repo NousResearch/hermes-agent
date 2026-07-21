@@ -2107,6 +2107,46 @@ class TestIncomingAudioHandling:
 
 class TestMessageRouting:
     @pytest.mark.asyncio
+    async def test_external_reaction_handler_receives_raw_event_and_body(self, adapter):
+        handler = AsyncMock()
+        adapter.set_external_reaction_handler(handler)
+        event = {
+            "type": "reaction_added",
+            "user": "U_OWNER",
+            "reaction": "eyes",
+            "item": {"type": "message", "channel": "C1", "ts": "500.1"},
+        }
+        body = {"team_id": "T1", "event_id": "Ev1"}
+
+        await adapter._handle_reaction_added(event, body)
+
+        handler.assert_awaited_once_with(event, body=body)
+
+    @pytest.mark.asyncio
+    async def test_reaction_trigger_becomes_one_shot_thread_mention(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        event = {
+            "type": "reaction_added",
+            "user": "U_OWNER",
+            "reaction": "eyes",
+            "event_ts": "500.2",
+            "item": {"type": "message", "channel": "C1", "ts": "500.1"},
+        }
+        body = {"team_id": "T1", "event_id": "Ev1"}
+
+        await adapter.dispatch_reaction_trigger(event, body=body)
+
+        synthetic, forwarded_body = adapter._handle_slack_message.await_args.args
+        assert synthetic["user"] == "U_OWNER"
+        assert synthetic["channel"] == "C1"
+        assert synthetic["thread_ts"] == "500.1"
+        assert synthetic["ts"] == "500.2"
+        assert "<@U_BOT>" in synthetic["text"]
+        assert not synthetic["text"].lstrip().startswith("<@U_BOT>")
+        assert synthetic["_slack_ingress_reaction_trigger"] is True
+        assert forwarded_body is body
+
+    @pytest.mark.asyncio
     async def test_dm_processed_without_mention(self, adapter):
         """DM messages should be processed without requiring a bot mention."""
         event = {
@@ -2131,6 +2171,46 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_external_admission_denial_overrides_legacy_thread_gates(self, adapter):
+        root_ts = "1234567890.000000"
+        adapter._bot_message_ts.add(root_ts)
+        adapter._mentioned_threads.add(root_ts)
+        admission = AsyncMock(return_value=False)
+        adapter.set_external_admission_handler(admission)
+        event = {
+            "text": "humans keep talking",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "thread_ts": root_ts,
+            "ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event, {"team_id": "T123"})
+
+        admission.assert_awaited_once()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_external_admission_does_not_mutate_legacy_follow_state(self, adapter):
+        root_ts = "1234567890.000000"
+        admission = AsyncMock(return_value=True)
+        adapter.set_external_admission_handler(admission)
+        event = {
+            "text": "<@U_BOT> answer only this turn",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "thread_ts": root_ts,
+            "ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event, {"team_id": "T123"})
+
+        adapter.handle_message.assert_awaited_once()
+        assert root_ts not in adapter._mentioned_threads
 
     @pytest.mark.asyncio
     async def test_channel_mention_strips_bot_id(self, adapter):

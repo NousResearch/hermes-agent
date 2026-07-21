@@ -111,6 +111,39 @@ async def test_send_without_transport_returns_failure():
     assert result.error == "no transport"
 
 
+@pytest.mark.asyncio
+async def test_edit_proxies_with_scope_and_platform():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=t)
+    event = _make_event(chat_id="chan-1", scope_id="team-1")
+    event.source.platform = Platform.SLACK
+    event.source.user_id = "user-1"
+    a._capture_scope(event)
+
+    result = await a.edit_message(
+        "chan-1",
+        "message-1",
+        "updated",
+        finalize=True,
+        metadata={"thread_id": "root-1"},
+    )
+
+    assert result.success is True
+    assert t.sent_platform == "slack"
+    assert t.sent == {
+        "op": "edit",
+        "chat_id": "chan-1",
+        "message_id": "message-1",
+        "content": "updated",
+        "finalize": True,
+        "metadata": {
+            "thread_id": "root-1",
+            "scope_id": "team-1",
+            "user_id": "user-1",
+        },
+    }
+
+
 class _CaptureTransport:
     """Minimal RelayTransport stand-in that records the outbound action."""
 

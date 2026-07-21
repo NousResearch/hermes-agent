@@ -79,6 +79,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `im:write` | Open and manage DMs |
 | `mpim:history` | Read group direct message (multi-person DM) history |
 | `mpim:read` | View basic group DM info |
+| `reactions:read` | Receive configured one-shot emoji triggers |
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |
@@ -132,6 +133,7 @@ This step is critical — it controls what messages the bot can see.
 | `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
 | `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
 | `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |
+| `reaction_added` | **Optional** | Enables configured owner-only one-shot emoji triggers |
 
 4. Click **Save Changes** at the bottom of the page
 
@@ -217,6 +219,54 @@ hermes gateway              # Foreground
 hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
+
+### Optional: single-Socket ingress sidecar
+
+For a Mac that may run or restart more than one Hermes process, the ingress
+sidecar can be the sole owner of Slack Socket Mode. The Gateway talks to it over
+one loopback Relay connection and never opens Slack directly.
+
+```yaml title="~/.hermes/config.yaml"
+slack:
+  enabled: false
+  ingress:
+    follow_ttl_days: 30
+    max_followed_threads: 10000
+    reaction_user_ids: ["U01ABC2DEF3"]
+    reaction_names: ["eyes"]
+
+gateway:
+  relay_url: "http://127.0.0.1:8791"
+  relay_authorization_is_upstream: false
+```
+
+Keep `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `SLACK_ALLOWED_USERS` in
+`~/.hermes/.env`, then run the sidecar before starting or restarting Gateway:
+
+```bash
+hermes slack ingress
+# In another terminal:
+hermes gateway restart
+```
+
+The safety invariants are enforced rather than advisory:
+
+- one ingress sidecar per machine, even across profiles or alternate ports;
+- one Slack Socket owner per app token, including direct Gateway processes;
+- one active Gateway Relay connection; a second is closed with code `4429`;
+- Slack connects only after Relay handshake and disconnects with Relay;
+- followed threads expire after the configured inactivity TTL and are also
+  bounded by `max_followed_threads`;
+- a root message beginning with `@Hermes` follows that thread; a mention inside
+  an existing thread is one-shot unless the thread is already followed;
+- `@Hermes /mute` is consumed by the sidecar, deletes the follow route, and is
+  never sent to Gateway or the LLM;
+- configured reactions trigger one turn without creating or refreshing a
+  follow route.
+
+The generated manifest includes `reactions:read` and `reaction_added`. If you
+apply those additions to an existing Slack app, reinstall the app when Slack
+prompts you.
 
 :::tip Codex reasoning-effort safety
 For Codex-backed Slack peer-agent channels, prefer `agent.reasoning_effort: high` or lower. `xhigh`

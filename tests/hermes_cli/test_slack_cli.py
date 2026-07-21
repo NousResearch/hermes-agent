@@ -2,7 +2,8 @@
 
 import argparse
 
-from hermes_cli.slack_cli import _build_full_manifest
+from hermes_cli.main import cmd_slack
+from hermes_cli.slack_cli import _build_full_manifest, _slack_ingress_settings
 from hermes_cli.subcommands.slack import build_slack_parser
 
 
@@ -12,6 +13,106 @@ def _parse_slack_args(argv):
     subparsers = parser.add_subparsers(dest="command")
     build_slack_parser(subparsers, cmd_slack=lambda _args: 0)
     return parser.parse_args(argv)
+
+
+class TestSlackIngressArgparse:
+    def test_ingress_defaults_to_loopback(self):
+        args = _parse_slack_args(["slack", "ingress"])
+        assert args.slack_command == "ingress"
+        assert args.host == "127.0.0.1"
+        assert args.port == 8791
+        assert args.state is None
+
+    def test_ingress_accepts_operational_overrides(self):
+        args = _parse_slack_args(
+            [
+                "slack",
+                "ingress",
+                "--host",
+                "localhost",
+                "--port",
+                "9001",
+                "--state",
+                "/tmp/slack.db",
+            ]
+        )
+        assert args.host == "localhost"
+        assert args.port == 9001
+        assert args.state == "/tmp/slack.db"
+
+    def test_ingress_policy_settings_come_from_config(self):
+        settings = _slack_ingress_settings(
+            {
+                "slack": {
+                    "ingress": {
+                        "follow_ttl_days": 7,
+                        "max_followed_threads": 321,
+                        "reaction_user_ids": ["U_OWNER", "U_OWNER", ""],
+                        "reaction_names": [":eyes:", "bookmark"],
+                    }
+                }
+            }
+        )
+
+        assert settings == {
+            "ttl_seconds": 7 * 24 * 60 * 60,
+            "max_threads": 321,
+            "reaction_user_ids": {"U_OWNER"},
+            "reaction_names": {"eyes", "bookmark"},
+        }
+
+    def test_ingress_policy_settings_have_bounded_defaults(self):
+        settings = _slack_ingress_settings({})
+        assert settings["ttl_seconds"] == 30 * 24 * 60 * 60
+        assert settings["max_threads"] == 10_000
+        assert settings["reaction_user_ids"] == set()
+        assert settings["reaction_names"] == set()
+
+    def test_ingress_dispatches_to_runtime_command(self, monkeypatch):
+        import hermes_cli.slack_cli as slack_cli
+
+        called = []
+        monkeypatch.setattr(
+            slack_cli,
+            "slack_ingress_command",
+            lambda args: called.append(args) or 17,
+        )
+        args = _parse_slack_args(["slack", "ingress"])
+
+        assert cmd_slack(args) == 17
+        assert called == [args]
+
+    def test_ingress_refuses_direct_slack_gateway_ownership(
+        self, monkeypatch, capsys
+    ):
+        import gateway.config as gateway_config_module
+        import hermes_cli.config as cli_config
+        import hermes_cli.slack_cli as slack_cli
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        monkeypatch.setattr(cli_config, "load_config", lambda: {})
+        monkeypatch.setattr(
+            gateway_config_module,
+            "load_gateway_config",
+            lambda: GatewayConfig(
+                platforms={
+                    Platform.SLACK: PlatformConfig(
+                        enabled=True,
+                        token="xoxb-test",
+                    )
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            slack_cli.asyncio,
+            "run",
+            lambda coroutine: coroutine.close(),
+        )
+
+        assert slack_cli.slack_ingress_command(
+            _parse_slack_args(["slack", "ingress"])
+        ) == 1
+        assert "slack.enabled: false" in capsys.readouterr().err
 
 
 class TestSlackManifestArgparse:
@@ -68,6 +169,14 @@ class TestSlackFullManifest:
         # mpim:read mirrors im:read for conversations.info classification.
         assert "mpim:history" in bot_scopes
         assert "mpim:read" in bot_scopes
+
+    def test_reaction_trigger_subscription_is_included(self):
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "reactions:read" in bot_scopes
+        assert "reaction_added" in bot_events
 
     def test_group_dm_surface_present_without_assistant_mode(self):
         """Dropping assistant mode must not strip the group-DM surface."""

@@ -242,7 +242,37 @@ def test_event_from_wire_sets_relay_delivery_marker():
         }
     )
     assert event.source.platform is Platform.DISCORD
+    assert event.source.delivered_via_relay is True
     assert event.source.delivered_via_upstream_relay is True
+
+
+def test_local_relay_delivery_does_not_bypass_platform_allowlist(monkeypatch):
+    """A local Slack ingress uses relay for transport, not for authorization."""
+    from gateway.relay.ws_transport import _event_from_wire
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+    runner, relay_adapter = _make_runner(
+        platform=Platform.RELAY,
+        authorization_is_upstream=True,
+    )
+    event = _event_from_wire(
+        {
+            "text": "hello!",
+            "source": {
+                "platform": "slack",
+                "chat_id": "C1",
+                "chat_type": "group",
+                "user_id": "U1",
+            },
+        },
+        authorization_is_upstream=False,
+    )
+
+    assert event.source.delivered_via_relay is True
+    assert event.source.delivered_via_upstream_relay is False
+    assert runner._adapter_for_source(event.source) is relay_adapter
+    assert runner._is_user_authorized(event.source) is False
 
 
 def test_event_from_wire_stamps_routed_profile():

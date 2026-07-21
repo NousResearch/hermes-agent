@@ -20,6 +20,32 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         description="Slack integration helpers for Hermes.",
     )
     slack_sub = slack_parser.add_subparsers(dest="slack_command")
+    slack_ingress = slack_sub.add_parser(
+        "ingress",
+        help="Run the loopback Slack Socket Mode ingress sidecar",
+        description=(
+            "Run the sole Slack Socket Mode owner and expose the local Relay "
+            "endpoint used by a Slack-disabled Hermes Gateway. Slack connects "
+            "only while that Relay client is connected."
+        ),
+    )
+    slack_ingress.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Loopback listener host (default: 127.0.0.1)",
+    )
+    slack_ingress.add_argument(
+        "--port",
+        type=int,
+        default=8791,
+        help="Relay listener port (default: 8791; use 0 for an ephemeral port)",
+    )
+    slack_ingress.add_argument(
+        "--state",
+        default=None,
+        metavar="PATH",
+        help="SQLite state path (default: $HERMES_HOME/slack-ingress.db)",
+    )
     slack_manifest = slack_sub.add_parser(
         "manifest",
         help="Print or write a Slack app manifest with every gateway command "

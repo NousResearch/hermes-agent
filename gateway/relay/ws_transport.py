@@ -129,7 +129,9 @@ def _render_relay_context(context: Any) -> Optional[str]:
     return f"[Recent channel messages]\n{body}"
 
 
-def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
+def _event_from_wire(
+    raw: Dict[str, Any], *, authorization_is_upstream: bool = True
+) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
     The connector emits SessionSource as the snake_case wire form (§3); map it
@@ -167,19 +169,20 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # config/credential scope — the same field the /p/<profile>/ HTTP
         # prefix and per-credential polling adapters already set.
         profile=src.get("profile"),
-        # Authentic upstream-trust signal: this event arrived over the
-        # per-instance-authenticated relay WS, so the connector already resolved
-        # it to this instance's owner-bound author. ``platform`` is the
-        # UNDERLYING platform (e.g. discord), not ``relay`` — authz keys the
-        # upstream-trust decision off THIS flag, not off ``platform`` (which
-        # would miss because the relay adapter is registered under
-        # ``Platform.RELAY``). Stamped here, never read off the wire.
-        delivered_via_upstream_relay=True,
+        # Transport routing and authorization trust are separate internal
+        # signals. Every event rebuilt here exits through RelayAdapter, but a
+        # local connector may opt out of upstream auth delegation so the normal
+        # platform allowlist/pairing checks still run.
+        delivered_via_relay=True,
+        delivered_via_upstream_relay=authorization_is_upstream is True,
     )
     try:
         msg_type = MessageType(raw.get("message_type", "text"))
     except ValueError:
         msg_type = MessageType.TEXT
+    metadata = raw.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
 
     return MessageEvent(
         text=raw.get("text", ""),
@@ -188,15 +191,21 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         media_urls=raw.get("media_urls") or [],
-        # Surrounding channel/group CONTEXT the connector attached for this
-        # addressed turn (design relay-channel-context): a read-only, oldest→
-        # newest list of nearby non-addressed messages (Model A pull / Model B
-        # buffer). Rendered into the existing ``channel_context`` field — the
-        # same read-only injection path history-backfill already uses
-        # (run.py prepends it ahead of the trigger message). Absent / empty on a
-        # connector that doesn't send it, a dm, or a no-context platform, so
-        # this is purely additive and byte-identical to today when unset.
-        channel_context=_render_relay_context(raw.get("context")),
+        media_types=raw.get("media_types") or [],
+        reply_to_text=raw.get("reply_to_text"),
+        reply_to_author_id=raw.get("reply_to_author_id"),
+        reply_to_author_name=raw.get("reply_to_author_name"),
+        reply_to_is_own_message=bool(raw.get("reply_to_is_own_message", False)),
+        auto_skill=raw.get("auto_skill"),
+        channel_prompt=raw.get("channel_prompt"),
+        metadata=metadata,
+        # A local platform adapter may already have rendered its context string;
+        # remote connectors use the normalized context-array form.
+        channel_context=(
+            raw.get("channel_context")
+            if isinstance(raw.get("channel_context"), str)
+            else _render_relay_context(raw.get("context"))
+        ),
     )
 
 
@@ -262,6 +271,7 @@ class WebSocketRelayTransport:
         outbound_timeout_s: float = _OUTBOUND_TIMEOUT_S,
         gateway_id: Optional[str] = None,
         upgrade_secret: Optional[str] = None,
+        authorization_is_upstream: bool = True,
         reconnect: bool = False,
         reconnect_backoff_s: float = 1.0,
         reconnect_max_backoff_s: float = 30.0,
@@ -291,6 +301,7 @@ class WebSocketRelayTransport:
         # (dev/test, or a connector that doesn't enforce auth).
         self._gateway_id = gateway_id
         self._upgrade_secret = upgrade_secret
+        self._authorization_is_upstream = authorization_is_upstream is True
 
         # Phase 5 §5.3: a NET-NEW reconnect supervisor. The base transport's
         # _read_loop just ends on socket close ("reconnection is caller policy");
@@ -714,7 +725,10 @@ class WebSocketRelayTransport:
                 self._descriptor_ready.set_result(descriptor)
         elif ftype == "inbound":
             if self._inbound is not None:
-                event = _event_from_wire(frame.get("event", {}))
+                event = _event_from_wire(
+                    frame.get("event", {}),
+                    authorization_is_upstream=self._authorization_is_upstream,
+                )
                 await self._inbound(event)
                 # Phase 5 §5.3: a buffered delivery (replayed on reconnect) carries
                 # a bufferId; ack it after the handler has durably taken it so the

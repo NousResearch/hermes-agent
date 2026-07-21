@@ -565,6 +565,36 @@ class GitHubSource(SkillSource):
         # https://github.com/NVIDIA/skills/tree/main/skills
         {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # --- Science bucket -------------------------------------------------
+        # Two upstream scientific-skill repos are tapped under one shared hub
+        # category ("science") via the tap-level "bucket" key, so their skills
+        # surface together instead of as two unrelated repos. Both are
+        # community trust on purpose — deliberately NOT in
+        # tools/skills_guard.py::TRUSTED_REPOS — so the security guard scans
+        # every skill and INSTALL_POLICY only auto-installs "safe" ones.
+        # Individual skills wrap third-party tools whose OWN licenses vary
+        # (some GPL; KEGG needs a commercial license for non-academic use);
+        # those terms are surfaced per-skill (frontmatter/Prerequisites) and
+        # are the installer's concern at use time, not vetted here.
+        #
+        # K-Dense-AI/scientific-agent-skills: ~150 skills, flat skills/<name>/
+        # layout (matches the anthropic/huggingface taps). MIT-licensed content.
+        {"repo": "K-Dense-AI/scientific-agent-skills", "path": "skills/", "bucket": "science"},
+        # synthetic-sciences/openscience: ~290 skills, Apache-2.0. Nested
+        # backend/cli/skills/<category>/<name>/ layout — _list_skills_in_repo
+        # only walks ONE level under a tap path, so each category is tapped
+        # separately (same one-entry-per-inner-path pattern as openai above).
+        *(
+            {"repo": "synthetic-sciences/openscience",
+             "path": f"backend/cli/skills/{_cat}/", "bucket": "science"}
+            for _cat in (
+                "biology", "chemistry", "cloud-compute", "coding",
+                "data-engineering", "databases", "document-parsing",
+                "llm-tools", "ml-inference", "ml-training", "other",
+                "physics", "quantum", "research", "scholar-evaluation",
+                "visualization", "writing",
+            )
+        ),
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -607,7 +637,7 @@ class GitHubSource(SkillSource):
 
         for tap in self.taps:
             try:
-                skills = self._list_skills_in_repo(tap["repo"], tap.get("path", ""))
+                skills = self._list_skills_in_repo(tap["repo"], tap.get("path", ""), tap.get("bucket"))
                 for skill in skills:
                     searchable = f"{skill.name} {skill.description} {' '.join(skill.tags)}".lower()
                     if query_lower in searchable:
@@ -742,9 +772,15 @@ class GitHubSource(SkillSource):
 
     # -- Internal helpers --
 
-    def _list_skills_in_repo(self, repo: str, path: str) -> List[SkillMeta]:
-        """List skill directories in a GitHub repo path, using cached index."""
-        cache_key = f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+    def _list_skills_in_repo(self, repo: str, path: str, bucket: Optional[str] = None) -> List[SkillMeta]:
+        """List skill directories in a GitHub repo path, using cached index.
+
+        ``bucket`` optionally forces a category label on every skill from this
+        tap (used to unify skills from several repos under one hub category,
+        e.g. multiple science repos → "science"). A repo's own
+        ``skills.sh.json`` grouping still wins when present.
+        """
+        cache_key = f"{repo}_{path}_{bucket or ''}".replace("/", "_").replace(" ", "_")
         cached = self._read_cache(cache_key)
         if cached is not None:
             return [SkillMeta(**s) for s in cached]
@@ -772,10 +808,16 @@ class GitHubSource(SkillSource):
             skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
             meta = self.inspect(skill_identifier)
             if meta:
+                category = None
                 if groupings:
                     category = groupings.get(meta.name) or groupings.get(dir_name)
-                    if category:
-                        meta.extra["category"] = category
+                # Tap-level bucket is the fallback when the repo ships no
+                # skills.sh.json grouping — lets several repos share one
+                # hub category (e.g. science) without a sidecar we can't edit.
+                if not category and bucket:
+                    category = bucket
+                if category:
+                    meta.extra["category"] = category
                 skills.append(meta)
 
         # Cache the results

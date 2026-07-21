@@ -198,6 +198,59 @@ class TestSkillsShGroupings:
         assert len(skills) == 1
         assert "category" not in skills[0].extra
 
+    def test_list_skills_bucket_stamps_category_when_no_sidecar(self):
+        # A tap-level bucket labels every skill when the repo ships no
+        # skills.sh.json grouping — this is how several repos share one hub
+        # category (e.g. science).
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        meta = SkillMeta(
+            name="rdkit", description="d", source="github",
+            identifier="K-Dense-AI/scientific-agent-skills/skills/rdkit",
+            trust_level="community",
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"type": "dir", "name": "rdkit"}]
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch("tools.skills_hub.httpx.get", return_value=resp):
+            skills = src._list_skills_in_repo(
+                "K-Dense-AI/scientific-agent-skills", "skills/", "science"
+            )
+
+        assert len(skills) == 1
+        assert skills[0].extra["category"] == "science"
+
+    def test_list_skills_sidecar_grouping_wins_over_bucket(self):
+        # When a repo DOES publish a skills.sh.json grouping, that wins over
+        # the tap-level bucket fallback.
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        meta = SkillMeta(
+            name="cuopt-developer", description="d", source="github",
+            identifier="NVIDIA/skills/skills/cuopt-developer", trust_level="trusted",
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"type": "dir", "name": "cuopt-developer"}]
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings",
+                          return_value={"cuopt-developer": "Decision Optimization"}), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch("tools.skills_hub.httpx.get", return_value=resp):
+            skills = src._list_skills_in_repo("NVIDIA/skills", "skills/", "science")
+
+        assert len(skills) == 1
+        assert skills[0].extra["category"] == "Decision Optimization"
+
     def test_meta_to_dict_roundtrip_preserves_extra(self):
         meta = SkillMeta(
             name="x", description="d", source="github",

@@ -40,6 +40,10 @@ By default the curator only **prunes** — the deterministic inactivity pass mar
 
 Pinned skills are off-limits to both the curator's auto-transitions and the agent's own `skill_manage` tool. See [Pinning a skill](#pinning-a-skill) below.
 
+**Cron-referenced skills** are treated like pinned for automatic transitions: if any cron job (including paused or disabled jobs) lists a skill in its invocation, the curator will not mark it stale or archive it — resuming or the next fire must still find the skill on disk. When consolidation merges a skill into an umbrella, the curator rewrites cron job skill references to follow the new name.
+
+**Never-used skills** (`use_count == 0`) are not archived until they are at least `stale_after_days` old. Zero uses means absence of evidence, not proof the skill is obsolete — a recently created skill may simply not have matched its trigger yet.
+
 ## Configuration
 
 All settings live in `config.yaml` under `curator:` (not `.env` — this isn't a secret). Defaults:

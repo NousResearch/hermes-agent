@@ -21,7 +21,8 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
 | `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
-| `gateway/platforms/` | Platform adapters (one per messaging platform) |
+| `gateway/platform_registry.py` | Adapter registry; plugin platforms register deferred loaders so SDKs import only when needed |
+| `gateway/platforms/` | Shared `BasePlatformAdapter` (`base.py`) and legacy direct adapters (e.g. Signal); most chat platforms live under `plugins/platforms/` |
 
 ## Architecture Overview
 
@@ -143,7 +144,7 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 
 ## Platform Adapters
 
-Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>/adapter.py`; a few legacy adapters still live directly in `gateway/platforms/`. All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
+Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>/adapter.py`; a few legacy adapters still live directly in `gateway/platforms/`. All extend `BasePlatformAdapter` from `gateway/platforms/base.py`. At plugin discovery time, bundled platform plugins register **deferred loaders** in `gateway/platform_registry.py` so heavy SDK imports run only when a platform is actually started, used for delivery, or listed in setup/status — plain `hermes chat` does not eagerly import every adapter.
 
 ```text
 plugins/platforms/                  # plugin-packaged adapters (one dir each)

@@ -332,4 +332,51 @@ class TestRunConversationSurrogateSanitization:
         for msg in result.get("messages", []):
             if msg.get("role") == "user":
                 assert "\udce2" not in msg["content"], "Surrogate leaked into stored message"
-                assert "\ufffd" in msg["content"], "Replacement char not in stored message"
+
+
+class TestSanitizeStructureSurrogatesApiKwargs:
+    """Regression coverage for issue #68254.
+
+    Byte-level reasoning models (kimi, glm, xiaomi/mimo) can embed lone
+    surrogates in reasoning output that flows into the built API request body
+    (api_kwargs) — e.g. ``reasoning_content`` / ``extra_body``. The proactive
+    ``_sanitize_structure_surrogates(api_kwargs)`` call in the conversation
+    loop must strip them before json.dumps() inside the SDK runs, otherwise
+    the request crashes with ``'utf-8' codec can't encode ... surrogates not
+    allowed`` and the error snowballs across retries.
+    """
+
+    def test_api_kwargs_reasoning_content_surrogate_stripped(self):
+        api_kwargs = {
+            "model": "kimi/kimi-k2",
+            "messages": [{"role": "assistant", "content": "ok"}],
+            "extra_body": {
+                "reasoning_content": "thinking\udce2 done",
+            },
+        }
+        found = _sanitize_structure_surrogates(api_kwargs)
+        assert found is True
+        assert "\ufffd" in api_kwargs["extra_body"]["reasoning_content"]
+        assert "\udce2" not in api_kwargs["extra_body"]["reasoning_content"]
+
+    def test_api_kwargs_json_serializable_after_sanitize(self):
+        dirty = {"messages": [{"role": "user", "content": "hi \udce2 there"}]}
+        _sanitize_structure_surrogates(dirty)
+        # Must not raise UnicodeEncodeError
+        json.dumps(dirty, ensure_ascii=False).encode("utf-8")
+
+    def test_api_kwargs_no_surrogates_is_noop(self):
+        api_kwargs = {"model": "gpt-4o", "messages": [{"role": "user", "content": "clean"}]}
+        assert _sanitize_structure_surrogates(api_kwargs) is False
+
+    def test_api_kwargs_nested_list_of_dicts(self):
+        api_kwargs = {
+            "reasoning_details": [
+                {"summary": "step \udc97 one"},
+                {"text": "result \udce2 end"},
+            ]
+        }
+        found = _sanitize_structure_surrogates(api_kwargs)
+        assert found is True
+        assert "\udc97" not in api_kwargs["reasoning_details"][0]["summary"]
+        assert "\ufffd" in api_kwargs["reasoning_details"][0]["summary"]

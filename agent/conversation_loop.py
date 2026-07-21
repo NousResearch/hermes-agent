@@ -1288,6 +1288,16 @@ def run_conversation(
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
+                # Proactively strip lone surrogates (U+D800-U+DFFF) from the
+                # built request body. Byte-level reasoning models (kimi, glm,
+                # xiaomi/mimo) can embed lone surrogates in reasoning output
+                # that flows into api_kwargs (e.g. reasoning_content /
+                # extra_body), which otherwise crashes json.dumps() inside the
+                # OpenAI SDK before the retry-recovery path runs. Mirrors the
+                # proactive api_messages sanitization above and the retry
+                # handler's _sanitize_structure_surrogates call (#68254).
+                if _sanitize_structure_surrogates(api_kwargs):
+                    logger.debug("Stripped lone surrogates from api_kwargs before API call")
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(
                         api_kwargs,

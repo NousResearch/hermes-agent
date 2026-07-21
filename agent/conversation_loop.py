@@ -5577,11 +5577,30 @@ def run_conversation(
                         agent._flush_messages_to_session_db(messages, conversation_history)
                     except Exception:
                         logger.debug("verify-on-stop interim flush failed", exc_info=True)
-                    messages.append({
-                        "role": "user",
-                        "content": _verify_nudge,
-                        "_verification_stop_synthetic": True,
-                    })
+                    # Prepend the nudge to the most recent real user message
+                    # rather than appending a new one after it.  Appending
+                    # makes the nudge the most recent user instruction,
+                    # causing the model to prioritize it over the user's
+                    # actual question — a priority inversion.
+                    _user_idx = None
+                    for _i in range(len(messages) - 1, -1, -1):
+                        if (
+                            isinstance(messages[_i], dict)
+                            and messages[_i].get("role") == "user"
+                            and not messages[_i].get("_verification_stop_synthetic")
+                            and not messages[_i].get("_empty_recovery_synthetic")
+                        ):
+                            _user_idx = _i
+                            break
+                    if _user_idx is not None:
+                        _orig = messages[_user_idx].get("content", "")
+                        messages[_user_idx]["content"] = f"{_verify_nudge}\n\n{_orig}"
+                    else:
+                        messages.append({
+                            "role": "user",
+                            "content": _verify_nudge,
+                            "_verification_stop_synthetic": True,
+                        })
                     agent._session_messages = messages
                     # Run the verification-stop loop silently — the nudge is an
                     # internal turn that should not add noise to the user's

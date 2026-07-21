@@ -76,20 +76,28 @@ class TestApprovalCardFormatting:
         assert html is not None
         assert "Dangerous command requires approval" in html
         assert "<details>" in html
+        assert html.index("Advisory interpretation") < html.index("<details>")
+        assert "<summary>Full command</summary>" in html
         assert "git reset --hard HEAD~1" in html
         assert "Discards recent local commits" in html
 
-    def test_terminal_compact_one_line_with_details(self):
+    def test_terminal_compact_keeps_advisory_primary_and_command_in_details(self):
         text, html = format_terminal_compact(
             choice="once",
             command="systemctl restart example.service",
             description="stop/restart system service",
             actor="@user:example.org",
+            summary="Restarts the example service and briefly interrupts it.",
         )
         assert "Approved once" in text
-        assert "systemctl restart example.service" in text
+        assert "Advisory interpretation" in text
+        assert "Restarts the example service" in text
+        assert "systemctl restart example.service" not in text
         assert html is not None
         assert "<details>" in html
+        assert html.index("Advisory interpretation") < html.index("<details>")
+        assert "<summary>Full command</summary>" in html
+        assert "systemctl restart example.service" in html
         assert "@user:example.org" in html
 
     def test_sanitize_summary_strips_html_and_bounds_length(self):
@@ -384,7 +392,7 @@ class TestMatrixApprovalCardLifecycle:
             )
         )
         adapter._user_id = "@bot:example.org"
-        adapter._approval_prompts_by_event["$target"] = _MatrixApprovalPrompt(
+        prompt = _MatrixApprovalPrompt(
             session_key="sess-1",
             chat_id="!room:example.org",
             message_id="$target",
@@ -392,6 +400,9 @@ class TestMatrixApprovalCardLifecycle:
             command="rm -rf /tmp/x",
             description="recursive delete",
         )
+        prompt.summary = "Deletes the bounded directory and its contents."
+        prompt.state = "pending_summarized"
+        adapter._approval_prompts_by_event["$target"] = prompt
         adapter._approval_prompt_by_session["sess-1"] = {"$target"}
         adapter.edit_message = AsyncMock(return_value=types.SimpleNamespace(success=True))
         adapter._redact_bot_approval_reactions = AsyncMock()
@@ -415,7 +426,13 @@ class TestMatrixApprovalCardLifecycle:
         assert adapter.edit_message.await_count == 1
         edited = adapter.edit_message.await_args.args[2]
         assert "Approved once" in edited
-        assert "rm -rf /tmp/x" in edited
+        assert "Deletes the bounded directory" in edited
+        assert "rm -rf /tmp/x" not in edited
+        metadata = adapter.edit_message.await_args.kwargs.get("metadata") or {}
+        edited_html = metadata.get("matrix_formatted_body") or ""
+        assert edited_html.index("Advisory interpretation") < edited_html.index("<details>")
+        assert "<summary>Full command</summary>" in edited_html
+        assert "rm -rf /tmp/x" in edited_html
 
     @pytest.mark.asyncio
     async def test_resolution_watch_tracks_one_approval_id(self, monkeypatch):

@@ -118,14 +118,6 @@ def truncate_command(command: str, limit: int = _CMD_PREVIEW_LIMIT) -> str:
     return cmd[:limit] + "..."
 
 
-def command_one_line_preview(command: str, max_len: int = 120) -> str:
-    """Single-line preview for terminal compact headers."""
-    flat = re.sub(r"\s+", " ", str(command or "")).strip()
-    if len(flat) <= max_len:
-        return flat
-    return flat[: max_len - 1] + "…"
-
-
 def _md_code_block(command: str) -> str:
     body = truncate_command(command).replace("```", "'''")
     return f"```\n{body}\n```"
@@ -258,34 +250,32 @@ def format_terminal_compact(
     actor: str = "",
     summary: str = "",
 ) -> tuple[str, Optional[str]]:
-    """t2: one-line outcome + details for audit."""
+    """t2: compact outcome + primary advisory + closed command disclosure."""
     redacted = force_redact_command(command)
     reason = (description or "dangerous command").strip() or "dangerous command"
     label = _OUTCOME_LABELS.get(choice, choice or "Resolved")
-    preview = command_one_line_preview(redacted)
     actor_bit = f" · {actor}" if actor else ""
 
-    text = (
-        f"**{label}**{actor_bit} · {reason}\n"
-        f"`{preview}`"
-    )
+    text = f"**{label}**{actor_bit} · {reason}"
     if summary:
         text += f"\n\nAdvisory interpretation: {sanitize_summary(summary)}"
-    text += "\n\n(Full command in rich clients / <details>)"
+    text += "\n\n(Full command available in formatted message details.)"
 
     details_inner = _html_pre(redacted)
-    if summary:
-        details_inner += (
-            f"<p><em>Advisory interpretation:</em> "
-            f"{html.escape(sanitize_summary(summary))}</p>"
-        )
     details_inner += f"<p>Reason: {html.escape(reason)}{html.escape(actor_bit)}</p>"
 
     html_body = (
         f"<p><strong>{html.escape(label)}</strong>"
-        f"{html.escape(actor_bit)} · {html.escape(reason)} · "
-        f"<code>{html.escape(preview)}</code></p>"
-        f"{_details_block(summary_label='Details', inner_html=details_inner)}"
+        f"{html.escape(actor_bit)} · {html.escape(reason)}</p>"
+    )
+    if summary:
+        html_body += (
+            f"<p><strong>Advisory interpretation:</strong> "
+            f"{html.escape(sanitize_summary(summary))}</p>"
+        )
+    html_body += _details_block(
+        summary_label="Full command",
+        inner_html=details_inner,
     )
     return text, html_body
 

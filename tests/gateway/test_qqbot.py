@@ -511,6 +511,53 @@ class TestReadyHandling:
         assert adapter._last_seq == 60
 
 
+class TestHelloAuthModeSelection:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_hello_uses_resume_before_cap(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._session_id = "sess_1"
+        adapter._last_seq = 10
+
+        scheduled = []
+        adapter._create_task = lambda coro: scheduled.append(coro)  # type: ignore[assignment]
+        adapter._send_resume = mock.AsyncMock(name="send_resume")
+        adapter._send_identify = mock.AsyncMock(name="send_identify")
+
+        adapter._dispatch_payload({"op": 10, "d": {"heartbeat_interval": 30000}})
+
+        assert len(scheduled) == 1
+        assert adapter._resume_attempts == 1
+        adapter._send_resume.assert_called_once()
+        adapter._send_identify.assert_not_called()
+        scheduled[0].close()
+
+    def test_hello_falls_back_to_identify_when_resume_cap_reached(self):
+        from gateway.platforms.qqbot.constants import MAX_RESUME_ATTEMPTS
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._session_id = "stale_sess"
+        adapter._last_seq = 99
+        adapter._resume_attempts = MAX_RESUME_ATTEMPTS
+
+        scheduled = []
+        adapter._create_task = lambda coro: scheduled.append(coro)  # type: ignore[assignment]
+        adapter._send_resume = mock.AsyncMock(name="send_resume")
+        adapter._send_identify = mock.AsyncMock(name="send_identify")
+
+        adapter._dispatch_payload({"op": 10, "d": {"heartbeat_interval": 30000}})
+
+        assert len(scheduled) == 1
+        assert adapter._session_id is None
+        assert adapter._last_seq is None
+        assert adapter._resume_attempts == 0
+        adapter._send_resume.assert_not_called()
+        adapter._send_identify.assert_called_once()
+        scheduled[0].close()
+
+
 # ---------------------------------------------------------------------------
 # _parse_json
 # ---------------------------------------------------------------------------

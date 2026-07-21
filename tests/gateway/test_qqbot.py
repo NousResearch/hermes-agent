@@ -466,13 +466,61 @@ class TestDispatchPayload:
 
     def test_op11_heartbeat_ack(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._heartbeat_ack_pending = True
+        adapter._last_heartbeat_sent_at = 123.0
         # Should not raise
         adapter._dispatch_payload({"op": 11, "t": "HEARTBEAT_ACK", "s": 42})
+        assert adapter._heartbeat_ack_pending is False
+        assert adapter._last_heartbeat_sent_at is None
 
     def test_seq_tracking(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter._dispatch_payload({"op": 0, "t": "READY", "s": 100, "d": {}})
         assert adapter._last_seq == 100
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_closes_ws_when_ack_missing(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._heartbeat_interval = 0.001
+        adapter._last_seq = 42
+        adapter._running = True
+
+        class FakeWS:
+            closed = False
+
+            def __init__(self):
+                self.sent = []
+                self.close_calls = []
+
+            async def send_json(self, payload):
+                self.sent.append(payload)
+
+            async def close(self, **kwargs):
+                self.close_calls.append(kwargs)
+                self.closed = True
+
+        ws = FakeWS()
+        adapter._ws = ws
+
+        task = asyncio.create_task(adapter._heartbeat_loop())
+        try:
+            for _ in range(50):
+                if ws.close_calls:
+                    break
+                await asyncio.sleep(0.001)
+        finally:
+            adapter._running = False
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert ws.sent == [{"op": 1, "d": 42}]
+        assert ws.close_calls
+        assert ws.close_calls[0]["message"] == b"heartbeat ACK timeout"
+        assert adapter._heartbeat_ack_pending is False
+        assert adapter._last_heartbeat_sent_at is None
 
     def test_seq_increments(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")

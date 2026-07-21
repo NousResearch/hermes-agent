@@ -224,6 +224,8 @@ class QQAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
+        self._heartbeat_ack_pending = False
+        self._last_heartbeat_sent_at: Optional[float] = None
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
@@ -459,6 +461,8 @@ class QQAdapter(BasePlatformAdapter):
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
+        self._heartbeat_ack_pending = False
+        self._last_heartbeat_sent_at = None
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
@@ -722,8 +726,29 @@ class QQAdapter(BasePlatformAdapter):
                 if not self._ws or self._ws.closed:
                     continue
                 try:
+                    if self._heartbeat_ack_pending:
+                        elapsed = (
+                            time.monotonic() - self._last_heartbeat_sent_at
+                            if self._last_heartbeat_sent_at is not None
+                            else self._heartbeat_interval
+                        )
+                        logger.warning(
+                            "[%s] Heartbeat ACK timeout after %.1fs; closing WebSocket to reconnect",
+                            self._log_tag,
+                            elapsed,
+                        )
+                        await self._ws.close(
+                            code=aiohttp.WSCloseCode.GOING_AWAY,
+                            message=b"heartbeat ACK timeout",
+                        )
+                        self._heartbeat_ack_pending = False
+                        self._last_heartbeat_sent_at = None
+                        continue
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
+                    self._heartbeat_ack_pending = True
+                    self._last_heartbeat_sent_at = time.monotonic()
+                    logger.debug("[%s] Heartbeat sent (seq=%s)", self._log_tag, self._last_seq)
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
         except asyncio.CancelledError:
@@ -839,6 +864,14 @@ class QQAdapter(BasePlatformAdapter):
                 self._create_task(self._send_resume())
             else:
                 self._create_task(self._send_identify())
+            return
+
+        # op 11 = Heartbeat ACK. If this stops arriving, the heartbeat loop
+        # closes the socket so the existing reconnect path can recover.
+        if op == 11:
+            self._heartbeat_ack_pending = False
+            self._last_heartbeat_sent_at = None
+            logger.debug("[%s] Heartbeat ACK received", self._log_tag)
             return
 
         # op 0 = Dispatch

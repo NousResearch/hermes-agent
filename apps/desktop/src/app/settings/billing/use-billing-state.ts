@@ -354,9 +354,11 @@ function derivePlanCard(
 
 /**
  * The plans-grid catalog. Each card's action depends on its order relative to the
- * current tier: current = inert marker; higher / no-current = "Choose ↗" opening
- * the portal with the tier pre-selected; lower = disabled with a caption noting
- * downgrades are moving in-app (ticket 11 wires the gateway pending-change flow).
+ * current tier: current = inert marker; higher = "Choose ↗" opening the portal with
+ * the tier pre-selected; lower = disabled with a caption noting downgrades are
+ * moving in-app (ticket 11 wires the gateway pending-change flow). With no active
+ * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
+ * there is no "subscribe to Free" upgrade and no downgrade state.
  */
 function derivePlanTiers(subscription: null | SubscriptionStateResponse): BillingPlanTierView[] {
   const tiers = enabledTiers(subscription)
@@ -366,7 +368,12 @@ function derivePlanTiers(subscription: null | SubscriptionStateResponse): Billin
   }
 
   const current = subscription?.current
-  const currentTier = tiers.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
+  const explicitCurrent = tiers.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
+  // No active subscription → the lowest-order ($0 / free) tier stands in as the
+  // current plan: it renders inert ("Current plan"), never as a "subscribe to
+  // Free" upgrade. Because it is the lowest order, no tier can be a downgrade,
+  // so every paid tier is a "Choose ↗" upgrade (spec ruling).
+  const currentTier = explicitCurrent ?? (current == null ? tiers[0] : undefined)
   const currentOrder = currentTier?.tier_order
   const manageBase = subscription?.portal_url ?? null
 
@@ -378,12 +385,13 @@ function derivePlanTiers(subscription: null | SubscriptionStateResponse): Billin
       tierId: tier.tier_id
     }
 
-    if (tier.is_current || (currentTier && tier.tier_id === currentTier.tier_id)) {
+    if (currentTier && tier.tier_id === currentTier.tier_id) {
       return { ...shared, state: 'current' as const }
     }
 
     // Downgrade = strictly below the current tier's order. Everything else
-    // (including every tier when there is no current subscription) is an upgrade.
+    // (every tier above the stand-in free tier when there is no subscription)
+    // is an upgrade.
     if (currentOrder != null && tier.tier_order < currentOrder) {
       return {
         ...shared,

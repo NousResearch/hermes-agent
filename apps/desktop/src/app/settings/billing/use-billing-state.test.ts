@@ -341,13 +341,19 @@ describe('derivePlanTiers (plans grid)', () => {
     expect(byName.Ultra.state).toBe('upgrade')
   })
 
-  it('treats every enabled tier as an upgrade when there is no current subscription', () => {
+  it('marks the free/lowest tier current (inert) and every paid tier an upgrade when there is no subscription', () => {
     const fixture = billingDevFixtures['free-personal']
     const view = deriveBillingView(fixture.billing, fixture.subscription)
+    const byName = Object.fromEntries(view.tiers.map(tier => [tier.name, tier]))
 
-    expect(view.tiers.map(tier => tier.state)).toEqual(['upgrade', 'upgrade', 'upgrade', 'upgrade'])
-    expect(view.tiers.find(tier => tier.name === 'Free')?.action?.url).toBe(
-      'https://portal.nousresearch.com/manage-subscription?org_id=org_personal_free&plan=cltier000free0000personal'
+    // No "subscribe to Free" — the $0 tier is the current plan, not a choice.
+    expect(view.tiers.map(tier => tier.state)).toEqual(['current', 'upgrade', 'upgrade', 'upgrade'])
+    expect(byName.Free.action).toBeUndefined()
+    expect(byName.Free.disabledCaption).toBeUndefined()
+    // No downgrade state can exist without a subscription.
+    expect(view.tiers.some(tier => tier.state === 'downgrade')).toBe(false)
+    expect(byName.Plus.action?.url).toBe(
+      'https://portal.nousresearch.com/manage-subscription?org_id=org_personal_free&plan=cltier111plus1111personal'
     )
   })
 
@@ -359,6 +365,15 @@ describe('derivePlanTiers (plans grid)', () => {
         context: 'personal',
         current: null,
         tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 'cltier_free_0000',
+            tier_order: 0
+          },
           {
             dollars_per_month_display: '$5',
             is_current: false,
@@ -372,8 +387,9 @@ describe('derivePlanTiers (plans grid)', () => {
       })
     )
 
-    expect(view.tiers.map(tier => tier.name)).toEqual(['Mystery'])
-    expect(view.tiers[0]?.state).toBe('upgrade')
+    // The unknown-named paid tier still lists (art resolves to null → text-only).
+    expect(view.tiers.map(tier => tier.name)).toEqual(['Free', 'Mystery'])
+    expect(view.tiers.find(tier => tier.name === 'Mystery')?.state).toBe('upgrade')
   })
 
   it('drops grandfathered (is_enabled: false) tiers from the grid', () => {

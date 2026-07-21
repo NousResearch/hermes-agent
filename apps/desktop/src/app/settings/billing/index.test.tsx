@@ -206,8 +206,11 @@ describe('BillingSettings', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'View plans' }))
 
     expect(await screen.findByText('Plans')).toBeTruthy()
-    // No current subscription → every tier is a "Choose ↗" upgrade.
-    expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(4)
+    // No subscription → the free tier is the inert current plan, the three paid
+    // tiers are "Choose ↗" upgrades (no "subscribe to Free").
+    expect(screen.getByText('Current plan')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(3)
+    expect(screen.queryByRole('button', { name: 'Downgrade' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to billing' }))
 

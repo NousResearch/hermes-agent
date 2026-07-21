@@ -103,7 +103,7 @@ def _build_auth_header(token: str) -> Dict[str, str]:
         return {}
     if ":" in token:
         import base64
-        encoded = base64.b64encode(token.encode()).decode()
+        encoded = base64.b64encode(token.encode("utf-8")).decode("utf-8")
         return {"Authorization": f"Basic {encoded}"}
     return {"Authorization": f"Bearer {token}"}
 

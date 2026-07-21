@@ -83,6 +83,24 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_loopback_bind_accepts_explicit_proxy_hostnames(self, monkeypatch):
+        """Trusted reverse-proxy hostnames can be allowed without disabling
+        loopback DNS-rebinding protection for every other hostname."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "dashboard.example.test, secondary.example.test",
+        )
+
+        assert _is_accepted_host("dashboard.example.test", "127.0.0.1")
+        assert _is_accepted_host("dashboard.example.test:9443", "127.0.0.1")
+        assert _is_accepted_host("secondary.example.test.", "127.0.0.1")
+        assert not _is_accepted_host("evil.example", "127.0.0.1")
+        assert not _is_accepted_host("dashboard.example.test", "my-server.corp.net")
+        assert not _is_accepted_host("[dashboard.example.test]junk", "127.0.0.1")
+        assert not _is_accepted_host("[::1]:not-a-port", "127.0.0.1")
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware

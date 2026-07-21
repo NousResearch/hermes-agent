@@ -397,6 +397,35 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _dashboard_allowed_hosts() -> set[str]:
+    """Extra trusted Host header values for loopback dashboards behind a proxy.
+
+    The dashboard normally accepts only loopback Host headers when it binds to
+    127.0.0.1. A trusted local reverse proxy can terminate HTTPS on an
+    external hostname and forward to 127.0.0.1 while preserving the original
+    Host header. Operators can opt in to those exact hostnames via
+    HERMES_DASHBOARD_ALLOWED_HOSTS without disabling the broader DNS-rebinding
+    protection.
+    """
+    raw = os.getenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    hosts: set[str] = set()
+    for item in raw.replace(";", ",").split(","):
+        value = item.strip().lower().rstrip(".")
+        if not value:
+            continue
+        if value.startswith("["):
+            close = value.find("]")
+            if close != -1:
+                value = value[1:close]
+            else:
+                value = value.strip("[]")
+        elif ":" in value:
+            value = value.rsplit(":", 1)[0]
+        if value:
+            hosts.add(value)
+    return hosts
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
@@ -440,13 +469,27 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if h.startswith("["):
         # IPv6 bracketed — port (if any) follows "]:"
         close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
+        if close == -1:
+            return False
+        host_only = h[1:close]  # strip brackets
+        suffix = h[close + 1:]
+        if ":" not in host_only:
+            return False
+        if suffix and not (suffix.startswith(":") and suffix[1:].isdigit()):
+            return False
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = host_only.lower().rstrip(".")
+    bound_lc = bound_host.lower().rstrip(".")
+
+    # Explicitly trusted proxy hostnames apply only to loopback binds. This is
+    # narrower than --insecure/0.0.0.0: only exact configured hostnames pass,
+    # and explicit non-loopback binds retain their exact-match behavior.
+    if (
+        bound_lc in _LOOPBACK_HOST_VALUES
+        and host_only in _dashboard_allowed_hosts()
+    ):
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -455,7 +498,6 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
         return True
 
     # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 

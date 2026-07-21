@@ -10,6 +10,7 @@ from plugins.platforms.slack.block_kit import (
     demote_tables,
     has_table_block,
     render_blocks,
+    sanitize_blocks,
     segment_blocks,
 )
 
@@ -508,3 +509,50 @@ class TestNoEmptyTextElements:
         from plugins.platforms.slack.block_kit import _inline_elements
         els = _inline_elements("")
         assert els and all(e.get("text") for e in els if e.get("type") == "text")
+
+
+class TestSanitizeBlocks:
+    """Send-boundary guard: repair invalid_blocks-triggering mistakes from ANY
+    builder before the payload leaves the process."""
+
+    def test_empty_text_element_floored(self):
+        blocks = [{"type": "rich_text", "elements": [
+            {"type": "rich_text_section", "elements": [{"type": "text", "text": ""}]}
+        ]}]
+        out = sanitize_blocks(blocks)
+        el = out[0]["elements"][0]["elements"][0]
+        assert el["text"] == " "
+
+    def test_empty_mrkdwn_and_plain_text_floored(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": ""}},
+            {"type": "header", "text": {"type": "plain_text", "text": ""}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert out[0]["text"]["text"] == " "
+        assert out[1]["text"]["text"] == " "
+
+    def test_null_column_settings_coerced_to_object(self):
+        blocks = [{"type": "table", "rows": [], "column_settings": [None, {"align": "right"}, None]}]
+        out = sanitize_blocks(blocks)
+        assert out[0]["column_settings"] == [{}, {"align": "right"}, {}]
+
+    def test_valid_blocks_unchanged(self):
+        blocks = render_blocks("# Title\n\nsome **bold** text")
+        assert sanitize_blocks(blocks) == blocks  # idempotent no-op on clean input
+
+    def test_idempotent(self):
+        blocks = [{"type": "rich_text", "elements": [
+            {"type": "rich_text_section", "elements": [{"type": "text", "text": ""}]}
+        ]}]
+        once = sanitize_blocks(blocks)
+        assert sanitize_blocks(once) == once
+
+    def test_never_raises_and_passes_non_list(self):
+        assert sanitize_blocks(None) is None
+        assert sanitize_blocks("nope") == "nope"
+
+    def test_does_not_mutate_input(self):
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": ""}}]
+        sanitize_blocks(blocks)
+        assert blocks[0]["text"]["text"] == ""  # original untouched

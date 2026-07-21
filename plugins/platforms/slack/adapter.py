@@ -62,6 +62,7 @@ try:  # sibling module; support both package and flat plugin-dir import
         has_table_block,
         progress_context_blocks,
         render_blocks,
+        sanitize_blocks,
         segment_blocks,
     )
 except ImportError:  # pragma: no cover - plugin loaded outside package context
@@ -71,11 +72,48 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
         has_table_block,
         progress_context_blocks,
         render_blocks,
+        sanitize_blocks,
         segment_blocks,
     )
 
 
 logger = logging.getLogger(__name__)
+
+
+# Methods whose ``blocks`` kwarg is sanitized at the send boundary.
+_SANITIZED_SEND_METHODS = frozenset(
+    {"chat_postMessage", "chat_update", "chat_postEphemeral"}
+)
+
+
+class _SanitizingClient:
+    """Transparent proxy over a Slack ``WebClient`` that runs every outbound
+    ``blocks`` payload through :func:`sanitize_blocks` before the send.
+
+    This is the single send-boundary choke point: every builder — the agent
+    reply path, exec-approval, slash-confirm, and anything added later —
+    obtains its client via ``_get_client()``, so all of them are protected
+    from the structural mistakes Slack rejects with ``invalid_blocks`` (a
+    single bad node fails the WHOLE message). Non-send attributes pass through
+    untouched, so reads (``conversations_history`` etc.) are unaffected.
+    """
+
+    __slots__ = ("_client",)
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._client, name)
+        if name not in _SANITIZED_SEND_METHODS or not callable(attr):
+            return attr
+
+        async def _send(*args: Any, **kwargs: Any) -> Any:
+            if isinstance(kwargs.get("blocks"), list):
+                kwargs["blocks"] = sanitize_blocks(kwargs["blocks"])
+            return await attr(*args, **kwargs)
+
+        return _send
 
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
@@ -1405,13 +1443,20 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
-        """Return the workspace-specific WebClient for a channel."""
+        """Return the workspace-specific WebClient for a channel.
+
+        Wrapped in a :class:`_SanitizingClient` so EVERY outbound send —
+        current or future, from any builder — passes its ``blocks`` through
+        :func:`sanitize_blocks` at this single choke point. A structurally
+        invalid block (empty text object, ``null`` column setting) otherwise
+        fails the whole message with ``invalid_blocks``.
+        """
         if team_id and team_id in self._team_clients:
-            return self._team_clients[team_id]
+            return _SanitizingClient(self._team_clients[team_id])
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
-            return self._team_clients[team_id]
-        return self._app.client  # fallback to primary
+            return _SanitizingClient(self._team_clients[team_id])
+        return _SanitizingClient(self._app.client)  # fallback to primary
 
     @staticmethod
     def _is_blocks_rejection(exc: Exception) -> bool:

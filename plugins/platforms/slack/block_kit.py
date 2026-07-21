@@ -911,3 +911,53 @@ def demote_tables(blocks: List[Block]) -> List[Block]:
 def has_table_block(blocks: List[Block]) -> bool:
     """True if any block in the list is a native ``table`` block."""
     return any(b.get("type") == "table" for b in blocks)
+
+
+# ----------------------------------------------------------------------------
+# Send-boundary sanitizer — a single defensive pass over ANY outbound blocks
+# ----------------------------------------------------------------------------
+
+_MIN_TEXT = " "  # Slack rejects a zero-length text object/element.
+
+
+def _sanitize_node(node: Any) -> Any:
+    """Recursively repair the structural mistakes Slack rejects outright.
+
+    Slack validates the WHOLE ``blocks`` array; a single bad node fails the
+    entire message (``invalid_blocks``) and the rich render is lost. This
+    fixes, anywhere in the tree, regardless of which builder produced it:
+
+    * empty ``text`` strings on text / plain_text / mrkdwn objects → a space
+      ("must be more than 0 characters");
+    * ``null`` entries in a table's ``column_settings`` → ``{}`` (an object)
+      ("must provide an object [.../column_settings/N]").
+
+    Pure and idempotent — returns new structures, never mutates the input.
+    """
+    if isinstance(node, dict):
+        out = {k: _sanitize_node(v) for k, v in node.items()}
+        if out.get("type") in ("text", "plain_text", "mrkdwn"):
+            if not (isinstance(out.get("text"), str) and out["text"]):
+                out["text"] = _MIN_TEXT
+        cs = out.get("column_settings")
+        if isinstance(cs, list):
+            out["column_settings"] = [
+                c if isinstance(c, dict) else {} for c in cs
+            ]
+        return out
+    if isinstance(node, list):
+        return [_sanitize_node(x) for x in node]
+    return node
+
+
+def sanitize_blocks(blocks: List[Block]) -> List[Block]:
+    """Send-boundary guard: repair invalid_blocks-triggering mistakes in a
+    blocks payload from ANY source (render_blocks, exec-approval, slash-confirm,
+    or a future builder). Never raises — returns the input unchanged on an
+    unexpected shape, so it can wrap every outbound send safely."""
+    if not isinstance(blocks, list):
+        return blocks
+    try:
+        return [_sanitize_node(b) for b in blocks]
+    except Exception:  # pragma: no cover - must never break a send
+        return blocks

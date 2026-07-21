@@ -337,3 +337,47 @@ class TestEditMessageBlocks:
         adapter, client = _make_adapter()  # rich_blocks off
         await adapter.edit_message("C1", "111.222", RICH_MD, finalize=True)
         assert "blocks" not in client.chat_update.await_args.kwargs
+
+
+class TestSanitizingClientProxy:
+    """_get_client wraps the WebClient so every send sanitizes its blocks —
+    the single send-boundary choke point protecting all builders."""
+
+    @pytest.mark.asyncio
+    async def test_get_client_sanitizes_blocks_on_send(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from plugins.platforms.slack.adapter import _SanitizingClient
+
+        raw = MagicMock()
+        raw.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        proxy = _SanitizingClient(raw)
+        bad = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": ""}},
+            {"type": "table", "rows": [], "column_settings": [None]},
+        ]
+        await proxy.chat_postMessage(channel="C1", text="t", blocks=bad)
+        sent = raw.chat_postMessage.await_args.kwargs["blocks"]
+        assert sent[0]["text"]["text"] == " "          # empty mrkdwn floored
+        assert sent[1]["column_settings"] == [{}]        # null coerced to object
+
+    @pytest.mark.asyncio
+    async def test_proxy_passes_through_non_send_methods(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from plugins.platforms.slack.adapter import _SanitizingClient
+
+        raw = MagicMock()
+        raw.conversations_history = AsyncMock(return_value={"messages": []})
+        proxy = _SanitizingClient(raw)
+        res = await proxy.conversations_history(channel="C1")
+        assert res == {"messages": []}
+
+    @pytest.mark.asyncio
+    async def test_proxy_send_without_blocks_is_untouched(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from plugins.platforms.slack.adapter import _SanitizingClient
+
+        raw = MagicMock()
+        raw.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        proxy = _SanitizingClient(raw)
+        await proxy.chat_postMessage(channel="C1", text="plain only")
+        assert "blocks" not in raw.chat_postMessage.await_args.kwargs

@@ -1414,7 +1414,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home, get_hermes_home_override
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
+from utils import (
+    atomic_json_write,
+    atomic_yaml_write,
+    base_url_host_matches,
+    base_url_hostname,
+    is_truthy_value,
+)
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -2134,6 +2140,47 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+
+
+_LOCAL_PROXY_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _local_proxy_route_is_authoritative() -> bool:
+    """Return whether the configured primary route is a loopback proxy.
+
+    ``OPENAI_BASE_URL`` is intentionally only used here as the endpoint
+    selected by the already-authoritative ``model.provider: openai-api``
+    configuration. This is a route-safety check, not a credential lookup.
+    """
+    try:
+        from hermes_cli.runtime_provider import _get_model_config
+
+        model_cfg = _get_model_config()
+    except Exception:
+        return False
+    if not isinstance(model_cfg, dict):
+        return False
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    if provider != "openai-api":
+        return False
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    if not base_url:
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    return base_url_hostname(base_url) in _LOCAL_PROXY_LOOPBACK_HOSTS
+
+
+def _is_stale_direct_codex_override(override: Optional[dict]) -> bool:
+    """Identify a persisted direct-Codex route superseded by the local proxy."""
+    if not _local_proxy_route_is_authoritative() or not isinstance(override, dict):
+        return False
+    provider = str(override.get("provider") or "").strip().lower()
+    if provider != "openai-codex":
+        return False
+    # Older persisted rows may not contain base_url. A provider-only
+    # openai-codex override is still the direct route and must be retired when
+    # the operator has explicitly selected the local proxy as primary.
+    base_url = str(override.get("base_url") or "").strip()
+    return not base_url or base_url_host_matches(base_url, "chatgpt.com")
 
 
 def _credential_pool_for_provider(provider: Optional[str]):
@@ -17477,7 +17524,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         when the store has nothing persisted (e.g. the user ran /new, which
         clears both the in-memory dict and the persisted field).
         """
-        if session_key in self._session_model_overrides:
+        in_memory = self._session_model_overrides.get(session_key)
+        if in_memory is not None:
+            if _is_stale_direct_codex_override(in_memory):
+                self._session_model_overrides.pop(session_key, None)
+                store = getattr(self, "session_store", None)
+                if store is not None:
+                    try:
+                        store.set_model_override(session_key, None)
+                    except Exception:
+                        logger.debug(
+                            "Failed to clear stale in-memory model override",
+                            exc_info=True,
+                        )
+                logger.warning(
+                    "Discarded direct Codex model override for local proxy session=%s",
+                    session_key,
+                )
             return
         store = getattr(self, "session_store", None)
         if store is None:
@@ -17490,6 +17553,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
         if not persisted:
+            return
+        if _is_stale_direct_codex_override(persisted):
+            try:
+                store.set_model_override(session_key, None)
+            except Exception:
+                logger.debug(
+                    "Failed to clear stale persisted model override", exc_info=True
+                )
+            logger.warning(
+                "Discarded stale persisted direct Codex override for local proxy "
+                "session=%s",
+                session_key,
+            )
             return
         override: Dict[str, Any] = {
             "model": persisted.get("model"),

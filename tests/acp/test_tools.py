@@ -665,6 +665,7 @@ class TestReadFileFenceTruncation:
         content = "\n".join(f"{i:4}| line {i} of a fairly long file" for i in range(400))
         assert len(content) > 5000
         text = self._read_file_text(content)
+        assert len(text) <= 5000
         lines = text.splitlines()
         fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
         # Both the opening and the closing fence must survive truncation.
@@ -680,7 +681,29 @@ class TestReadFileFenceTruncation:
         content = chunk * 200
         assert len(content) > 5000
         text = self._read_file_text(content)
+        assert len(text) <= 5000
         lines = text.splitlines()
         fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
         assert len(fence_lines) == 2
         assert len(fence_lines[0]) > 3
+
+    def test_wide_fence_still_respects_size_cap(self):
+        # A 1,000-char interior backtick-delimited segment widens the fence to
+        # ~1,001 backticks on both sides, so a fixed content reserve overshoots
+        # the UI size cap even though the fence stays paired. The rendered
+        # block (header + fences + note included) must stay within the limit.
+        content = (
+            "1| prefix line\n"
+            + "2| `" + "x" * 1000 + "`\n"
+            + "".join(f"{i}| filler line of ordinary text\n" for i in range(3, 600))
+        )
+        assert len(content) > 5000
+        text = self._read_file_text(content)
+        assert len(text) <= 5000
+        lines = text.splitlines()
+        fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
+        assert len(fence_lines) == 2
+        assert fence_lines[0] == fence_lines[1]
+        assert len(fence_lines[0]) > 1000
+        assert lines[-1].startswith("... (")
+        assert lines[-2] == fence_lines[1]

@@ -265,12 +265,19 @@ def _fenced_truncated_text(header: str, content: str, limit: int = 5000) -> str:
     full = f"{header}\n\n{_fenced_text(content)}"
     if len(full) <= limit:
         return full
-    keep = max(0, limit - len(header) - 150)
-    clipped = content[:keep]
-    return (
-        f"{header}\n\n{_fenced_text(clipped)}"
-        f"\n... ({len(content)} chars total, truncated)"
-    )
+    note = f"\n... ({len(content)} chars total, truncated)"
+    # The fence width is data-dependent (interior backtick-delimited segments
+    # widen it), so a fixed reserve can overshoot the limit. Size the actual
+    # rendered block and shave the raw content by the overshoot until it fits.
+    # Content is only ever cut from the end, so the fence width computed for a
+    # prefix never grows as the prefix shrinks — each pass strictly reduces
+    # the candidate and the loop terminates.
+    keep = max(0, limit - len(header) - len(note) - 10)
+    while True:
+        candidate = f"{header}\n\n{_fenced_text(content[:keep])}{note}"
+        if len(candidate) <= limit or keep == 0:
+            return candidate
+        keep = max(0, keep - (len(candidate) - limit))
 
 
 def _format_todo_result(result: Optional[str]) -> Optional[str]:

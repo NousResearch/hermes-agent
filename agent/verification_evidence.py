@@ -77,6 +77,16 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _connect_readonly() -> Optional[sqlite3.Connection]:
+    """Open an existing evidence database without creating or migrating it."""
+    path = _db_path()
+    if not path.is_file():
+        return None
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -898,8 +908,16 @@ def list_approval_decision_receipts(
     query += " ORDER BY id DESC LIMIT ?"
     params.append(bounded_limit)
     with _DB_LOCK:
-        with _connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+        try:
+            conn = _connect_readonly()
+            if conn is None:
+                return []
+            with conn:
+                rows = conn.execute(query, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
     return [dict(row) for row in rows]
 
 

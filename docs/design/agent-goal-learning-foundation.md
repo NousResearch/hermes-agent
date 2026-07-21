@@ -104,6 +104,14 @@ receipt. If persistence fails after a terminal mutation, Hermes holds the
 private non-actionable claim and reports its path for manual reconciliation;
 automatic replay is prohibited.
 
+Operators can inspect this narrow audit boundary with `/memory receipts` or
+`/skills receipts` (the `receipt` and `history` aliases are equivalent). The
+shared CLI and gateway handler exposes only receipt id, pending id, terminal
+decision/outcome, trusted proposal origin, safe terminal-noop code, and time.
+It neither reveals proposal content nor changes pending, goal, learning, or
+receipt state. The response explicitly states that it is read-only and cannot
+replay a terminal decision.
+
 ## Manual wait controls
 
 The same durable wait state is available on CLI, gateway, and TUI without new

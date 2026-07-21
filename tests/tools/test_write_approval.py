@@ -828,6 +828,40 @@ def test_approval_and_rejection_persist_immutable_decision_receipts(hermes_home)
     assert "approved once" not in str(memory_receipts[0])
 
 
+def test_receipts_subcommand_is_read_only_and_redacts_proposal_content(hermes_home):
+    from agent.verification_evidence import list_approval_decision_receipts
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, memory_tool
+
+    _set_approval(wa.MEMORY, True)
+    store = MemoryStore()
+    store.load_from_disk()
+    staged = json.loads(
+        memory_tool("add", "memory", "private proposal content", store=store)
+    )
+    record = wa.get_pending(wa.MEMORY, staged["pending_id"])
+    assert record is not None
+    assert "Approved 1" in handle_pending_subcommand(
+        wa.MEMORY, ["approve", record["id"]], memory_store=store
+    )
+    before = list_approval_decision_receipts(subsystem=wa.MEMORY)
+
+    output = handle_pending_subcommand(wa.MEMORY, ["receipts"])
+
+    assert f"Recent memory terminal decision receipts (1):" in output
+    assert record["id"] in output
+    assert "approved/applied" in output
+    assert "[foreground]" in output
+    assert "private proposal content" not in output
+    assert "Read-only audit history" in output
+    assert wa.pending_count(wa.MEMORY) == 0
+    assert list_approval_decision_receipts(subsystem=wa.MEMORY) == before
+    assert handle_pending_subcommand(wa.SKILLS, ["history"]) == (
+        "No terminal skills decision receipts."
+    )
+
+
 def test_terminal_memory_noop_persists_receipt_but_retryable_failure_does_not(
     hermes_home, monkeypatch
 ):

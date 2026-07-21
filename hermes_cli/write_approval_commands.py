@@ -51,6 +51,39 @@ def _fmt_pending_list(subsystem: str) -> str:
     return "\n".join(lines)
 
 
+def _fmt_receipt_list(subsystem: str) -> str:
+    """Format recent immutable decisions without exposing proposal content."""
+    try:
+        from agent.verification_evidence import list_approval_decision_receipts
+
+        records = list_approval_decision_receipts(subsystem=subsystem, limit=20)
+    except Exception:
+        logger.exception("Failed to read %s approval decision receipts", subsystem)
+        return f"{subsystem} approval receipt history is unavailable."
+
+    if not records:
+        return f"No terminal {subsystem} decision receipts."
+
+    lines = [f"Recent {subsystem} terminal decision receipts ({len(records)}):"]
+    for receipt in records:
+        failure = receipt.get("failure_code")
+        suffix = f" ({failure})" if failure else ""
+        lines.append(
+            "  {id}: {pending_id} {decision}/{outcome} [{origin}] {recorded_at}{suffix}".format(
+                id=receipt["id"],
+                pending_id=receipt["pending_id"],
+                decision=receipt["decision"],
+                outcome=receipt["terminal_outcome"],
+                origin=receipt["proposal_origin"],
+                recorded_at=receipt["recorded_at"],
+                suffix=suffix,
+            )
+        )
+    lines.append("")
+    lines.append("Read-only audit history; terminal decisions are never replayed from this view.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Subcommand dispatch
 # ---------------------------------------------------------------------------
@@ -87,6 +120,9 @@ def handle_pending_subcommand(
 
     if sub == "pending":
         return _fmt_pending_list(subsystem)
+
+    if sub in {"receipt", "receipts", "history"}:
+        return _fmt_receipt_list(subsystem)
 
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)

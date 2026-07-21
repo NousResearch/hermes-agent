@@ -91,7 +91,33 @@ def test_approval_decision_receipt_rejects_conflicting_terminalization(tmp_path,
     assert len(list_approval_decision_receipts()) == 1
 
 
-def test_approval_receipt_schema_upgrades_v3_metadata_and_creates_guards(tmp_path, monkeypatch):
+def test_approval_receipt_reader_does_not_create_or_migrate_database(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert list_approval_decision_receipts() == []
+    assert not home.exists()
+
+    home.mkdir()
+    database_path = home / "verification_evidence.db"
+    with sqlite3.connect(database_path) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '3')")
+    before = database_path.read_bytes()
+
+    assert list_approval_decision_receipts() == []
+    assert database_path.read_bytes() == before
+    with sqlite3.connect(database_path) as conn:
+        assert conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0] == "3"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'approval_decision_receipts'"
+        ).fetchone() is None
+
+
+def test_approval_receipt_writer_upgrades_v3_metadata_and_creates_guards(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
     home.mkdir()
@@ -100,7 +126,9 @@ def test_approval_receipt_schema_upgrades_v3_metadata_and_creates_guards(tmp_pat
         conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '3')")
 
-    assert list_approval_decision_receipts() == []
+    assert record_approval_decision_receipt(
+        record=_approval_record(), decision="approved", terminal_outcome="applied"
+    ) is not None
 
     with sqlite3.connect(database_path) as conn:
         version = conn.execute(

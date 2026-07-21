@@ -422,6 +422,12 @@ def _extract_attachments(
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    # Email preserves full payload without chunking: SMTP handles arbitrary
+    # lengths (adapter internally limits to MAX_MESSAGE_LENGTH=50_000).
+    # When True, the delivery router skips gateway-level truncation at
+    # MAX_PLATFORM_OUTPUT (4000 chars) and passes the full content to send().
+    splits_long_messages = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 

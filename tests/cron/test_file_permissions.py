@@ -56,6 +56,98 @@ class TestCronFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
             self.assertEqual(file_mode, 0o600)
 
+    def test_root_save_preserves_existing_jobs_owner(self):
+        """A root CLI rewrite must keep the gateway account's ownership."""
+        cron_dir = Path(self.tmpdir) / "cron"
+        output_dir = cron_dir / "output"
+        jobs_file = cron_dir / "jobs.json"
+        cron_dir.mkdir(parents=True)
+        jobs_file.write_text('{"jobs": []}', encoding="utf-8")
+        original = jobs_file.stat()
+
+        with (
+            patch("cron.jobs.CRON_DIR", cron_dir),
+            patch("cron.jobs.OUTPUT_DIR", output_dir),
+            patch("cron.jobs.JOBS_FILE", jobs_file),
+            patch("cron.jobs.os.geteuid", return_value=0),
+            patch("cron.jobs.os.fchown") as fchown,
+        ):
+            from cron.jobs import save_jobs
+
+            save_jobs([{"id": "test", "prompt": "hello"}])
+
+        fchown.assert_called_once()
+        fd, uid, gid = fchown.call_args.args
+        self.assertIsInstance(fd, int)
+        self.assertEqual((uid, gid), (original.st_uid, original.st_gid))
+        self.assertTrue(jobs_file.exists())
+
+    def test_owner_preservation_failure_keeps_existing_jobs_file(self):
+        """Fail closed before replace if ownership cannot be restored."""
+        cron_dir = Path(self.tmpdir) / "cron"
+        output_dir = cron_dir / "output"
+        jobs_file = cron_dir / "jobs.json"
+        cron_dir.mkdir(parents=True)
+        original = b'{"jobs": [{"id": "keep-me"}]}'
+        jobs_file.write_bytes(original)
+
+        with (
+            patch("cron.jobs.CRON_DIR", cron_dir),
+            patch("cron.jobs.OUTPUT_DIR", output_dir),
+            patch("cron.jobs.JOBS_FILE", jobs_file),
+            patch("cron.jobs.os.geteuid", return_value=0),
+            patch("cron.jobs.os.fchown", side_effect=PermissionError("denied")),
+            self.assertRaises(PermissionError),
+        ):
+            from cron.jobs import save_jobs
+
+            save_jobs([{"id": "replacement"}])
+
+        self.assertEqual(jobs_file.read_bytes(), original)
+        self.assertEqual(list(cron_dir.glob(".jobs_*.tmp")), [])
+
+    def test_first_save_does_not_attempt_owner_preservation(self):
+        cron_dir = Path(self.tmpdir) / "cron"
+        output_dir = cron_dir / "output"
+        jobs_file = cron_dir / "jobs.json"
+
+        with (
+            patch("cron.jobs.CRON_DIR", cron_dir),
+            patch("cron.jobs.OUTPUT_DIR", output_dir),
+            patch("cron.jobs.JOBS_FILE", jobs_file),
+            patch("cron.jobs.os.geteuid", return_value=0),
+            patch("cron.jobs.os.fchown") as fchown,
+        ):
+            from cron.jobs import save_jobs
+
+            save_jobs([{"id": "first"}])
+
+        fchown.assert_not_called()
+        self.assertTrue(jobs_file.exists())
+
+    def test_unprivileged_save_does_not_chown_existing_jobs_file(self):
+        """Only a privileged writer should preserve another account's owner."""
+        cron_dir = Path(self.tmpdir) / "cron"
+        output_dir = cron_dir / "output"
+        jobs_file = cron_dir / "jobs.json"
+        cron_dir.mkdir(parents=True)
+        jobs_file.write_text('{"jobs": []}', encoding="utf-8")
+        different_uid = jobs_file.stat().st_uid + 1
+
+        with (
+            patch("cron.jobs.CRON_DIR", cron_dir),
+            patch("cron.jobs.OUTPUT_DIR", output_dir),
+            patch("cron.jobs.JOBS_FILE", jobs_file),
+            patch("cron.jobs.os.geteuid", return_value=different_uid),
+            patch("cron.jobs.os.fchown") as fchown,
+        ):
+            from cron.jobs import save_jobs
+
+            save_jobs([{"id": "recovered"}])
+
+        fchown.assert_not_called()
+        self.assertTrue(jobs_file.exists())
+
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
         with patch("cron.jobs.OUTPUT_DIR", output_dir), \

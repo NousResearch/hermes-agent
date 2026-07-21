@@ -2001,7 +2001,16 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.auth_type == "aws_sdk":
+        if hermes_slug == "lmstudio":
+            # LM Studio is a local endpoint. It should appear in the picker when
+            # the user has configured LM_BASE_URL or is already using the
+            # provider, even if the local server does not require an API key.
+            has_creds = bool(
+                os.environ.get("LM_BASE_URL")
+                or os.environ.get("LM_API_KEY")
+                or current_provider.strip().lower() == "lmstudio"
+            )
+        elif overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)

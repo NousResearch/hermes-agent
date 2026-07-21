@@ -22,6 +22,8 @@ import asyncio
 import contextlib
 from unittest.mock import AsyncMock
 
+import pytest
+
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _kakao = load_plugin_adapter("kakao")
@@ -477,13 +479,13 @@ class TestEnvEnablement:
 
 class TestCheckRequirementsAndValidate:
 
-    def test_rejects_without_secret(self, monkeypatch):
+    def test_passes_without_secret(self, monkeypatch):
+        # check_fn is a dependency gate only; the registry runs it before
+        # it has a config, so requiring the env secret here would break
+        # extra-only setups.
+        pytest.importorskip("aiohttp")
         monkeypatch.delenv("KAKAO_SKILL_SECRET", raising=False)
-        assert not check_requirements()
-
-    def test_accepts_with_secret_and_aiohttp(self, monkeypatch):
-        monkeypatch.setenv("KAKAO_SKILL_SECRET", "s")
-        assert check_requirements()  # aiohttp is a project dependency
+        assert check_requirements()
 
     def test_validate_config_from_extra(self):
         from gateway.config import PlatformConfig
@@ -501,6 +503,48 @@ class TestCheckRequirementsAndValidate:
         from gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"skill_secret": "s"})
         assert is_connected(cfg) == validate_config(cfg)
+
+
+class TestRegistryGate:
+    """The production gate: PlatformRegistry.create_adapter() calls
+    check_fn() before validate_config() or the factory, so the
+    config-extra-only credential path must survive all three stages."""
+
+    @pytest.fixture(autouse=True)
+    def _require_aiohttp(self):
+        # Without aiohttp the check_fn stage rejects everything, which
+        # would vacuously pass the rejection test and mask the gate
+        # behavior these tests exist to pin down.
+        pytest.importorskip("aiohttp")
+
+    @staticmethod
+    def _registry():
+        from gateway.platform_registry import PlatformEntry, PlatformRegistry
+        registry = PlatformRegistry()
+        registry.register(
+            PlatformEntry(
+                name="kakao",
+                label="Kakao",
+                adapter_factory=lambda cfg: KakaoAdapter(cfg),
+                check_fn=check_requirements,
+                validate_config=validate_config,
+            )
+        )
+        return registry
+
+    def test_create_adapter_with_extra_only_secret(self, monkeypatch):
+        monkeypatch.delenv("KAKAO_SKILL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"skill_secret": "s"})
+        adapter = self._registry().create_adapter("kakao", cfg)
+        assert isinstance(adapter, KakaoAdapter)
+        assert adapter.skill_secret == "s"
+
+    def test_create_adapter_rejects_unconfigured(self, monkeypatch):
+        monkeypatch.delenv("KAKAO_SKILL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={})
+        assert self._registry().create_adapter("kakao", cfg) is None
 
 
 class TestAdapterInit:

@@ -903,9 +903,13 @@ class KakaoAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 
 def check_requirements() -> bool:
-    """Plugin gate: require the shared secret AND aiohttp at runtime."""
-    if not os.getenv("KAKAO_SKILL_SECRET"):
-        return False
+    """Plugin gate: dependencies only (aiohttp).
+
+    The shared secret is deliberately NOT checked here: the registry calls
+    ``check_fn()`` before it ever sees the ``PlatformConfig``, so an env-var
+    check would lock out ``extra["skill_secret"]``-only setups.
+    ``validate_config()`` owns the credential gate (env or config extra).
+    """
     try:
         import aiohttp  # noqa: F401
     except ImportError:

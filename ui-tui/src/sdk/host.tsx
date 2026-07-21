@@ -164,8 +164,10 @@ export function AmbientDock(): ReactNode {
 
   const ctx = { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never }
 
+  // paddingRight keeps card borders off the terminal's last column — an
+  // exact-edge border char trips pending-wrap and reads as a clipped border.
   return (
-    <Box columnGap={1} flexDirection="row" justifyContent="flex-end" width="100%">
+    <Box columnGap={1} flexDirection="row" justifyContent="flex-end" paddingRight={2} width="100%">
       {overlay.ambient.map(active => (
         <Box key={active.appId}>{renderApp(active, ctx)}</Box>
       ))}

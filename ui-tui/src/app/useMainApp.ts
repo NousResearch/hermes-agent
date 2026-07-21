@@ -38,6 +38,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -434,6 +435,26 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
+
+  // Hot-loaded user widgets announce themselves — a silently-registered
+  // widget is indistinguishable from a failed one. Errors surface too.
+  useEffect(
+    () =>
+      onUserWidgets(({ added, errors, removed }) => {
+        for (const id of added) {
+          sys(`widget /${id} is live — type /${id} to open`)
+        }
+
+        for (const id of removed) {
+          sys(`widget /${id} removed (file deleted)`)
+        }
+
+        for (const err of errors) {
+          sys(`widget ${err.file} failed to load: ${err.message}`)
+        }
+      }),
+    [sys]
+  )
 
   const page = useCallback(
     (text: string, title?: string) => patchOverlayState({ pager: { lines: text.split('\n'), offset: 0, title } }),

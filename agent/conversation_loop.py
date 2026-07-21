@@ -3349,9 +3349,18 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                # Retryable 5xx (502/503/500/529): one quick retry for blips,
+                # then fall back — same logic as transport failures. 503
+                # capacity/overload waves are functionally identical to 429
+                # from the user's perspective (#68771).
+                is_retryable_5xx = classified.reason in {
+                    FailoverReason.server_error,
+                    FailoverReason.overloaded,
+                }
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
+                    or (is_retryable_5xx and retry_count >= 1)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -3385,6 +3394,11 @@ def run_conversation(
                         elif _is_transport_failure:
                             agent._buffer_status(
                                 "⚠️ Provider unreachable — switching to fallback provider..."
+                            )
+                        elif is_retryable_5xx:
+                            agent._buffer_status(
+                                f"⚠️ Provider returned HTTP {status_code} — "
+                                "switching to fallback provider..."
                             )
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")

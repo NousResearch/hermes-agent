@@ -1925,7 +1925,7 @@ from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
-from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.slash_commands import GatewaySlashCommandsMixin, ModelSwitchConfirmation
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -10838,7 +10838,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # honored, but handlers that return nothing behave exactly as
         # before (telemetry-style hooks keep working).
         if command and is_gateway_known_command(canonical):
-            raw_args = event.get_command_args().strip()
+            # /model accepts an inline payload after a newline; the hook args
+            # must describe the command line only, not the routed prompt body.
+            _hook_arg_event = (
+                self._split_inline_command_payload(event)[0]
+                if canonical == "model"
+                else event
+            )
+            raw_args = _hook_arg_event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -10985,7 +10992,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_yolo_command(event)
 
         if canonical == "model":
-            return await self._handle_model_command(event)
+            model_event, inline_payload = self._split_inline_command_payload(event)
+            model_response = await self._handle_model_command(model_event)
+            if inline_payload.strip() and isinstance(model_response, ModelSwitchConfirmation):
+                # Successful switch with an inline payload — deliver the
+                # confirmation now, rewrite the turn to the payload, and fall
+                # through to agent processing (the /learn pattern) so
+                # "/model <name>\n<prompt>" runs the prompt on the new model.
+                # ModelSwitchConfirmation is the structural success signal;
+                # the confirmation text itself is localized and must not be
+                # parsed.
+                try:
+                    adapter = self._adapter_for_source(source)
+                    if adapter:
+                        _model_meta = self._thread_metadata_for_source(source)
+                        await adapter.send(
+                            str(source.chat_id), str(model_response), metadata=_model_meta
+                        )
+                except Exception:
+                    logger.debug("model switch confirmation send failed", exc_info=True)
+                event.text = inline_payload
+            else:
+                return model_response
 
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)

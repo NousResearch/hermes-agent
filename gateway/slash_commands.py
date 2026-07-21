@@ -56,6 +56,17 @@ logger = logging.getLogger("gateway.run")
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 
+class ModelSwitchConfirmation(str):
+    """Confirmation text for a completed /model switch.
+
+    A structural marker so the dispatcher can detect a successful switch
+    without parsing presentation text — the message is localized via
+    ``t("gateway.model.switched", ...)`` and its wording varies by locale.
+    """
+
+    __slots__ = ()
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
 
@@ -89,6 +100,23 @@ class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
+
+    @staticmethod
+    def _split_inline_command_payload(event: MessageEvent) -> tuple[MessageEvent, str]:
+        """Split a slash command's first line from an inline payload body.
+
+        ``/model gpt-x\\nsummarize this`` returns an event whose text is just
+        the command line, plus the remaining payload so the dispatcher can
+        route it as a normal prompt after the command succeeds.
+        """
+        text = event.text or ""
+        command_line, sep, payload = text.partition("\n")
+        if not sep:
+            return event, ""
+        return (
+            dataclasses.replace(event, text=command_line.rstrip("\r")),
+            payload.lstrip("\r\n"),
+        )
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
@@ -2107,7 +2135,7 @@ class GatewaySlashCommandsMixin:
             else:
                 lines.append(t("gateway.model.session_only_hint"))
 
-            return "\n".join(lines)
+            return ModelSwitchConfirmation("\n".join(lines))
 
         # Expensive-model confirmation gate (typed /model <name> path).
         # The pickers (Telegram/Discord inline keyboards, TUI, dashboard)

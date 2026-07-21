@@ -186,6 +186,62 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Reject epoch values before 2000-01-01T00:00:00Z: nothing in Hermes' lifetime
+# legitimately produced a gateway heartbeat last century, so anything older is
+# a corrupt or hand-edited state file (e.g. an accidental 0 / tiny int).
+_EPOCH_MIN_PLAUSIBLE = 946684800.0  # 2000-01-01T00:00:00Z
+
+
+def normalize_updated_at(value: Any) -> Optional[str]:
+    """Coerce a persisted ``updated_at`` value to an RFC3339 string or ``None``.
+
+    The ``gateway_state.json`` writers all emit RFC3339 via :func:`_utc_now_iso`,
+    but the file can also be produced by legacy gateways (which wrote unix
+    epoch floats), hand edits, or partial corruption. Every read/emit surface
+    (``/api/status``'s ``gateway_updated_at``, the gateway's
+    ``/health/detailed`` ``updated_at``) promises consumers ``string | null``
+    (see ``web/src/lib/api.ts``), so this funnel enforces that contract:
+
+    - ``str``: accepted iff :meth:`datetime.fromisoformat` parses it (a
+      trailing ``Z`` is tolerated). Naive timestamps are coerced to UTC.
+      Returns the canonical ``datetime.isoformat()`` rendering.
+    - ``int`` / ``float``: treated as unix epoch **seconds** and converted to
+      a UTC ISO string. Implausible values — before 2000-01-01, more than a
+      day in the future, or non-finite — return ``None``.
+    - ``bool``: returns ``None``. Although ``bool`` is an ``int`` subclass,
+      ``True``/``False`` as a timestamp is always garbage (epoch 0/1 would be
+      rejected by the range guard anyway); rejecting explicitly keeps the
+      behaviour documented rather than incidental.
+    - anything else (``None``, dict, list, ...): ``None``.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        raw = value.strip()
+        # Python < 3.11 fromisoformat rejects a trailing 'Z'; tolerate it.
+        if raw.endswith(("Z", "z")):
+            raw = raw[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.isoformat()
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds != seconds or seconds in (float("inf"), float("-inf")):
+            return None
+        now = datetime.now(timezone.utc).timestamp()
+        if seconds < _EPOCH_MIN_PLAUSIBLE or seconds > now + 86400:
+            return None
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
+
+
 def terminate_pid(pid: int, *, force: bool = False) -> None:
     """Terminate a PID with platform-appropriate force semantics.
 

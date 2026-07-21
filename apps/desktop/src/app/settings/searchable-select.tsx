@@ -34,18 +34,19 @@ export function SearchableSelect({
 
   const handleSelect = useCallback(
     (selected: string) => {
-      onChange(selected === value ? '' : selected)
+      onChange(selected)
       setOpen(false)
     },
-    [onChange, value]
+    [onChange]
   )
 
-  const displayValue = value || placeholder
+  const displayValue = value !== '' && value !== undefined ? value : placeholder
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
+          aria-haspopup="listbox"
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',
@@ -64,10 +65,6 @@ export function SearchableSelect({
       <PopoverContent
         align="start"
         className="w-[var(--radix-popover-trigger-width)] p-0"
-        onOpenAutoFocus={e => {
-          // Let cmdk's CommandInput own focus, not the popover container.
-          e.preventDefault()
-        }}
       >
         <Command
           filter={(value, search) => {
@@ -76,14 +73,15 @@ export function SearchableSelect({
             // match segments after "/" so "york" matches "America/New_York".
             const lower = search.toLowerCase()
             const itemLower = value.toLowerCase()
-            if (itemLower.includes(lower)) return 1
-            // Match the segment after the last "/" (city name).
+            // Prioritize city/region segment (after last "/") so "york" ranks
+            // "America/New_York" above "America/New_York/Special".
             const slash = itemLower.lastIndexOf('/')
-            if (slash !== -1 && itemLower.slice(slash + 1).includes(lower)) return 1
+            if (slash !== -1 && itemLower.slice(slash + 1).includes(lower)) return 2
+            if (itemLower.includes(lower)) return 1
             return 0
           }}
         >
-          <CommandInput placeholder={placeholder} />
+          <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>

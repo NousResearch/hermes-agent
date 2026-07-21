@@ -111,6 +111,7 @@ hermes              # インタラクティブCLI — 会話を開始
 hermes model        # LLMプロバイダとモデルを選択
 hermes tools        # 有効にするツールを設定
 hermes config set   # 個別の設定値をセット
+hermes config get   # 個別の設定値を表示
 hermes gateway      # メッセージングゲートウェイを起動（Telegram、Discord等）
 hermes setup        # フルセットアップウィザードを実行（一括設定）
 hermes claw migrate # OpenClawから移行（OpenClaw利用者の場合）

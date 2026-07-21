@@ -1195,6 +1195,34 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided.")
 
+    # Hard-block gateway-lifecycle commands, mirroring the guard in
+    # terminal_tool. Without this, execute_code is a straight bypass: the
+    # terminal() path refuses `launchctl bootout ai.hermes.gateway`, but the
+    # identical command inside `os.system(...)` / `subprocess.run([...])` here
+    # sailed through and SIGTERM'd the gateway mid-task — verified 2026-07-19,
+    # every variant (bootout / kickstart -k / hermes gateway restart) returned
+    # approved=True. That matters because several bundled skills still document
+    # a bootout recipe in their troubleshooting sections (grsai-provider, which
+    # the agent reads while generating images, among them), so the model has a
+    # standing invitation to run exactly this. Killing the gateway from inside
+    # it also kills this very subprocess, so the restart may never complete.
+    if os.environ.get("_HERMES_GATEWAY") == "1":
+        from hermes_cli.cron import _contains_gateway_lifecycle_command
+        if _contains_gateway_lifecycle_command(code):
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    "Blocked: cannot restart or stop the gateway from inside the "
+                    "gateway process. The gateway would kill this script before it "
+                    "could complete (SIGTERM propagates to child processes). Run "
+                    "`hermes gateway restart` from a shell outside the gateway, or "
+                    "let the watchdog (~/.hermes/scripts/gateway-watchdog.sh) "
+                    "handle recovery."
+                ),
+                "tool_calls_made": 0,
+                "duration_seconds": 0,
+            }, ensure_ascii=False)
+
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()

@@ -40,6 +40,10 @@ widgets.
    widgets directory is watched); `/widgets-reload` forces a rescan.
 3. The widget's id becomes its slash command automatically (`/<id>`), with
    its `help` in the `/` completion popover. No other registration exists.
+4. Auto-open (no command needed): end `register(sdk)` with
+   `sdk.openWidget(app, app.init(''))` — the widget docks itself the moment
+   the file loads. Only do this when the user asked for it; note it re-docks
+   on every `/widgets-reload`.
 
 ## Quick Reference
 

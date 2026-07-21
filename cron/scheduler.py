@@ -1402,7 +1402,7 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None, adapters_by_id=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1530,6 +1530,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             continue
 
         pconfig = config.platforms.get(platform)
+        # Multi-app mode (#68046): pconfig may be a list, select the right one
+        if isinstance(pconfig, list):
+            # Try to match by profile if job has one
+            job_profile = job.get("profile") or job.get("deliver", {}).get("profile")
+            if job_profile:
+                selected = next(
+                    (c for c in pconfig if (c.extra or {}).get("profile") == job_profile),
+                    pconfig[0] if pconfig else None
+                )
+            else:
+                selected = pconfig[0] if pconfig else None
+            pconfig = selected
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
@@ -1538,7 +1550,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+        # Multi-app mode (#68046): if the platform has multiple adapters, try
+        # to select the one matching this pconfig's configured id.
         runtime_adapter = (adapters or {}).get(platform)
+        if runtime_adapter is None and hasattr(pconfig, "extra"):
+            # pconfig is a single PlatformConfig at this point (list already
+            # resolved above).  Look up the concrete adapter by its full id
+            # (``platform:configured_id``) in the runner's adapters_by_id map.
+            _extra = getattr(pconfig, "extra", None) or {}
+            _configured_id = str(
+                _extra.get("adapter_id")
+                or _extra.get("app_id")
+                or _extra.get("bot_id")
+                or ""
+            ).strip()
+            if _configured_id and isinstance(adapters_by_id, dict):
+                _full_id = f"{platform.value}:{_configured_id}"
+                runtime_adapter = adapters_by_id.get(_full_id) or runtime_adapter
         delivered = False
         target_errors = []
 
@@ -3518,7 +3546,7 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False, adapters_by_id=None) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
@@ -3634,7 +3662,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             if should_deliver:
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop, adapters_by_id=adapters_by_id)
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -3688,6 +3716,7 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
+    adapters_by_id=None,
 ):
     """
     Check and run all due jobs.
@@ -3776,7 +3805,7 @@ def tick(
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose, adapters_by_id=adapters_by_id)
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so

@@ -1409,6 +1409,17 @@ def load_gateway_config() -> GatewayConfig:
                         continue
                     try:
                         seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+                    except ValueError as e:
+                        # Validation errors (duplicate app_id, >10 apps limit)
+                        # must be visible — the platform will be silently
+                        # disabled if we just continue.  Log at ERROR so the
+                        # user sees it in gateway logs (#68046).
+                        logger.error(
+                            "Configuration error for %s: %s — this platform "
+                            "will be disabled.",
+                            entry.name, e,
+                        )
+                        continue
                     except Exception as e:
                         logger.debug(
                             "apply_yaml_config_fn for %s raised: %s",
@@ -1417,8 +1428,12 @@ def load_gateway_config() -> GatewayConfig:
                         continue
                     if not isinstance(seeded, dict) or not seeded:
                         continue
-                    _, extra = _ensure_platform_extra_dict(platforms_data, entry.name)
-                    extra.update(seeded)
+                    # Multi-app list return: feishu.apps[] → platforms.feishu: [...]
+                    if "platforms_list" in seeded:
+                        platforms_data[entry.name] = seeded["platforms_list"]
+                    else:
+                        _, extra = _ensure_platform_extra_dict(platforms_data, entry.name)
+                        extra.update(seeded)
 
             # Slack settings → env vars: migrated to the slack plugin's
             # ``apply_yaml_config_fn`` hook (see plugins/platforms/slack/

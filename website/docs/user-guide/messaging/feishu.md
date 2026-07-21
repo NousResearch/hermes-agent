@@ -528,6 +528,93 @@ Set `require_mention: false` on a `group_rules` entry to skip the @-mention requ
 
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 
+## Multi-App Profile Routing
+
+Host multiple Feishu/Lark bot apps in a single gateway process, each one routed to its own [Hermes profile](../profiles.md) — with independent skills, MCP connections, memory, SOUL, and credentials. Useful for running one bot per role (e.g. `architect`, `code-reviewer`, `test-engineer`) without a separate gateway process per bot.
+
+### How it works
+
+Each entry in `feishu.apps[]` is a distinct Feishu app — its own `app_id`/`app_secret`, created separately in the Feishu/Lark developer console. Tagging an entry with `profile: <name>` scopes every inbound message from that app to `<name>`'s `HERMES_HOME` for the turn: its own skills, memory, `SOUL.md`, MCP servers, and `.env` credentials. An entry without a `profile` field behaves like a normal single-app bot on the gateway's own profile.
+
+This depends on [`gateway.multiplex_profiles: true`](../multi-profile-gateways.md#alternative-one-gateway-many-profiles-multiplexing) — the flag that turns on the profile-scoping engine this feature builds on. All `feishu.apps[]` entries still run inside **one process** (the profile that owns `multiplex_profiles`), so you are not starting a separate gateway per bot.
+
+:::tip Only have one Feishu bot?
+To route different chats/groups of a single existing bot to different profiles instead of creating new bot apps, use [`gateway.profile_routes`](../multi-profile-gateways.md#routing-shared-bot-chats-to-profiles-profile_routes) instead — no new Feishu app required.
+:::
+
+### Prerequisites
+
+1. Create every target profile first. A `profile:` name that doesn't exist on disk does **not** error — it silently falls back to the gateway's own home with a warning logged, so a typo here fails quietly:
+   ```bash
+   hermes profile create architect
+   hermes profile create code-reviewer
+   # ... one per bot
+   ```
+2. Enable multiplexing on the profile that will own the gateway (usually `default`):
+   ```bash
+   hermes config set gateway.multiplex_profiles true
+   ```
+3. In the Feishu/Lark developer console, create one app per bot identity and copy each **App ID** / **App Secret** — repeat [Step 1](#step-1-create-a-feishu--lark-app) above once per app.
+
+### Configuration
+
+Add `apps:` under `platforms.feishu` in the config.yaml of the profile that owns the gateway. **YAML takes precedence** over the legacy `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars — if both are present, the gateway logs a warning and uses the YAML list.
+
+```yaml
+platforms:
+  feishu:
+    enabled: true
+    apps:
+      - app_id: cli_aaa111
+        app_secret: secret_aaa
+        profile: architect
+        home_channel: oc_architect_home
+        allowed_users: ou_alice,ou_bob
+      - app_id: cli_bbb222
+        app_secret: secret_bbb
+        profile: code-reviewer
+        home_channel: oc_reviewer_home
+        allow_all_users: true
+      - app_id: cli_ccc333
+        app_secret: secret_ccc
+        profile: test-engineer
+        allow_bots: mentions
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `app_id` / `app_secret` | ✅ | Credentials for this specific Feishu app. An entry missing either is skipped. |
+| `profile` | — | Hermes profile this app's turns scope to. Omit to keep the app on the gateway's own profile. |
+| `home_channel` | — | Per-app override for cron/notification delivery target (same semantics as `FEISHU_HOME_CHANNEL`). |
+| `allow_all_users` / `allowed_users` | — | Per-app authorization, overriding the global allowlist for this app only. |
+| `allow_bots` | — | Per-app bot-to-bot policy (`none`/`mentions`/`all`); falls back to the top-level `feishu.allow_bots` when omitted. |
+
+Constraints:
+
+- Maximum **10** apps per gateway.
+- `app_id` must be unique across the list — a duplicate raises a config error at startup.
+- `domain` and `FEISHU_CONNECTION_MODE` are not per-app; every app in the list shares the platform-level domain/connection-mode settings.
+
+### Verifying
+
+```bash
+hermes gateway restart
+hermes status              # confirm every app adapter connected
+tail -f ~/.hermes/logs/gateway.log
+```
+
+Message each bot and confirm the reply reflects that bot's target profile (different personality, different skill/tool availability, separate memory). If a mapped app appears to be served by the wrong profile, search the log for `does not exist ... falling back to global HERMES_HOME` — the profile directory is missing or misspelled.
+
+### Multi-App Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `feishu.apps contains N entries; maximum is 10` | Reduce the list to 10 or fewer apps. |
+| `Duplicate app_id in feishu.apps: <id>` | Each `app_id` must appear once; remove the duplicate entry. |
+| `Both feishu.apps[] config and FEISHU_APP_ID env var detected` | Remove `FEISHU_APP_ID`/`FEISHU_APP_SECRET` from `.env`, or delete the `apps:` block — don't configure both. |
+| Bot replies with the default profile's personality/skills instead of the mapped one | `gateway.multiplex_profiles` is not `true`, or the target profile doesn't exist on disk (check the log for the fallback warning). |
+| Only one bot connects, others silent | Confirm each `app_id`/`app_secret` pair is valid and the app is published in the Feishu developer console — each entry connects independently. |
+
 ## Deduplication
 
 Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedup state is persisted across restarts to `~/.hermes/feishu_seen_message_ids.json`.

@@ -165,13 +165,17 @@ class InProcessCronScheduler(CronScheduler):
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None, **kwargs):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+        # Multi-app mode (#68046): adapters_by_id passed from gateway for
+        # per-profile cron delivery routing. Extracted from kwargs so the
+        # ABC signature stays stable (additive growth only).
+        adapters_by_id = kwargs.get("adapters_by_id")
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
@@ -187,6 +191,7 @@ class InProcessCronScheduler(CronScheduler):
                         loop=loop,
                         sync=False,
                         can_dispatch=can_dispatch,
+                        adapters_by_id=adapters_by_id,
                     )
                 ok = True
             except BaseException as e:

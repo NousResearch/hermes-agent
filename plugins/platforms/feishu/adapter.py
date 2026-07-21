@@ -4297,6 +4297,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if self_ids and sender_ids & self_ids:
             return "self_echo"
 
+        # NOTE (#68046): Bot-to-bot self-message detection would require sender's app_id,
+        # but Feishu receive_v1 webhooks don't include sender.app_id (only sender.sender_id
+        # has open_id/user_id/union_id). The GET im/v1/messages API returns sender.id=app_id,
+        # but that's only available in the reaction routing path (L2971-2975), not in the
+        # main message intake. Since Feishu doesn't echo our outbound messages back as inbound,
+        # the self_echo guard above (via open_id matching) is sufficient for preventing loops.
+        # Multi-bot coexistence in the same chat is supported; each bot filters via its own
+        # open_id.
+
         if is_bot:
             mode = self._allow_bots
             if mode != "mentions" and mode != "all":
@@ -5758,11 +5767,102 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
-    Env vars take precedence over YAML. Returns None — flows through env.
+
+    Now also supports feishu.apps[] list for multi-app profile routing (#68046).
+    When feishu.apps is configured, each app entry becomes a separate
+    PlatformConfig in the platforms.feishu list, with per-app credentials,
+    home_channel, authorization policies, and profile mapping.
+
+    YAML takes precedence over env vars when feishu.apps[] is configured.
+    Returns bridged config dict for multi-app, or None for single-app mode (flows through env).
     """
+    # Single-app config (legacy): allow_bots
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+
+    # Multi-app config: feishu.apps[] list
+    apps_list = feishu_cfg.get("apps")
+    if not isinstance(apps_list, list):
+        return None  # Single-app mode, no bridging needed
+
+    # YAML/env coexistence warning (#68046): if both feishu.apps[] and FEISHU_APP_ID
+    # are present, YAML takes precedence but warn the user of the conflict.
+    if os.getenv("FEISHU_APP_ID"):
+        logger.warning(
+            "Both feishu.apps[] config and FEISHU_APP_ID env var detected; "
+            "using YAML apps config, ignoring env var."
+        )
+
+    # Validate app count (hard limit: 10)
+    if len(apps_list) > 10:
+        raise ValueError(
+            f"feishu.apps contains {len(apps_list)} entries; maximum is 10. "
+            "Multi-app Feishu supports up to 10 concurrent apps per gateway."
+        )
+
+    # Collect app_ids to detect duplicates (#68046)
+    seen_app_ids = set()
+
+    # Build per-app config dicts for platforms.feishu list
+    platform_configs = []
+    for i, app_entry in enumerate(apps_list):
+        if not isinstance(app_entry, dict):
+            continue
+
+        app_id = app_entry.get("app_id")
+        app_secret = app_entry.get("app_secret")
+        if not app_id or not app_secret:
+            continue
+
+        # Duplicate app_id check (#68046)
+        if app_id in seen_app_ids:
+            raise ValueError(f"Duplicate app_id in feishu.apps: {app_id}")
+        seen_app_ids.add(app_id)
+
+        # Base config for this app
+        app_config = {
+            "enabled": True,
+            "extra": {
+                "app_id": app_id,
+                "app_secret": app_secret,
+                # adapter_id is used by _adapter_instance_id() to generate the full
+                # "platform:id" string. Store just the app_id here, not the full prefix.
+                "adapter_id": app_id,
+            }
+        }
+
+        # Optional profile mapping
+        profile = app_entry.get("profile", "").strip()
+        if profile:
+            app_config["extra"]["profile"] = profile
+
+        # Optional home_channel
+        home_channel = app_entry.get("home_channel", "").strip()
+        if home_channel:
+            app_config["extra"]["home_channel"] = home_channel
+
+        # Per-app authorization: allow_all_users
+        if "allow_all_users" in app_entry:
+            app_config["extra"]["allow_all_users"] = app_entry["allow_all_users"]
+
+        # Per-app authorization: allowed_users
+        allowed_users = app_entry.get("allowed_users", "").strip()
+        if allowed_users:
+            app_config["extra"]["allowed_users"] = allowed_users
+
+        # Per-app bot policy (#68046): allow_bots per app entry.
+        # Falls back to the top-level feishu.allow_bots (already bridged to
+        # the env var above), so single-app backward compat is preserved.
+        if "allow_bots" in app_entry:
+            app_config["extra"]["allow_bots"] = str(app_entry["allow_bots"]).lower()
+
+        platform_configs.append(app_config)
+
+    if not platform_configs:
+        return None  # No valid apps, fall back to single-app mode
+
+    # Return multi-app config list (will be merged into platforms.feishu)
+    return {"platforms_list": platform_configs}
 
 
 def _is_connected(config) -> bool:

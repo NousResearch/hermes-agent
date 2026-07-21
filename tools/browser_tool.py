@@ -463,10 +463,15 @@ def _get_cdp_override() -> str:
     Precedence is:
     1. ``BROWSER_CDP_URL`` env var (live override from ``/browser connect``)
     2. ``browser.cdp_url`` in config.yaml (persistent config)
+    3. ``browser.auto_attach_local_chrome: true`` -- probe
+       ``http://127.0.0.1:9222/json/version`` once per process and reuse
+       a running Chrome started with ``--remote-debugging-port=9222``.
+       Opt-in (default off) for safety: we never auto-attach to the
+       user's logged-in browser without explicit consent.
 
-    When either is set, we skip both Browserbase and the local headless
-    launcher and connect directly to the supplied Chrome DevTools Protocol
-    endpoint.
+    When any of these resolves to a non-empty URL, we skip both
+    Browserbase and the local headless launcher and connect directly to
+    the supplied Chrome DevTools Protocol endpoint.
     """
     env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
     if env_override:
@@ -478,11 +483,179 @@ def _get_cdp_override() -> str:
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            return _resolve_cdp_override(str(browser_cfg.get("cdp_url", "") or ""))
+            configured = str(browser_cfg.get("cdp_url", "") or "")
+            if configured:
+                return _resolve_cdp_override(configured)
+            # Opt-in auto-attach: only consult the local probe when the
+            # user explicitly set browser.auto_attach_local_chrome: true.
+            # We DO NOT default this on -- attaching to the user's
+            # real browser without consent would surprise users who
+            # ran `hermes` expecting an isolated headless instance.
+            # See #24288 for the discussion.
+            if is_truthy_value(browser_cfg.get("auto_attach_local_chrome", False)):
+                auto = _probe_local_chrome_cdp()
+                if auto:
+                    # Cache via env so concurrent tool calls see the same
+                    # endpoint without re-probing the discovery URL.
+                    os.environ["BROWSER_CDP_URL"] = auto
+                    logger.info(
+                        "browser_tool: auto-attached to local Chrome at %s "
+                        "(browser.auto_attach_local_chrome=true)",
+                        auto,
+                    )
+                    return auto
     except Exception as e:
         logger.debug("Could not read browser.cdp_url from config: %s", e)
 
     return ""
+
+
+# Cache the local-Chrome probe so every tool call doesn't issue a GET
+# to ``127.0.0.1:9222`` (which prints a debug log and adds ~10ms latency
+# on a cold socket).  A short TTL means the user can launch Chrome
+# mid-session and the next nav picks it up.
+_LOCAL_CDP_PROBE_CACHE: Dict[str, Any] = {"checked_at": 0.0, "url": ""}
+_LOCAL_CDP_PROBE_TTL_S = 5.0
+
+
+def _probe_local_chrome_cdp(
+    host: str = "127.0.0.1",
+    port: int = 9222,
+    timeout_s: float = 1.0,
+) -> str:
+    """Return the WS debugger URL of a local Chrome with remote debugging,
+    or an empty string when none is reachable.
+
+    Used by the opt-in ``browser.auto_attach_local_chrome`` workflow
+    (#24288) so users who pre-launched Chrome with
+    ``--remote-debugging-port=9222`` get login-state reuse without
+    having to remember ``/browser connect`` every session.
+
+    The probe is cached for :data:`_LOCAL_CDP_PROBE_TTL_S` seconds so
+    parallel tool calls share the result and a stale "Chrome is down"
+    answer self-heals within a few seconds of the user launching it.
+    """
+    now = time.monotonic()
+    cached = _LOCAL_CDP_PROBE_CACHE
+    if now - float(cached.get("checked_at", 0.0)) < _LOCAL_CDP_PROBE_TTL_S:
+        return str(cached.get("url") or "")
+
+    cached["checked_at"] = now
+    cached["url"] = ""
+
+    discovery_url = f"http://{host}:{port}/json/version"
+    try:
+        response = requests.get(discovery_url, timeout=timeout_s)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        logger.debug(
+            "browser_tool: local CDP probe at %s failed: %s", discovery_url, exc,
+        )
+        return ""
+
+    ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+    if ws_url:
+        cached["url"] = ws_url
+        return ws_url
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Auth-wall detection (#24288)
+# ---------------------------------------------------------------------------
+# When the browser navigates to a URL that redirects to a sign-in page,
+# the LLM gets back a snapshot of a login form instead of the page it
+# asked for.  Without context the model often retries the same URL, then
+# tries to type credentials into the form, then gives up.  Surfacing a
+# clear "this looks like a login wall -- use /browser connect" hint on
+# the first hop saves an iteration budget and points the user at the
+# already-shipped CDP attach workflow.
+_AUTH_WALL_URL_FRAGMENTS: tuple[str, ...] = (
+    "/login",
+    "/log-in",
+    "/signin",
+    "/sign-in",
+    "/sign_in",
+    "/auth/login",
+    "/users/sign_in",
+    "/accounts/login",
+    "/account/login",
+    "/oauth/authorize",
+    "/saml/sso",
+    "openid",
+    "okta.com",
+    "auth0.com",
+    "login.microsoftonline.com",
+    "accounts.google.com",
+    "github.com/login",
+)
+_AUTH_WALL_TITLE_FRAGMENTS: tuple[str, ...] = (
+    "sign in",
+    "sign-in",
+    "log in",
+    "log-in",
+    "login",
+    "authenticate",
+    "authentication required",
+    "you must be logged in",
+    "please log in",
+    "session expired",
+)
+
+
+def _looks_like_auth_wall(url: str, title: str) -> bool:
+    """Return True when ``(url, title)`` resembles a login redirect.
+
+    Pure helper -- no I/O, no globals.  Centralised so we can unit-test
+    the heuristic without spinning up an actual browser.  False
+    positives are tolerable (the worst case is one extra hint in the
+    nav response); false negatives matter more.
+    """
+    lowered_url = (url or "").lower()
+    lowered_title = (title or "").lower()
+    for frag in _AUTH_WALL_URL_FRAGMENTS:
+        if frag in lowered_url:
+            return True
+    for frag in _AUTH_WALL_TITLE_FRAGMENTS:
+        if frag in lowered_title:
+            return True
+    return False
+
+
+def _auth_wall_remediation_hint() -> str:
+    """User-facing remediation text appended to nav responses when an
+    auth wall is detected and no CDP is attached (#24288).
+
+    Kept as a module-level constant string (rather than a lambda or
+    inline literal) so docs / tests can import + assert on the exact
+    copy.  Three concrete remediations in priority order:
+
+      1. `/browser connect` -- already-shipped slash command, zero
+         setup if Chrome is reachable.
+      2. Launch Chrome with `--remote-debugging-port=9222` then
+         re-navigate.  Combines with
+         ``browser.auto_attach_local_chrome: true`` for zero-friction
+         reuse on subsequent runs.
+      3. Site-specific workarounds: e.g. ``gh`` CLI for GitHub
+         (the workaround the user explicitly called out in #24288).
+    """
+    return (
+        "This page looks like a sign-in / authentication wall. The browser "
+        "tool runs in an isolated session that does NOT share cookies with "
+        "your real Chrome browser, so logged-in pages redirect to the "
+        "login screen. To act on this page on the user's behalf, suggest "
+        "one of:\n"
+        "  1. /browser connect -- attach Hermes to the user's live Chrome "
+        "session via Chrome DevTools Protocol so your existing login "
+        "cookies are reused.\n"
+        "  2. Launch Chrome with --remote-debugging-port=9222 and either "
+        "re-run /browser connect or set browser.auto_attach_local_chrome: "
+        "true in config.yaml so Hermes attaches automatically.\n"
+        "  3. For GitHub specifically: use the `gh` CLI (gh issue create, "
+        "gh pr create, gh repo view) via the terminal tool -- it shares "
+        "the user's gh auth and doesn't need a browser at all."
+    )
 
 
 def _get_dialog_policy_config() -> Tuple[str, float]:
@@ -1862,7 +2035,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating. If the response includes an 'auth_wall_warning' field, the URL redirected to a login page because the browser session does not share the user's real Chrome cookies; relay the suggested remediations (/browser connect, --remote-debugging-port=9222, gh CLI for GitHub) to the user rather than trying to type credentials into the form.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2991,6 +3164,23 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
                 "4) Some sites have very aggressive bot detection that may be unavoidable."
             )
+
+        # Auth-wall hint (#24288): when the requested URL silently
+        # redirected to a sign-in page and we're NOT already attached
+        # to the user's real Chrome via CDP, surface a single
+        # explicit hint pointing at /browser connect.  We deliberately
+        # only emit this when the redirect is observable (final_url !=
+        # url) or the title screams "login" -- a page whose canonical
+        # URL contains /login (e.g. login.example.com itself) is the
+        # user's destination, not an auth wall.
+        if (
+            not _get_cdp_override()
+            and (
+                (final_url and final_url != url and _looks_like_auth_wall(final_url, title))
+                or _looks_like_auth_wall("", title)
+            )
+        ):
+            response["auth_wall_warning"] = _auth_wall_remediation_hint()
 
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:

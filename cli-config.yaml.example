@@ -366,6 +366,27 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Auto-attach to a local Chrome started with --remote-debugging-port=9222.
+  # When true, on the first browser tool call Hermes probes
+  # http://127.0.0.1:9222/json/version and -- if a Chrome instance is
+  # reachable -- transparently uses it as the CDP backend instead of
+  # spawning an isolated headless browser.  This is the zero-friction
+  # equivalent of running `/browser connect` at the start of every
+  # session: pages you're already logged into in that Chrome window
+  # (GitHub, Google Workspace, internal dashboards) become accessible
+  # to the agent's browser tools (#24288).
+  #
+  # Default: false.  We never auto-attach without consent because
+  # attaching to your real browser means the agent's clicks affect
+  # your real tabs.  Set this only on personal workstations you're
+  # comfortable letting Hermes drive.
+  #
+  # Setup (one-time, from a separate terminal):
+  #   macOS:    open -a "Google Chrome" --args --remote-debugging-port=9222
+  #   Linux:    google-chrome --remote-debugging-port=9222 &
+  #   Windows:  & "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+  auto_attach_local_chrome: false
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

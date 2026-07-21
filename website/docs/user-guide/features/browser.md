@@ -363,6 +363,38 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.
 
+### Working with login-protected pages
+
+Out of the box, the browser tool runs in an **isolated session** that does NOT share cookies with your real Chrome browser. That's safer for one-off automation (the agent can't read your bank tabs by accident) but it means any URL behind a login wall — GitHub Issues "new", Google Workspace docs, internal dashboards, anything OAuth-gated — silently redirects to a sign-in page and the agent gets back a snapshot of an empty login form.
+
+Hermes detects these redirects and surfaces an `auth_wall_warning` field in the navigation response so the model relays the situation to you instead of trying to type credentials. Three remediations, easiest first:
+
+1. **`/browser connect` (interactive CLI).** Attach Hermes to your live Chrome via CDP so all your existing login cookies are in play. See the section above. Best for one-shot tasks where you can sit at the terminal.
+2. **`browser.auto_attach_local_chrome: true` (set-and-forget).** Add this to `config.yaml` (or `~/.hermes/config.yaml`) and pre-launch Chrome with `--remote-debugging-port=9222` once. On the next agent loop Hermes probes `http://127.0.0.1:9222/json/version`, finds Chrome, and transparently routes every browser tool call through it — no `/browser connect` step needed. Re-probes every 5 seconds so launching Chrome mid-session also works. Best for personal workstations where you're happy to let Hermes drive your real browser.
+
+   ```yaml
+   # ~/.hermes/config.yaml
+   browser:
+     auto_attach_local_chrome: true
+   ```
+
+   ```bash
+   # One-time, in a separate terminal — Linux
+   google-chrome --remote-debugging-port=9222 \
+     --user-data-dir="$HOME/.hermes/chrome-debug" &
+
+   # macOS
+   open -a "Google Chrome" --args \
+     --remote-debugging-port=9222 \
+     --user-data-dir="$HOME/.hermes/chrome-debug"
+   ```
+
+   **Default is off** because attaching to your real browser means the agent's clicks affect your real tabs. Only flip it on for machines and profiles you're comfortable letting Hermes drive.
+
+3. **Site-specific CLIs.** For some auth-gated services a CLI sidesteps the browser entirely — `gh issue create` / `gh pr create` for GitHub, `gcloud` / `aws` / `az` for cloud consoles. The agent can call these via the terminal tool and they reuse your existing auth (`gh auth login`, `aws configure`, etc.).
+
+Once any of the three is in place the `auth_wall_warning` field stops appearing — the page either renders correctly (CDP attached) or the agent picks a non-browser path (terminal-based CLI).
+
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 
 If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.

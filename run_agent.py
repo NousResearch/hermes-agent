@@ -5723,14 +5723,22 @@ class AIAgent:
         ``us.anthropic.claude-sonnet-4-5-20250929-v1:0``) and rejects
         the hyphenated form with
         ``HTTP 400 The provided model identifier is invalid``.
+        Custom providers preserve dots because the user explicitly configured
+        the model name — dot-to-hyphen conversion is only correct for the
+        Anthropic API itself (#16417).
         Regression for #11976; mirrors the opencode-go fix for #5211
         (commit f77be22c), which extended this same allowlist."""
-        if (getattr(self, "provider", "") or "").lower() in {
+        provider = (getattr(self, "provider", "") or "").lower()
+        if provider in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
             "zai", "bedrock",
             "xiaomi", "vertex",
         }:
+            return True
+        # Custom providers point at user-configured endpoints — preserve the
+        # model name as-is since the dot-to-hyphen conversion is Anthropic-specific.
+        if provider == "custom":
             return True
         base = (getattr(self, "base_url", "") or "").lower()
         return (

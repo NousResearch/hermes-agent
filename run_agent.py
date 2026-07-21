@@ -4617,6 +4617,17 @@ class AIAgent:
         _base = getattr(self, "_anthropic_base_url", "") or ""
         if "azure.com" in _base:
             return False
+        # Third-party Anthropic-compatible endpoints (MiniMax, GLM, Kimi, ByteDance, etc.)
+        # also use static API keys. Refreshing would pick up OAuth credentials
+        # that are invalid for these providers, causing 401 errors.
+        # Check using the same detection logic as build_anthropic_client.
+        from agent.anthropic_adapter import _is_third_party_anthropic_endpoint
+        if _is_third_party_anthropic_endpoint(_base):
+            logger.debug(
+                "Skipping credential refresh for third-party Anthropic endpoint: %s",
+                _base,
+            )
+            return False
 
         try:
             from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client

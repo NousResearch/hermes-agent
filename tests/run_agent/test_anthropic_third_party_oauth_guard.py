@@ -95,6 +95,58 @@ class TestOAuthFlagOnRefresh:
         assert result is True
         assert agent._is_anthropic_oauth is True
 
+    def test_third_party_endpoint_skips_refresh(self, agent):
+        """Third-party Anthropic-compatible endpoints (MiniMax, GLM, ByteDance, etc.)
+        must not trigger credential refresh even when provider == 'anthropic'.
+
+        This protects against the case where a user configures a custom Anthropic-compatible
+        endpoint with provider='anthropic' but the endpoint is not the native Anthropic API.
+        Refreshing would pick up OAuth credentials that are invalid for these endpoints.
+        """
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"  # provider is anthropic, but...
+        agent._anthropic_api_key = "custom-api-key"
+        agent._anthropic_base_url = "https://llmbox.bytedance.net"  # ...third-party endpoint
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        # The function must skip refresh for third-party endpoints.
+        assert result is False
+        # API key must remain unchanged.
+        assert agent._anthropic_api_key == "custom-api-key"
+        # OAuth flag must remain False.
+        assert agent._is_anthropic_oauth is False
+
+    def test_azure_endpoint_skips_refresh(self, agent):
+        """Azure endpoints use static API keys and must not trigger OAuth refresh."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent._anthropic_api_key = "azure-api-key"
+        agent._anthropic_base_url = "https://my-instance.azure.com/anthropic"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        # The function must skip refresh for Azure endpoints.
+        assert result is False
+        # API key must remain unchanged.
+        assert agent._anthropic_api_key == "azure-api-key"
+
 
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""

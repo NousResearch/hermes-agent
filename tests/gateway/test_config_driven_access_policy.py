@@ -1,8 +1,9 @@
 """Tests for config-driven platform access policies at the gateway layer.
 
-Background (#34515): WeCom, Weixin, Yuanbao, QQBot, and WhatsApp expose a
+Background (#34515): WeCom, Weixin, Yuanbao, QQBot, WhatsApp, and Feishu expose a
 documented config-driven access surface (``dm_policy`` / ``group_policy`` /
-``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra``) and enforce
+``allow_from`` / ``group_allow_from`` / ``group_rules`` in
+``PlatformConfig.extra``) and enforce
 it at intake —
 a message is dropped inside the adapter and never reaches the gateway unless it
 already passed that policy.
@@ -113,6 +114,7 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter"),
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+        ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
     ],
 )
 def test_own_policy_adapters_declare_the_flag(module_path, class_name):

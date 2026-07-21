@@ -785,3 +785,185 @@ async def test_degraded_send_path_wait_skips_adapters_without_gate():
     started = time.monotonic()
     await runner._wait_for_degraded_send_paths(timeout=5.0)
     assert time.monotonic() - started < 1.0
+
+
+# ── marker retention + deferred retry for refused lifecycle sends (#66589) ──
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_retains_marker_on_degraded_rejection(
+    tmp_path, monkeypatch
+):
+    """A send_path_degraded refusal must not delete the only durable record."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="send_path_degraded", retryable=True),
+    )
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    assert notify_path.exists(), "marker must survive a refused (not failed) send"
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_clears_marker_when_retain_disabled(
+    tmp_path, monkeypatch
+):
+    """The deferred retry's last-chance send must not keep the marker forever."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="send_path_degraded", retryable=True),
+    )
+
+    delivered_target = await runner._send_restart_notification(retain_marker_on_degraded=False)
+
+    assert delivered_target is None
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_still_clears_marker_on_real_failure(
+    tmp_path, monkeypatch
+):
+    """Non-degraded failures (e.g. 'Chat not found') keep the old cleanup behavior."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="Chat not found"),
+    )
+
+    await runner._send_restart_notification()
+
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_home_channel_notification_counts_degraded_rejection(tmp_path, monkeypatch):
+    """start() uses _last_home_notify_degraded to retain .restart_pending.json."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="send_path_degraded", retryable=True),
+    )
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    assert runner._last_home_notify_degraded == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_retry_delivers_retained_restart_notification(
+    tmp_path, monkeypatch
+):
+    """Marker retained at startup is delivered once the adapter recovers."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="1"))
+
+    await runner._retry_deferred_lifecycle_notifications()
+
+    assert not notify_path.exists()
+    adapter.send.assert_awaited_once()
+    call = adapter.send.await_args
+    assert call is not None
+    assert call.args[0] == "42"
+
+
+@pytest.mark.asyncio
+async def test_deferred_retry_clears_marker_when_adapter_never_recovers(
+    tmp_path, monkeypatch
+):
+    """A second refusal clears the marker: bounded loss beats a permanent stale marker."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="send_path_degraded", retryable=True),
+    )
+
+    await runner._retry_deferred_lifecycle_notifications()
+
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_deferred_retry_delivers_retained_planned_notification(
+    tmp_path, monkeypatch
+):
+    """The home-channel path is retried too, then the planned marker is cleared."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    (tmp_path / ".restart_pending.json").write_text("{}")
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="1"))
+
+    await runner._retry_deferred_lifecycle_notifications()
+
+    assert not (tmp_path / ".restart_pending.json").exists()
+    adapter.send.assert_awaited_once()
+    call = adapter.send.await_args
+    assert call is not None
+    assert call.args[0] == "home-42"
+
+
+@pytest.mark.asyncio
+async def test_schedule_deferred_retry_noop_without_markers(tmp_path, monkeypatch):
+    """Normal startup (no retained markers) must not spawn a retry task."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner._deferred_lifecycle_retry_task = None
+
+    runner._schedule_deferred_lifecycle_retry()
+
+    assert runner._deferred_lifecycle_retry_task is None

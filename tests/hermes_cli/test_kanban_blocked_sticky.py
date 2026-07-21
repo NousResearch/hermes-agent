@@ -13,6 +13,7 @@ These tests pin down:
 
 * Worker / operator-initiated blocks are sticky and survive
   ``recompute_ready``.
+* Out-of-process bridge blocks obey the same sticky lifecycle.
 * Circuit-breaker blocks (``gave_up`` event, status flipped via
   ``_record_task_failure``) still auto-recover — the original intent
   of #40c1decb3 is preserved.
@@ -97,6 +98,54 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
         assert kb.get_task(conn, child).status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Out-of-process bridge blocks must share the sticky lifecycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("clear_event", ["bridge_requeued", "bridge_dispatched"])
+def test_bridge_block_is_sticky_until_bridge_clear_transition(
+    kanban_home: Path,
+    clear_event: str,
+) -> None:
+    """A bridge-managed worker emits bridge-specific transition names.
+
+    Treating ``bridge_blocked`` as ordinary direct DB manipulation lets the
+    dispatcher immediately re-promote review-gated work.  A later explicit
+    bridge requeue or dispatch must clear that sticky state, just like
+    ``unblock_task`` clears a canonical worker block.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bridge-managed review")
+        now = int(time.time())
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'bridge_blocked', NULL, ?)",
+            (tid, now),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        blocked_task = kb.get_task(conn, tid)
+        assert blocked_task is not None
+        assert blocked_task.status == "blocked"
+
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, ?, NULL, ?)",
+            (tid, clear_event, now + 1),
+        )
+        conn.commit()
+
+        # A later transient status-only block is recoverable once the bridge
+        # has explicitly cleared its prior review gate.
+        assert kb.recompute_ready(conn) == 1
+        ready_task = kb.get_task(conn, tid)
+        assert ready_task is not None
+        assert ready_task.status == "ready"
 
 
 # ---------------------------------------------------------------------------

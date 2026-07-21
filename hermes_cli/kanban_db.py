@@ -3362,7 +3362,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
       ``hermes kanban block <id>``).  This is a deliberate handoff that
       should stay blocked until an operator unblocks it.  The block tool
-      emits a ``"blocked"`` event row in ``task_events``.
+      The block tool emits a ``"blocked"`` event row in ``task_events``.
+      Out-of-process bridge workers use the equivalent ``"bridge_blocked"``
+      transition and clear it with ``"bridge_requeued"`` or
+      ``"bridge_dispatched"``.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
@@ -3383,11 +3386,13 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN "
+        "('blocked', 'unblocked', 'bridge_blocked', "
+        "'bridge_requeued', 'bridge_dispatched') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "bridge_blocked"}
 
 
 def recompute_ready(

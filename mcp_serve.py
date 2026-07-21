@@ -27,8 +27,6 @@ MCP client config (e.g. claude_desktop_config.json):
     }
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -229,6 +227,30 @@ def _coerce_int(
     except (TypeError, ValueError):
         coerced = default
     return max(minimum, min(coerced, maximum))
+
+
+def _coerce_optional_str(value) -> Optional[str]:
+    """Coerce optional string args from untrusted MCP client inputs."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return None
+
+
+def _coerce_required_str(
+    value,
+    *,
+    field: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Coerce required string args from untrusted MCP client inputs."""
+    if isinstance(value, str):
+        return value, None
+    if isinstance(value, (int, float, bool)):
+        return str(value), None
+    return None, f"{field} must be a string"
 
 
 def _extract_message_content(msg: dict) -> str:
@@ -577,6 +599,8 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             limit: Maximum number of conversations to return (default 50)
             search: Optional text to filter conversations by name
         """
+        platform = _coerce_optional_str(platform)
+        search = _coerce_optional_str(search)
         limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
         entries = _load_sessions_index()
         conversations = []
@@ -625,6 +649,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         Args:
             session_key: The session key from conversations_list
         """
+        session_key, error = _coerce_required_str(session_key, field="session_key")
+        if error:
+            return json.dumps({"error": error})
         entries = _load_sessions_index()
         entry = entries.get(session_key)
 
@@ -665,6 +692,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: The session key from conversations_list
             limit: Maximum number of messages to return (default 50, most recent)
         """
+        session_key, error = _coerce_required_str(session_key, field="session_key")
+        if error:
+            return json.dumps({"error": error})
         limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
         entries = _load_sessions_index()
         entry = entries.get(session_key)
@@ -722,6 +752,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: The session key from conversations_list
             message_id: The message ID from messages_read
         """
+        session_key, error = _coerce_required_str(session_key, field="session_key")
+        if error:
+            return json.dumps({"error": error})
+        message_id, error = _coerce_required_str(message_id, field="message_id")
+        if error:
+            return json.dumps({"error": error})
         entries = _load_sessions_index()
         entry = entries.get(session_key)
         if not entry:
@@ -779,6 +815,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             limit: Maximum events to return (default 20)
         """
         after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
+        session_key = _coerce_optional_str(session_key)
         limit = _coerce_int(limit, default=20, minimum=1, maximum=200)
         result = bridge.poll_events(
             after_cursor=after_cursor,
@@ -806,6 +843,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             timeout_ms: Maximum wait time in milliseconds (default 30000)
         """
         after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
+        session_key = _coerce_optional_str(session_key)
         timeout_ms = _coerce_int(
             timeout_ms,
             default=30000,
@@ -843,6 +881,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             target: Platform target in "platform:identifier" format
             message: The message text to send
         """
+        target, error = _coerce_required_str(target, field="target")
+        if error:
+            return json.dumps({"error": error})
+        message, error = _coerce_required_str(message, field="message")
+        if error:
+            return json.dumps({"error": error})
         if not target or not message:
             return json.dumps({"error": "Both target and message are required"})
 
@@ -869,6 +913,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         Args:
             platform: Filter by platform name (telegram, discord, slack, etc.)
         """
+        platform = _coerce_optional_str(platform)
         directory = _load_channel_directory()
         if not directory:
             entries = _load_sessions_index()
@@ -940,6 +985,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
+        id, error = _coerce_required_str(id, field="id")
+        if error:
+            return json.dumps({"error": error})
+        decision, error = _coerce_required_str(decision, field="decision")
+        if error:
+            return json.dumps({"error": error})
         if decision not in {"allow-once", "allow-always", "deny"}:
             return json.dumps({
                 "error": f"Invalid decision: {decision}. "

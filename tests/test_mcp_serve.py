@@ -511,10 +511,21 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
 
 def _run_tool(server, name, args=None):
     """Call an MCP tool through FastMCP's tool manager and return parsed JSON."""
-    result = asyncio.get_event_loop().run_until_complete(
+    result = _call_tool_raw(server, name, args)
+    return json.loads(result) if isinstance(result, str) else result
+
+
+def _call_tool_raw(server, name, args=None):
+    """Call an MCP tool through FastMCP's tool manager without parsing/handling errors."""
+    return asyncio.get_event_loop().run_until_complete(
         server._tool_manager.call_tool(name, args or {})
     )
-    return json.loads(result) if isinstance(result, str) else result
+
+
+def _assert_string_validation_error(exc_info, field):
+    text = str(exc_info.value)
+    assert field in text
+    assert "valid string" in text
 
 
 @pytest.fixture
@@ -570,6 +581,20 @@ class TestE2EConversationsList:
         result = _run_tool(server, "conversations_list", {"limit": 2})
         assert result["count"] == 2
 
+    def test_rejects_numeric_platform_at_mcp_boundary(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "conversations_list", {"platform": 123})
+
+        _assert_string_validation_error(exc_info, "platform")
+
+    def test_rejects_invalid_search_type_at_mcp_boundary(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "conversations_list", {"search": ["Alice"]})
+
+        _assert_string_validation_error(exc_info, "search")
+
 
 class TestE2EConversationGet:
     def test_get_existing(self, mcp_server_e2e, _event_loop):
@@ -586,6 +611,13 @@ class TestE2EConversationGet:
         result = _run_tool(server, "conversation_get",
                           {"session_key": "nonexistent:key"})
         assert "error" in result
+
+    def test_rejects_unhashable_session_key(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "conversation_get", {"session_key": []})
+
+        _assert_string_validation_error(exc_info, "session_key")
 
 
 class TestE2EMessagesRead:
@@ -629,6 +661,13 @@ class TestE2EMessagesRead:
                           {"session_key": "nonexistent:key"})
         assert "error" in result
 
+    def test_rejects_unhashable_session_key(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "messages_read", {"session_key": {}})
+
+        _assert_string_validation_error(exc_info, "session_key")
+
 
 class TestE2EAttachmentsFetch:
     def test_fetch_media_from_message(self, mcp_server_e2e, _event_loop):
@@ -667,6 +706,16 @@ class TestE2EAttachmentsFetch:
             "message_id": "1",
         })
         assert "error" in result
+
+    def test_rejects_invalid_message_id(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "attachments_fetch", {
+                "session_key": "agent:main:telegram:dm:123456",
+                "message_id": [],
+            })
+
+        _assert_string_validation_error(exc_info, "message_id")
 
 
 class TestE2EEventsPoll:
@@ -719,6 +768,16 @@ class TestE2EEventsPoll:
                           {"session_key": "b"})
         assert len(result["events"]) == 1
 
+    def test_ignores_invalid_session_key_type(self, mcp_server_e2e, _event_loop):
+        from mcp_serve import QueueEvent
+
+        server, bridge = mcp_server_e2e
+        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "events_poll", {"session_key": []})
+
+        _assert_string_validation_error(exc_info, "session_key")
+
 
 class TestE2EEventsWait:
     def test_wait_timeout(self, mcp_server_e2e, _event_loop):
@@ -746,14 +805,24 @@ class TestE2EEventsWait:
         result = _run_tool(server, "events_wait", {"timeout_ms": 999999})
         assert result["event"] is not None
 
+    def test_ignores_invalid_session_key_type(self, mcp_server_e2e, _event_loop):
+        from mcp_serve import QueueEvent
+
+        server, bridge = mcp_server_e2e
+        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="test"))
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "events_wait", {"session_key": {}, "timeout_ms": 100})
+
+        _assert_string_validation_error(exc_info, "session_key")
+
 class TestMCPToolParameterCoercion:
-    def test_conversations_list_coerces_string_limit(self, fake_mcp_server, _event_loop):
-        server, _ = fake_mcp_server
+    def test_conversations_list_coerces_string_limit(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
         result = _run_tool(server, "conversations_list", {"limit": "2"})
         assert result["count"] == 2
 
-    def test_messages_read_coerces_string_limit(self, fake_mcp_server, _event_loop):
-        server, _ = fake_mcp_server
+    def test_messages_read_coerces_string_limit(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
         result = _run_tool(
             server,
             "messages_read",
@@ -761,10 +830,10 @@ class TestMCPToolParameterCoercion:
         )
         assert result["count"] == 2
 
-    def test_events_poll_coerces_string_cursor_and_limit(self, fake_mcp_server, _event_loop):
+    def test_events_poll_coerces_string_cursor_and_limit(self, mcp_server_e2e, _event_loop):
         from mcp_serve import QueueEvent
 
-        server, bridge = fake_mcp_server
+        server, bridge = mcp_server_e2e
         bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
         bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="b"))
 
@@ -772,22 +841,16 @@ class TestMCPToolParameterCoercion:
         assert len(result["events"]) == 1
         assert result["next_cursor"] == 1
 
-    def test_events_wait_coerces_invalid_timeout(self, fake_mcp_server, _event_loop):
-        from mcp_serve import QueueEvent
+    def test_events_wait_rejects_invalid_timeout_at_mcp_boundary(
+        self,
+        mcp_server_e2e,
+        _event_loop,
+    ):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "events_wait", {"after_cursor": "0", "timeout_ms": "bad"})
 
-        server, bridge = fake_mcp_server
-        bridge._enqueue(
-            QueueEvent(
-                cursor=0,
-                type="message",
-                session_key="test",
-                data={"content": "waiting for this"},
-            )
-        )
-
-        result = _run_tool(server, "events_wait", {"after_cursor": "0", "timeout_ms": "bad"})
-        assert result["event"] is not None
-        assert result["event"]["content"] == "waiting for this"
+        assert "timeout_ms" in str(exc_info.value)
 
 
 class TestE2EMessagesSend:
@@ -795,6 +858,13 @@ class TestE2EMessagesSend:
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_send", {"target": "", "message": "hi"})
         assert "error" in result
+
+    def test_rejects_invalid_target_type(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "messages_send", {"target": [], "message": "hi"})
+
+        _assert_string_validation_error(exc_info, "target")
 
     def test_send_delegates_to_tool(self, mcp_server_e2e, _event_loop, monkeypatch):
         server, _ = mcp_server_e2e
@@ -825,6 +895,13 @@ class TestE2EChannelsList:
         result = _run_tool(server, "channels_list", {"platform": "slack"})
         assert result["count"] == 1
         assert result["channels"][0]["target"] == "slack:C1234"
+
+    def test_ignores_invalid_platform_type(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "channels_list", {"platform": ["slack"]})
+
+        _assert_string_validation_error(exc_info, "platform")
 
     def test_channels_with_directory(self, mcp_server_e2e, _event_loop, monkeypatch):
         """Populated channel_directory.json should be unwrapped via the 'platforms' key.
@@ -917,6 +994,13 @@ class TestE2EPermissions:
         result = _run_tool(server, "permissions_respond",
                           {"id": "nope", "decision": "deny"})
         assert "error" in result
+
+    def test_rejects_invalid_id_type(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as exc_info:
+            _call_tool_raw(server, "permissions_respond", {"id": [], "decision": "deny"})
+
+        _assert_string_validation_error(exc_info, "id")
 
 
 # ---------------------------------------------------------------------------

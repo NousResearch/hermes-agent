@@ -252,6 +252,97 @@ MATTERMOST_ALLOWED_CHANNELS="abc123def456ghi789jkl012mno,xyz987uvw654rst321opq09
 
 另请参阅：[管理员/用户斜杠命令分离](../../reference/slash-commands.md#permissions-and-adminuser-split)。
 
+## 被动观察未提及机器人的频道消息
+
+Mattermost 可以将符合条件的频道聊天保存为上下文，而不会把每条消息都当作请求：
+
+```yaml
+mattermost:
+  require_mention: true
+  allowed_channels:
+    - "xyz987uvw654rst321opq098nml"
+  observe_unmentioned_channel_messages: true
+```
+
+此行为与 Telegram 的 `observe_unmentioned_group_messages` 一致。授权用户发送但未 `@提及` 机器人的消息只会保存为**上下文**，Hermes 保持静默。之后，当授权用户在同一频道或线程中明确提及机器人时，该轮对话可以使用这些观察上下文，但旧消息不会被当作待处理请求重新执行。
+
+安全与作用范围：
+
+- 该选项默认为 `false`，不会改变现有安装。
+- 必须保持 `require_mention` 启用，并且频道必须明确列在 `allowed_channels` 中；没有频道白名单时，被动观察会安全地保持禁用。
+- 消息写入会话记录前，发送者必须通过现有 Mattermost/gateway 用户授权检查。
+- 私信和 `free_response_channels` 仍使用正常分发；Webhook 消息、机器人账号、Hermes 自身消息、系统消息、未提及机器人的命令形式消息及白名单外频道继续被忽略。Mattermost 用户查询失败时会安全地跳过，不会写入被动上下文。
+- 上下文按频道共享；回复消息则按 Mattermost 线程根范围共享。观察文本会保留发送者名称和 ID 作为来源标记。
+- 被动观察会记录消息包含附件，但不会下载文件；明确提及机器人的消息仍保留现有附件下载行为。
+
+等效环境变量：
+
+```bash
+MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES=true
+```
+
+## 原生富消息与交互操作
+
+Mattermost 可以将 Hermes 回复渲染为原生附件卡片，同时保留原始 Markdown 作为回退文本。此功能默认关闭，因此不会改变现有安装的消息样式。
+
+```yaml
+mattermost:
+  rich_posts: true
+  feedback_buttons: true
+  interaction_url: "https://hermes.internal.example/mattermost/actions"
+  interaction_host: "127.0.0.1"
+  interaction_port: 8789
+  interaction_timeout_seconds: 300
+  interaction_allowed_cidrs:
+    - "10.0.0.12/32" # Mattermost 服务器的回调源 IP
+```
+
+在 `~/.hermes/.env` 中单独设置回调签名密钥：
+
+```bash
+MATTERMOST_INTERACTION_SECRET=replace-with-a-long-random-secret
+```
+
+可使用 `openssl rand -hex 32` 生成密钥。
+
+### 富消息行为
+
+- `rich_posts: true` 使用 Mattermost 原生 `props.attachments` 卡片包装回复。
+- 第一个 Markdown 标题会成为卡片标题；列表、表格、分隔线、代码块和其余标题继续作为 Mattermost Markdown 渲染。
+- 完整原始 Markdown 保存在附件的 `fallback` 字段中。
+- 流式输出的中间更新保持纯文本，只有最终编辑会应用富消息布局，以避免卡片闪烁。
+- 超过 Mattermost 可读分块长度的回复会在所有分块中保持纯文本。
+- 主动通知和进程外 cron 消息使用相同布局。
+- 如果 Mattermost 拒绝结构化消息或编辑，Hermes 会自动重试纯 Markdown，避免丢失回复。
+
+### 审批与反馈按钮
+
+同时配置 `interaction_url`、`MATTERMOST_INTERACTION_SECRET`，并在 `interaction_allowed_cidrs` 中至少设置一个可信来源后：
+
+- 执行审批可显示原生的**仅允许一次**、**本会话允许**、**始终允许**和**拒绝**按钮；
+- `feedback_buttons: true` 会在最终富消息回复中添加**有帮助**和**没有帮助**按钮；
+- 每个回调都携带带签名的一次性上下文，并通过现有 Mattermost 用户白名单检查；
+- 操作会在 `interaction_timeout_seconds` 后过期（取值限制为 30–3600 秒）；
+- 审批会话密钥和签名密钥不会发送到 Mattermost。
+
+如果回调未配置或交互监听器无法启动，Hermes 会回退到现有的文本审批流程。只有启用 `rich_posts` 时，`feedback_buttons` 才会生效。
+
+### 回调可达性
+
+操作回调由 Mattermost 服务器发送，而不是用户浏览器。因此 Mattermost 服务器必须能够访问 `interaction_url`。Hermes 还会拒绝直接 TCP 对端不在 `interaction_allowed_cidrs` 中的回调；应尽量使用精确的 IPv4 `/32` 或 IPv6 `/128`。部分部署会阻止访问私有地址；使用内部 URL 时，管理员可能需要通过 `AllowedUntrustedInternalConnections` 允许该目标。
+
+非回环回调 URL 必须使用 HTTPS。只有通过安全本地代理转发的 `http://127.0.0.1:8789/...` 等回环监听地址可以使用普通 HTTP。
+
+Hermes 在本地 `interaction_host:interaction_port` 上监听，并使用 `interaction_url` 的路径。请通过现有反向代理、VPN 或私有服务网络转发该监听器；无需公开 Hermes 仪表板，并应优先使用私有路由。
+
+在多配置文件复用模式下，该回调属于主机端口监听器：只有活动/默认配置文件可以设置 `interaction_url`。Hermes 会在启动时拒绝辅助配置文件中的回调监听器，避免端口冲突后静默降级交互操作。
+
+如果回调经过反向代理，`interaction_allowed_cidrs` 中只能填写该代理的直接 IP，并且代理路由必须通过源 IP 白名单或双向 TLS 等方式只允许 Mattermost 服务器访问。Hermes 不信任客户端提供的转发头。面向公众开放的普通代理路由无法证明回调来源。
+
+:::warning
+除非防火墙已将访问限制到精确的可信对端，否则不要将交互监听器绑定到 `0.0.0.0`。不要使用包含普通用户的宽泛 CIDR。不要把 `MATTERMOST_INTERACTION_SECRET` 写入 `config.yaml`、源码仓库或日志。
+:::
+
 ## 故障排查
 
 ### 机器人不响应消息

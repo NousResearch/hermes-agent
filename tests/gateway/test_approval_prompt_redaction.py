@@ -152,6 +152,47 @@ class TestApprovalCommandWiring:
             assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
             assert isinstance(value.args[1], ast.Constant) and value.args[1].value is default
 
+    def test_chat_platform_threads_exact_approval_id_when_supported(self):
+        """Button adapters that opt into exact IDs must receive the queued ID."""
+        import ast
+        import inspect
+
+        import gateway.run as run
+
+        tree = ast.parse(inspect.getsource(run))
+        notify = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_approval_notify_sync"
+        )
+        assignment = next(
+            node
+            for node in ast.walk(notify)
+            if isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Subscript)
+            and isinstance(node.targets[0].value, ast.Name)
+            and node.targets[0].value.id == "_approval_id_kwargs"
+        )
+        value = assignment.value
+        assert isinstance(value, ast.Call)
+        assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
+        assert isinstance(value.args[0], ast.Constant)
+        assert value.args[0].value == "approval_id"
+
+        call = next(
+            node
+            for node in ast.walk(notify)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "send_exec_approval"
+        )
+        assert any(
+            keyword.arg is None
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "_approval_id_kwargs"
+            for keyword in call.keywords
+        )
+
 
 class TestApprovalTextFallbackContract:
     def test_smart_deny_only_advertises_one_operation(self):

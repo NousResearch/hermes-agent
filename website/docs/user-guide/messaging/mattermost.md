@@ -252,6 +252,99 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+## Passive observation of unmentioned channel posts
+
+Mattermost can retain eligible channel chatter as context without treating every post as a request:
+
+```yaml
+mattermost:
+  require_mention: true
+  allowed_channels:
+    - "xyz987uvw654rst321opq098nml"
+  observe_unmentioned_channel_messages: true
+```
+
+This mirrors Telegram's `observe_unmentioned_group_messages` behavior. An authorized post without an `@mention` is stored as **context only**; Hermes stays silent. When an authorized user later addresses the bot in the same channel or thread, that turn may use the observed context, but the older posts are not replayed as pending requests.
+
+Safety and scope:
+
+- The option defaults to `false` and does not change existing installations.
+- `require_mention` must remain enabled, and the channel must be explicitly listed in `allowed_channels`. Observation fails closed when no channel allowlist is configured.
+- The sender must pass the existing Mattermost/gateway user authorization check before the post is persisted.
+- DMs and `free_response_channels` use normal dispatch behavior; webhook posts, bot accounts, Hermes-authored posts, system posts, unmentioned command-shaped posts, and channels outside the allowlist remain ignored. Mattermost user lookup failures fail closed and do not persist passive context.
+- Context is shared at channel scope, or at Mattermost thread-root scope for replies. Sender name and ID are retained as attribution in the observed text.
+- Passive observation records when a post has attachments but does not download those files. Addressed posts retain the existing attachment-download behavior.
+
+Environment-variable equivalent:
+
+```bash
+MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES=true
+```
+
+## Native rich posts and interactive actions
+
+Mattermost can render Hermes replies as native attachment cards while preserving the original Markdown as fallback text. This is opt-in so existing installations keep their current message layout.
+
+```yaml
+mattermost:
+  rich_posts: true
+  feedback_buttons: true
+  interaction_url: "https://hermes.internal.example/mattermost/actions"
+  interaction_host: "127.0.0.1"
+  interaction_port: 8789
+  interaction_timeout_seconds: 300
+  interaction_allowed_cidrs:
+    - "10.0.0.12/32" # Mattermost server's callback source IP
+```
+
+Set a separate callback-signing secret in `~/.hermes/.env`:
+
+```bash
+MATTERMOST_INTERACTION_SECRET=replace-with-a-long-random-secret
+```
+
+You can generate one with `openssl rand -hex 32`.
+
+### Rich-post behavior
+
+- `rich_posts: true` wraps replies in Mattermost-native `props.attachments` cards.
+- The first Markdown heading becomes the card title. Lists, tables, dividers, code blocks, and remaining headings stay as Mattermost Markdown in the card body.
+- The complete original Markdown is kept in the attachment's `fallback` field.
+- Streaming updates remain plain while text is changing. Hermes applies the rich layout only to the final edit, avoiding card flicker.
+- Responses that exceed Mattermost's readable chunk size stay plain across all chunks.
+- Proactive and out-of-process cron messages use the same layout.
+- If Mattermost rejects a structured post or edit, Hermes automatically retries with plain Markdown so the answer is not lost.
+
+### Approval and feedback buttons
+
+When `interaction_url`, `MATTERMOST_INTERACTION_SECRET`, and at least one trusted `interaction_allowed_cidrs` entry are configured:
+
+- execution approvals can show native **Allow once**, **Allow for session**, **Always allow**, and **Deny** buttons;
+- `feedback_buttons: true` adds **Helpful** and **Not helpful** controls to final rich replies;
+- every callback carries a signed, single-use context and is checked against the existing Mattermost user allowlist;
+- signed actions expire after `interaction_timeout_seconds` (clamped to 30–3600 seconds);
+- approval session keys and the signing secret are never sent to Mattermost.
+
+If callbacks are not configured or the interaction listener cannot start, Hermes falls back to the existing typed approval flow. `feedback_buttons` has no effect unless `rich_posts` is also enabled.
+
+### Callback reachability
+
+Mattermost itself—not the user's browser—sends the action callback. The Mattermost server must therefore be able to reach `interaction_url`. Hermes also rejects callbacks unless the direct TCP peer is in `interaction_allowed_cidrs`; use exact `/32` IPv4 or `/128` IPv6 entries whenever possible.
+
+Non-loopback callback URLs must use HTTPS. Plain HTTP is accepted only for loopback listeners such as `http://127.0.0.1:8789/...` behind a secured local proxy.
+
+Some Mattermost deployments block callbacks to private addresses. If you use an internal URL, your Mattermost administrator may need to allow that destination with `AllowedUntrustedInternalConnections`.
+
+Hermes listens locally on `interaction_host:interaction_port` and uses the path from `interaction_url` (for the example above, `/mattermost/actions`). Put that listener behind your existing reverse proxy, VPN, or private service network. You do **not** need to expose the Hermes dashboard publicly. Prefer a private route whenever Mattermost and Hermes share a trusted network.
+
+In profile-multiplex mode, this callback is a host-port listener: only the active/default profile may configure `interaction_url`. Hermes rejects callback listeners on secondary profiles at startup instead of allowing a port collision and silently degrading actions.
+
+If a reverse proxy terminates the callback, list only the proxy's direct IP in `interaction_allowed_cidrs` and configure that proxy route to accept requests only from the Mattermost server (for example with a source-IP allowlist or mutual TLS). Hermes deliberately does not trust client-supplied forwarding headers. A generally public proxy route does not provide callback provenance.
+
+:::warning
+Do not bind the interaction listener to `0.0.0.0` unless a firewall restricts access to the exact trusted peers. Do not use broad CIDRs that include ordinary users. Keep `MATTERMOST_INTERACTION_SECRET` out of `config.yaml`, source control, and logs.
+:::
+
 ## Troubleshooting
 
 ### Bot is not responding to messages

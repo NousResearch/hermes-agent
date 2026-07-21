@@ -1,13 +1,13 @@
-import { useStdout } from '@hermes/ink'
-import { Box } from '@hermes/ink'
+import { Box, Text, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { Component, type ReactNode } from 'react'
 
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiTheme } from '../app/uiStore.js'
+import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { getWidgetApp } from './registry.js'
-import type { ActiveWidget, WidgetApp, WidgetInput } from './types.js'
+import type { ActiveWidget, AmbientZone, WidgetApp, WidgetInput } from './types.js'
 
 /**
  * The widget-app host. Core integrates through exactly four touchpoints:
@@ -130,10 +130,53 @@ export function dispatchWidgetInput(input: WidgetInput): boolean {
   return true
 }
 
+/** Crash isolation: a widget throwing in render must NEVER take the TUI
+ *  down (user widgets are agent-generated code). The boundary swaps the
+ *  card for a compact error chip and logs; the app stays registered so a
+ *  hot-reloaded fix re-renders on the next state change. */
+class WidgetBoundary extends Component<
+  { appId: string; children: ReactNode; errorColor: string },
+  { message: null | string }
+> {
+  override state: { message: null | string } = { message: null }
+
+  static getDerivedStateFromError(error: unknown) {
+    return { message: error instanceof Error ? error.message : String(error) }
+  }
+
+  override componentDidCatch(error: unknown) {
+    recordParentLifecycle(
+      `widget /${this.props.appId} crashed in render: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+
+  override render() {
+    if (this.state.message !== null) {
+      return (
+        <Text color={this.props.errorColor} wrap="truncate-end">
+          ⚠ /{this.props.appId}: {this.state.message}
+        </Text>
+      )
+    }
+
+    return this.props.children
+  }
+}
+
 const renderApp = (active: ActiveWidget, ctx: { cols: number; rows: number; t: never }) => {
   const app = getWidgetApp(active.appId)
 
-  return app ? app.render({ ...ctx, state: active.state as never }) : null
+  if (!app) {
+    return null
+  }
+
+  const t = ctx.t as { color: { error: string } }
+
+  return (
+    <WidgetBoundary appId={active.appId} errorColor={t.color.error} key={active.appId}>
+      {app.render({ ...ctx, state: active.state as never })}
+    </WidgetBoundary>
+  )
 }
 
 /** Render slot for the MODAL app — viewport-level, so it can anchor
@@ -150,27 +193,90 @@ export function ActiveWidgetSlot(): ReactNode {
   return renderApp(overlay.widget, { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never })
 }
 
-/** The ambient dock: in-FLOW (never floats over the transcript),
- *  right-aligned, sitting directly above the status bar — GUI-style
- *  "widgets that just sit there" while the composer stays live. */
-export function AmbientDock(): ReactNode {
-  const overlay = useStore($overlayState)
+const zoneOf = (active: ActiveWidget): AmbientZone => getWidgetApp(active.appId)?.zone ?? 'dock-bottom'
+
+const useAmbientCtx = () => {
   const t = useStore($uiTheme)
   const { stdout } = useStdout()
 
-  if (!overlay.ambient.length) {
+  return { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never }
+}
+
+/** An in-FLOW dock row: reserves real rows in the chrome (never covers
+ *  content), right-aligned cards. `dock-top` renders under the top status
+ *  bar, `dock-bottom` above the bottom one. */
+export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-top' }): ReactNode {
+  const overlay = useStore($overlayState)
+  const ctx = useAmbientCtx()
+  const docked = overlay.ambient.filter(active => zoneOf(active) === placement)
+
+  if (!docked.length) {
     return null
   }
-
-  const ctx = { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never }
 
   // paddingRight keeps card borders off the terminal's last column — an
   // exact-edge border char trips pending-wrap and reads as a clipped border.
   return (
     <Box columnGap={1} flexDirection="row" justifyContent="flex-end" paddingRight={2} width="100%">
-      {overlay.ambient.map(active => (
+      {docked.map(active => (
         <Box key={active.appId}>{renderApp(active, ctx)}</Box>
       ))}
+    </Box>
+  )
+}
+
+const DEFAULT_RAIL_WIDTH = 44
+
+const railSide = (zone: AmbientZone): 'left' | 'right' | null =>
+  zone === 'top-left' || zone === 'bottom-left' ? 'left' : zone === 'top-right' || zone === 'bottom-right' ? 'right' : null
+
+const railApps = (ambient: ActiveWidget[], side: 'left' | 'right') =>
+  ambient.filter(active => railSide(zoneOf(active)) === side)
+
+/** Columns a rail RESERVES (0 when empty) — the transcript's width budget
+ *  subtracts this, so widgets genuinely take up space and text reflows
+ *  beside them instead of being painted over. */
+export function ambientRailWidth(side: 'left' | 'right', ambient = $overlayState.get().ambient): number {
+  const apps = railApps(ambient, side)
+
+  return apps.length ? Math.max(...apps.map(active => getWidgetApp(active.appId)?.width ?? DEFAULT_RAIL_WIDTH)) : 0
+}
+
+/** Live rail width for layout math (re-renders on dock changes). */
+export function useAmbientRailWidth(side: 'left' | 'right'): number {
+  const overlay = useStore($overlayState)
+
+  return ambientRailWidth(side, overlay.ambient)
+}
+
+/** A side rail: a RESERVED column beside the transcript holding corner
+ *  widgets — `top-*` zones anchor to its top, `bottom-*` to its bottom.
+ *  Widgets take real space; nothing overlays content. */
+export function AmbientRail({ side }: { side: 'left' | 'right' }): ReactNode {
+  const overlay = useStore($overlayState)
+  const ctx = useAmbientCtx()
+  const apps = railApps(overlay.ambient, side)
+
+  if (!apps.length) {
+    return null
+  }
+
+  const top = apps.filter(active => zoneOf(active).startsWith('top'))
+  const bottom = apps.filter(active => zoneOf(active).startsWith('bottom'))
+  const width = ambientRailWidth(side, overlay.ambient)
+
+  return (
+    <Box flexDirection="column" flexShrink={0} justifyContent="space-between" paddingX={1} width={width}>
+      <Box flexDirection="column" rowGap={1}>
+        {top.map(active => (
+          <Box key={active.appId}>{renderApp(active, ctx)}</Box>
+        ))}
+      </Box>
+      <Box flexDirection="column" rowGap={1}>
+        {bottom.map(active => (
+          <Box key={active.appId}>{renderApp(active, ctx)}</Box>
+        ))}
+      </Box>
     </Box>
   )
 }

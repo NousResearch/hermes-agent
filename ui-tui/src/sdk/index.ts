@@ -46,7 +46,24 @@ export {
 
 export type { Theme, ThemeColors } from '../theme.js'
 // App contract + host
-export { ActiveWidgetSlot, closeWidget, dispatchWidgetInput, launchWidget, openWidget, updateWidget } from './host.js'
+export {
+  ActiveWidgetSlot,
+  AmbientDock,
+  AmbientRail,
+  ambientRailWidth,
+  closeWidget,
+  dispatchWidgetInput,
+  launchWidget,
+  openWidget,
+  updateWidget
+} from './host.js'
 export { defineWidgetApp, getWidgetApp, listWidgetApps } from './registry.js'
-export { type ActiveWidget, isCtrl, type WidgetApp, type WidgetInput, type WidgetRenderCtx } from './types.js'
+export {
+  type ActiveWidget,
+  type AmbientZone,
+  isCtrl,
+  type WidgetApp,
+  type WidgetInput,
+  type WidgetRenderCtx
+} from './types.js'
 export { loadUserWidgets, type UserWidgetLoadResult, widgetSdk, type WidgetSdk } from './userWidgets.js'

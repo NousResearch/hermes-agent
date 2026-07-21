@@ -1371,6 +1371,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1496,6 +1497,10 @@ def _resolve_explicit_runtime(
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider in ("opencode-zen", "opencode-go"):
+            from hermes_cli.models import opencode_model_api_mode
+            effective_model = target_model or model_cfg.get("default") or ""
+            api_mode = opencode_model_api_mode(provider, effective_model)
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -1506,6 +1511,15 @@ def _resolve_explicit_runtime(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+
+        # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
+        # Anthropic SDK prepends its own /v1/messages to the base_url. Strip the
+        # trailing /v1 so the SDK constructs the correct path (e.g.
+        # https://opencode.ai/zen/v1/messages instead of .../v1/v1/messages).
+        # Mirrors the same step in _resolve_runtime_from_pool_entry.
+        if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
+            import re as _re
+            base_url = _re.sub(r"/v1/?$", "", base_url)
 
         return {
             "provider": provider,
@@ -1695,6 +1709,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime

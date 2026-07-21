@@ -1925,6 +1925,19 @@ class TestMultimodalToolContentUnsupported:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    def test_xiaomi_mimo_backtick_variant_pattern(self):
+        """Issue #37469 — MiMo API returns backtick-wrapped param:
+        ``{"error":{"param":"`text` is not set"}}`` which escapes the
+        plain "text is not set" substring match.
+        """
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'code': '400', 'message': 'Param Incorrect', 'param': '`text` is not set', 'type': ''}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
     def test_generic_tool_message_must_be_string(self):
         e = MockAPIError(
             "tool message content must be a string",

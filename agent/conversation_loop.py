@@ -346,6 +346,23 @@ def run_conversation(
     # state registry.  Set BEFORE any tool dispatch so snapshots taken at
     # child-launch time see the parent's real id, not None.
     agent._current_task_id = effective_task_id
+
+    # Preemptive cancellation: register this turn as a job with the global
+    # JobManager so the gateway can cancel it out-of-band via STOP <job_id>.
+    # Feature-flagged — when off, _cancellation_token stays None and all
+    # downstream checks are no-ops (token is None -> not cancelled).
+    _cancellation_token = None
+    _job_id = None
+    try:
+        from agent.cancellation import get_job_manager, is_preemptive_cancellation_enabled
+        if is_preemptive_cancellation_enabled():
+            _mgr = get_job_manager()
+            _job_id = _mgr.create_job()
+            _cancellation_token = _mgr.get_token(_job_id)
+            agent._job_id = _job_id
+            agent._cancellation_token = _cancellation_token
+    except Exception:
+        pass
     
     # Reset retry counters and iteration budget at the start of each turn
     # so subagent usage from a previous turn doesn't eat into the next one.
@@ -628,7 +645,7 @@ def run_conversation(
     # interrupt arrived before startup finished, preserve it and bind it
     # to this execution thread now instead of dropping it on the floor.
     _ra()._set_interrupt(False, agent._execution_thread_id)
-    if agent._interrupt_requested:
+    if agent._interrupt_requested or (_cancellation_token and _cancellation_token.is_cancelled):
         _ra()._set_interrupt(True, agent._execution_thread_id)
         agent._interrupt_thread_signal_pending = False
     else:
@@ -677,7 +694,7 @@ def run_conversation(
         agent._checkpoint_mgr.new_turn()
 
         # Check for interrupt request (e.g., user sent new message)
-        if agent._interrupt_requested:
+        if agent._interrupt_requested or (_cancellation_token and _cancellation_token.is_cancelled):
             interrupted = True
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
@@ -1385,7 +1402,7 @@ def run_conversation(
                     sleep_end = time.time() + wait_time
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
-                        if agent._interrupt_requested:
+                        if agent._interrupt_requested or (_cancellation_token and _cancellation_token.is_cancelled):
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
@@ -2399,7 +2416,7 @@ def run_conversation(
                     )
 
                 # Check for interrupt before deciding to retry
-                if agent._interrupt_requested:
+                if agent._interrupt_requested or (_cancellation_token and _cancellation_token.is_cancelled):
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                     agent._persist_session(messages, conversation_history)
                     agent.clear_interrupt()
@@ -3052,7 +3069,7 @@ def run_conversation(
                 sleep_end = time.time() + wait_time
                 _backoff_touch_counter = 0
                 while time.time() < sleep_end:
-                    if agent._interrupt_requested:
+                    if agent._interrupt_requested or (_cancellation_token and _cancellation_token.is_cancelled):
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                         agent._persist_session(messages, conversation_history)
                         agent.clear_interrupt()
@@ -4062,6 +4079,17 @@ def run_conversation(
 
     # Clean up VM and browser for this task after conversation completes
     agent._cleanup_task_resources(effective_task_id)
+
+    # Unregister preemptive cancellation job (if registered).
+    # Safe no-op when feature flag is off or job was never created.
+    try:
+        if _job_id is not None:
+            from agent.cancellation import get_job_manager
+            get_job_manager().unregister_job(_job_id)
+    except Exception:
+        pass
+    agent._job_id = None
+    agent._cancellation_token = None
 
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn

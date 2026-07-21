@@ -72,7 +72,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(tool_calls)
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
-    if agent._interrupt_requested:
+    if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
             messages.append(make_tool_result_message(
@@ -206,7 +206,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # snapshotted an empty/earlier set) and our registration, apply
         # the interrupt to our own tid now so is_interrupted() inside
         # the tool returns True on the next poll.
-        if agent._interrupt_requested:
+        if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
             try:
                 _ra()._set_interrupt(True, _worker_tid)
             except Exception:
@@ -311,7 +311,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     # to abort, but tools without interrupt checks (web_search,
                     # read_file) will run to completion. Cancel any futures
                     # that haven't started yet so we don't block on them.
-                    if agent._interrupt_requested:
+                    if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
                         if not _interrupt_logged:
                             _interrupt_logged = True
                             agent._vprint(
@@ -351,7 +351,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         blocked = False
         if r is None:
             # Tool was cancelled (interrupt) or thread didn't return
-            if agent._interrupt_requested:
+            if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
@@ -472,7 +472,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
         # do NOT start any more tools -- skip them all immediately.
-        if agent._interrupt_requested:
+        if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
             remaining_calls = assistant_message.tool_calls[i-1:]
             if remaining_calls:
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)

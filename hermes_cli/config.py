@@ -611,6 +611,14 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        # Preemptive cancellation: enables out-of-band task cancellation
+        # via Discord STOP <job_id> / STOP ALL commands. When enabled,
+        # each agent turn gets a job_id + CancellationToken registered with
+        # the global JobManager.  The gateway can cancel a specific job
+        # immediately without waiting for the current tool call to finish.
+        # Default: false (off).  Enable via config or env var
+        # HERMES_PREEMPTIVE_CANCELLATION=true.
+        "preemptive_cancellation": False,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

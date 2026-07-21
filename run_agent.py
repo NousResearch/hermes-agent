@@ -1751,6 +1751,13 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        # Preemptive cancellation: also signal the CancellationToken so that
+        # in-flight operations (LLM streaming, HTTP, sleep) can abort without
+        # waiting for the next iteration boundary.  Safe no-op when feature
+        # flag is off or no token exists.
+        _ct = getattr(self, "_cancellation_token", None)
+        if _ct is not None and not _ct.is_cancelled:
+            _ct.request_cancel()
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.

@@ -416,6 +416,14 @@ def init_agent(
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
 
+    # Preemptive cancellation state (feature-flagged, default off).
+    # When HERMES_PREEMPTIVE_CANCELLATION is enabled, each run_conversation()
+    # turn gets a job_id + CancellationToken registered with the global
+    # JobManager.  The gateway Discord listener can cancel a specific job
+    # out-of-band without waiting for the current tool call to finish.
+    agent._job_id = None
+    agent._cancellation_token = None  # CancellationToken or None
+
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
     # NOT set _interrupt_requested; it waits for the current tool batch

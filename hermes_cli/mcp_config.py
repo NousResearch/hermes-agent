@@ -412,6 +412,23 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
 
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
 
+def _trailing_env_in_args(cmd_args: List[str]) -> bool:
+    """True when a ``--env KEY=VALUE`` was swallowed by greedy ``--args``.
+
+    ``--args`` uses ``nargs=REMAINDER`` so a ``--env`` typed *after* it is
+    captured into the child argv instead of populating the server's env
+    (issue #68944).  A container runtime's own ``--env`` (e.g. ``docker run
+    --env FOO=bar <image>``) is legitimate, so key on the specific footgun
+    shape: a trailing ``--env`` followed only by ``KEY=VALUE`` tokens.  For
+    ``docker`` the image name (no ``=``) trails the env pair, so it stays quiet.
+    """
+    if "--env" not in cmd_args:
+        return False
+    last = len(cmd_args) - 1 - cmd_args[::-1].index("--env")
+    tail = cmd_args[last + 1:]
+    return bool(tail) and all("=" in token for token in tail)
+
+
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
@@ -427,6 +444,19 @@ def cmd_mcp_add(args):
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+
+    # Footgun guard: `--env` typed after `--args` is eaten by REMAINDER and
+    # never reaches the env: block (issue #68944).  `--args` is documented as
+    # "must be the last option", so warn instead of silently misfiling it.
+    if not raw_env and _trailing_env_in_args(cmd_args):
+        _warning(
+            "'--env' after '--args' was captured as a command argument, "
+            "not an environment variable."
+        )
+        _info(
+            "Put --env before --args, e.g. "
+            "hermes mcp add NAME --command CMD --env KEY=VALUE --args ..."
+        )
 
     server_config: Dict[str, Any] = {}
     try:

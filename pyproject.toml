@@ -86,7 +86,6 @@ dependencies = [
   # tools/lazy_deps.py treats every version constraint as satisfied, and
   # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
   # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
-  # Pinned to the version already resolved in uv.lock (no resolution churn).
   "packaging==26.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
@@ -116,7 +115,7 @@ dependencies = [
   # /usr/share/zoneinfo).  Credits: PR #13182 (@sprmn24).
   "tzdata==2025.3; sys_platform == 'win32'",
   # Cross-platform process / PID management.  `psutil` is the canonical
-  # answer for "is this PID alive" and process-tree walking across Linux,
+  # answer for \"is this PID alive\" and process-tree walking across Linux,
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
   # (which is a silent killer on Windows) and `os.killpg` (which doesn't
   # exist on Windows).
@@ -142,7 +141,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -279,7 +278,7 @@ termux = [
   "hermes-agent[acp]",
 ]
 termux-all = [
-  # Best-effort "install all" profile for Termux. Same policy as [all]:
+  # Best-effort "install all" profile for Termux. Same policy as [all]:\
   # only includes extras that aren't covered by `tools/lazy_deps.py`.
   # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
   # first use, so they're no longer eager-installed here.
@@ -371,7 +370,7 @@ locales = ["locales/*.yaml"]
 #
 # data-files flattens every glob match into its single target dir, so each
 # catalog entry needs its OWN target to preserve the per-entry directory the
-# catalog iterates over (a shared `optional-mcps/*/*` glob would collapse all
+# catalog iterates over (a shared `optional-mcps/*/*` gob would collapse all
 # manifests into one colliding optional-mcps/manifest.yaml). One target per
 # entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
 "optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]

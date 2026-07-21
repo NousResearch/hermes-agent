@@ -22894,6 +22894,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         cron_start_kwargs["can_dispatch"] = lambda: not (
             runner._draining or runner._external_drain_active
         )
+        if getattr(config, "multiplex_profiles", False):
+            cron_start_kwargs["multiplex"] = True
     cron_thread = threading.Thread(
         target=cron_provider.start,
         args=(cron_stop,),

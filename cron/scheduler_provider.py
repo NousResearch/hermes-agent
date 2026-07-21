@@ -167,16 +167,26 @@ class InProcessCronScheduler(CronScheduler):
     a daemon thread. ``can_dispatch`` is an optional synchronous gate supplied
     by GatewayRunner during external drain; skipped ticks leave due jobs intact
     for the next allowed tick.
+
+    When ``multiplex=True``, each tick cycle iterates all profiles returned by
+    ``profiles_to_serve(multiplex=True)`` and ticks each profile's cron store
+    inside a ``use_cron_store(home)`` context manager.  This respects the
+    gateway's profile-selection contract (``hermes_cli/profiles.py``) and
+    avoids the cross-profile global-retargeting race fixed by ``ec0227b4``.
+    When ``multiplex=False`` (default), behavior is unchanged — one tick per
+    cycle against the active profile's store.
     """
 
     @property
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60,
+              can_dispatch=None, multiplex=False):
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import record_ticker_heartbeat
+        from cron.jobs import record_ticker_heartbeat, use_cron_store
+        from hermes_constants import set_hermes_home_override
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
@@ -186,34 +196,79 @@ class InProcessCronScheduler(CronScheduler):
                 "Marked %d interrupted cron execution(s) unknown after restart",
                 recovered,
             )
+
+        # ── Resolve the list of profile homes to tick ─────────────────
+        cron_homes = None
+        if multiplex:
+            from hermes_cli.profiles import profiles_to_serve
+            cron_homes = profiles_to_serve(multiplex=True)
+            logger.info(
+                "Cron ticker: multiplex mode, %d profile(s) (%s)",
+                len(cron_homes),
+                ", ".join(name for name, _ in cron_homes),
+            )
+
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
         while not stop_event.is_set():
-            ok = False
-            try:
-                if can_dispatch is not None and not can_dispatch():
-                    logger.debug("Cron dispatch paused while gateway drains existing work")
-                else:
-                    cron_tick(
-                        verbose=False,
-                        adapters=adapters,
-                        loop=loop,
-                        sync=False,
-                        can_dispatch=can_dispatch,
-                    )
-                ok = True
-            except BaseException as e:
-                # Catch BaseException (not just Exception) so a SystemExit from
-                # a misbehaving provider SDK / agent retry path does not kill
-                # the ticker thread silently (#32612). KeyboardInterrupt is
-                # intentionally caught here too — gateway shutdown is driven by
-                # stop_event (set by the main thread's signal handler), not by
-                # an exception in this daemon thread, so swallowing it and
-                # re-checking stop_event keeps shutdown clean.
-                logger.error("Cron tick error: %s", e, exc_info=True)
-            # Record liveness every iteration; bump the success marker only on a
-            # clean tick, so status can tell "alive but failing every tick" from
-            # "actually firing jobs" (#32612, #32895).
-            record_ticker_heartbeat(success=ok)
+            if not multiplex:
+                # Single-profile: original behavior, unchanged.
+                ok = False
+                try:
+                    if can_dispatch is not None and not can_dispatch():
+                        logger.debug("Cron dispatch paused while gateway drains existing work")
+                    else:
+                        cron_tick(
+                            verbose=False,
+                            adapters=adapters,
+                            loop=loop,
+                            sync=False,
+                            can_dispatch=can_dispatch,
+                        )
+                    ok = True
+                except BaseException as e:
+                    # Catch BaseException (not just Exception) so a SystemExit from
+                    # a misbehaving provider SDK / agent retry path does not kill
+                    # the ticker thread silently (#32612). KeyboardInterrupt is
+                    # intentionally caught here too — gateway shutdown is driven by
+                    # stop_event (set by the main thread's signal handler), not by
+                    # an exception in this daemon thread, so swallowing it and
+                    # re-checking stop_event keeps shutdown clean.
+                    logger.error("Cron tick error: %s", e, exc_info=True)
+                record_ticker_heartbeat(success=ok)
+            else:
+                # Multiplex: iterate all profiles, each inside its own
+                # use_cron_store context.  ContextVar isolation ensures
+                # tick(sync=False) background workers — which call
+                # contextvars.copy_context() (cron/scheduler.py:3431, :4025) —
+                # resolve the correct profile home even after the loop
+                # advances to the next profile.
+                any_ok = False
+                for _name, home in cron_homes:
+                    if stop_event.is_set():
+                        break
+                    try:
+                        if can_dispatch is not None and not can_dispatch():
+                            logger.debug(
+                                "Cron dispatch paused while gateway drains "
+                                "existing work (profile=%s)", _name,
+                            )
+                            break
+                        with use_cron_store(home):
+                            set_hermes_home_override(str(home))
+                            cron_tick(
+                                verbose=False,
+                                adapters=adapters,
+                                loop=loop,
+                                sync=False,
+                                can_dispatch=can_dispatch,
+                            )
+                            any_ok = True
+                    except BaseException as e:
+                        logger.error(
+                            "Cron tick error (profile=%s): %s",
+                            _name, e, exc_info=True,
+                        )
+                record_ticker_heartbeat(success=any_ok)
             stop_event.wait(interval)

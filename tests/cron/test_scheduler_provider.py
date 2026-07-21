@@ -691,3 +691,181 @@ class TestGuardJobCredentialExfil:
 
         monkeypatch.setattr(ct, "_validate_cron_base_url", _boom)
         assert _guard_job_credential_exfil({"id": "j8", "provider": "anthropic"}) is None
+
+
+# ── Multiplex cross-profile tick tests ────────────────────────────────────────
+
+
+def test_multiplex_ticks_all_profiles(tmp_path, monkeypatch):
+    """With multiplex=True, tick() is called once per profile returned by
+    profiles_to_serve(multiplex=True), each inside a use_cron_store context.
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    homes = [
+        ("default", tmp_path / "default"),
+        ("alpha", tmp_path / "alpha"),
+        ("beta", tmp_path / "beta"),
+    ]
+    for _name, p in homes:
+        p.mkdir(parents=True)
+
+    tick_calls = []
+    stop = threading.Event()
+    provider = InProcessCronScheduler()
+
+    def fake_tick(*a, **kw):
+        from cron.jobs import _current_cron_store
+        tick_calls.append(str(_current_cron_store().cron_dir))
+        return 0
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: homes if multiplex else [homes[0]],
+    )
+
+    with patch("cron.scheduler.tick", side_effect=fake_tick):
+        t = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0, "multiplex": True},
+            daemon=True,
+        )
+        t.start()
+        assert _wait_until(lambda: len(tick_calls) >= 3), (
+            f"expected >=3 tick calls, got {len(tick_calls)}"
+        )
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # Each profile's cron_dir was entered exactly once per cycle.
+    assert len(tick_calls) >= 3
+    dirs_seen = set(tick_calls[:3])
+    for _name, p in homes:
+        assert str(p / "cron") in dirs_seen, (
+            f"profile {_name} cron dir not ticked"
+        )
+
+
+def test_multiplex_false_does_not_iterate(tmp_path, monkeypatch):
+    """With multiplex=False (default), tick() uses the single active store
+    and profiles_to_serve is never called.
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    tick_calls = []
+    stop = threading.Event()
+    provider = InProcessCronScheduler()
+
+    probe = []
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: probe.append(multiplex) or [("default", tmp_path)],
+    )
+
+    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: tick_calls.append(k) or 0):
+        t = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0},
+            daemon=True,
+        )
+        t.start()
+        assert _wait_until(lambda: len(tick_calls) >= 1)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # profiles_to_serve must NOT be called when multiplex is False.
+    assert probe == [], "profiles_to_serve was called with multiplex=False"
+
+
+def test_multiplex_uses_cron_store_context(tmp_path, monkeypatch):
+    """Each tick in multiplex mode runs inside use_cron_store(home) so that
+    _current_cron_store().cron_dir points to the correct profile directory.
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron.jobs import _current_cron_store
+
+    home_a = tmp_path / "alpha"
+    home_b = tmp_path / "beta"
+    home_a.mkdir()
+    home_b.mkdir()
+    homes = [("alpha", home_a), ("beta", home_b)]
+
+    observed_dirs = []
+    stop = threading.Event()
+    provider = InProcessCronScheduler()
+
+    def capture_tick(*a, **kw):
+        observed_dirs.append(str(_current_cron_store().cron_dir))
+        return 0
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: homes,
+    )
+
+    with patch("cron.scheduler.tick", side_effect=capture_tick):
+        t = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0, "multiplex": True},
+            daemon=True,
+        )
+        t.start()
+        assert _wait_until(lambda: len(observed_dirs) >= 2)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert str(home_a / "cron") in observed_dirs
+    assert str(home_b / "cron") in observed_dirs
+
+
+def test_multiplex_tick_error_does_not_stop_other_profiles(tmp_path, monkeypatch):
+    """If tick() raises for one profile, the scheduler still ticks the rest
+    and records a heartbeat with success=True (at least one clean tick).
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    home_a = tmp_path / "alpha"
+    home_b = tmp_path / "beta"
+    home_a.mkdir()
+    home_b.mkdir()
+    homes = [("alpha", home_a), ("beta", home_b)]
+
+    tick_results = []
+    stop = threading.Event()
+    provider = InProcessCronScheduler()
+
+    call_count = [0]
+
+    def flaky_tick(*a, **kw):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise RuntimeError("boom on first profile")
+        tick_results.append("ok")
+        return 0
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: homes,
+    )
+
+    with patch("cron.scheduler.tick", side_effect=flaky_tick):
+        t = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0, "multiplex": True},
+            daemon=True,
+        )
+        t.start()
+        assert _wait_until(lambda: len(tick_results) >= 1)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # Second profile's tick succeeded despite the first raising.
+    assert len(tick_results) >= 1

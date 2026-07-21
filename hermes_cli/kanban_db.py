@@ -99,7 +99,7 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "pending_approval", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
@@ -3724,6 +3724,134 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+_NEGATIVE_GATE_VERDICT_RE = re.compile(
+    r"\b(CANARY\s+HOLD|NEEDS\s+TEST\s+FIX|NEEDS\s+FIX|NEEDS_FIX|"
+    r"NEEDS\s+INPUT|NEEDS_INPUT|NOT\s+APPROVED|REJECTED|REJECT|HOLD)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_negative_gate_verdict(text: Optional[str]) -> Optional[dict[str, str]]:
+    """Return a normalized negative gate verdict from handoff text, if present."""
+    if not text:
+        return None
+    match = _NEGATIVE_GATE_VERDICT_RE.search(text)
+    if not match:
+        return None
+    verdict = re.sub(r"\s+", " ", match.group(1).replace("_", " ").upper()).strip()
+    reason = ""
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("reason:"):
+            reason = stripped.split(":", 1)[1].strip()
+            break
+    if not reason:
+        reason = str(text).strip().splitlines()[0][:400]
+    return {"verdict": verdict, "reason": reason}
+
+
+_PROVIDER_HUMAN_REQUIRED_RE = re.compile(
+    r"\b(provider|quota|rate[-_ ]?limit|429|401|403|unauthori[sz]ed|invalid[_ -]?api[_ -]?key|invalid[_ -]?token)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_provider_human_required(error_text: Optional[str]) -> bool:
+    """Return true for provider quota/auth walls that should not respawn."""
+    return bool(error_text and _PROVIDER_HUMAN_REQUIRED_RE.search(str(error_text)))
+
+
+def _pending_approval_event_exists(conn: sqlite3.Connection, task_id: str) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'approval_required' LIMIT 1",
+        (task_id,),
+    ).fetchone())
+
+
+def _append_approval_required_once(
+    conn: sqlite3.Connection,
+    task_id: str,
+    payload: dict[str, Any],
+) -> None:
+    if not _pending_approval_event_exists(conn, task_id):
+        _append_event(conn, task_id, "approval_required", payload)
+
+
+def emit_pending_approval_handbacks(conn: sqlite3.Connection) -> int:
+    """Emit one durable approval-required event for parked tasks."""
+    emitted = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, last_failure_error, result, body, title FROM tasks "
+            "WHERE status = 'pending_approval'"
+        ).fetchall()
+        for row in rows:
+            if _pending_approval_event_exists(conn, row["id"]):
+                continue
+            reason = row["last_failure_error"] or row["result"] or row["body"] or row["title"] or "approval-required"
+            _append_event(
+                conn,
+                row["id"],
+                "approval_required",
+                {"reason": str(reason)[:500]},
+            )
+            emitted += 1
+    return emitted
+
+
+def _normalize_provider_human_required_ready(conn: sqlite3.Connection) -> int:
+    """Park stale ready provider quota/auth blockers before dispatch can spawn."""
+    normalized = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, last_failure_error FROM tasks "
+            "WHERE status = 'ready' AND last_failure_error IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            if not _is_provider_human_required(row["last_failure_error"]):
+                continue
+            reason = (
+                "approval-required: provider quota/auth wall — "
+                f"{row['last_failure_error']}"
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'pending_approval', "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "block_kind = 'needs_input', last_failure_error = ? "
+                "WHERE id = ? AND status = 'ready'",
+                (reason[:500], row["id"]),
+            )
+            _append_approval_required_once(
+                conn,
+                row["id"],
+                {"reason": reason[:500]},
+            )
+            normalized += 1
+    return normalized
+
+
+def _negative_parent_payload(conn: sqlite3.Connection, task_id: str) -> Optional[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT p.id, p.result, p.body, p.title FROM tasks p "
+        "JOIN task_links l ON l.parent_id = p.id "
+        "WHERE l.child_id = ? AND p.status = 'done'",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        text = "\n".join(
+            str(part) for part in (row["result"], row["body"], row["title"])
+            if part
+        )
+        verdict = _extract_negative_gate_verdict(text)
+        if verdict:
+            return {
+                "reason": verdict["reason"],
+                "verdict": verdict["verdict"],
+                "parent_id": row["id"],
+            }
+    return None
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
@@ -3761,7 +3889,7 @@ def recompute_ready(
     with write_txn(conn):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
+            "FROM tasks WHERE status IN ('todo', 'blocked', 'ready')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -3772,13 +3900,33 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
+            negative_parent = _negative_parent_payload(conn, task_id)
+            if negative_parent:
+                reason = (
+                    f"approval-required: parent {negative_parent['parent_id']} "
+                    f"returned {negative_parent['verdict']}: {negative_parent['reason']}"
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'pending_approval', "
+                    "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                    "block_kind = 'needs_input', last_failure_error = ? "
+                    "WHERE id = ? AND status IN ('todo', 'blocked', 'ready')",
+                    (reason[:500], task_id),
+                )
+                payload = dict(negative_parent)
+                payload["reason"] = negative_parent["reason"]
+                _append_approval_required_once(conn, task_id, payload)
+                continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if (
+                cur_status != "ready"
+                and all(p["status"] in ("done", "archived") for p in parents)
+            ):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -7215,6 +7363,40 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 (row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                if rate_limited_exit or _is_provider_human_required(error_text):
+                    # Provider quota/auth walls are human-visible approval
+                    # stops, not spawnable ready work. Park the task without
+                    # incrementing the failure counter so quota windows and
+                    # credential walls cannot create ready-loop storms.
+                    provider_reason = (
+                        "approval-required: provider quota/auth wall — "
+                        f"{error_text}"
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET status = 'pending_approval', "
+                        "last_failure_error = ?, block_kind = 'needs_input' "
+                        "WHERE id = ?",
+                        (provider_reason[:500], row["id"]),
+                    )
+                    _append_approval_required_once(
+                        conn,
+                        row["id"],
+                        {"reason": provider_reason[:500], "exit_kind": kind, "exit_code": code},
+                    )
+                    _provider_outcome = "rate_limited" if rate_limited_exit else "pending_approval"
+                    run_id = _end_run(
+                        conn, row["id"],
+                        outcome=_provider_outcome, status=_provider_outcome,
+                        error=provider_reason,
+                        metadata=dict(event_payload),
+                    )
+                    _append_event(
+                        conn, row["id"], event_kind,
+                        event_payload,
+                        run_id=run_id,
+                    )
+                    rate_limited.append(row["id"])
+                    continue
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
@@ -7341,6 +7523,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 event_payload_extra={"pid": pid, "claimer": claimer},
             )
             if tripped:
+                if protocol_violation:
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            tid,
+                            "blocked",
+                            {
+                                "reason": error_text,
+                                "kind": "protocol_violation",
+                                "source": "detect_crashed_workers",
+                            },
+                        )
                 auto_blocked.append(tid)
     # Stash auto-blocked ids on the function for the dispatch loop to pick up.
     # Keeps the public return type (``list[str]``) stable for direct callers
@@ -7910,6 +8104,9 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    if not dry_run:
+        _normalize_provider_human_required_ready(conn)
+        emit_pending_approval_handbacks(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

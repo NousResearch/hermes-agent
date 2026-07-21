@@ -930,13 +930,19 @@ def test_rate_limit_exit_requeues_without_counting_failure(
             assert tid in rl
 
             task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"hit {i}: should requeue ready, got {task.status}"
+            assert task.status == "pending_approval", (
+                f"hit {i}: should park for human approval, got {task.status}"
             )
             assert task.consecutive_failures == 0, (
                 f"hit {i}: rate-limit must not count a failure, "
                 f"got {task.consecutive_failures}"
             )
+            assert _kb.emit_pending_approval_handbacks(conn) == 0
+            conn.execute(
+                "UPDATE tasks SET status = 'ready' WHERE id = ?",
+                (tid,),
+            )
+            conn.commit()
 
         # Last failure error stamped so the respawn guard recognizes the
         # quota wall.
@@ -1947,17 +1953,7 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once defers (does NOT auto-block) a ready task whose last
-    error is a blocker_auth.
-
-    The old behaviour auto-blocked on first occurrence, which was too
-    aggressive: a transient 429 rate-limit (which typically clears in
-    seconds to minutes) would end up requiring manual unblock. The new
-    behaviour defers the spawn this tick; the task stays in ``ready``
-    and gets another chance next tick. If the auth error genuinely
-    persists, the existing ``consecutive_failures`` circuit breaker
-    will auto-block via the normal failure-limit path.
-    """
+    """dispatch_once parks provider quota/auth walls for human approval."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -1971,22 +1967,20 @@ def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    # Critical: task is NOT auto-blocked on first occurrence.
+    # Critical: task is NOT auto-blocked as a generic spawn-failure breaker.
     assert t not in res.auto_blocked, (
-        f"blocker_auth should defer, not auto-block on first occurrence; "
+        f"blocker_auth should park for approval, not auto-block; "
         f"got auto_blocked={res.auto_blocked!r}"
     )
-    # It IS recorded as respawn_guarded with the reason.
-    assert (t, "blocker_auth") in res.respawn_guarded, (
-        f"expected (task_id, 'blocker_auth') in respawn_guarded; "
-        f"got {res.respawn_guarded!r}"
-    )
+    assert (t, "blocker_auth") not in res.respawn_guarded
     # And it's NOT spawned this tick.
     assert t not in spawned_ids
-    # Status stays ``ready`` so a future tick (or operator action) can
-    # retry without manual unblock.
+    # Status parks in ``pending_approval`` so a provider/auth wall does not
+    # respawn-loop without a human decision.
     with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "ready"
+        task = kb.get_task(conn, t)
+        assert task.status == "pending_approval"
+        assert task.block_kind == "needs_input"
 
 
 def test_dispatch_respawn_guard_skips_recent_success(
@@ -2042,7 +2036,7 @@ def test_dispatch_respawn_guard_skips_active_pr(
 def test_dispatch_respawn_guard_dry_run_no_auto_block(
     kanban_home, all_assignees_spawnable
 ):
-    """In dry_run mode, blocker_auth tasks are recorded in respawn_guarded (not auto-blocked)."""
+    """In dry_run mode, blocker_auth tasks are recorded but not mutated."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="dry-quota", assignee="alice")
         conn.execute(

@@ -143,12 +143,12 @@ def _conn(board: Optional[str] = None):
 # available via a filter toggle rather than a visible column.
 #
 # Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
-# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
-# if it is omitted here, the board-level fallback below mis-buckets scheduled
-# tasks into ``todo`` and makes the dashboard look like the Scheduled column
-# disappeared.
+# ``scheduled`` is a first-class waiting column used for time-based follow-ups
+# and ``pending_approval`` is where provider/capability walls are parked for
+# human review; omitting either makes the dashboard misrepresent canonical task
+# state.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "pending_approval", "review", "done",
 ]
 
 

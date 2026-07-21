@@ -248,6 +248,7 @@ class TestQQWebSocketProxy:
 
         assert seen_session_kwargs.get("trust_env") is True
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+        assert seen_ws_kwargs.get("heartbeat") == 20.0
 
 # ---------------------------------------------------------------------------
 # _strip_at_mention

@@ -1902,7 +1902,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
-    print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
+    warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
+    if agent.quiet_mode:
+        # Quiet mode is used by automation wrappers as a machine-readable stdout
+        # channel. Keep diagnostics out of stdout so wrappers receive only the
+        # final assistant content.
+        logger.warning(warning)
+    else:
+        agent._safe_print(warning)
 
     summary_request = (
         "You've reached the maximum number of tool-calling iterations allowed. "

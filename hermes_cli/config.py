@@ -8769,6 +8769,8 @@ def set_config_value(key: str, value: str, force: bool = False):
 
         save_provider_env_credential(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
+        from hermes_cli.change_impact import advisory_for_config_key, print_advisory
+        print_advisory(advisory_for_config_key(key.upper()))
         return
 
     # Unknown-key notice (#34067): the key is still written (arbitrary keys
@@ -8845,6 +8847,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     else:
         _display_value = value
     print(f"✓ Set {key} = {_display_value} in {config_path}")
+    from hermes_cli.change_impact import advisory_for_config_key, print_advisory
+    print_advisory(advisory_for_config_key(key))
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the
     # user the runtime may never read it and suggest the likely-intended path.

@@ -13,6 +13,7 @@ server). Mismatched tokens are rejected before dispatch.
 
 from __future__ import annotations
 
+import hmac
 import json
 import uuid
 from typing import Any, Dict, Tuple
@@ -116,7 +117,10 @@ def validate_request(msg: Dict[str, Any], expected_token: str) -> Tuple[bool, st
     token = msg.get("token")
     if not isinstance(token, str) or not token:
         return False, "missing token"
-    if token != expected_token:
+    # Constant-time comparison so the shared token cannot be recovered via a
+    # validation-timing side channel (CWE-208). A plain ``!=`` short-circuits
+    # on the first differing byte, leaking the matched prefix length.
+    if not hmac.compare_digest(token.encode("utf-8"), expected_token.encode("utf-8")):
         return False, "token mismatch"
     payload = msg.get("payload")
     if not isinstance(payload, dict):

@@ -57,6 +57,9 @@ def _voice_capture_install_hint() -> str:
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
     return "pip install sounddevice numpy"
 
+def _arecord_available() -> bool:
+    """Return True if arecord (ALSA utils) is available."""
+    return shutil.which("arecord") is not None
 
 def _termux_microphone_command() -> Optional[str]:
     if not _is_termux_environment():
@@ -236,6 +239,8 @@ def detect_audio_environment() -> dict:
     except ImportError:
         if termux_capture:
             notices.append("Termux:API microphone recording available (sounddevice not required)")
+        elif _arecord_available():
+            notices.append("Using arecord (ALSA) for recording — PortAudio not required")
         elif termux_mic_cmd and not termux_app_installed:
             warnings.append(
                 "Termux:API Android app is not installed. Install/update the Termux:API app to use termux-microphone-record."
@@ -245,6 +250,8 @@ def detect_audio_environment() -> dict:
     except OSError:
         if termux_capture:
             notices.append("Termux:API microphone recording available (PortAudio not required)")
+        elif _arecord_available():
+            notices.append("PortAudio crashed but arecord (ALSA) is available — using fallback")
         elif termux_mic_cmd and not termux_app_installed:
             warnings.append(
                 "Termux:API Android app is not installed. Install/update the Termux:API app to use termux-microphone-record."
@@ -810,11 +817,293 @@ class AudioRecorder:
         return wav_path
 
 
-def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
+# ============================================================================
+# PipeWire Arecord Recorder -- bypasses PortAudio entirely
+# ============================================================================
+
+class ArecordRecorder:
+    """Recorder backend that uses arecord subprocess to bypass PortAudio.
+
+    Fixes SIGILL crashes on PipeWire 1.4.11+ where PortAudio's JACK bridge
+    hands corrupted function pointers during callback initialization.
+
+    Uses arecord for recording and a separate numpy-based monitoring thread
+    for silence detection (same algorithm as AudioRecorder).
+    """
+
+    supports_silence_autostop = True
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._recording = False
+        self._start_time: float = 0.0
+        self._recording_path: Optional[str] = None
+        self._process: Optional[subprocess.Popen] = None
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        # PCM data accumulator (written by monitor thread, read on stop)
+        self._pcm_chunks: list = []
+        # Silence detection state (mirrors AudioRecorder)
+        self._has_spoken = False
+        self._speech_start: float = 0.0
+        self._dip_start: float = 0.0
+        self._min_speech_duration: float = 0.3
+        self._max_dip_tolerance: float = 0.3
+        self._silence_start: float = 0.0
+        self._resume_start: float = 0.0
+        self._resume_dip_start: float = 0.0
+        self._on_silence_stop = None
+        self._silence_threshold: int = SILENCE_RMS_THRESHOLD
+        self._silence_duration: float = SILENCE_DURATION_SECONDS
+        self._max_wait: float = 15.0
+        self._peak_rms: int = 0
+        self._current_rms: int = 0
+
+    @property
+    def elapsed_seconds(self) -> float:
+        if not self._recording:
+            return 0.0
+        return time.monotonic() - self._start_time
+
+    @property
+    def current_rms(self) -> int:
+        return self._current_rms
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def start(self, on_silence_stop=None) -> None:
+        with self._lock:
+            if self._recording:
+                return
+            self._recording = True
+            self._start_time = time.monotonic()
+            self._has_spoken = False
+            self._speech_start = 0.0
+            self._dip_start = 0.0
+            self._silence_start = 0.0
+            self._resume_start = 0.0
+            self._resume_dip_start = 0.0
+            self._peak_rms = 0
+            self._current_rms = 0
+            self._pcm_chunks = []
+            self._on_silence_stop = on_silence_stop
+            self._stop_event.clear()
+
+            os.makedirs(_TEMP_DIR, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self._recording_path = os.path.join(_TEMP_DIR, f"recording_{timestamp}.wav")
+
+        # Start arecord writing raw PCM to a pipe for live monitoring
+        cmd = [
+            "arecord",
+            "-f", "S16_LE",
+            "-r", str(SAMPLE_RATE),
+            "-c", str(CHANNELS),
+            "-t", "raw",
+            "-q",  # quiet
+            "--buffer-size", "8192",
+        ]
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as e:
+            with self._lock:
+                self._recording = False
+            raise RuntimeError(f"Failed to start arecord: {e}") from e
+
+        # Start monitoring thread for PCM collection and silence detection
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_loop, daemon=True, name="arecord-monitor"
+        )
+        self._monitor_thread.start()
+
+        logger.info("Arecord recording started")
+
+    def _monitor_loop(self) -> None:
+        """Read PCM chunks from arecord pipe, accumulate data, and detect silence."""
+        import numpy as np
+
+        chunk_samples = int(SAMPLE_RATE * 0.1)  # 100ms chunks
+        chunk_bytes = chunk_samples * CHANNELS * SAMPLE_WIDTH
+
+        while not self._stop_event.is_set() and self._process and self._process.poll() is None:
+            try:
+                data = self._process.stdout.read(chunk_bytes)
+                if not data or len(data) < chunk_bytes:
+                    break
+                # Accumulate raw PCM for WAV writing on stop
+                self._pcm_chunks.append(data)
+                samples = np.frombuffer(data, dtype=np.int16)
+                rms = int(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+
+                silence_triggered = False
+                with self._lock:
+                    if not self._recording:
+                        break
+                    self._current_rms = rms
+                    if rms > self._peak_rms:
+                        self._peak_rms = rms
+                    silence_triggered = self._check_silence(rms)
+
+                # Fire callback OUTSIDE the lock to prevent deadlock
+                # (stop() also acquires _lock)
+                if silence_triggered and self._on_silence_stop:
+                    self._on_silence_stop()
+            except (OSError, ValueError):
+                break
+
+    def _check_silence(self, rms: int) -> bool:
+        """Silence detection logic. Returns True if silence threshold met.
+
+        Must be called while holding self._lock.
+        """
+        if self._on_silence_stop is None:
+            return False
+        now = time.monotonic()
+        elapsed = now - self._start_time
+
+        if rms > self._silence_threshold:
+            self._dip_start = 0.0
+            if self._speech_start == 0.0:
+                self._speech_start = now
+            elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
+                self._has_spoken = True
+                logger.debug("Speech confirmed (%.2fs above threshold)", now - self._speech_start)
+            if not self._has_spoken:
+                self._silence_start = 0.0
+            else:
+                self._resume_dip_start = 0.0
+                if self._resume_start == 0.0:
+                    self._resume_start = now
+                elif now - self._resume_start >= self._min_speech_duration:
+                    self._silence_start = 0.0
+                    self._resume_start = 0.0
+        elif self._has_spoken:
+            if self._resume_start > 0:
+                if self._resume_dip_start == 0.0:
+                    self._resume_dip_start = now
+                elif now - self._resume_dip_start >= self._max_dip_tolerance:
+                    if self._silence_start == 0.0:
+                        self._silence_start = now
+                    self._resume_start = 0.0
+            elif self._silence_start == 0.0:
+                self._silence_start = now
+            if self._silence_start > 0 and now - self._silence_start >= self._silence_duration:
+                return True
+        elif elapsed >= self._max_wait:
+            return True
+        return False
+
+    def stop(self) -> Optional[str]:
+        with self._lock:
+            if not self._recording:
+                return None
+            self._recording = False
+            path = self._recording_path
+            self._recording_path = None
+            started_at = self._start_time
+
+        self._stop_event.set()
+        duration = time.monotonic() - started_at
+
+        # Stop arecord
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=3)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
+
+        # Wait for monitor thread
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=2)
+            self._monitor_thread = None
+
+        if duration < 0.3:
+            if path and os.path.isfile(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            return None
+
+        # Write accumulated PCM data as WAV
+        pcm_data = b"".join(self._pcm_chunks)
+        self._pcm_chunks = []
+        if not pcm_data:
+            return None
+
+        os.makedirs(_TEMP_DIR, exist_ok=True)
+        if not path:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(_TEMP_DIR, f"recording_{timestamp}.wav")
+
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm_data)
+
+        file_size = os.path.getsize(path)
+        logger.info("Arecord WAV written: %s (%d bytes, %.1fs)", path, file_size, duration)
+        return path
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._recording = False
+            path = self._recording_path
+            self._recording_path = None
+            self._current_rms = 0
+
+        self._stop_event.set()
+        self._pcm_chunks = []
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=3)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
+
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=2)
+            self._monitor_thread = None
+
+        if path and os.path.isfile(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        logger.info("Arecord recording cancelled")
+
+    def shutdown(self) -> None:
+        self.cancel()
+
+
+def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder | ArecordRecorder:
     """Return the best recorder backend for the current environment."""
     if _termux_voice_capture_available():
         return TermuxAudioRecorder()
-    return AudioRecorder()
+    # Prefer arecord on Linux to avoid PortAudio/PipeWire race condition crashes
+    if platform.system() == "Linux" and _arecord_available():
+        return ArecordRecorder()
+    if _audio_available():
+        return AudioRecorder()
+    if _arecord_available():
+        return ArecordRecorder()
+    raise RuntimeError("No audio recording backend available. Install sounddevice or alsa-utils.")
 
 
 # ============================================================================
@@ -1059,8 +1348,8 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # Try sounddevice for WAV files
-    if file_path.endswith(".wav"):
+    # Try sounddevice for WAV files (skip on Linux where PortAudio can crash on PipeWire)
+    if file_path.endswith(".wav") and platform.system() != "Linux":
         try:
             sd, np = _import_audio()
             with wave.open(file_path, "rb") as wf:
@@ -1090,6 +1379,7 @@ def play_audio_file(file_path: str) -> bool:
         players.append(["afplay", file_path])
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
+        players.append(["paplay", file_path])
         players.append(["aplay", "-q", file_path])
 
     for cmd in players:
@@ -1137,19 +1427,22 @@ def check_voice_requirements() -> Dict[str, Any]:
 
     missing: List[str] = []
     termux_capture = _termux_voice_capture_available()
-    has_audio = _audio_available() or termux_capture
+    has_arecord = _arecord_available()
+    has_audio = _audio_available() or termux_capture or has_arecord
 
     if not has_audio:
-        missing.extend(["sounddevice", "numpy"])
+        missing.extend(["sounddevice", "numpy", "alsa-utils"])
 
     # Environment detection
     env_check = detect_audio_environment()
 
-    available = has_audio and stt_available and env_check["available"]
+    available = has_audio and stt_available and (env_check["available"] or has_arecord)
     details_parts = []
 
     if termux_capture:
         details_parts.append("Audio capture: OK (Termux:API microphone)")
+    elif has_arecord and not _audio_available():
+        details_parts.append("Audio capture: OK (arecord/ALSA fallback)")
     elif has_audio:
         details_parts.append("Audio capture: OK")
     else:

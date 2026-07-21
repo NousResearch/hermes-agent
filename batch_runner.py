@@ -907,7 +907,7 @@ class BatchRunner:
         # Aggregate statistics across all batches
         total_tool_stats = {}
         
-        start_time = time.time()
+        start_time = time.monotonic()
         
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
         
@@ -1078,7 +1078,7 @@ class BatchRunner:
             "batch_size": self.batch_size,
             "model": self.model,
             "completed_at": datetime.now().isoformat(),
-            "duration_seconds": round(time.time() - start_time, 2),
+            "duration_seconds": round(time.monotonic() - start_time, 2),
             "tool_statistics": total_tool_stats,
             "reasoning_statistics": total_reasoning_stats,
         }
@@ -1093,7 +1093,7 @@ class BatchRunner:
         print(f"✅ Prompts processed this run: {sum(r.get('processed', 0) for r in results)}")
         print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries}")
         print(f"✅ Total batch files merged: {batch_files_found}")
-        print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
+        print(f"⏱️  Total duration: {round(time.monotonic() - start_time, 2)}s")
         print("\n📈 Tool Usage Statistics:")
         print("-" * 70)
         

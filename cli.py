@@ -4043,7 +4043,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._resumed = False
         # Per-prompt elapsed timer — started at the beginning of each chat turn,
         # frozen when the agent thread completes, displayed in the status bar.
-        self._prompt_start_time: Optional[float] = None  # time.time() when turn started
+        self._prompt_start_time: Optional[float] = None  # time.monotonic() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
@@ -12267,7 +12267,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # exits the main thread and daemon threads are reaped automatically).
             # Start per-prompt elapsed timer — frozen after the agent thread
             # finishes; reset on the next turn.
-            self._prompt_start_time = time.time()
+            self._prompt_start_time = time.monotonic()
             self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
@@ -12361,7 +12361,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Freeze per-prompt elapsed timer once the agent thread has
             # exited (or been abandoned as a daemon after interrupt).
             if self._prompt_start_time is not None:
-                self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
+                self._prompt_duration = max(0.0, time.monotonic() - self._prompt_start_time)
                 self._prompt_start_time = None
             # Record when this agent loop finished so the status bar can show
             # idle time since the last final response.

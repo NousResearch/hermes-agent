@@ -503,6 +503,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
+      // Enable screen-reader mode so VoiceOver / NVDA can discover the
+      // off-screen textarea xterm creates for assistive technology.
+      // Without this the chat composer is invisible to screen readers.
+      // See #36784.
+      screenReaderMode: true,
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -630,6 +635,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+
+      // Let Tab / Shift-Tab escape the terminal so screen-reader and keyboard
+      // users can navigate to other page controls (WCAG 2.1.2 No Keyboard Trap).
+      // Folding into the existing handler — xterm stores one handler per
+      // terminal (lib/xterm.js CoreBrowserTerminal.attachCustomKeyEventHandler
+      // assigns directly to `_customKeyEventHandler`), so registering Tab
+      // escape separately would silently overwrite the clipboard handler and
+      // Tab would never escape. See #36784.
+      if (ev.key === "Tab") return false;
 
       // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
       // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
@@ -1429,6 +1443,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             ref={hostRef}
+            role="region"
+            aria-label="Chat terminal"
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 

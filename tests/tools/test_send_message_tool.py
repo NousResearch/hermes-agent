@@ -707,6 +707,176 @@ class TestSendTelegramMediaDelivery:
 
 
 # ---------------------------------------------------------------------------
+# Defense-in-depth: per-platform send sites validate media paths (#34270)
+# ---------------------------------------------------------------------------
+
+
+class TestSendTelegramRevalidatesMediaPaths:
+    """Regression tests for #34270.
+
+    Even though the top-level send_message_tool() filters via
+    BasePlatformAdapter.filter_media_delivery_paths(), each per-platform
+    send site (_send_telegram, _send_signal) MUST re-validate the path
+    against the safe-roots allowlist before opening the file. This is
+    defense in depth: a future caller of _send_telegram with an
+    unfiltered media_files list must not silently exfiltrate files.
+    """
+
+    def test_send_telegram_rejects_path_outside_safe_roots(self, tmp_path, monkeypatch):
+        # Pin strict mode + disable recency trust so a fresh file outside
+        # any safe root is not auto-trusted.
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        # Use a file in a path that is NOT in MEDIA_DELIVERY_SAFE_ROOTS.
+        # We point to a path under /tmp but explicitly override the
+        # safe-roots allowlist to exclude it.
+        unsafe = tmp_path / "leaked.pdf"
+        unsafe.write_bytes(b"%PDF leaked")
+
+        # Override the safe-roots to a sibling directory so this file's
+        # parent is NOT covered.
+        other = tmp_path / "safe-zone"
+        other.mkdir()
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(other),),
+        )
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        # Pass the unsafe path directly to _send_telegram, bypassing
+        # the top-level filter (which is exactly what a future caller
+        # might do by accident).
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "caption",
+                media_files=[(str(unsafe), False)],
+            )
+        )
+
+        # The text part still sent ...
+        bot.send_message.assert_awaited()
+        # ... but the file was NOT delivered.
+        bot.send_document.assert_not_awaited()
+        bot.send_photo.assert_not_awaited()
+        bot.send_video.assert_not_awaited()
+
+        # The warning surfaced to the caller.
+        assert result.get("warnings"), (
+            f"expected a warning about unsafe media path, got {result!r}"
+        )
+        joined = "\n".join(result["warnings"])
+        assert "unsafe" in joined.lower() or "allowed roots" in joined.lower()
+
+    def test_send_telegram_accepts_path_inside_safe_roots(self, tmp_path, monkeypatch):
+        """Happy path: a file inside MEDIA_DELIVERY_SAFE_ROOTS still delivers."""
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(tmp_path),),
+        )
+        ok = tmp_path / "ok.pdf"
+        ok.write_bytes(b"%PDF safe")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "",
+                media_files=[(str(ok), False)],
+            )
+        )
+
+        # No warnings emitted, document was delivered.
+        assert not result.get("warnings"), result
+        bot.send_document.assert_awaited_once()
+
+
+class TestSendSignalRevalidatesMediaPaths:
+    """Mirror of the Telegram test for the Signal path (#34270)."""
+
+    def test_send_signal_rejects_path_outside_safe_roots(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        unsafe = tmp_path / "leaked.pdf"
+        unsafe.write_bytes(b"%PDF leaked")
+        other = tmp_path / "safe-zone"
+        other.mkdir()
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(other),),
+        )
+
+        # Mock httpx client so _send_signal can run without a real bridge.
+        # We expect the bridge to be hit with attachments=[] (the unsafe
+        # path was filtered).
+        captured_payloads = []
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {"result": {"timestamp": 1}}
+            def raise_for_status(self):
+                pass
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, *a, **kw):
+                captured_payloads.append(kw.get("json"))
+                return _FakeResp()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        with caplog.at_level(logging.WARNING):
+            result = asyncio.run(
+                _send_signal(
+                    {"http_url": "http://127.0.0.1:8080", "account": "+15555550000"},
+                    "+15555551111",
+                    "hi",
+                    media_files=[(str(unsafe), False)],
+                )
+            )
+
+        # The warning was emitted.
+        warned = any("unsafe media path" in r.getMessage().lower()
+                     or "outside allowed roots" in r.getMessage().lower()
+                     for r in caplog.records)
+        assert warned, [r.getMessage() for r in caplog.records]
+
+        # And the attachments did NOT include the unsafe path.
+        for payload in captured_payloads:
+            params = payload.get("params", {})
+            attachments = params.get("attachments") or []
+            assert str(unsafe) not in attachments, (
+                f"unsafe path leaked into Signal attachments: {attachments}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Regression: long messages are chunked before platform dispatch
 # ---------------------------------------------------------------------------
 

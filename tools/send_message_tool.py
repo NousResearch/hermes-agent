@@ -1283,6 +1283,27 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         raise
 
         for media_path, is_voice in media_files:
+            # Defense-in-depth: validate the media path against the safe-roots
+            # allowlist before opening the file. The caller is expected to
+            # have already filtered via BasePlatformAdapter.filter_media_
+            # delivery_paths(), but re-validating here protects against
+            # future code paths that might skip the upstream filter (and
+            # makes the trust boundary local to the I/O site). See #34270.
+            try:
+                from gateway.platforms.base import validate_media_delivery_path
+                _safe_path = validate_media_delivery_path(media_path)
+            except Exception:
+                # If the validator itself fails to import, fail closed.
+                _safe_path = None
+            if not _safe_path:
+                warning = (
+                    f"Skipping unsafe media path outside allowed roots: {media_path}"
+                )
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
+            media_path = _safe_path
+
             if not os.path.exists(media_path):
                 warning = f"Media file not found, skipping: {media_path}"
                 logger.warning(warning)
@@ -1492,7 +1513,32 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
         valid_media = media_files or []
         attachment_paths = []
+        # Defense-in-depth: validate each media path against the safe-roots
+        # allowlist before attaching. Mirrors the same guard added to
+        # _send_telegram() (#34270) so every per-platform send site enforces
+        # the trust boundary locally.
+        try:
+            from gateway.platforms.base import validate_media_delivery_path
+        except Exception:
+            validate_media_delivery_path = None  # type: ignore
         for media_path, _is_voice in valid_media:
+            # Fail closed: if the validator is unavailable (e.g. import
+            # failure in a minimal install), skip all media rather than
+            # delivering unvalidated paths. Mirrors _send_telegram().
+            if validate_media_delivery_path is None:
+                logger.warning(
+                    "Signal: media path validator unavailable, skipping %s",
+                    media_path,
+                )
+                continue
+            safe_path = validate_media_delivery_path(media_path)
+            if not safe_path:
+                logger.warning(
+                    "Signal: skipping unsafe media path outside allowed roots: %s",
+                    media_path,
+                )
+                continue
+            media_path = safe_path
             if os.path.exists(media_path):
                 attachment_paths.append(media_path)
             else:

@@ -795,6 +795,126 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsNvidiaNimReasoning:
+    """NVIDIA NIM reasoning_effort plumbing for thinking-capable model families.
+
+    NIM-hosted models (DeepSeek V4 Pro/Flash, Kimi K2 Thinking, GPT-OSS 120B,
+    Qwen3-thinking, Nemotron 3) gate their `<think>` chain on top-level
+    `reasoning_effort`. Without it, `reasoning_content` is null on the response.
+    """
+
+    def test_nvidia_nim_reasoning_effort_default_high(self, transport):
+        """No explicit effort → default 'high' (NIM's documented sweet spot)."""
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_nvidia_nim_reasoning_effort_explicit_levels(self, transport):
+        """low/medium/high are accepted by every reasoning model on NIM."""
+        for effort in ("low", "medium", "high"):
+            kw = transport.build_kwargs(
+                model="deepseek-ai/deepseek-v4-flash",
+                messages=[{"role": "user", "content": "Hi"}],
+                is_nvidia_nim=True,
+                reasoning_config={"effort": effort},
+                max_tokens_param_fn=lambda n: {"max_tokens": n},
+            )
+            assert kw["reasoning_effort"] == effort, f"effort={effort}"
+
+    def test_nvidia_nim_max_passes_through_for_deepseek_v4(self, transport):
+        """DeepSeek V4 Pro/Flash on NIM accept 'max'; forward as-is."""
+        for model in (
+            "deepseek-ai/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-pro",
+        ):
+            kw = transport.build_kwargs(
+                model=model,
+                messages=[{"role": "user", "content": "Hi"}],
+                is_nvidia_nim=True,
+                reasoning_config={"effort": "max"},
+                max_tokens_param_fn=lambda n: {"max_tokens": n},
+            )
+            assert kw["reasoning_effort"] == "max", f"model={model}"
+
+    def test_nvidia_nim_max_caps_to_high_for_nemotron(self, transport):
+        """Nemotron 3 on NIM rejects 'max' with a 400 literal_error.
+        Cap the value to 'high' to keep the request valid.
+        """
+        for model in (
+            "nvidia/nemotron-3-super-120b-a12b",
+            "nvidia/nemotron-3-nano-30b-a3b",
+        ):
+            kw = transport.build_kwargs(
+                model=model,
+                messages=[{"role": "user", "content": "Hi"}],
+                is_nvidia_nim=True,
+                reasoning_config={"effort": "max"},
+                max_tokens_param_fn=lambda n: {"max_tokens": n},
+            )
+            assert kw["reasoning_effort"] == "high", f"model={model}"
+
+    def test_nvidia_nim_xhigh_maps_to_max_only_for_v4(self, transport):
+        """Hermes' 'xhigh' rung — promoted to 'max' for V4, capped to 'high' elsewhere.
+        NIM never accepts 'xhigh' itself.
+        """
+        kw_v4 = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"effort": "xhigh"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw_v4["reasoning_effort"] == "max"
+
+        kw_nemo = transport.build_kwargs(
+            model="nvidia/nemotron-3-super-120b-a12b",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"effort": "xhigh"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw_nemo["reasoning_effort"] == "high"
+
+    def test_nvidia_nim_thinking_disabled_omits_field(self, transport):
+        """`enabled: False` opts out of thinking — no reasoning_effort emitted."""
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"enabled": False, "effort": "high"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_nvidia_nim_unknown_effort_falls_back_to_default(self, transport):
+        """Garbage effort value → defaults to 'high' rather than crashing."""
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"effort": "unknown-value"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_non_nvidia_route_unaffected(self, transport):
+        """Other routes (no is_nvidia_nim flag) don't get the field auto-injected."""
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            reasoning_config={"effort": "high"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # Without is_nvidia_nim=True, the NVIDIA branch shouldn't fire.
+        # (Kimi/TokenHub/LM Studio paths might still inject it, but those flags
+        # are off here too — so the field stays out.)
+        assert "reasoning_effort" not in kw
+
+
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the
     user requests an effort the model can't honor (e.g. ``high`` on a

@@ -558,6 +558,23 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     assert child_after["status"] == "ready"
 
 
+def test_patch_status_review(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "needs review"}).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "review"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "review"
+
+    review = next(
+        c for c in client.get("/api/plugins/kanban/board").json()["columns"]
+        if c["name"] == "review"
+    )
+    assert any(x["id"] == t["id"] for x in review["tasks"])
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 
@@ -1137,6 +1154,24 @@ def test_bulk_status_ready(client):
     ready = next(col for col in board["columns"] if col["name"] == "ready")
     ids = {t["id"] for t in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
+
+
+def test_bulk_status_review(client):
+    a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
+    b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [a["id"], b["id"]], "status": "review"},
+    )
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert all(entry["ok"] for entry in results)
+
+    board = client.get("/api/plugins/kanban/board").json()
+    review = next(col for col in board["columns"] if col["name"] == "review")
+    ids = {t["id"] for t in review["tasks"]}
+    assert {a["id"], b["id"]}.issubset(ids)
 
 
 def test_bulk_status_done_forwards_completion_summary(client):

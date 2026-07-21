@@ -3295,7 +3295,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # conversation_loop.py to decide whether _response_was_previewed
         # should be set after stream_delta_callback(None): if nothing visible
         # was streamed, the CLI should still render the final response panel.
+        #
+        # _stream_flushed_chars is zeroed by _reset_stream_state() which
+        # runs AFTER _flush_stream() inside _stream_delta(None).  So the
+        # gate in conversation_loop.py cannot read _stream_flushed_chars
+        # post-callback — it would always see 0.  Instead, _flush_stream()
+        # snapshots the counter into _last_stream_had_visible before the
+        # reset nukes it, and the gate reads that persistent flag.
         self._stream_flushed_chars = 0
+        self._last_stream_had_visible = False
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         # Table-row buffer.  When a streamed line looks like it could be
         # part of a markdown table, hold it here until the block ends so
@@ -5015,6 +5023,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._stream_box_opened:
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+
+        # Snapshot whether visible text was emitted during this stream,
+        # BEFORE _reset_stream_state() zeroes _stream_flushed_chars.
+        # conversation_loop.py reads this persistent flag after the None
+        # callback returns to decide whether to set _response_was_previewed.
+        self._last_stream_had_visible = self._stream_flushed_chars > 0
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""

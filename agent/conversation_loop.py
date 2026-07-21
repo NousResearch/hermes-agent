@@ -4032,16 +4032,20 @@ def run_conversation(
                     # swallowed and never recovered), setting
                     # _response_was_previewed=True would tell the CLI to
                     # skip the final render — silently hiding
-                    # the assistant's reply.  The CLI exposes
-                    # `_stream_flushed_chars` on the callback's bound
-                    # instance for exactly this gate; non-CLI callbacks
-                    # (gateway platforms) don't set stream_delta_callback
-                    # at all, so the outer `if` already protects them.
+                    # the assistant's reply.
+                    #
+                    # _flush_stream() snapshots _stream_flushed_chars into
+                    # _last_stream_had_visible BEFORE _reset_stream_state
+                    # zeroes the counter, so we read the persistent snapshot
+                    # rather than the already-reset live counter.
+                    # Non-CLI callbacks (gateway platforms) don't set
+                    # stream_delta_callback at all, so the outer `if`
+                    # already protects them.
                     _streamed_visible = False
                     _cb_self = getattr(agent.stream_delta_callback, "__self__", None)
                     if _cb_self is not None:
                         _streamed_visible = bool(
-                            getattr(_cb_self, "_stream_flushed_chars", 0)
+                            getattr(_cb_self, "_last_stream_had_visible", False)
                         )
                     if _streamed_visible:
                         agent._response_was_previewed = True

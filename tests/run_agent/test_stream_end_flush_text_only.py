@@ -15,7 +15,16 @@ The hermes-sweeper review (teknium1, 2026-06-13) flagged two issues:
    skip its final render and silently hide the assistant's reply.
 2. There were no regression tests pinning this behaviour.
 
-These tests pin the corrected behaviour.
+A second sweeper review (teknium1, 2026-07-13) flagged a further issue:
+
+3. The gate read ``_stream_flushed_chars`` AFTER ``stream_delta_callback(None)``
+   returned — but the production ``_stream_delta(None)`` calls
+   ``_flush_stream()`` then ``_reset_stream_state()``, the latter zeroing
+   ``_stream_flushed_chars``.  The gate therefore always saw 0 and
+   ``response_previewed`` stayed False, causing the Rich Panel to double-render.
+   The fake callback in tests did not reproduce that reset, masking the bug.
+
+These tests pin the corrected behaviour using a reset-faithful fake callback.
 """
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -80,20 +89,39 @@ class _FakeStreamDisplay:
     """Mimics just enough of ``HermesCLI`` for the gate to read.
 
     The production gate in ``conversation_loop.py`` reads
-    ``stream_delta_callback.__self__._stream_flushed_chars``.  The
+    ``stream_delta_callback.__self__._last_stream_had_visible``.  The
     callback must therefore be a bound method on an object that exposes
-    that counter — exactly what a real ``HermesCLI`` instance does.
+    that flag — exactly what a real ``HermesCLI`` instance does.
+
+    Crucially, the production ``_stream_delta(None)`` calls
+    ``_flush_stream()`` (which snapshots ``_stream_flushed_chars`` into
+    ``_last_stream_had_visible``) and THEN ``_reset_stream_state()``
+    (which zeroes ``_stream_flushed_chars``).  This fake reproduces
+    that exact ordering so the gate reads the snapshot, not the
+    already-reset live counter.
     """
 
     def __init__(self):
         self._stream_flushed_chars = 0
+        self._last_stream_had_visible = False
         self.deltas = []
         self.flush_none_calls = 0
+
+    def _flush_stream(self):
+        """Simulate the production flush: snapshot visible flag."""
+        self._last_stream_had_visible = self._stream_flushed_chars > 0
+
+    def _reset_stream_state(self):
+        """Simulate the production reset: zero the live counter."""
+        self._stream_flushed_chars = 0
 
     def _stream_delta(self, text):
         if text is None:
             # Mirrors the production flush — caller fires this with
             # ``None`` at end-of-stream to close the response box.
+            # Production order: _flush_stream() THEN _reset_stream_state().
+            self._flush_stream()
+            self._reset_stream_state()
             self.flush_none_calls += 1
             return
         self._stream_flushed_chars += len(text)
@@ -168,13 +196,17 @@ class TestTextOnlyStreamEndFlush:
         ):
             result = loop_agent.run_conversation("hi")
 
-        assert display._stream_flushed_chars == len("Hello world!"), (
-            f"Expected 12 visible chars to flow through _stream_delta, "
-            f"got {display._stream_flushed_chars}.  Deltas: {display.deltas!r}"
+        assert display._last_stream_had_visible is True, (
+            f"Expected visible text to set _last_stream_had_visible=True, "
+            f"got False.  Deltas: {display.deltas!r}"
         )
         assert display.flush_none_calls >= 1, (
             "stream_delta_callback(None) must be fired at end-of-stream so "
             "the CLI closes the response box and flushes any buffered text."
+        )
+        assert display._stream_flushed_chars == 0, (
+            "After _reset_stream_state() the live counter must be zeroed; "
+            "the gate reads _last_stream_had_visible, not the live counter."
         )
         assert result.get("response_previewed") is True, (
             "When visible text was streamed, result['response_previewed'] "
@@ -217,7 +249,12 @@ class TestTextOnlyStreamEndFlush:
             result = loop_agent.run_conversation("think about it")
 
         assert display._stream_flushed_chars == 0, (
-            "No visible text was streamed; the counter must be zero."
+            "No visible text was streamed; the live counter must be zero "
+            "(also zeroed by _reset_stream_state after the None callback)."
+        )
+        assert display._last_stream_had_visible is False, (
+            "No visible text was streamed; _last_stream_had_visible must "
+            "be False so the gate does not suppress the final Rich Panel."
         )
         assert display.flush_none_calls >= 1, (
             "stream_delta_callback(None) must still fire to close the "
@@ -238,24 +275,29 @@ class TestTextOnlyStreamEndFlush:
         """Regression for the sweeper's #2 finding: text held back by
         partial-tag detection in ``_stream_prefilt`` (e.g. a trailing
         ``<`` at a chunk boundary that the streaming filter suspected
-        might be the start of ``<think>``) gets recovered by
+        might be the start of ``<think``) gets recovered by
         ``_flush_stream()`` and emitted as regular text.  That recovered
         text must count toward ``_stream_flushed_chars`` so the gate
         recognises the response as already previewed.
+
+        The stream ends with the held prefix still in the buffer — a
+        true end-of-stream partial-prefix case, not one where a
+        subsequent chunk resolves the ambiguity.  ``_flush_stream()``
+        must recover it before the snapshot.
         """
         display = _FakeStreamDisplay()
         loop_agent.stream_delta_callback = display._stream_delta
 
-        # Stream where a chunk ends with a bare "<" that the
-        # partial-tag detector will hold, then a follow-up that
-        # resolves the tag without it being a real <think> opener, so
-        # the held "<" must be recovered as regular text in
-        # _flush_stream().
+        # Stream where the last content chunk ends with a bare "<" that
+        # the partial-tag detector holds, and finish_reason comes on the
+        # NEXT chunk with no further content.  This is a true
+        # end-of-stream partial-prefix: the "<" is never resolved by a
+        # follow-up character, so _flush_stream() must recover it.
         mock_create.return_value = _FakeRequestClient(side_effects=[
             [
-                _make_stream_chunk(content="Here is the answer: 4"),
-                _make_stream_chunk(content="2 <"),  # trailing '<' held
-                _make_stream_chunk(content="3", finish_reason="stop"),
+                _make_stream_chunk(content="Here is the answer: 42"),
+                _make_stream_chunk(content=" <"),  # trailing '<' held
+                _make_stream_chunk(finish_reason="stop"),  # no more content
                 _make_empty_chunk(),
             ],
         ])
@@ -268,14 +310,19 @@ class TestTextOnlyStreamEndFlush:
             result = loop_agent.run_conversation("what is 6*7?")
 
         # The visible-streamed portion plus the trailing "<" that
-        # _flush_stream() recovers must produce a non-zero counter.
+        # _flush_stream() recovers must produce a non-zero counter
+        # at snapshot time, flipping _last_stream_had_visible to True.
         # We don't pin the exact split between streamed-vs-recovered
         # here — that's the partial-tag detector's contract — only that
         # *some* visible text was emitted and the gate flipped.
-        assert display._stream_flushed_chars > 0, (
+        assert display._last_stream_had_visible is True, (
             "Partial-tag recovery must contribute to _stream_flushed_chars "
-            "so the gate recognises recovered text as visible content.  "
+            "at snapshot time so _last_stream_had_visible flips True.  "
             f"Got deltas: {display.deltas!r}"
+        )
+        assert display._stream_flushed_chars == 0, (
+            "After _reset_stream_state() the live counter must be zeroed; "
+            "the gate reads _last_stream_had_visible, not the live counter."
         )
         assert result.get("response_previewed") is True, (
             "When the partial-tag recovery emits visible text, the gate "

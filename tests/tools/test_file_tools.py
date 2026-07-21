@@ -64,6 +64,37 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    def test_missing_path_key_returns_error(self):
+        """#31791 — handler must reject calls where 'path' key is absent rather than
+        defaulting to "" and producing a confusing 'File not found: ' error with
+        unrelated similar_files suggestions."""
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({}))
+        assert "error" in result
+        assert "path" in result["error"].lower()
+
+    def test_empty_path_returns_error(self):
+        """#31791 — explicit empty string path is rejected before resolution."""
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"path": ""}))
+        assert "error" in result
+        assert "path" in result["error"].lower()
+
+    def test_non_string_path_returns_error(self):
+        """#31791 — non-string path (e.g. None, list) is rejected."""
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"path": None}))
+        assert "error" in result
+        assert "path" in result["error"].lower()
+
+    def test_read_file_schema_requires_non_empty_path(self):
+        """#31791 — schema declares minLength: 1 so providers that honor JSON Schema
+        can reject empty paths before the call reaches the handler."""
+        assert READ_FILE_SCHEMA["parameters"]["properties"]["path"].get("minLength") == 1
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")

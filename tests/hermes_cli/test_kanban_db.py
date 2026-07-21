@@ -1562,6 +1562,18 @@ def test_list_tasks_order_by(kanban_home):
         except ValueError as e:
             assert "order_by must be one of" in str(e)
 
+
+def test_list_tasks_order_by_priority_desc_sorts_highest_first(kanban_home):
+    with kb.connect() as conn:
+        low = kb.create_task(conn, title="low", priority=1)
+        mid = kb.create_task(conn, title="mid", priority=5)
+        high = kb.create_task(conn, title="high", priority=9)
+
+        by_priority_desc = kb.list_tasks(conn, order_by="priority-desc")
+
+        assert [t.id for t in by_priority_desc] == [high, mid, low]
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

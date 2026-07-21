@@ -3048,7 +3048,7 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "created": "created_at ASC, id ASC",
     "created-desc": "created_at DESC, id DESC",
     "priority": "priority DESC, created_at ASC",
-    "priority-desc": "priority ASC, created_at ASC",
+    "priority-desc": "priority DESC, created_at ASC",
     "status": "status ASC, created_at ASC",
     "assignee": "assignee ASC, created_at ASC",
     "title": "title ASC, id ASC",

@@ -1811,16 +1811,14 @@ class QQAdapter(BasePlatformAdapter):
         fn = filename.strip().lower()
         if ct == "voice" or ct.startswith("audio/"):
             return True
+        # QQ file uploads have content_type="file".  Without this guard,
+        # any uploaded audio file (e.g. .wav, .mp3) would be misrouted into
+        # the STT pipeline and never be received as a normal file attachment.
+        if ct == "file":
+            return False
         _VOICE_EXTENSIONS = (
-            ".silk",
-            ".amr",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".m4a",
-            ".aac",
-            ".speex",
-            ".flac",
+            ".silk", ".amr", ".mp3", ".wav", ".ogg",
+            ".m4a", ".aac", ".speex", ".flac",
         )
         if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
             return True

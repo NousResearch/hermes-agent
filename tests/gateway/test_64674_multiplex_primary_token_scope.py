@@ -97,6 +97,34 @@ class TestPlatformHasBotCredential:
             Platform.TELEGRAM, PlatformConfig(enabled=True, token="123:abc")
         ) is True
 
+    def test_backfills_from_env_when_config_empty(self, monkeypatch):
+        """Startup-race regression: a secret source (1Password, etc.) that
+        finishes resolving the token into os.environ AFTER a platform's
+        PlatformConfig snapshot was queued for reconnect must still be
+        picked up, instead of permanently evicting the platform from the
+        retry queue on the very next check."""
+        from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+        from gateway.run import _platform_has_bot_credential
+
+        env_name = PLATFORM_TOKEN_ENV_NAMES[Platform.DISCORD]
+        monkeypatch.setenv(env_name, "late-resolved-token")
+        cfg = PlatformConfig(enabled=True, token="")
+
+        assert _platform_has_bot_credential(Platform.DISCORD, cfg) is True
+        # Also backfilled onto the config so the reconnect attempt actually
+        # uses the recovered token instead of dropping it again next cycle.
+        assert cfg.token == "late-resolved-token"
+
+    def test_still_false_when_env_also_empty(self, monkeypatch):
+        from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+        from gateway.run import _platform_has_bot_credential
+
+        env_name = PLATFORM_TOKEN_ENV_NAMES[Platform.DISCORD]
+        monkeypatch.delenv(env_name, raising=False)
+        cfg = PlatformConfig(enabled=True, token="")
+
+        assert _platform_has_bot_credential(Platform.DISCORD, cfg) is False
+
     def test_non_token_platform_always_true(self):
         from gateway.run import _platform_has_bot_credential
 

@@ -2808,3 +2808,26 @@ class CLICommandsMixin:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _handle_wake_command(self, command: str):
+        """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener."""
+        from cli import _cprint
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        if subcommand == "on":
+            self._start_wake_word_listener(announce=True)
+        elif subcommand == "off":
+            self._stop_wake_word_listener(announce=True)
+        elif subcommand in ("", "status"):
+            if subcommand == "":
+                # Bare /wake toggles.
+                if getattr(self, "_wake_word_active", False):
+                    self._stop_wake_word_listener(announce=True)
+                else:
+                    self._start_wake_word_listener(announce=True)
+            else:
+                self._show_wake_word_status()
+        else:
+            _cprint(f"Unknown wake subcommand: {subcommand}")
+            _cprint("Usage: /wake [on|off|status]")

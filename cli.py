@@ -973,6 +973,7 @@ def _cleanup_all_browsers(*args, **kwargs):
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
+_cli_wake_owner = None
 # One-shot CLI finalization runs before process cleanup so plugins can observe
 # the session boundary while the agent is still attached. If a signal lands in
 # that narrow window, atexit cleanup must not emit that session finalize again.
@@ -1166,6 +1167,12 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # can't skip the reset (#36823). No-op unless the TUI actually ran.
     _reset_terminal_input_modes_on_exit()
 
+    try:
+        from tools.wake_word import stop_listening as _stop_wake_word
+        if _cli_wake_owner is not None:
+            _stop_wake_word(owner=_cli_wake_owner)
+    except Exception:
+        pass
     try:
         _cleanup_all_terminals()
     except Exception:
@@ -9187,6 +9194,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "wake":
+            self._handle_wake_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
         else:
@@ -11224,6 +11233,204 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_tts_done.set()
 
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
+
+    # ── Wake word ("Hey Hermes") ─────────────────────────────────────────
+    #
+    # An always-on hotword listener (tools/wake_word.py) that, on detecting
+    # the wake phrase, starts a fresh session and captures one utterance via
+    # the existing voice pipeline — the "Hey Siri" pattern, fully on-device.
+    #
+    # The detector holds the microphone, so it must be paused while a voice
+    # turn records (two input streams on one device is unreliable). On wake we
+    # pause it and mark the system suspended; a lightweight watchdog resumes it
+    # once the turn finishes and the CLI is idle again — covering every exit
+    # path (transcript submitted, no speech, or transcription error) without
+    # threading resume logic through the voice machinery.
+
+    def _maybe_start_wake_word(self):
+        """Start the wake-word listener at CLI startup if this surface is eligible."""
+        try:
+            from tools.wake_word import wake_surface_enabled
+            if not wake_surface_enabled("cli"):
+                return
+        except Exception:
+            return
+        self._start_wake_word_listener(announce=True)
+
+    def _start_wake_word_listener(self, announce: bool = False) -> bool:
+        """Build + start the hotword detector. Returns True on success."""
+        try:
+            from tools.wake_word import (
+                check_wake_word_requirements,
+                load_wake_word_config,
+                owns_listener,
+                start_listening,
+            )
+        except Exception as e:
+            if announce:
+                _cprint(f"{_DIM}Wake word unavailable: {e}{_RST}")
+            return False
+
+        if getattr(self, "_wake_word_active", False) and owns_listener(self):
+            if announce:
+                _cprint(f"{_DIM}Wake word is already listening.{_RST}")
+            return True
+        self._wake_word_active = False
+
+        cfg = load_wake_word_config()
+        reqs = check_wake_word_requirements(cfg)
+        if not reqs["available"]:
+            if announce:
+                _cprint(f"\n{_ACCENT}Wake word requirements not met:{_RST}")
+                if reqs.get("hint"):
+                    _cprint(f"  {_DIM}{reqs['hint']}{_RST}")
+            return False
+
+        self._wake_start_new_session = bool(cfg.get("start_new_session", True))
+        try:
+            start_listening(self._on_wake_word, owner=self, config=cfg)
+        except Exception as e:
+            if announce:
+                _cprint(f"\n{_DIM}Failed to start wake word: {e}{_RST}")
+            return False
+
+        self._wake_word_active = True
+        self._wake_suspended = False
+        global _cli_wake_owner
+        _cli_wake_owner = self
+        self._start_wake_watchdog()
+        if announce:
+            _cprint(f"\n{_ACCENT}Wake word listening{_RST} "
+                    f"{_DIM}(say \"{reqs['phrase']}\" — /wake off to stop){_RST}")
+        return True
+
+    def _stop_wake_word_listener(self, announce: bool = False):
+        """Stop and tear down the hotword detector."""
+        global _cli_wake_owner
+        was_active = getattr(self, "_wake_word_active", False)
+        self._wake_word_active = False
+        self._wake_suspended = False
+        try:
+            from tools.wake_word import stop_listening
+            stop_listening(owner=self)
+        except Exception:
+            pass
+        if _cli_wake_owner is self:
+            _cli_wake_owner = None
+        if announce:
+            if was_active:
+                _cprint(f"{_DIM}Wake word stopped.{_RST}")
+            else:
+                _cprint(f"{_DIM}Wake word is not running.{_RST}")
+
+    def _on_wake_word(self):
+        """Fired after the detector hears the wake phrase."""
+        if getattr(self, "_should_exit", False):
+            return
+        # Ignore wake while a turn is in flight or the mic is already in use.
+        if self._agent_running or self._voice_recording or getattr(self, "_voice_processing", False):
+            return
+
+        # Release the mic so STT can capture the command utterance.
+        try:
+            from tools.wake_word import pause_listening
+            if not pause_listening(owner=self):
+                self._wake_word_active = False
+                return
+        except Exception as e:
+            logger.debug("wake word pause failed: %s", e)
+            return
+        self._wake_suspended = True
+
+        _cprint(f"\n{_ACCENT}✦ Wake word detected — listening...{_RST}")
+        if getattr(self, "_app", None):
+            try:
+                self._app.invalidate()
+            except Exception:
+                pass
+
+        if getattr(self, "_wake_start_new_session", True):
+            try:
+                self.new_session(silent=True)
+            except Exception as e:
+                logger.debug("wake word new_session failed: %s", e)
+
+        # Single-utterance capture (not continuous) via the voice pipeline;
+        # VAD auto-stop transcribes and queues the transcript for process_loop.
+        with self._voice_lock:
+            self._voice_mode = True
+        self._voice_continuous = False
+        try:
+            self._voice_start_recording()
+        except Exception as e:
+            _cprint(f"{_DIM}Wake capture failed: {e}{_RST}")
+            # Leave _wake_suspended set; the watchdog resumes once idle.
+
+    def _start_wake_watchdog(self):
+        """Resume the paused detector when the CLI returns to a stable idle."""
+        if getattr(self, "_wake_watchdog_started", False):
+            return
+        self._wake_watchdog_started = True
+
+        def _loop():
+            idle_polls = 0
+            try:
+                while getattr(self, "_wake_word_active", False) and not getattr(self, "_should_exit", False):
+                    time.sleep(0.25)
+                    if not getattr(self, "_wake_suspended", False):
+                        idle_polls = 0
+                        continue
+                    busy = (
+                        self._agent_running
+                        or self._voice_recording
+                        or getattr(self, "_voice_processing", False)
+                        or not self._pending_input.empty()
+                    )
+                    if busy:
+                        idle_polls = 0
+                        continue
+                    # Require a few consecutive idle polls (~0.75s) so we don't
+                    # resume in the gap between VAD stop and the agent starting.
+                    idle_polls += 1
+                    if idle_polls >= 3:
+                        idle_polls = 0
+                        try:
+                            from tools.wake_word import resume_listening
+                            if resume_listening(owner=self):
+                                self._wake_suspended = False
+                            else:
+                                self._wake_word_active = False
+                        except Exception as e:
+                            logger.debug("wake word resume failed: %s", e)
+            finally:
+                self._wake_watchdog_started = False
+
+        threading.Thread(target=_loop, daemon=True, name="wake-watchdog").start()
+
+    def _show_wake_word_status(self):
+        """Show current wake-word listener status."""
+        from tools.wake_word import (
+            check_wake_word_requirements,
+            is_listening,
+            load_wake_word_config,
+            owns_listener,
+        )
+
+        cfg = load_wake_word_config()
+        reqs = check_wake_word_requirements(cfg)
+        owned = owns_listener(self)
+        state = "LISTENING" if owned and is_listening() else "PAUSED" if owned else "OFF"
+
+        _cprint(f"\n{_BOLD}Wake Word Status{_RST}")
+        _cprint(f"  State:       {state}")
+        _cprint(f"  Phrase:      \"{reqs['phrase']}\"")
+        _cprint(f"  Provider:    {reqs['provider']}")
+        _cprint(f"  Surface:     {cfg.get('surface', 'auto')}")
+        _cprint(f"  New session: {'yes' if cfg.get('start_new_session', True) else 'no'}")
+        if not reqs["available"] and reqs.get("hint"):
+            _cprint(f"  {_DIM}{reqs['hint']}{_RST}")
+        if not owned:
+            _cprint(f"  {_DIM}Enable with /wake on{_RST}")
 
     def _toggle_voice_tts(self):
         """Toggle TTS output for voice mode."""
@@ -15176,7 +15383,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
-        
+
+        # Wake word ("Hey Hermes") — start the always-on hotword listener if
+        # enabled. Off-thread so a first-run engine install never blocks the
+        # prompt; best-effort, so deps/mic/key gaps are surfaced, never fatal.
+        def _wake_startup():
+            try:
+                self._maybe_start_wake_word()
+            except Exception as e:
+                logger.debug("wake-word startup skipped: %s", e)
+        threading.Thread(target=_wake_startup, daemon=True, name="wake-startup").start()
+
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         

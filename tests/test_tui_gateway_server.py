@@ -1012,6 +1012,7 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert captured["silence_duration"] == 3.0
         assert captured["auto_restart"] is False
 
+
     # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
     # of ``int``, so the naive ``isinstance(threshold, (int, float))``
     # guard would forward ``silence_threshold: true`` as ``1`` instead
@@ -1040,6 +1041,173 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
             captured["silence_duration"] == 3.0
         ), f"bool silence_duration leaked through for {bad_bool_cfg!r}"
         assert captured["auto_restart"] is False
+
+
+def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatch):
+    from tools import wake_word
+
+    state = {"owner": None, "callback": None, "paused": False}
+    voice_callbacks = {}
+
+    def start_listening(callback, *, owner, config):
+        if state["owner"] is not None and state["owner"] is not owner:
+            raise wake_word.WakeWordInUse
+        state.update(owner=owner, callback=callback, paused=False)
+
+    def pause_listening(*, owner):
+        if state["owner"] is not owner:
+            return False
+        state["paused"] = True
+        return True
+
+    def stop_listening(*, owner):
+        if state["owner"] is not owner:
+            return False
+        state.update(owner=None, callback=None, paused=False)
+        return True
+
+    def resume_listening(*, owner):
+        if state["owner"] is not owner:
+            return False
+        state["paused"] = False
+        return True
+
+    def start_continuous(**callbacks):
+        voice_callbacks.update(callbacks)
+        return True
+
+    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: {
+        "enabled": True,
+        "phrase": "hey hermes",
+        "surface": "auto",
+        "start_new_session": True,
+    })
+    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
+        "available": True,
+        "phrase": "hey hermes",
+        "provider": "test",
+        "hint": "",
+    })
+    monkeypatch.setattr(wake_word, "start_listening", start_listening)
+    monkeypatch.setattr(wake_word, "pause_listening", pause_listening)
+    monkeypatch.setattr(wake_word, "stop_listening", stop_listening)
+    monkeypatch.setattr(wake_word, "owns_listener", lambda owner: state["owner"] is owner)
+    monkeypatch.setattr(
+        wake_word,
+        "is_listening",
+        lambda: state["owner"] is not None and not state["paused"],
+    )
+    monkeypatch.setattr(
+        wake_word,
+        "resume_listening",
+        resume_listening,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=start_continuous,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    first = types.SimpleNamespace(_closed=False)
+    second = types.SimpleNamespace(_closed=False)
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload: emitted.append(
+            (event, sid, payload, server.current_transport())
+        ),
+    )
+    server._wake_owner_transport = None
+    server._wake_owner_surface = ""
+    try:
+        started = server.dispatch({
+            "id": "wake-1",
+            "method": "wake.start",
+            "params": {"surface": "gui", "session_id": "first-session"},
+        }, transport=first)
+        denied = server.dispatch({
+            "id": "wake-2",
+            "method": "wake.start",
+            "params": {"surface": "tui", "session_id": "second-session"},
+        }, transport=second)
+        denied_stop = server.dispatch({
+            "id": "wake-stop-2",
+            "method": "wake.stop",
+            "params": {},
+        }, transport=second)
+        denied_voice_stop = server.dispatch({
+            "id": "voice-stop-2",
+            "method": "voice.record",
+            "params": {"action": "stop"},
+        }, transport=second)
+
+        assert started["result"]["started"] is True
+        assert denied["result"] == {
+            "started": False,
+            "reason": "owned",
+            "owner_surface": "gui",
+        }
+        assert denied_stop["result"] == {"stopped": False, "reason": "not_owner"}
+        assert denied_voice_stop["result"] == {
+            "status": "busy",
+            "reason": "wake_owned",
+        }
+
+        state["callback"]()
+        assert emitted == [(
+            "wake.detected",
+            "first-session",
+            {"phrase": "hey hermes", "start_new_session": True},
+            first,
+        )]
+        assert state["paused"] is True
+
+        voice_started = server.dispatch({
+            "id": "voice-start-1",
+            "method": "voice.record",
+            "params": {"action": "start", "session_id": "first-session"},
+        }, transport=first)
+        assert voice_started["result"]["status"] == "recording"
+        voice_callbacks["on_status"]("idle")
+        assert state["paused"] is False
+
+        stopped = server.dispatch({
+            "id": "wake-stop-1",
+            "method": "wake.stop",
+            "params": {},
+        }, transport=first)
+        assert stopped["result"] == {"stopped": True, "reason": None}
+
+        reclaimed = server.dispatch({
+            "id": "wake-reclaim-2",
+            "method": "wake.start",
+            "params": {"surface": "tui", "session_id": "second-session"},
+        }, transport=second)
+        assert reclaimed["result"]["started"] is True
+        assert state["owner"] is second
+
+        state["callback"]()
+        assert emitted[-1] == (
+            "wake.detected",
+            "second-session",
+            {"phrase": "hey hermes", "start_new_session": True},
+            second,
+        )
+
+        stopped_again = server.dispatch({
+            "id": "wake-stop-2-after-reclaim",
+            "method": "wake.stop",
+            "params": {},
+        }, transport=second)
+        assert stopped_again["result"] == {"stopped": True, "reason": None}
+    finally:
+        server._wake_owner_transport = None
+        server._wake_owner_surface = ""
 
 
 def test_voice_record_stop_forces_transcription(monkeypatch):

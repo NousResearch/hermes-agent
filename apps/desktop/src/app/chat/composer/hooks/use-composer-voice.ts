@@ -1,9 +1,12 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
@@ -52,6 +55,7 @@ export function useComposerVoice({
   const { t } = useI18n()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
+  const voiceStartRequest = useStore($voiceConversationStartRequest)
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
     focusInput,
@@ -131,6 +135,40 @@ export function useComposerVoice({
     () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
     [target, toggleVoiceConversation]
   )
+
+  useEffect(() => {
+    if (target === 'main' && !disabled && takeVoiceConversationStart(voiceStartRequest) && !voiceConversationActive) {
+      setVoiceConversationActive(true)
+    }
+  }, [disabled, target, voiceConversationActive, voiceStartRequest])
+
+  const wakePausedRef = useRef(false)
+
+  const resumeWakeIfPaused = useCallback(() => {
+    if (!wakePausedRef.current) {
+      return
+    }
+
+    wakePausedRef.current = false
+    void $gateway
+      .get()
+      ?.request('wake.resume', {})
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (voiceConversationActive) {
+      wakePausedRef.current = true
+      void $gateway
+        .get()
+        ?.request('wake.pause', {})
+        .catch(() => undefined)
+    } else {
+      resumeWakeIfPaused()
+    }
+  }, [resumeWakeIfPaused, voiceConversationActive])
+
+  useEffect(() => resumeWakeIfPaused, [resumeWakeIfPaused])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

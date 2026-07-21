@@ -640,9 +640,50 @@ def build_session_context_prompt(
         home_name = _format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
 
+    # Telegram topics and Discord threads can be addressed explicitly by the
+    # send_message tool.  This target describes the source conversation, not a
+    # home-channel child, so it must be emitted even when no home is configured.
+    # A usable target necessarily contains raw routing IDs; omit it rather than
+    # advertising non-routable hashes when PII redaction is active.
+    supports_explicit_thread_target = (
+        context.source.platform in {Platform.TELEGRAM, Platform.DISCORD}
+        and bool(context.source.thread_id)
+        and bool(context.source.chat_id)
+    )
+    has_explicit_thread_target = supports_explicit_thread_target and not redact_pii
+    if has_explicit_thread_target:
+        thread_target = _format_untrusted_prompt_value(
+            f"{context.source.platform.value}:"
+            f"{context.source.chat_id}:{context.source.thread_id}"
+        )
+        lines.append(
+            f"- `{thread_target}` → This thread "
+            "(use for send_message in this conversation)"
+        )
+
     # Note about explicit targeting
     lines.append("")
-    lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+    if has_explicit_thread_target:
+        lines.append(
+            "*For explicit targeting, use `\"platform:chat_id\"` for channels "
+            "or `\"platform:chat_id:thread_id\"` for threads/topics.*"
+        )
+        # Add a prominent warning when in a thread — bare platform name goes to
+        # the home channel, NOT the current thread.
+        lines.append(
+            "*IMPORTANT: When sending to this thread, always use the "
+            "platform:chat_id:thread_id format. Using just the platform name "
+            "does NOT target this thread; it uses the configured home-channel "
+            "route, or fails if none is configured.*"
+        )
+    elif supports_explicit_thread_target and redact_pii:
+        lines.append(
+            "*The explicit target for this thread is omitted because PII "
+            "redaction is enabled. Use `\"origin\"` for scheduled delivery "
+            "back to this thread.*"
+        )
+    else:
+        lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
 
     return "\n".join(lines)
 

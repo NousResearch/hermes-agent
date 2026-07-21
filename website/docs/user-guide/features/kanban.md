@@ -69,6 +69,105 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
+## Dependency gating
+
+Kanban dependencies are a directed acyclic graph (DAG) of `parent → child`
+edges stored in `task_links`. A child task is eligible to run only after all
+of its parents have reached a terminal success state. This is what lets an
+orchestrator create a whole pipeline up front — design, implementation,
+review, release notes — while the dispatcher only wakes the next step when
+its inputs are actually ready.
+
+### Status flow
+
+For dependency-gated work, the common status path is:
+
+```text
+triage/specify/decompose → todo ──(parents done)──> ready ──(claimed)──> running
+                                           │                           │
+                                           │                           ├──> done
+                                           │                           └──> blocked
+                                           └── stays todo while any parent is unfinished
+```
+
+Key details:
+
+- Tasks with no parents can start in `ready` as soon as they have an assignee.
+- Tasks with parents stay in `todo` until every parent is `done` or `archived`.
+- The dispatcher only claims `ready` tasks; it does not claim `todo` tasks.
+- `running` means a worker has an active claim. Claims are compare-and-swap
+  updates in SQLite, so two dispatchers/workers cannot both win the same task.
+- `blocked` means either a worker/operator deliberately asked for input, or the
+  failure circuit breaker paused a task after repeated spawn/runtime failures.
+
+### `recompute_ready` semantics
+
+`recompute_ready` is the promotion pass that moves eligible tasks from `todo`
+to `ready`. It is safe to run repeatedly; it only promotes tasks whose parents
+are all complete and leaves everything else alone.
+
+It runs automatically in the important places:
+
+- after a parent task is completed;
+- after a dependency edge is removed with `unlink`;
+- when the dispatcher performs its normal sweep.
+
+Human-facing board reads also refresh this state: `hermes kanban list` runs a
+cheap recompute before rendering, and the dispatcher repeats the pass on its
+normal sweep.
+
+A blocked task is treated carefully:
+
+- If it was blocked by an explicit worker/operator `kanban_block` or
+  `hermes kanban block`, it is sticky. It stays blocked until someone calls
+  `kanban_unblock` or `hermes kanban unblock <id>`.
+- If it was blocked by the failure circuit breaker, `recompute_ready` may
+  promote it once its parents are complete, resetting the failure counters as
+  part of that auto-recovery path.
+
+### Linking rules
+
+Use `--parent` at creation time when you already know the dependency:
+
+```bash
+SPEC=$(hermes kanban create "Write auth spec" --assignee architect --json | jq -r .id)
+IMPL=$(hermes kanban create "Implement auth" --assignee backend --parent "$SPEC" --json | jq -r .id)
+hermes kanban create "Review auth" --assignee reviewer --parent "$IMPL"
+```
+
+Use `hermes kanban link <parent> <child>` when the relationship is discovered
+later. If the child was already `ready` and the new parent is not done yet, the
+link operation demotes the child back to `todo` so it cannot run with missing
+inputs.
+
+Cycles are rejected. A task cannot depend on itself, and adding `A → B` fails if
+`B` already reaches `A` through existing child links. Keep the graph flowing in
+one direction from prerequisites to consumers.
+
+### Anti-patterns
+
+Avoid these shapes; they make agent handoffs noisy or deadlock-prone:
+
+- **Using dependencies as priority.** A parent should produce an input the child
+  needs. If two tasks are merely ordered by preference, use priority or comments
+  instead of a fake edge.
+- **Creating cycles by handoff language.** "A reviews B" and "B waits for A"
+  can accidentally describe both directions. Model it as one edge: producer →
+  consumer.
+- **One mega-parent for everything.** A single broad parent serializes unrelated
+  work and defeats parallelism. Split prerequisites so independent tasks can run
+  as soon as their specific inputs are ready.
+- **Blocking instead of completing with a handoff.** If a task produced useful
+  output, call `kanban_complete` with a summary/metadata payload. Use
+  `kanban_block` only when human input is required before any downstream worker
+  should continue.
+- **Linking across boards.** Boards are the hard isolation boundary. If work in
+  another board matters, reference it in the task body/comment and create an
+  explicit follow-up in the target board.
+- **Relying on a running worker's memory as the handoff.** Downstream tasks read
+  parent summaries and metadata from the board. Put durable decisions in the
+  `kanban_complete` summary or metadata, not only in the worker's conversation.
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,

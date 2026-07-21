@@ -1019,3 +1019,378 @@ class TestTruncateHelper:
     def test_unicode_message_encoded(self):
         result = _ntfy._truncate_body("héllo 🔔", context="test")
         assert result == "héllo 🔔".encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 13. SUPPORTS_MESSAGE_EDITING — non-editable / mirror-line streaming
+# ---------------------------------------------------------------------------
+
+
+class TestSupportsMessageEditing:
+    """ntfy has no edit API (publishing is POST-only, no edit_message
+    override). It must declare SUPPORTS_MESSAGE_EDITING = False so the gateway
+    reads it via ``getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)`` and
+    treats ntfy as a mirror-line platform (empty streaming cursor, mid-stream
+    updates routed as fresh sends) instead of issuing edit_message calls that
+    ntfy cannot honor — which would otherwise leave a stuck-cursor preview."""
+
+    def test_flag_is_false_on_class(self):
+        assert NtfyAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_gateway_getattr_resolves_false(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        # Exactly how gateway/run.py reads the flag.
+        assert getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is False
+
+    def test_edit_message_not_supported(self):
+        """No edit_message override -> base default returns success=False.
+        This is why the flag must be False: an edit attempt cannot succeed."""
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        result = _run(adapter.edit_message("t", "mid-1", "updated text"))
+        assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# 14. Background-stream fatal escalation -> _notify_fatal_error()
+# ---------------------------------------------------------------------------
+
+
+class TestFatalEscalation:
+    """connect() returns True after spawning _run_stream() as a background
+    task, so the gateway's startup escalation (which only runs on connect()
+    == False) is skipped. A background fatal therefore only reaches the
+    gateway through _notify_fatal_error(); _run_stream must call it when the
+    stream dies fatally, otherwise the dead adapter lingers reporting stale
+    state and the gateway never escalates or shuts down."""
+
+    def test_run_stream_notifies_gateway_on_fatal(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        adapter._running = True
+
+        notified = []
+        adapter.set_fatal_error_handler(lambda a: notified.append(a))
+
+        async def _raise_fatal(*_a, **_k):
+            adapter._set_fatal_error("ntfy_unauthorized", "401", retryable=False)
+            raise _ntfy._FatalStreamError("401 Unauthorized")
+
+        with patch.object(adapter, "_consume_stream", side_effect=_raise_fatal):
+            _run(adapter._run_stream())
+
+        assert notified == [adapter]
+        assert adapter._running is False
+
+    def test_run_stream_async_handler_awaited(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        adapter._running = True
+
+        notified = []
+
+        async def _handler(a):
+            notified.append(a)
+
+        adapter.set_fatal_error_handler(_handler)
+
+        async def _raise_fatal(*_a, **_k):
+            adapter._set_fatal_error("ntfy_topic_not_found", "404", retryable=False)
+            raise _ntfy._FatalStreamError("404 Not Found")
+
+        with patch.object(adapter, "_consume_stream", side_effect=_raise_fatal):
+            _run(adapter._run_stream())
+
+        assert notified == [adapter]
+
+
+# ---------------------------------------------------------------------------
+# 15. 403 Forbidden -> permanent fatal (not an infinite reconnect)
+# ---------------------------------------------------------------------------
+
+
+class TestForbiddenFatal:
+    """ntfy returns 403 (not 401) when a token is present but lacks read
+    access to a protected topic. A 403 is permanent and must map to a
+    non-retryable fatal error, otherwise it falls through to
+    raise_for_status() and the reconnect loop busy-loops forever."""
+
+    def test_403_sets_fatal_forbidden(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "locked"}))
+        adapter._http_client = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        adapter._http_client.stream = MagicMock(return_value=mock_cm)
+
+        fake_httpx = MagicMock()
+        fake_httpx.Timeout = MagicMock()
+        with patch.object(_ntfy, "httpx", fake_httpx):
+            with pytest.raises(_ntfy._FatalStreamError):
+                _run(adapter._consume_stream("https://ntfy.example/locked/json", {}))
+
+        assert adapter.has_fatal_error is True
+        assert adapter._fatal_error_code == "ntfy_forbidden"
+        assert adapter._fatal_error_retryable is False
+        assert "locked" in adapter._fatal_error_message
+
+    def test_403_does_not_call_raise_for_status(self):
+        """403 must be caught before raise_for_status(); otherwise it becomes a
+        generic HTTPStatusError that the reconnect loop retries forever."""
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "locked"}))
+        adapter._http_client = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.raise_for_status = MagicMock(
+            side_effect=AssertionError("raise_for_status must not run for 403")
+        )
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        adapter._http_client.stream = MagicMock(return_value=mock_cm)
+
+        fake_httpx = MagicMock()
+        fake_httpx.Timeout = MagicMock()
+        with patch.object(_ntfy, "httpx", fake_httpx):
+            with pytest.raises(_ntfy._FatalStreamError):
+                _run(adapter._consume_stream("https://ntfy.example/locked/json", {}))
+        mock_response.raise_for_status.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 16. send() chunks long replies instead of dropping the tail
+# ---------------------------------------------------------------------------
+
+
+class TestSendChunking:
+    """The gateway hands send() the full response and relies on the adapter to
+    split it; a single-slice ``content[:MAX]`` silently dropped everything past
+    the first 4096 chars. send() must loop the base chunker and publish every
+    chunk."""
+
+    def _client_capturing_bodies(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "abc"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        return mock_client
+
+    def test_long_message_split_into_multiple_posts(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        client = self._client_capturing_bodies()
+        adapter._http_client = client
+
+        long_msg = "x" * (MAX_MESSAGE_LENGTH * 2 + 100)
+        result = _run(adapter.send("t", long_msg))
+
+        assert result.success is True
+        # Multiple chunks -> multiple POSTs (single-slice would post once).
+        assert client.post.call_count >= 2
+
+    def test_tail_not_dropped(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        client = self._client_capturing_bodies()
+        adapter._http_client = client
+
+        # Distinct head/tail so we can prove the tail is actually published.
+        head = "H" * (MAX_MESSAGE_LENGTH - 10)
+        tail = "TAILMARKER"
+        long_msg = head + ("Z" * 20) + tail
+        _run(adapter.send("t", long_msg))
+
+        published = "".join(
+            call.kwargs["content"].decode("utf-8")
+            for call in client.post.call_args_list
+        )
+        assert "TAILMARKER" in published
+
+    def test_each_chunk_within_limit(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        client = self._client_capturing_bodies()
+        adapter._http_client = client
+
+        _run(adapter.send("t", "y" * (MAX_MESSAGE_LENGTH * 2 + 50)))
+        for call in client.post.call_args_list:
+            assert len(call.kwargs["content"].decode("utf-8")) <= MAX_MESSAGE_LENGTH
+
+    def test_short_message_still_single_post(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        client = self._client_capturing_bodies()
+        adapter._http_client = client
+
+        result = _run(adapter.send("t", "short"))
+        assert result.success is True
+        assert client.post.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 17. Inbound attachment download / classification
+# ---------------------------------------------------------------------------
+
+
+class TestInboundAttachments:
+    """ntfy delivers files as an ``attachment`` object on the message event.
+    _on_message must download/classify it (image->PHOTO, audio->VOICE, else
+    DOCUMENT) and populate media_urls/media_types, and must not drop an
+    attachment-only event whose body is empty."""
+
+    def _make_adapter(self):
+        return NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "hermes-in"}))
+
+    def test_image_attachment_promoted_to_photo(self):
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured = []
+        adapter.set_message_handler(lambda e: captured.append(e))
+
+        async def _dl(att):
+            return "/cache/img_123.jpg", "image/jpeg"
+
+        with patch.object(adapter, "_download_attachment", side_effect=_dl):
+            _run(adapter._on_message({
+                "id": "att-1",
+                "event": "message",
+                "topic": "hermes-in",
+                "message": "see attached",
+                "attachment": {"name": "pic.jpg", "type": "image/jpeg",
+                               "url": "https://ntfy.example/file/pic.jpg"},
+                "time": None,
+            }))
+
+        assert len(captured) == 1
+        assert captured[0].message_type == MessageType.PHOTO
+        assert captured[0].media_urls == ["/cache/img_123.jpg"]
+        assert captured[0].media_types == ["image/jpeg"]
+
+    def test_document_attachment_promoted_to_document(self):
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured = []
+        adapter.set_message_handler(lambda e: captured.append(e))
+
+        async def _dl(att):
+            return "/cache/doc_report.pdf", "application/pdf"
+
+        with patch.object(adapter, "_download_attachment", side_effect=_dl):
+            _run(adapter._on_message({
+                "id": "att-2",
+                "event": "message",
+                "topic": "hermes-in",
+                "message": "report",
+                "attachment": {"name": "report.pdf", "type": "application/pdf",
+                               "url": "https://ntfy.example/file/report.pdf"},
+                "time": None,
+            }))
+
+        assert captured[0].message_type == MessageType.DOCUMENT
+        assert captured[0].media_urls == ["/cache/doc_report.pdf"]
+
+    def test_attachment_only_empty_body_not_dropped(self):
+        """An attachment with no body must still be dispatched — the old
+        ``if not text: return`` guard silently discarded it."""
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured = []
+        adapter.set_message_handler(lambda e: captured.append(e))
+
+        async def _dl(att):
+            return "/cache/img_xyz.png", "image/png"
+
+        with patch.object(adapter, "_download_attachment", side_effect=_dl):
+            _run(adapter._on_message({
+                "id": "att-3",
+                "event": "message",
+                "topic": "hermes-in",
+                "attachment": {"name": "shot.png", "type": "image/png",
+                               "url": "https://ntfy.example/file/shot.png"},
+                "time": None,
+            }))
+
+        assert len(captured) == 1
+        assert captured[0].message_type == MessageType.PHOTO
+        assert captured[0].media_urls == ["/cache/img_xyz.png"]
+
+    def test_plain_text_message_stays_text_with_no_media(self):
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured = []
+        adapter.set_message_handler(lambda e: captured.append(e))
+
+        _run(adapter._on_message({
+            "id": "txt-1",
+            "event": "message",
+            "topic": "hermes-in",
+            "message": "just text",
+            "time": None,
+        }))
+
+        assert captured[0].message_type == MessageType.TEXT
+        assert captured[0].media_urls == []
+        assert captured[0].media_types == []
+
+    def test_failed_download_degrades_to_text(self):
+        """If the attachment download fails, the message must still be
+        delivered (as text) rather than crashing the stream consumer."""
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured = []
+        adapter.set_message_handler(lambda e: captured.append(e))
+
+        async def _dl(att):
+            return None, ""
+
+        with patch.object(adapter, "_download_attachment", side_effect=_dl):
+            _run(adapter._on_message({
+                "id": "att-4",
+                "event": "message",
+                "topic": "hermes-in",
+                "message": "body with broken attachment",
+                "attachment": {"name": "x.bin", "type": "application/octet-stream",
+                               "url": "https://ntfy.example/file/x.bin"},
+                "time": None,
+            }))
+
+        assert len(captured) == 1
+        assert captured[0].message_type == MessageType.TEXT
+        assert captured[0].media_urls == []
+
+    def test_download_attachment_uses_auth_and_caches_image(self):
+        """_download_attachment fetches with auth headers and routes image
+        bytes through cache_image_from_bytes."""
+        adapter = NtfyAdapter(
+            PlatformConfig(enabled=True, extra={"topic": "t", "token": "tk"})
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"\xff\xd8\xff binary"
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        with patch.object(_ntfy, "cache_image_from_bytes", return_value="/cache/i.jpg") as m_img:
+            path, mime = _run(adapter._download_attachment(
+                {"name": "p.jpg", "type": "image/jpeg",
+                 "url": "https://ntfy.example/file/p.jpg"}
+            ))
+
+        assert path == "/cache/i.jpg"
+        assert mime == "image/jpeg"
+        m_img.assert_called_once()
+        sent_headers = mock_client.get.call_args.kwargs["headers"]
+        assert sent_headers.get("Authorization") == "Bearer tk"
+
+    def test_download_attachment_http_error_returns_none(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        path, mime = _run(adapter._download_attachment(
+            {"name": "x", "type": "image/png", "url": "https://ntfy.example/file/x"}
+        ))
+        assert path is None
+        assert mime == ""

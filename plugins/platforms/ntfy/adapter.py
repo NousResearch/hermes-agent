@@ -66,6 +66,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +161,19 @@ class NtfyAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
+    # ntfy has no message-edit API: publishing is POST-only, there is no
+    # PATCH/edit endpoint, and no edit_message override here (so the base
+    # default returns success=False). Declaring this False makes the gateway
+    # treat ntfy as a mirror-line platform: the streaming consumer uses an
+    # empty cursor and routes mid-stream updates as fresh sends instead of
+    # edit_message calls. Left at the default (True), send() always returns a
+    # real message_id, so the consumer stores it and issues edit_message on the
+    # next delta; that fails, trips fallback mode, and tries to strip the
+    # cursor with another failing edit -- the user gets a partial-preview push
+    # ending in a stuck cursor before the real answer. False keeps the preview
+    # from ever leaving a stuck cursor or a failed-edit fallback.
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config: PlatformConfig):
         platform = Platform("ntfy")
         super().__init__(config=config, platform=platform)
@@ -217,7 +233,17 @@ class NtfyAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except _FatalStreamError:
+                # _set_fatal_error already flipped _running=False and wrote the
+                # fatal runtime status. connect() returned True (the stream is a
+                # background task), so the gateway's startup escalation path was
+                # skipped -- the only way a background failure reaches the
+                # gateway is _notify_fatal_error(), which disconnects/pops this
+                # dead adapter, queues retryable failures for the reconnect
+                # watcher, and cleanly stops the gateway when no platforms
+                # remain. Without it a 401/404/403 silently kills inbound
+                # reception while the adapter lingers reporting stale state.
                 self._running = False
+                await self._notify_fatal_error()
                 return
             except Exception as e:
                 if not self._running:
@@ -268,6 +294,25 @@ class NtfyAdapter(BasePlatformAdapter):
                     retryable=False,
                 )
                 raise _FatalStreamError("404 Not Found")
+            if response.status_code == 403:
+                # ntfy returns 403 (not 401) when a token IS present but lacks
+                # read access to a protected/ACL'd topic. This never succeeds on
+                # retry; without a fatal classification it falls through to
+                # raise_for_status() -> generic except in _run_stream -> reconnect
+                # loop forever at the backoff cap. Mattermost treats 403 the same
+                # way (permanent, stop reconnecting).
+                logger.error(
+                    "[%s] Forbidden (403) for topic %s — stopping reconnect loop. "
+                    "Check NTFY_TOKEN read permissions.",
+                    self.name, self._topic,
+                )
+                self._set_fatal_error(
+                    "ntfy_forbidden",
+                    f"ntfy token lacks read access to topic '{self._topic}' (403). "
+                    "Check NTFY_TOKEN permissions.",
+                    retryable=False,
+                )
+                raise _FatalStreamError("403 Forbidden")
             response.raise_for_status()
 
             async for line in response.aiter_lines():
@@ -319,7 +364,30 @@ class NtfyAdapter(BasePlatformAdapter):
             return
 
         text = (event.get("message") or "").strip()
-        if not text:
+
+        # ntfy can publish a file as an ``attachment`` object
+        # ({"name", "type", "size", "url", "expires"}); the body may be absent.
+        # Download and classify it so the file reaches the agent. Without this
+        # an attachment-only event is dropped at the empty-body guard, and an
+        # attachment-with-body is mistyped as TEXT with its URL discarded — the
+        # gateway only forwards media when message_type is PHOTO/VOICE/DOCUMENT.
+        attachment = event.get("attachment") or {}
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        msg_type = MessageType.TEXT
+        if attachment.get("url"):
+            cached, mime = await self._download_attachment(attachment)
+            if cached:
+                media_urls.append(cached)
+                media_types.append(mime)
+                if mime.startswith("image/"):
+                    msg_type = MessageType.PHOTO
+                elif mime.startswith("audio/"):
+                    msg_type = MessageType.VOICE
+                else:
+                    msg_type = MessageType.DOCUMENT
+
+        if not text and not media_urls:
             logger.debug("[%s] Empty message body, skipping", self.name)
             return
 
@@ -352,15 +420,59 @@ class NtfyAdapter(BasePlatformAdapter):
 
         message_event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=msg_type,
             source=source,
             message_id=msg_id,
             raw_message=event,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
         logger.debug("[%s] Message on topic %s: %s", self.name, topic, text[:80])
         await self.handle_message(message_event)
+
+    async def _download_attachment(self, attachment: Dict[str, Any]) -> tuple:
+        """Download an ntfy attachment and cache it locally.
+
+        Returns ``(local_path, mime_type)`` on success or ``(None, "")`` on
+        failure. Attachment URLs on protected topics need the same auth headers
+        as the stream, and downstream vision/document tooling reads local file
+        paths — so the bytes are fetched here and cached via the shared
+        ``cache_*_from_bytes`` helpers, mirroring the Mattermost and SimpleX
+        adapters. Failures are logged and degrade gracefully so a bad
+        attachment never crashes the stream consumer.
+        """
+        url = attachment.get("url")
+        if not url or not self._http_client:
+            return None, ""
+        name = attachment.get("name") or "attachment"
+        mime = attachment.get("type") or "application/octet-stream"
+        ext = os.path.splitext(name)[1]
+        try:
+            resp = await self._http_client.get(
+                url, headers=self._auth_headers(), timeout=30.0,
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "[%s] Attachment download failed HTTP %d: %s",
+                    self.name, resp.status_code, url,
+                )
+                return None, ""
+            data = resp.content
+        except Exception as e:
+            logger.warning("[%s] Attachment download error: %s", self.name, e)
+            return None, ""
+
+        try:
+            if mime.startswith("image/"):
+                return cache_image_from_bytes(data, ext or ".jpg"), mime
+            if mime.startswith("audio/"):
+                return cache_audio_from_bytes(data, ext or ".ogg"), mime
+            return cache_document_from_bytes(data, name), mime
+        except Exception as e:
+            logger.warning("[%s] Attachment cache error: %s", self.name, e)
+            return None, ""
 
     # -- Deduplication ------------------------------------------------------
 
@@ -402,27 +514,36 @@ class NtfyAdapter(BasePlatformAdapter):
         if markdown_enabled:
             headers["X-Markdown"] = "true"
 
-        if len(content) > self.MAX_MESSAGE_LENGTH:
-            logger.warning(
-                "[%s] Message truncated from %d to %d chars (ntfy limit)",
-                self.name, len(content), self.MAX_MESSAGE_LENGTH,
-            )
-        body = content[:self.MAX_MESSAGE_LENGTH]
+        # ntfy's 4096-char body limit applies per published notification, so a
+        # long reply must be split across several pushes — a single-slice
+        # ``content[:MAX]`` silently dropped everything past the first chunk
+        # (the gateway hands send() the full response and relies on the adapter
+        # to chunk; it never pre-splits). Loop the base chunker like Mattermost
+        # / IRC and publish each chunk, returning the last message id.
+        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
 
         try:
-            resp = await self._http_client.post(
-                url, content=body.encode("utf-8"), headers=headers, timeout=15.0,
-            )
-            if resp.status_code < 300:
+            returned_id: Optional[str] = None
+            for chunk in chunks:
+                resp = await self._http_client.post(
+                    url, content=chunk.encode("utf-8"), headers=headers, timeout=15.0,
+                )
+                if resp.status_code >= 300:
+                    body_text = resp.text
+                    logger.warning(
+                        "[%s] Send failed HTTP %d: %s",
+                        self.name, resp.status_code, body_text[:200],
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"HTTP {resp.status_code}: {body_text[:200]}",
+                    )
                 try:
                     data = resp.json()
                     returned_id = data.get("id") or uuid.uuid4().hex[:12]
                 except Exception:
                     returned_id = uuid.uuid4().hex[:12]
-                return SendResult(success=True, message_id=returned_id)
-            body_text = resp.text
-            logger.warning("[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body_text[:200])
-            return SendResult(success=False, error=f"HTTP {resp.status_code}: {body_text[:200]}")
+            return SendResult(success=True, message_id=returned_id)
         except httpx.TimeoutException:
             return SendResult(success=False, error="Timeout publishing to ntfy")
         except Exception as e:

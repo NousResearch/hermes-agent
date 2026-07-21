@@ -78,8 +78,11 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "telegram":    _TIER_HIGH,
     "discord":     _TIER_HIGH,
 
+    # Slack is frequently workspace-facing and even edited progress messages are
+    # still visible to everyone in the channel/thread, so default it quieter.
+    "slack":           _TIER_LOW,
+
     # Tier 2 — edit support, often customer/workspace channels
-    "slack":           _TIER_MEDIUM,
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,

@@ -194,6 +194,7 @@ class TestModuleSurface:
             "kanban_block",
             "kanban_comment",
             "kanban_heartbeat",
+            "kanban_authority",
         ):
             assert worker_tool in EXPOSED_TOOLS, (
                 f"{worker_tool!r} missing from codex callback — kanban "

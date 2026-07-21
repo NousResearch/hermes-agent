@@ -440,6 +440,34 @@ def _handle_show(args: dict, **kw) -> str:
         return tool_error(f"kanban_show: {e}")
 
 
+def _handle_authority(args: dict, **kw) -> str:
+    """Fail-closed merge-time proof for the current verifier card."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(str(tid))
+    if ownership_err:
+        return ownership_err
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            check = kb.check_merge_authority(conn, str(tid), board=board)
+            # Always return the complete structured disposition. Callers MUST
+            # require ``allowed: true`` before merging; every parse/ledger/
+            # ambiguity failure is represented as ``allowed: false``.
+            return json.dumps(check.to_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_authority: {e}")
+    except Exception as e:
+        logger.exception("kanban_authority failed")
+        return tool_error(f"kanban_authority: {e}")
+
+
 def _handle_list(args: dict, **kw) -> str:
     """List task summaries with the same core filters as the CLI."""
     guard = _require_orchestrator_tool("kanban_list")
@@ -1381,6 +1409,30 @@ KANBAN_SHOW_SCHEMA = {
     },
 }
 
+KANBAN_AUTHORITY_SCHEMA = {
+    "name": "kanban_authority",
+    "description": (
+        "Required fail-closed self-check immediately before a verifier merges "
+        "a GitHub PR. Returns allowed=true only when this open card is the "
+        "sole live authority candidate and the reconciled ledger agrees. "
+        "Authority selects WHICH card may merge; the card's CI/security gates "
+        "still decide WHEN merging is permitted. Never merge unless allowed "
+        "is exactly true. Ambiguous, advisory, unparseable, missing, and stale "
+        "states all return allowed=false."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
 KANBAN_LIST_SCHEMA = {
     "name": "kanban_list",
     "description": (
@@ -1928,6 +1980,15 @@ registry.register(
     handler=_handle_show,
     check_fn=_check_kanban_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="kanban_authority",
+    toolset="kanban",
+    schema=KANBAN_AUTHORITY_SCHEMA,
+    handler=_handle_authority,
+    check_fn=_check_kanban_mode,
+    emoji="🔐",
 )
 
 registry.register(

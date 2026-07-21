@@ -206,6 +206,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
                             "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
+                            "authority",
                             "claim", "comment", "complete", "edit", "block", "unblock",
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",

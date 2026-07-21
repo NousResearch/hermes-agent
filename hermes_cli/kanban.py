@@ -267,6 +267,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
+    b_create.add_argument("--default-repo", default=None, metavar="OWNER/REPO",
+                          help="GitHub repo used only for legacy bare #N merge targets")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -302,6 +304,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("slug")
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
+
+    b_set_repo = boards_sub.add_parser(
+        "set-default-repo",
+        help="Set the GitHub owner/repo used for legacy bare #N merge targets",
+    )
+    b_set_repo.add_argument("slug")
+    b_set_repo.add_argument("repo", nargs="?", default="",
+                            help="GitHub owner/repo. Omit to clear.")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -495,6 +505,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--json", action="store_true",
         help="Emit JSON (structured) instead of the default human table",
     )
+
+    # --- single merge authority (SMA-2026-07-21) ---
+    p_authority = sub.add_parser(
+        "authority",
+        help="Check or reconcile the sole verifier allowed to merge a PR",
+    )
+    authority_sub = p_authority.add_subparsers(dest="authority_action")
+    p_authority_check = authority_sub.add_parser(
+        "check", help="Fail-closed merge-time authority check for one verifier card"
+    )
+    p_authority_check.add_argument("task_id")
+    p_authority_check.add_argument("--json", action="store_true")
+    p_authority_sweep = authority_sub.add_parser(
+        "sweep", help="Deduplicate all open PR verifier cards and reconcile the ledger"
+    )
+    p_authority_sweep.add_argument("--json", action="store_true")
 
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
@@ -968,6 +994,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
+            "authority": _cmd_authority,
             "link":     _cmd_link,
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
@@ -1055,6 +1082,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "set-default-repo":
+        return _cmd_boards_set_default_repo(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1119,14 +1148,19 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         print("kanban boards create: slug is required", file=sys.stderr)
         return 2
     already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
-    meta = kb.create_board(
-        normed,
-        name=args.name,
-        description=args.description,
-        icon=args.icon,
-        color=args.color,
-        default_workdir=args.default_workdir,
-    )
+    try:
+        meta = kb.create_board(
+            normed,
+            name=args.name,
+            description=args.description,
+            icon=args.icon,
+            color=args.color,
+            default_workdir=args.default_workdir,
+            default_repo=args.default_repo,
+        )
+    except ValueError as exc:
+        print(f"kanban boards create: {exc}", file=sys.stderr)
+        return 2
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
     print(f"  Display name: {meta.get('name', '')}")
@@ -1189,6 +1223,8 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     print(f"  Display name: {meta.get('name', '')}")
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
+    if meta.get("default_repo"):
+        print(f"  Default repo: {meta['default_repo']}")
     print(f"  DB path:      {meta['db_path']}")
     print(f"  Tasks:        {total} total"
           + (f" ({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))})"
@@ -1227,6 +1263,29 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_default_repo(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-default-repo: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-default-repo: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    try:
+        meta = kb.write_board_metadata(normed, default_repo=args.repo)
+    except ValueError as exc:
+        print(f"kanban boards set-default-repo: {exc}", file=sys.stderr)
+        return 2
+    new_val = meta.get("default_repo")
+    if new_val:
+        print(f"Board {normed!r} default repo set to {new_val!r}.")
+    else:
+        print(f"Board {normed!r} default repo cleared.")
     return 0
 
 
@@ -1820,6 +1879,67 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _merge_authority_action_to_dict(action: kb.MergeAuthorityAction) -> dict[str, Any]:
+    return {
+        "pr_ref": action.pr_ref,
+        "kept_task_id": action.kept_task_id,
+        "gate_strength": action.gate_strength,
+        "demoted_task_ids": list(action.demoted_task_ids),
+        "archived_task_ids": list(action.archived_task_ids),
+        "reason": action.reason,
+    }
+
+
+def _cmd_authority(args: argparse.Namespace) -> int:
+    """Manual sweep and merge-time authority check surface."""
+    action = getattr(args, "authority_action", None)
+    if action not in {"check", "sweep"}:
+        print(
+            "usage: hermes kanban authority {check <task-id>|sweep} [--json]",
+            file=sys.stderr,
+        )
+        return 2
+    if action == "sweep":
+        with kb.connect_closing() as conn:
+            changes = kb.sweep_merge_authority(conn)
+        payload = {
+            "dedupe_count": len(changes),
+            "actions": [_merge_authority_action_to_dict(item) for item in changes],
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        elif not changes:
+            print("Merge-authority ledger is reconciled; no duplicate verifier cards found.")
+        else:
+            print(f"Reconciled {len(changes)} duplicate PR verifier set(s):")
+            for item in changes:
+                losers = [*item.demoted_task_ids, *item.archived_task_ids]
+                print(
+                    f"  {item.pr_ref}: kept {item.kept_task_id}; "
+                    f"stood down {', '.join(losers)}"
+                )
+        return 0
+
+    with kb.connect_closing() as conn:
+        check = kb.check_merge_authority(conn, args.task_id)
+    if getattr(args, "json", False):
+        print(json.dumps(check.to_dict(), indent=2, ensure_ascii=False))
+    elif check.allowed:
+        print(
+            f"AUTHORIZED: {check.task_id} is sole merge authority for "
+            f"{check.pr_ref} ({check.gate_strength} gate)."
+        )
+        print("Gate conditions remain separate and must still be satisfied.")
+    else:
+        print(
+            f"DENIED: {check.task_id} has no merge authority: {check.reason}",
+            file=sys.stderr,
+        )
+        if check.winner_task_id:
+            print(f"Sole winner: {check.winner_task_id}", file=sys.stderr)
+    return 0 if check.allowed else 1
+
+
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         kb.link_tasks(conn, args.parent_id, args.child_id)
@@ -2310,6 +2430,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if getattr(args, "json", False):
         print(json.dumps({
+            "merge_authority_actions": [
+                _merge_authority_action_to_dict(item)
+                for item in res.merge_authority_actions
+            ],
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,
@@ -2329,6 +2453,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0
+    print(f"Authority dedupes: {len(res.merge_authority_actions)}")
+    for item in res.merge_authority_actions:
+        losers = [*item.demoted_task_ids, *item.archived_task_ids]
+        print(
+            f"  {item.pr_ref}: kept {item.kept_task_id}; "
+            f"stood down {', '.join(losers)}"
+        )
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
     if res.crashed:
@@ -2904,6 +3035,8 @@ Common subcommands:
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
+  `authority check <id>`  Fail-closed merge authority proof
+  `authority sweep`     Reconcile duplicate PR verifier cards
   `assignees`           Known profiles + counts
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history

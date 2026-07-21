@@ -14,7 +14,7 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
-- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_authority`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
@@ -98,6 +98,7 @@ hermes kanban boards list
 hermes kanban boards create atm10-server \
     --name "ATM10 Server" \
     --description "Minecraft modded server ops" \
+    --default-repo NousResearch/hermes-agent \
     --icon 🎮 \
     --switch                   # optional: make it the active board
 
@@ -111,6 +112,10 @@ hermes kanban boards show             # who's active right now?
 
 # Rename the display name (the slug is immutable — it's the directory name).
 hermes kanban boards rename atm10-server "ATM10 (Prod)"
+
+# Set/clear the repo used only by legacy bare `#N` verifier targets.
+hermes kanban boards set-default-repo atm10-server owner/repo
+hermes kanban boards set-default-repo atm10-server
 
 # Archive (default) — moves the board's dir to boards/_archived/<slug>-<ts>/.
 # Recoverable by moving the dir back.
@@ -291,6 +296,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 | Tool | Purpose | Required params |
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
+| `kanban_authority` | Required fail-closed self-check immediately before a PR verifier merges. Defaults to the env's task id; require `allowed: true`. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
@@ -336,6 +342,63 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 ```
 
 The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+
+### Single merge authority for PR verifiers
+
+When multiple open verifier cards refer to the same pull request, exactly one
+card may own merge authority. This is separate from merge gates: the gate says
+**when** merging is safe; authority says **which card** is allowed to perform
+the merge. The existing one-writer-per-branch convention is unchanged.
+
+New verifier cards must include an exact marker on its own line:
+
+```text
+MERGE-TARGET: NousResearch/hermes-agent#257
+```
+
+For older cards, Hermes also accepts a unique GitHub pull-request URL. A bare
+`#257` is accepted only when the board has an `owner/repo` default configured
+with `hermes kanban boards set-default-repo`. Missing, malformed, or ambiguous
+targets have no authority.
+
+Authority candidates are open cards whose title/body identifies them as a
+verifier or `VERIFY+MERGE` card. `[ADVISORY]` and `STAND-DOWN` cards are never
+candidates. Arbitration is deterministic:
+
+1. A hard-gated verifier wins over a standard or CI-green-only verifier.
+2. Among equally strong gates, the oldest card wins.
+3. Equal timestamps use lexicographic task id as the final tie-break.
+
+The security re-review contract is a hard gate. An orphaned-PR verifier
+template carrying that same hard gate is treated identically, even while it is
+waiting and a CI-green-only competitor is runnable.
+
+Hermes enforces this in three layers: within the `create_task` write
+transaction, at step zero of every dispatcher tick, and at merge time through
+`kanban_authority`. A duplicate that never started and has no incomplete
+children is archived. An in-flight or otherwise unsafe duplicate remains open
+but is renamed `[ADVISORY]`, receives a deterministic `STAND-DOWN` note, and
+cannot pass the merge-time check. Every disposition is recorded in comments,
+`task_events`, and the reconciled `merge_authority` ledger.
+
+Before merging, a verifier must call:
+
+```text
+kanban_authority()  # require the returned `allowed` field to be exactly true
+```
+
+Humans and automation can inspect the same contract or force an idempotent
+reconciliation:
+
+```bash
+hermes kanban authority check t_verifier --json
+hermes kanban authority sweep --json
+```
+
+The check fails closed for advisory cards, unparseable or ambiguous targets,
+multiple live candidates, no authority, and missing/mismatched ledger state.
+An `allowed: true` result does not waive CI, security re-review, or any other
+gate recorded on the winning card.
 
 ### Why tools instead of shelling to `hermes kanban`
 
@@ -648,7 +711,7 @@ To disable without removing: add `dashboard.plugins.kanban.enabled: false` to `c
 
 ### Scope boundary
 
-The GUI is deliberately thin. Everything the plugin does is reachable from the CLI; the plugin just makes it comfortable for humans. Auto-assignment, budgets, governance gates, and org-chart views remain user-space — a router profile, another plugin, or a reuse of `tools/approval.py` — exactly as listed in the out-of-scope section of the design spec.
+The GUI is deliberately thin. Everything the plugin does is reachable from the CLI; the plugin just makes it comfortable for humans. Auto-assignment, budgets, governance gates beyond the merge-authority safety contract, and org-chart views remain user-space — a router profile, another plugin, or a reuse of `tools/approval.py` — exactly as listed in the out-of-scope section of the design spec.
 
 ## CLI command reference
 
@@ -678,6 +741,8 @@ hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body 
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
+hermes kanban authority check <id> [--json]            # require sole merge authority
+hermes kanban authority sweep [--json]                 # dedupe verifier cards + ledger
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
 hermes kanban claim <id> [--ttl SECONDS]
@@ -825,7 +890,7 @@ Gateway platforms have practical message-length caps. If `/kanban list`, `/kanba
 
 ### Autocomplete
 
-In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list (`list`, `ls`, `show`, `create`, `assign`, `link`, `unlink`, `claim`, `comment`, `complete`, `block`, `unblock`, `archive`, `tail`, `dispatch`, `context`, `init`, `gc`). The remaining verbs listed in the CLI reference above (`watch`, `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-subscribe`, `notify-list`, `notify-unsubscribe`, `daemon`) also work — they're just not in the autocomplete hint list yet.
+In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list, including `authority`. All verbs in the CLI reference above remain available when typed directly.
 
 ## Collaboration patterns
 
@@ -945,6 +1010,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
 | `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
+| `merge_authority_deduped` | `{pr_ref, kept_task_id, gate_strength, demoted_task_ids, archived_task_ids, reason}` | Duplicate verifier candidates were arbitrated. The same complete payload is written on every affected card; repeated no-op sweeps emit nothing. |
 
 **Edits** (human-driven changes that aren't transitions):
 

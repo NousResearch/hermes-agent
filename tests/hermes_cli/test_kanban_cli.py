@@ -335,6 +335,7 @@ def test_kanban_in_autocomplete_table():
     subs = SUBCOMMANDS.get("/kanban") or []
     assert "create" in subs
     assert "dispatch" in subs
+    assert "authority" in subs
 
 
 def test_kanban_autocomplete_includes_live_subcommands():

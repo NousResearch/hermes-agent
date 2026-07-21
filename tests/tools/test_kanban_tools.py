@@ -55,7 +55,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_authority", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
@@ -136,7 +136,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_authority", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
@@ -2075,6 +2075,7 @@ def test_board_param_in_all_schemas():
 
     schemas = [
         kt.KANBAN_SHOW_SCHEMA,
+        kt.KANBAN_AUTHORITY_SCHEMA,
         kt.KANBAN_LIST_SCHEMA,
         kt.KANBAN_COMPLETE_SCHEMA,
         kt.KANBAN_BLOCK_SCHEMA,

@@ -53,7 +53,8 @@ dispatcher used to claim their task — even under unusual symlink or
 Docker layouts.
 
 Schema is intentionally small: tasks, task_links, task_comments,
-task_events.  The ``workspace_kind`` field decouples coordination from git
+task_events, and the reconciled merge_authority ledger. The
+``workspace_kind`` field decouples coordination from git
 worktrees so that research / ops / digital-twin workloads work alongside
 coding workloads.  See ``docs/hermes-kanban-v1-spec.pdf`` for the full
 design specification.
@@ -136,6 +137,49 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+
+# SMA-2026-07-21 merge-authority contract. A verifier card is authoritative
+# only while it is open, explicitly verifier-shaped, not stood down, and has
+# exactly one parseable PR target. The ledger is a reconciled cache/audit aid;
+# live task rows remain the source of truth.
+MERGE_AUTHORITY_OPEN_STATUSES = frozenset(
+    {"triage", "todo", "scheduled", "ready", "running", "blocked", "review"}
+)
+MERGE_GATE_HARD = "hard"
+MERGE_GATE_STANDARD = "standard"
+MERGE_AUTHORITY_EVENT_KIND = "merge_authority_deduped"
+MERGE_AUTHORITY_COMMENT_AUTHOR = "kanban-merge-authority"
+
+_MERGE_TARGET_MARKER_LINE_RE = re.compile(
+    r"(?im)^\s*MERGE-TARGET\s*:\s*([^\s]+)\s*$"
+)
+_MERGE_TARGET_MARKER_PREFIX_RE = re.compile(
+    r"(?im)^\s*MERGE-TARGET\s*:"
+)
+_CANONICAL_PR_REF_RE = re.compile(
+    r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)#(?P<number>[1-9]\d*)$"
+)
+_GITHUB_PR_URL_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/"
+    r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/pull/"
+    r"(?P<number>[1-9]\d*)(?=$|[\s/?#)\],.;:])(?:[/?#][^\s]*)?",
+    re.IGNORECASE,
+)
+_BARE_PR_RE = re.compile(r"(?<![\w/])#(?P<number>[1-9]\d*)\b")
+_DEFAULT_REPO_RE = re.compile(
+    r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)$"
+)
+_VERIFY_MERGE_RE = re.compile(r"\bVERIFY\s*\+\s*MERGE\b", re.IGNORECASE)
+_VERIFIER_TITLE_RE = re.compile(r"\bverifier\b", re.IGNORECASE)
+_VERIFIER_BODY_ROLE_RE = re.compile(
+    r"(?im)^\s*(?:role\s*:\s*verifier|\[verifier\])\s*$"
+)
+_ADVISORY_RE = re.compile(r"\[ADVISORY\]", re.IGNORECASE)
+_STAND_DOWN_RE = re.compile(r"\bSTAND[- ]DOWN\b", re.IGNORECASE)
+_HARD_GATE_RE = re.compile(r"\bHARD[- ]GATE(?:D)?\b", re.IGNORECASE)
+_SECURITY_REREVIEW_RE = re.compile(
+    r"\bsecurity\s+(?:re[- ]?review|review\s+again)\b", re.IGNORECASE
+)
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -648,6 +692,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "default_repo": None,
         "created_at": None,
         "archived": False,
     }
@@ -675,6 +720,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    default_repo: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -698,6 +744,11 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if default_repo is not None:
+        value = str(default_repo).strip()
+        if value and _DEFAULT_REPO_RE.fullmatch(value) is None:
+            raise ValueError("default_repo must be an owner/repo GitHub repository")
+        meta["default_repo"] = value or None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -718,6 +769,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    default_repo: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -735,6 +787,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        default_repo=default_repo,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -1089,6 +1142,64 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class MergeTargetParse:
+    """Fail-closed result of resolving a verifier card's PR target."""
+
+    pr_ref: Optional[str]
+    source: Optional[str]
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.pr_ref is not None and self.error is None
+
+
+@dataclass(frozen=True)
+class MergeAuthorityCandidate:
+    """One live verifier card eligible to arbitrate authority for a PR."""
+
+    task_id: str
+    pr_ref: str
+    gate_strength: str
+    created_at: int
+    status: str
+
+
+@dataclass(frozen=True)
+class MergeAuthorityAction:
+    """Durable disposition produced while deduplicating one PR."""
+
+    pr_ref: str
+    kept_task_id: str
+    gate_strength: str
+    demoted_task_ids: tuple[str, ...]
+    archived_task_ids: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
+class MergeAuthorityCheck:
+    """Merge-time self-check result returned by CLI and tool surfaces."""
+
+    allowed: bool
+    task_id: str
+    pr_ref: Optional[str]
+    winner_task_id: Optional[str]
+    gate_strength: Optional[str]
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "task_id": self.task_id,
+            "pr_ref": self.pr_ref,
+            "winner_task_id": self.winner_task_id,
+            "gate_strength": self.gate_strength,
+            "reason": self.reason,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1200,6 +1311,17 @@ CREATE TABLE IF NOT EXISTS task_events (
     kind       TEXT NOT NULL,
     payload    TEXT,
     created_at INTEGER NOT NULL
+);
+
+-- Reconciled single-merge-authority ledger. Live open verifier cards are the
+-- source of truth; creation-time arbitration and periodic/manual sweeps keep
+-- this cache aligned so merge-time checks can fail closed on stale state.
+CREATE TABLE IF NOT EXISTS merge_authority (
+    pr_ref           TEXT PRIMARY KEY,
+    task_id          TEXT NOT NULL,
+    gate_strength    TEXT NOT NULL,
+    claimed_at       INTEGER NOT NULL,
+    last_disposition TEXT NOT NULL
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -2384,6 +2506,489 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _canonical_pr_ref(owner: str, repo: str, number: str | int) -> str:
+    """Return the stable, case-insensitive ledger key for one GitHub PR."""
+    return f"{owner.lower()}/{repo.lower()}#{int(number)}"
+
+
+def _normalise_default_repo(default_repo: Optional[str]) -> Optional[str]:
+    value = (default_repo or "").strip()
+    match = _DEFAULT_REPO_RE.fullmatch(value)
+    if match is None:
+        return None
+    return f"{match.group('owner').lower()}/{match.group('repo').lower()}"
+
+
+def parse_merge_target(
+    text: Optional[str], *, default_repo: Optional[str] = None
+) -> MergeTargetParse:
+    """Parse one verifier PR target using the SMA precedence rules.
+
+    New cards use an exact ``MERGE-TARGET: owner/repo#N`` line. If any
+    marker prefix is present, malformed or conflicting marker values fail
+    closed rather than falling through to looser legacy parsing. Without a
+    marker, a unique GitHub pull-request URL is accepted. The final legacy
+    fallback accepts a unique bare ``#N`` only when ``default_repo`` is a
+    valid ``owner/repo`` value.
+    """
+    value = text or ""
+    marker_prefixes = _MERGE_TARGET_MARKER_PREFIX_RE.findall(value)
+    marker_present = bool(marker_prefixes)
+    marker_values = _MERGE_TARGET_MARKER_LINE_RE.findall(value)
+    if marker_present:
+        if len(marker_values) != len(marker_prefixes):
+            return MergeTargetParse(None, "marker", "invalid MERGE-TARGET marker")
+        parsed: set[str] = set()
+        for raw in marker_values:
+            match = _CANONICAL_PR_REF_RE.fullmatch(raw.strip())
+            if match is None:
+                return MergeTargetParse(None, "marker", "invalid MERGE-TARGET marker")
+            parsed.add(
+                _canonical_pr_ref(
+                    match.group("owner"), match.group("repo"), match.group("number")
+                )
+            )
+        if not parsed:
+            return MergeTargetParse(None, "marker", "invalid MERGE-TARGET marker")
+        if len(parsed) != 1:
+            return MergeTargetParse(None, "marker", "ambiguous MERGE-TARGET markers")
+        return MergeTargetParse(next(iter(parsed)), "marker")
+
+    url_refs = {
+        _canonical_pr_ref(m.group("owner"), m.group("repo"), m.group("number"))
+        for m in _GITHUB_PR_URL_RE.finditer(value)
+    }
+    if url_refs:
+        if len(url_refs) != 1:
+            return MergeTargetParse(None, "github_url", "ambiguous GitHub PR URLs")
+        return MergeTargetParse(next(iter(url_refs)), "github_url")
+
+    bare_numbers = {int(m.group("number")) for m in _BARE_PR_RE.finditer(value)}
+    if bare_numbers:
+        repo_ref = _normalise_default_repo(default_repo)
+        if repo_ref is None:
+            return MergeTargetParse(
+                None,
+                "bare",
+                "bare PR target requires board default_repo=owner/repo",
+            )
+        if len(bare_numbers) != 1:
+            return MergeTargetParse(None, "bare", "ambiguous bare PR numbers")
+        return MergeTargetParse(f"{repo_ref}#{next(iter(bare_numbers))}", "bare")
+
+    return MergeTargetParse(None, None, "no parseable merge target")
+
+
+def _task_merge_text(title: Optional[str], body: Optional[str]) -> str:
+    return f"{title or ''}\n{body or ''}"
+
+
+def _is_merge_verifier_card(title: Optional[str], body: Optional[str]) -> bool:
+    """Recognise PR verifier cards without catching generic swarm cards."""
+    text = _task_merge_text(title, body)
+    if _ADVISORY_RE.search(text) or _STAND_DOWN_RE.search(text):
+        return False
+    return bool(
+        _VERIFY_MERGE_RE.search(text)
+        or _VERIFIER_TITLE_RE.search(title or "")
+        or _VERIFIER_BODY_ROLE_RE.search(body or "")
+    )
+
+
+def merge_gate_strength(title: Optional[str], body: Optional[str]) -> str:
+    """Classify the gate without considering whether it is runnable now."""
+    text = _task_merge_text(title, body)
+    if _HARD_GATE_RE.search(text) or _SECURITY_REREVIEW_RE.search(text):
+        return MERGE_GATE_HARD
+    return MERGE_GATE_STANDARD
+
+
+def _board_default_repo(board: Optional[str]) -> Optional[str]:
+    try:
+        board_slug = board if board is not None else get_current_board()
+        return _normalise_default_repo(
+            read_board_metadata(board_slug).get("default_repo")
+        )
+    except Exception:
+        return None
+
+
+def _merge_authority_candidate_from_row(
+    row: sqlite3.Row, *, default_repo: Optional[str]
+) -> Optional[MergeAuthorityCandidate]:
+    if row["status"] not in MERGE_AUTHORITY_OPEN_STATUSES:
+        return None
+    if not _is_merge_verifier_card(row["title"], row["body"]):
+        return None
+    target = parse_merge_target(
+        _task_merge_text(row["title"], row["body"]),
+        default_repo=default_repo,
+    )
+    if not target.ok or target.pr_ref is None:
+        return None
+    return MergeAuthorityCandidate(
+        task_id=row["id"],
+        pr_ref=target.pr_ref,
+        gate_strength=merge_gate_strength(row["title"], row["body"]),
+        created_at=int(row["created_at"]),
+        status=row["status"],
+    )
+
+
+def list_merge_authority_candidates(
+    conn: sqlite3.Connection, *, board: Optional[str] = None
+) -> list[MergeAuthorityCandidate]:
+    """Return all live, parseable PR merge-authority candidates."""
+    default_repo = _board_default_repo(board)
+    placeholders = ",".join("?" for _ in MERGE_AUTHORITY_OPEN_STATUSES)
+    rows = conn.execute(
+        "SELECT id, title, body, status, created_at FROM tasks "
+        f"WHERE status IN ({placeholders})",
+        tuple(sorted(MERGE_AUTHORITY_OPEN_STATUSES)),
+    ).fetchall()
+    candidates = [
+        candidate
+        for row in rows
+        if (candidate := _merge_authority_candidate_from_row(
+            row, default_repo=default_repo
+        )) is not None
+    ]
+    return sorted(candidates, key=lambda c: (c.pr_ref, c.created_at, c.task_id))
+
+
+def _merge_authority_order(candidate: MergeAuthorityCandidate) -> tuple[int, int, str]:
+    """Deterministic total order: hard gate, seniority, then task id."""
+    gate_rank = 0 if candidate.gate_strength == MERGE_GATE_HARD else 1
+    return (gate_rank, candidate.created_at, candidate.task_id)
+
+
+def arbitrate_merge_authority(
+    candidates: Iterable[MergeAuthorityCandidate],
+) -> tuple[MergeAuthorityCandidate, str]:
+    """Choose the sole winner and return a stable audit explanation."""
+    ordered = sorted(candidates, key=_merge_authority_order)
+    if not ordered:
+        raise ValueError("at least one merge-authority candidate is required")
+    winner = ordered[0]
+    reason = (
+        "hard-gated verifier outranks standard/CI-green-only; then oldest "
+        "gated card; then lexicographic task id"
+    )
+    return winner, reason
+
+
+def _insert_merge_authority_comment_txn(
+    conn: sqlite3.Connection, task_id: str, body: str, now: int
+) -> None:
+    conn.execute(
+        "INSERT INTO task_comments (task_id, author, body, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (task_id, MERGE_AUTHORITY_COMMENT_AUTHOR, body, now),
+    )
+
+
+def _upsert_merge_authority_ledger_txn(
+    conn: sqlite3.Connection,
+    candidate: MergeAuthorityCandidate,
+    *,
+    now: int,
+    disposition: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO merge_authority (
+            pr_ref, task_id, gate_strength, claimed_at, last_disposition
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(pr_ref) DO UPDATE SET
+            task_id = excluded.task_id,
+            gate_strength = excluded.gate_strength,
+            claimed_at = CASE
+                WHEN merge_authority.task_id = excluded.task_id
+                THEN merge_authority.claimed_at
+                ELSE excluded.claimed_at
+            END,
+            last_disposition = excluded.last_disposition
+        """,
+        (
+            candidate.pr_ref,
+            candidate.task_id,
+            candidate.gate_strength,
+            now,
+            disposition,
+        ),
+    )
+
+
+def _loser_is_safe_to_archive_txn(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        "SELECT status, started_at, current_run_id, claim_lock "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if (
+        row["started_at"] is not None
+        or row["current_run_id"] is not None
+        or row["claim_lock"] is not None
+        or row["status"] == "running"
+    ):
+        return False
+    incomplete_child = conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks c ON c.id = l.child_id "
+        "WHERE l.parent_id = ? AND c.status NOT IN ('done', 'archived') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return incomplete_child is None
+
+
+def _reconcile_merge_authority_pr_txn(
+    conn: sqlite3.Connection,
+    pr_ref: str,
+    candidates: Iterable[MergeAuthorityCandidate],
+) -> Optional[MergeAuthorityAction]:
+    """Reconcile one PR. Caller must already hold ``write_txn``."""
+    candidates = tuple(c for c in candidates if c.pr_ref == pr_ref)
+    if not candidates:
+        conn.execute("DELETE FROM merge_authority WHERE pr_ref = ?", (pr_ref,))
+        return None
+
+    winner, reason = arbitrate_merge_authority(candidates)
+    now = int(time.time())
+    if len(candidates) == 1:
+        ledger = conn.execute(
+            "SELECT task_id, gate_strength FROM merge_authority WHERE pr_ref = ?",
+            (pr_ref,),
+        ).fetchone()
+        if (
+            ledger is not None
+            and ledger["task_id"] == winner.task_id
+            and ledger["gate_strength"] == winner.gate_strength
+        ):
+            return None
+        _upsert_merge_authority_ledger_txn(
+            conn, winner, now=now, disposition="sole-authority"
+        )
+        return None
+
+    archived: list[str] = []
+    demoted: list[str] = []
+    losers = sorted(
+        (candidate for candidate in candidates if candidate.task_id != winner.task_id),
+        key=lambda c: c.task_id,
+    )
+    for loser in losers:
+        if _loser_is_safe_to_archive_txn(conn, loser.task_id):
+            conn.execute(
+                "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ?",
+                (loser.task_id,),
+            )
+            _append_event(
+                conn,
+                loser.task_id,
+                "archived",
+                {"reason": "merge_authority_dedupe", "pr_ref": pr_ref},
+            )
+            archived.append(loser.task_id)
+        else:
+            row = conn.execute(
+                "SELECT title, body FROM tasks WHERE id = ?", (loser.task_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            title = row["title"] or ""
+            if not _ADVISORY_RE.search(title):
+                title = f"[ADVISORY] {title}".strip()
+            stand_down = (
+                f"STAND-DOWN: merge authority for {pr_ref} belongs to "
+                f"{winner.task_id}. MERGE-AUTHORITY: NONE."
+            )
+            body = (row["body"] or "").rstrip()
+            body = f"{body}\n\n{stand_down}" if body else stand_down
+            conn.execute(
+                "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+                (title, body, loser.task_id),
+            )
+            demoted.append(loser.task_id)
+
+    action = MergeAuthorityAction(
+        pr_ref=pr_ref,
+        kept_task_id=winner.task_id,
+        gate_strength=winner.gate_strength,
+        demoted_task_ids=tuple(demoted),
+        archived_task_ids=tuple(archived),
+        reason=reason,
+    )
+    payload = {
+        "pr_ref": action.pr_ref,
+        "kept_task_id": action.kept_task_id,
+        "gate_strength": action.gate_strength,
+        "demoted_task_ids": list(action.demoted_task_ids),
+        "archived_task_ids": list(action.archived_task_ids),
+        "reason": action.reason,
+    }
+    loser_ids = [*action.demoted_task_ids, *action.archived_task_ids]
+    _insert_merge_authority_comment_txn(
+        conn,
+        winner.task_id,
+        (
+            f"MERGE AUTHORITY: kept for {pr_ref}; stood down "
+            f"{', '.join(loser_ids)}. Arbitration: {reason}."
+        ),
+        now,
+    )
+    _append_event(conn, winner.task_id, MERGE_AUTHORITY_EVENT_KIND, payload)
+    for loser_id in loser_ids:
+        disposition = "demoted to [ADVISORY]" if loser_id in demoted else "archived"
+        _insert_merge_authority_comment_txn(
+            conn,
+            loser_id,
+            (
+                f"STAND-DOWN: {disposition}; {winner.task_id} is the sole "
+                f"merge authority for {pr_ref}. Arbitration: {reason}."
+            ),
+            now,
+        )
+        _append_event(conn, loser_id, MERGE_AUTHORITY_EVENT_KIND, payload)
+    _upsert_merge_authority_ledger_txn(
+        conn, winner, now=now, disposition="deduped"
+    )
+    return action
+
+
+def sweep_merge_authority(
+    conn: sqlite3.Connection, *, board: Optional[str] = None
+) -> list[MergeAuthorityAction]:
+    """Deduplicate all PR verifier candidates and reconcile the ledger.
+
+    The sweep is idempotent: after the first pass, archived and advisory
+    losers are no longer candidates, so subsequent passes update only ledger
+    cache fields and emit no comments/events.
+    """
+    actions: list[MergeAuthorityAction] = []
+    with write_txn(conn):
+        candidates = list_merge_authority_candidates(conn, board=board)
+        grouped: dict[str, list[MergeAuthorityCandidate]] = {}
+        for candidate in candidates:
+            grouped.setdefault(candidate.pr_ref, []).append(candidate)
+        for pr_ref in sorted(grouped):
+            action = _reconcile_merge_authority_pr_txn(
+                conn, pr_ref, grouped[pr_ref]
+            )
+            if action is not None:
+                actions.append(action)
+
+        # Re-read after loser remediation. These live rows are authoritative;
+        # remove ledger entries for PRs that no longer have any candidate.
+        live = list_merge_authority_candidates(conn, board=board)
+        live_refs = {candidate.pr_ref for candidate in live}
+        if live_refs:
+            placeholders = ",".join("?" for _ in live_refs)
+            conn.execute(
+                f"DELETE FROM merge_authority WHERE pr_ref NOT IN ({placeholders})",
+                tuple(sorted(live_refs)),
+            )
+        else:
+            conn.execute("DELETE FROM merge_authority")
+    return actions
+
+
+def check_merge_authority(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> MergeAuthorityCheck:
+    """Fail-closed merge-time proof that ``task_id`` is the sole winner."""
+    row = conn.execute(
+        "SELECT id, title, body, status, created_at FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return MergeAuthorityCheck(False, task_id, None, None, None, "task not found")
+    if row["status"] not in MERGE_AUTHORITY_OPEN_STATUSES:
+        return MergeAuthorityCheck(
+            False, task_id, None, None, None, "task is not an open authority card"
+        )
+    if not _is_merge_verifier_card(row["title"], row["body"]):
+        return MergeAuthorityCheck(
+            False,
+            task_id,
+            None,
+            None,
+            None,
+            "task is advisory/stand-down or not a verifier card",
+        )
+    target = parse_merge_target(
+        _task_merge_text(row["title"], row["body"]),
+        default_repo=_board_default_repo(board),
+    )
+    if not target.ok or target.pr_ref is None:
+        return MergeAuthorityCheck(
+            False, task_id, None, None, None, target.error or "unparseable target"
+        )
+    matches = [
+        candidate
+        for candidate in list_merge_authority_candidates(conn, board=board)
+        if candidate.pr_ref == target.pr_ref
+    ]
+    if len(matches) != 1:
+        winner = arbitrate_merge_authority(matches)[0].task_id if matches else None
+        return MergeAuthorityCheck(
+            False,
+            task_id,
+            target.pr_ref,
+            winner,
+            None,
+            f"ambiguous/no authority: found {len(matches)} live candidates",
+        )
+    sole = matches[0]
+    if sole.task_id != task_id:
+        return MergeAuthorityCheck(
+            False,
+            task_id,
+            target.pr_ref,
+            sole.task_id,
+            sole.gate_strength,
+            "task is not the sole live authority winner",
+        )
+    ledger = conn.execute(
+        "SELECT task_id, gate_strength FROM merge_authority WHERE pr_ref = ?",
+        (target.pr_ref,),
+    ).fetchone()
+    if ledger is None:
+        return MergeAuthorityCheck(
+            False,
+            task_id,
+            target.pr_ref,
+            sole.task_id,
+            sole.gate_strength,
+            "stale ledger: no authority claim recorded; run authority sweep",
+        )
+    if (
+        ledger["task_id"] != sole.task_id
+        or ledger["gate_strength"] != sole.gate_strength
+    ):
+        return MergeAuthorityCheck(
+            False,
+            task_id,
+            target.pr_ref,
+            sole.task_id,
+            sole.gate_strength,
+            "stale ledger: recorded authority does not match live task rows",
+        )
+    return MergeAuthorityCheck(
+        True,
+        task_id,
+        target.pr_ref,
+        sole.task_id,
+        sole.gate_strength,
+        "sole merge authority confirmed; gate conditions must still be satisfied",
+    )
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2681,6 +3286,29 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                # Layer 1 (SMA-2026-07-21): arbitrate PR merge authority in
+                # this same BEGIN IMMEDIATE transaction. Concurrent verifier
+                # creators serialize here, so no observer can see two newly
+                # created cards both holding authority.
+                created_row = conn.execute(
+                    "SELECT id, title, body, status, created_at FROM tasks WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                created_candidate = _merge_authority_candidate_from_row(
+                    created_row,
+                    default_repo=_board_default_repo(board),
+                )
+                if created_candidate is not None:
+                    same_pr = [
+                        candidate
+                        for candidate in list_merge_authority_candidates(
+                            conn, board=board
+                        )
+                        if candidate.pr_ref == created_candidate.pr_ref
+                    ]
+                    _reconcile_merge_authority_pr_txn(
+                        conn, created_candidate.pr_ref, same_pr
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -6025,6 +6653,8 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
 
+    merge_authority_actions: list[MergeAuthorityAction] = field(default_factory=list)
+    """PR verifier dedupe actions completed before any claim/dispatch work."""
     reclaimed: int = 0
     promoted: int = 0
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
@@ -7519,11 +8149,12 @@ def _dispatch_once_locked(
     """Run one dispatcher tick.
 
     Steps:
+      0. Reconcile single merge authority for duplicate PR verifier cards.
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
-      3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      4. Promote todo -> ready where all parents are done.
+      5. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
@@ -7544,11 +8175,16 @@ def _dispatch_once_locked(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    result = DispatchResult()
+    # Layer 2 (SMA-2026-07-21): this is deliberately step zero. Duplicate
+    # verifier cards are neutralised before reclaim/promotion can make a loser
+    # runnable and before any claim or worker spawn can occur.
+    result.merge_authority_actions = sweep_merge_authority(conn, board=board)
+
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
 
-    result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,

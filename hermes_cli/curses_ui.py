@@ -270,24 +270,43 @@ NAV_DOWN = "down"
 NAV_SELECT = "select"
 NAV_TOGGLE = "toggle"
 NAV_CANCEL = "cancel"
+NAV_PAGE_UP = "page_up"
+NAV_PAGE_DOWN = "page_down"
+NAV_HOME = "home"
+NAV_END = "end"
+NAV_BACKSPACE = "backspace"
 NAV_NONE = "none"
 
 
-def read_menu_key(stdscr) -> str:
-    """Read one keypress and normalize it to a menu action.
+def read_menu_key_ex(stdscr, *, letters_are_nav: bool = True):
+    """Read one keypress; return ``(action, raw_key)``.
 
-    Decodes raw arrow-key escape sequences in addition to the translated
+    ``action`` is one of the ``NAV_*`` constants.  ``raw_key`` is the integer
+    returned by the initial ``getch()`` — callers that also accept literal
+    typed characters (e.g. a type-to-filter menu) use it to recover the
+    printable byte when ``action`` is :data:`NAV_NONE`.
+
+    Set ``letters_are_nav=False`` for menus that accept typed text (e.g. the
+    session browser's filter): then the vim aliases ``j``/``k``, ``SPACE`` and
+    ``q`` are reported as :data:`NAV_NONE` (with their raw byte) instead of
+    navigation/toggle/cancel, so they can be inserted into the filter.  The
+    translated ``curses.KEY_*`` arrows and decoded escape sequences still
+    navigate regardless.
+
+    Decodes raw arrow/navigation escape sequences in addition to the translated
     ``curses.KEY_*`` values.  Even with ``keypad(True)`` (which
     ``curses.wrapper`` sets), some terminals/terminfo entries deliver cursor
-    keys as raw CSI/SS3 byte sequences — ``getch()`` then returns ``27`` (ESC)
-    followed by e.g. ``[`` ``A``.  Treating that leading ``27`` as a cancel is
-    what made the setup wizard's provider/model pickers bail to the numbered
-    fallback the moment a user pressed up/down.
+    and navigation keys as raw CSI/SS3 byte sequences — ``getch()`` then returns
+    ``27`` (ESC) followed by e.g. ``[`` ``A``.  Treating that leading ``27`` as a
+    cancel is what made the setup wizard's pickers bail to the numbered fallback
+    (and made the session browser inject ``[A`` into its filter) the moment a
+    user pressed an arrow key.
 
-    Returns one of the ``NAV_*`` constants.  A lone ESC (no continuation byte
-    within a short window) is the only thing that maps to ``NAV_CANCEL`` via
-    the escape path; ``q`` also cancels.  Unknown sequences map to
-    ``NAV_NONE`` so the caller simply ignores them rather than misfiring.
+    Any escape sequence we don't map to a navigation action is consumed up to
+    its terminator and reported as :data:`NAV_NONE` with ``raw_key == 27`` so
+    its tail bytes can never leak into a filter buffer or the next ``input()``.
+    A genuine lone ESC (no continuation byte within a short window) maps to
+    :data:`NAV_CANCEL`.
     """
     return _decode_menu_key(stdscr, stdscr.getch())
 
@@ -300,16 +319,26 @@ def _decode_menu_key(stdscr, key: int) -> str:
     """
     import curses
 
-    if key in (curses.KEY_UP, ord("k")):
-        return NAV_UP
-    if key in (curses.KEY_DOWN, ord("j")):
-        return NAV_DOWN
+    if key == curses.KEY_UP or (letters_are_nav and key == ord("k")):
+        return NAV_UP, key
+    if key == curses.KEY_DOWN or (letters_are_nav and key == ord("j")):
+        return NAV_DOWN, key
     if key in (curses.KEY_ENTER, 10, 13):
-        return NAV_SELECT
-    if key == ord(" "):
-        return NAV_TOGGLE
-    if key == ord("q"):
-        return NAV_CANCEL
+        return NAV_SELECT, key
+    if letters_are_nav and key == ord(" "):
+        return NAV_TOGGLE, key
+    if letters_are_nav and key == ord("q"):
+        return NAV_CANCEL, key
+    if key == curses.KEY_NPAGE:
+        return NAV_PAGE_DOWN, key
+    if key == curses.KEY_PPAGE:
+        return NAV_PAGE_UP, key
+    if key == curses.KEY_HOME:
+        return NAV_HOME, key
+    if key == curses.KEY_END:
+        return NAV_END, key
+    if key in (curses.KEY_BACKSPACE, 127, 8):
+        return NAV_BACKSPACE, key
 
     if key == 27:  # ESC — could be a lone ESC (cancel) or an escape sequence.
         # Wait briefly for a continuation byte.  On slow PTYs (SSH/tmux) the
@@ -322,24 +351,60 @@ def _decode_menu_key(stdscr, key: int) -> str:
             stdscr.timeout(-1)  # restore blocking mode
 
         if nxt == -1:
-            return NAV_CANCEL  # genuine lone ESC
+            return NAV_CANCEL, key  # genuine lone ESC
 
         if nxt in (ord("["), ord("O")):  # CSI / SS3 introducer
+            # Read the rest of the sequence: optional parameter/intermediate
+            # bytes (0x20–0x3F) followed by a single final byte (0x40–0x7E).
+            params = ""
             final = stdscr.getch()
-            if final in (ord("A"), ord("k")):
-                return NAV_UP
-            if final in (ord("B"), ord("j")):
-                return NAV_DOWN
-            # Consume the tail of any other CSI sequence (e.g. ``[3~`` Delete,
-            # ``[H`` Home) up to its terminator so stray bytes don't leak into
-            # the next input() and corrupt it.
-            while 0x20 <= final <= 0x3F:  # CSI parameter/intermediate bytes
+            while 0x20 <= final <= 0x3F:
+                if 0x30 <= final <= 0x39 or final == ord(";"):
+                    params += chr(final)
                 final = stdscr.getch()
-            return NAV_NONE
-        # ESC followed by some other byte we don't handle — swallow it.
-        return NAV_NONE
 
-    return NAV_NONE
+            # Single-letter finals: arrows + Home/End (xterm/SS3 forms).
+            if final in (ord("A"), ord("k")):
+                return NAV_UP, key
+            if final in (ord("B"), ord("j")):
+                return NAV_DOWN, key
+            if final == ord("H"):
+                return NAV_HOME, key
+            if final == ord("F"):
+                return NAV_END, key
+            # Numeric "~"-terminated finals: ESC [ 5 ~ = PgUp, 6 ~ = PgDn,
+            # 1~/7~ = Home, 4~/8~ = End, 3~ = Delete (ignored).
+            if final == ord("~"):
+                mapping = {
+                    "1": NAV_HOME, "7": NAV_HOME,
+                    "4": NAV_END, "8": NAV_END,
+                    "5": NAV_PAGE_UP, "6": NAV_PAGE_DOWN,
+                }
+                return mapping.get(params, NAV_NONE), key
+            return NAV_NONE, key
+        # ESC followed by a byte that is NOT a CSI/SS3 introducer: this is a
+        # genuine ESC press immediately followed by another key (Alt-combo,
+        # fast typing, or a paste).  Treat the ESC as a lone ESC (cancel) and
+        # push the stray byte back so the next read processes it normally —
+        # never silently swallow it.
+        try:
+            if nxt != -1:
+                curses.ungetch(nxt)
+        except Exception:
+            pass
+        return NAV_CANCEL, key
+
+    return NAV_NONE, key
+
+
+def read_menu_key(stdscr) -> str:
+    """Read one keypress and normalize it to a menu action.
+
+    Thin wrapper over :func:`read_menu_key_ex` for callers that only need the
+    normalized ``NAV_*`` action and not the raw key code.  See
+    ``read_menu_key_ex`` for the full decoding behavior.
+    """
+    return read_menu_key_ex(stdscr)[0]
 
 
 # Sentinel: an on_action reducer returns this to mean "keep looping" (the

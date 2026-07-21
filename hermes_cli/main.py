@@ -1083,6 +1083,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             )
 
         def _curses_browse(stdscr):
+            from hermes_cli.curses_ui import (
+                read_menu_key_ex, NAV_UP, NAV_DOWN, NAV_PAGE_UP,
+                NAV_PAGE_DOWN, NAV_HOME, NAV_END, NAV_SELECT, NAV_CANCEL,
+                NAV_BACKSPACE, NAV_NONE,
+            )
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -1200,29 +1205,41 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                action, raw_key = read_menu_key_ex(stdscr, letters_are_nav=False)
 
-                if key in {curses.KEY_UP,}:
+                if action == NAV_UP:
                     if filtered:
                         cursor = (cursor - 1) % len(filtered)
-                elif key in {curses.KEY_DOWN,}:
+                elif action == NAV_DOWN:
                     if filtered:
                         cursor = (cursor + 1) % len(filtered)
-                elif key in {curses.KEY_ENTER, 10, 13}:
+                elif action == NAV_PAGE_UP:
+                    if filtered:
+                        cursor = max(0, cursor - max(1, visible_rows))
+                elif action == NAV_PAGE_DOWN:
+                    if filtered:
+                        cursor = min(len(filtered) - 1, cursor + max(1, visible_rows))
+                elif action == NAV_HOME:
+                    cursor = 0
+                elif action == NAV_END:
+                    if filtered:
+                        cursor = len(filtered) - 1
+                elif action == NAV_SELECT:
                     if filtered:
                         result_holder[0] = filtered[cursor]["id"]
                     return
-                elif key == 27:  # Esc
+                elif action == NAV_CANCEL:
+                    # Esc only (q is treated as a filter character here).
                     if search_text:
-                        # First Esc clears the search
+                        # First Esc clears the search.
                         search_text = ""
                         filtered = list(sessions)
                         cursor = 0
                         scroll_offset = 0
                     else:
-                        # Second Esc exits
+                        # Second Esc (or Esc with no filter) exits.
                         return
-                elif key in {curses.KEY_BACKSPACE, 127, 8}:
+                elif action == NAV_BACKSPACE:
                     if search_text:
                         search_text = search_text[:-1]
                         if search_text:
@@ -1231,11 +1248,15 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                             filtered = list(sessions)
                         cursor = 0
                         scroll_offset = 0
-                elif key == ord("q") and not search_text:
-                    return
-                elif 32 <= key <= 126:
-                    # Printable character → add to search filter
-                    search_text += chr(key)
+                elif action == NAV_NONE and 32 <= raw_key <= 126:
+                    # Printable character → add to search filter.  With
+                    # letters_are_nav=False, q/j/k/space arrive here too.
+                    # Escape-sequence bytes never reach here: read_menu_key_ex
+                    # consumes them whole and returns NAV_NONE with raw_key == 27.
+                    if not search_text and chr(raw_key) == "q":
+                        # 'q' with no active filter quits (legacy shortcut).
+                        return
+                    search_text += chr(raw_key)
                     filtered = [s for s in sessions if _match(s, search_text)]
                     cursor = 0
                     scroll_offset = 0

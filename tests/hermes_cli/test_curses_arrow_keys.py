@@ -94,10 +94,13 @@ def test_unhandled_csi_sequence_is_consumed_and_ignored():
     assert fake.keys == [ord("X")]
 
 
-def test_home_end_csi_sequences_ignored():
-    # ESC [ H (Home) and ESC [ F (End) -> NAV_NONE, fully consumed.
-    assert read_menu_key(FakeStdscr([27, ord("["), ord("H")])) == NAV_NONE
-    assert read_menu_key(FakeStdscr([27, ord("["), ord("F")])) == NAV_NONE
+def test_home_end_csi_sequences_decode():
+    # ESC [ H (Home) and ESC [ F (End) now decode to navigation actions
+    # (the menus that use read_menu_key honor Home/End), rather than being
+    # silently ignored.  Either way their bytes are fully consumed.
+    from hermes_cli.curses_ui import NAV_HOME, NAV_END
+    assert read_menu_key(FakeStdscr([27, ord("["), ord("H")])) == NAV_HOME
+    assert read_menu_key(FakeStdscr([27, ord("["), ord("F")])) == NAV_END
 
 
 def test_escape_uses_short_timeout_then_restores_blocking():

@@ -248,10 +248,24 @@ class TestCursesBrowse:
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""
 
-        # Build a mock stdscr that returns keys from the sequence
+        from collections import deque
+
+        # Back getch with a real queue so curses.ungetch (used by the menu key
+        # decoder to push back a byte that followed a lone ESC) can re-enqueue
+        # it — faithfully modeling terminal input rather than dropping it.
+        pending = deque(key_sequence)
+
+        def _getch():
+            if not pending:
+                raise StopIteration
+            return pending.popleft()
+
+        def _ungetch(ch):
+            pending.appendleft(ch)
+
         mock_stdscr = MagicMock()
         mock_stdscr.getmaxyx.return_value = (30, 120)
-        mock_stdscr.getch.side_effect = key_sequence
+        mock_stdscr.getch.side_effect = _getch
 
         # Capture what curses.wrapper receives and call it with our mock
         with patch("curses.wrapper") as mock_wrapper:
@@ -265,7 +279,8 @@ class TestCursesBrowse:
             mock_wrapper.side_effect = run_inner
             with patch("curses.curs_set"):
                 with patch("curses.has_colors", return_value=False):
-                    return _session_browse_picker(sessions)
+                    with patch("curses.ungetch", side_effect=_ungetch):
+                        return _session_browse_picker(sessions)
 
     def test_enter_selects_first_session(self):
         sessions = _make_sessions(3)

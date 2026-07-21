@@ -338,3 +338,115 @@ def test_seam_503_on_provider_unreachable():
     )
     resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
     assert resp.status_code == 503
+
+
+# --------------------------------------------------------------------------
+# Prefix registration
+# --------------------------------------------------------------------------
+
+
+def test_prefix_route_matches_parameterised_paths():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban",)))
+    token_auth.register_token_route_prefix("/api/plugins/kanban/")
+    for path in (
+        "/api/plugins/kanban/tasks",
+        "/api/plugins/kanban/tasks/t_abc123/complete",
+    ):
+        assert token_auth.is_token_route(path)
+        req = _FakeRequest(path=path, headers={"authorization": "Bearer good"})
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+        assert resp.status_code == 200
+        assert req.state.token_authenticated is True
+
+
+def test_prefix_route_does_not_match_outside_prefix():
+    token_auth.register_token_route_prefix("/api/plugins/kanban/")
+    # Sibling plugin and the bare prefix root are untouched pass-throughs.
+    for path in ("/api/plugins/other/tasks", "/api/plugins/kanban"):
+        assert not token_auth.is_token_route(path)
+        req = _FakeRequest(path=path)
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+        assert resp.status_code == 200
+        assert getattr(req.state, "token_authenticated", False) is False
+
+
+def test_prefix_route_excluded_subtree_stays_on_session_gate():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban",)))
+    token_auth.register_token_route_prefix(
+        "/api/plugins/kanban/",
+        exclude=("/api/plugins/kanban/dashboard",),
+    )
+    # The interactive dashboard subtree is NOT owned by the seam: no token
+    # demanded, request passes through to the cookie/session gates untouched.
+    for path in (
+        "/api/plugins/kanban/dashboard",
+        "/api/plugins/kanban/dashboard/tasks/t_abc123",
+    ):
+        assert not token_auth.is_token_route(path)
+        req = _FakeRequest(path=path)
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+        assert resp.status_code == 200
+        assert getattr(req.state, "token_authenticated", False) is False
+    # ...while the external surface next to it is token-only.
+    assert token_auth.is_token_route("/api/plugins/kanban/tasks")
+    req = _FakeRequest(path="/api/plugins/kanban/tasks", headers={})
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 401
+
+
+def test_clear_token_routes_drops_prefixes():
+    token_auth.register_token_route_prefix("/api/plugins/kanban/")
+    token_auth.clear_token_routes()
+    assert not token_auth.is_token_route("/api/plugins/kanban/tasks")
+
+
+# --------------------------------------------------------------------------
+# Scope enforcement
+# --------------------------------------------------------------------------
+
+
+def test_scoped_route_accepts_principal_with_scope():
+    register_provider(_TokenProvider(secret="good", scopes=("drain",)))
+    token_auth.register_token_route("/api/gateway/drain", scope="drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+def test_scoped_route_rejects_principal_without_scope_403():
+    # A valid credential for ANOTHER surface must not open this one: the
+    # kanban-scoped secret authenticates but lacks the drain capability.
+    register_provider(_TokenProvider(secret="good", scopes=("kanban",)))
+    token_auth.register_token_route("/api/gateway/drain", scope="drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 403
+    assert getattr(req.state, "token_authenticated", False) is False
+
+
+def test_scoped_prefix_rejects_foreign_credential_403():
+    register_provider(_TokenProvider(secret="drain-secret", scopes=("drain",)))
+    token_auth.register_token_route_prefix("/api/plugins/kanban/", scope="kanban")
+    req = _FakeRequest(
+        path="/api/plugins/kanban/tasks",
+        headers={"authorization": "Bearer drain-secret"},
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 403
+
+
+def test_unscoped_route_accepts_any_verified_principal():
+    # Backward compatibility: no scope requirement → any verified principal
+    # passes, exactly the pre-scope behaviour.
+    register_provider(_TokenProvider(secret="good", scopes=()))
+    token_auth.register_token_route("/api/gateway/drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200

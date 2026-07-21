@@ -1,0 +1,630 @@
+"""Sanitized REST adapter for the shared Hermes Kanban store.
+
+The dashboard plugin mounts this router at ``/api/plugins/kanban``.  The
+adapter intentionally exposes workflow/task concepts rather than SQLite rows:
+private task bodies, results, comments, workspace paths, claims, process data,
+profile internals, and raw event payloads are never serialized.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import sqlite3
+import time
+from contextlib import contextmanager
+from typing import Annotated, Any, Iterator, Optional
+
+from fastapi import APIRouter, Header, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict, Field
+
+from agent.redact import redact_sensitive_text
+from hermes_cli import kanban_db
+
+log = logging.getLogger(__name__)
+
+router = APIRouter()
+
+_API_VERSION = "1"
+_DEFAULT_LOG_TAIL = 8_192
+_MAX_LOG_TAIL = 32_768
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:])(?:[A-Za-z]:[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]*|/(?:[^/\s]+/)+[^/\s]*)"
+)
+# Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
+# not just at its start — the token can appear mid-line inside a dumped curl
+# command (``curl -H 'Authorization: Bearer ...'``) or a shell trace.
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+"
+)
+
+# Known-safe validation messages from ``kanban_db`` that may be echoed to an
+# external caller verbatim: they carry no filesystem paths, SQL, or other
+# internal detail — only user-facing input guidance. Anything else collapses
+# to a stable generic fallback while the raw error is logged server-side.
+_SAFE_ERROR_MARKERS = (
+    "title is required",
+    "unknown parent task",
+    "unknown task",
+    "a task cannot depend on itself",
+    "would create a cycle",
+    "is a toolset name",
+    "are toolset names",
+    "skill name cannot contain comma",
+    "must be one of",
+)
+
+
+def _client_error(
+    exc: Exception,
+    *,
+    fallback: str,
+    status_code: int = 400,
+) -> HTTPException:
+    """Build an HTTPException with a sanitized, stable ``detail``.
+
+    The original exception is always logged server-side. The client sees a
+    known-safe validation message when one is recognised, otherwise the
+    generic ``fallback`` — raw internal text never reaches the wire.
+    """
+    message = str(exc)
+    detail = message if any(m in message for m in _SAFE_ERROR_MARKERS) else fallback
+    log.warning("kanban_api request rejected (detail=%r): %s", detail, message)
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+class _RequestModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class CreateTaskRequest(_RequestModel):
+    title: str = Field(min_length=1, max_length=300)
+    body: Optional[str] = Field(default=None, max_length=100_000)
+    assignee: Optional[str] = Field(default=None, max_length=128)
+    tenant: Optional[str] = Field(default=None, max_length=128)
+    priority: int = Field(default=0, ge=-1_000_000, le=1_000_000)
+    parents: list[str] = Field(default_factory=list, max_length=100)
+    triage: bool = False
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    max_runtime_seconds: Optional[int] = Field(default=None, ge=1, le=31_536_000)
+    skills: Optional[list[str]] = Field(default=None, max_length=50)
+
+
+class UpdateTaskRequest(_RequestModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    body: Optional[str] = Field(default=None, max_length=100_000)
+    assignee: Optional[str] = Field(default=None, max_length=128)
+    priority: Optional[int] = Field(default=None, ge=-1_000_000, le=1_000_000)
+
+
+class CommentRequest(_RequestModel):
+    body: str = Field(min_length=1, max_length=20_000)
+    author: str = Field(default="external-api", min_length=1, max_length=128)
+
+
+class CompleteRequest(_RequestModel):
+    summary: Optional[str] = Field(default=None, max_length=50_000)
+
+
+class BlockRequest(_RequestModel):
+    reason: Optional[str] = Field(default=None, max_length=20_000)
+    kind: Optional[str] = None
+
+
+@contextmanager
+def _connection(board: Optional[str]) -> Iterator[sqlite3.Connection]:
+    slug = _resolve_board_slug(board)
+    kanban_db.init_db(board=slug)
+    conn = kanban_db.connect(board=slug)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _resolve_board_slug(board: Optional[str]) -> str:
+    if board is None or not str(board).strip():
+        return kanban_db.get_current_board()
+    try:
+        slug = kanban_db.normalize_board_slug(board)
+    except ValueError as exc:
+        raise _client_error(exc, fallback="invalid board id") from exc
+    if not slug or not kanban_db.board_exists(slug):
+        raise HTTPException(status_code=404, detail="board not found")
+    return slug
+
+
+def _resolve_board_id_or_name(value: str) -> str:
+    candidate = value.strip()
+    try:
+        slug = kanban_db.normalize_board_slug(candidate)
+    except ValueError:
+        slug = None
+    if slug and kanban_db.board_exists(slug):
+        return slug
+
+    matches = [
+        item["slug"]
+        for item in kanban_db.list_boards(include_archived=False)
+        if str(item.get("name") or "").casefold() == candidate.casefold()
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="board not found")
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="board name is ambiguous; use its id")
+    return matches[0]
+
+
+def _board_counts(slug: str) -> dict[str, int]:
+    # One connection per board, one GROUP BY query. ``connect`` auto-runs the
+    # schema/migration pass on first open, so the separate ``init_db`` call
+    # (which opened and threw away its own connection) is redundant — dropping
+    # it halves the connections ``list_boards`` opens while enumerating boards.
+    # Boards are separate SQLite files, so per-board counts genuinely need one
+    # connection each; the query itself stays single.
+    with kanban_db.connect_closing(board=slug) as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status"
+        ).fetchall()
+        return {row["status"]: int(row["count"]) for row in rows}
+
+
+def _board_dto(meta: dict[str, Any], *, current: str) -> dict[str, Any]:
+    slug = str(meta["slug"])
+    counts = _board_counts(slug)
+    return {
+        "id": slug,
+        "name": str(meta.get("name") or slug),
+        "description": str(meta.get("description") or ""),
+        "icon": str(meta.get("icon") or ""),
+        "color": str(meta.get("color") or ""),
+        "created_at": meta.get("created_at"),
+        "is_current": slug == current,
+        "counts": counts,
+        "total": sum(counts.values()),
+    }
+
+
+def _task_dto(conn: sqlite3.Connection, task: kanban_db.Task) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "assignee": task.assignee,
+        # Attribution: which profile (or surface, e.g. "external-api" /
+        # "dashboard") created the card — this is what lets an external
+        # control plane visualise orchestrator fan-out, not just who the
+        # work was routed to.
+        "created_by": task.created_by,
+        "status": task.status,
+        "priority": task.priority,
+        "tenant": task.tenant,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "workflow_template_id": task.workflow_template_id,
+        "current_step_key": task.current_step_key,
+        "block_kind": task.block_kind,
+        "links": {
+            "parents": kanban_db.parent_ids(conn, task.id),
+            "children": kanban_db.child_ids(conn, task.id),
+        },
+    }
+
+
+def _require_task(conn: sqlite3.Connection, task_id: str) -> kanban_db.Task:
+    task = kanban_db.get_task(conn, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return task
+
+
+def _task_response(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    return {"task": _task_dto(conn, _require_task(conn, task_id))}
+
+
+def _transition_response(
+    conn: sqlite3.Connection,
+    task_id: str,
+    ok: bool,
+    action: str,
+) -> dict[str, Any]:
+    if not ok:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        raise HTTPException(status_code=409, detail=f"task cannot be {action} from its current state")
+    return _task_response(conn, task_id)
+
+
+def _idempotency_key(
+    payload_key: Optional[str],
+    header_key: Optional[str],
+) -> Optional[str]:
+    body = (payload_key or "").strip()
+    header = (header_key or "").strip()
+    if body and header and body != header:
+        raise HTTPException(status_code=409, detail="conflicting idempotency keys")
+    key = header or body or None
+    if key and len(key) > 200:
+        raise HTTPException(status_code=422, detail="idempotency key is too long")
+    return key
+
+
+def _sanitize_log(content: str) -> str:
+    redacted = redact_sensitive_text(content, force=True)
+    redacted = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", redacted)
+    return _ABSOLUTE_PATH_RE.sub("[PATH]", redacted)
+
+
+@router.get("/health")
+def health() -> dict[str, Any]:
+    current = kanban_db.get_current_board()
+    try:
+        with _connection(current) as conn:
+            conn.execute("SELECT 1").fetchone()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="kanban store unavailable") from exc
+    return {
+        "status": "ok",
+        "service": "hermes-kanban",
+        "api_version": _API_VERSION,
+        "current_board": current,
+    }
+
+
+@router.get("/capabilities")
+def capabilities() -> dict[str, Any]:
+    return {
+        "api_version": _API_VERSION,
+        "boards": {"read": True, "write": False},
+        "tasks": {"read": True, "create": True, "update": True},
+        "actions": ["comment", "complete", "block", "unblock", "archive"],
+        "links": {"create": True, "delete": True},
+        "observability": ["events", "runs", "sanitized_log_excerpt"],
+        "task_statuses": sorted(kanban_db.VALID_STATUSES),
+        "block_kinds": sorted(kanban_db.VALID_BLOCK_KINDS),
+        "idempotent_task_creation": True,
+        "profile_execution": False,
+        # Read-only roster (GET /profiles): name + description only, for
+        # assignee pickers in external control planes. No profile
+        # management or execution surface exists here.
+        "profiles_api": True,
+    }
+
+
+@router.get("/profiles")
+def list_profiles() -> dict[str, Any]:
+    """Sanitized assignee roster for external control planes.
+
+    Returns only what an external dashboard needs to route work — the
+    profile name and its operator-facing description (the same pair the
+    built-in decomposer feeds its routing LLM). Models, providers,
+    filesystem paths, env/config state, and skill inventories are
+    deliberately not exposed.
+    """
+    from hermes_cli import profiles as profiles_mod  # lazy: heavy CLI import
+
+    try:
+        infos = profiles_mod.list_profiles()
+    except Exception as exc:
+        log.warning("kanban_api profiles listing failed: %s", exc)
+        raise HTTPException(status_code=503, detail="profiles unavailable") from exc
+    roster = [
+        {
+            "name": info.name,
+            "description": (info.description or "").strip(),
+            "has_description": bool((info.description or "").strip()),
+        }
+        for info in infos
+    ]
+    roster.sort(key=lambda item: item["name"])
+    return {"profiles": roster, "count": len(roster)}
+
+
+@router.get("/boards")
+def list_boards() -> dict[str, Any]:
+    current = kanban_db.get_current_board()
+    boards = [
+        _board_dto(meta, current=current)
+        for meta in kanban_db.list_boards(include_archived=False)
+    ]
+    return {"boards": boards, "current": current, "count": len(boards)}
+
+
+@router.get("/boards/{board_id_or_name}")
+def get_board(board_id_or_name: str) -> dict[str, Any]:
+    slug = _resolve_board_id_or_name(board_id_or_name)
+    current = kanban_db.get_current_board()
+    return {"board": _board_dto(kanban_db.read_board_metadata(slug), current=current)}
+
+
+@router.get("/tasks")
+def list_tasks(
+    board: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    assignee: Optional[str] = Query(default=None),
+    tenant: Optional[str] = Query(default=None),
+    include_archived: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> dict[str, Any]:
+    try:
+        with _connection(board) as conn:
+            tasks = kanban_db.list_tasks(
+                conn,
+                status=status,
+                assignee=assignee,
+                tenant=tenant,
+                include_archived=include_archived,
+                limit=limit,
+            )
+            items = [_task_dto(conn, task) for task in tasks]
+    except ValueError as exc:
+        raise _client_error(exc, fallback="invalid task filter") from exc
+    return {"tasks": items, "count": len(items), "limit": limit}
+
+
+@router.post("/tasks", status_code=201)
+def create_task(
+    payload: CreateTaskRequest,
+    response: Response,
+    board: Optional[str] = Query(default=None),
+    idempotency_header: Annotated[Optional[str], Header(alias="Idempotency-Key")] = None,
+) -> dict[str, Any]:
+    key = _idempotency_key(payload.idempotency_key, idempotency_header)
+    with _connection(board) as conn:
+        try:
+            # The storage layer owns idempotency end to end: a repeated key
+            # (fast-path hit or a lost UNIQUE-index race with a concurrent
+            # POST) resolves to the existing task with created=False.
+            task_id, created = kanban_db.create_task_idempotent(
+                conn,
+                title=payload.title,
+                body=payload.body,
+                assignee=payload.assignee,
+                created_by="external-api",
+                workspace_kind="scratch",
+                tenant=payload.tenant,
+                priority=payload.priority,
+                parents=payload.parents,
+                triage=payload.triage,
+                idempotency_key=key,
+                max_runtime_seconds=payload.max_runtime_seconds,
+                skills=payload.skills,
+            )
+        except ValueError as exc:
+            raise _client_error(exc, fallback="task could not be created") from exc
+        if not created:
+            response.status_code = 200
+        return {**_task_response(conn, task_id), "created": created}
+
+
+@router.get("/tasks/{task_id}")
+def get_task(task_id: str, board: Optional[str] = Query(default=None)) -> dict[str, Any]:
+    with _connection(board) as conn:
+        return _task_response(conn, task_id)
+
+
+@router.patch("/tasks/{task_id}")
+def update_task(
+    task_id: str,
+    payload: UpdateTaskRequest,
+    board: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    fields = payload.model_fields_set
+    if not fields:
+        raise HTTPException(status_code=400, detail="at least one field is required")
+    with _connection(board) as conn:
+        task = _require_task(conn, task_id)
+        scalar_fields = [f for f in ("title", "body", "priority") if f in fields]
+        # Reject title/body edits on a finished card up front, before writing
+        # anything (including a possible assignee change), so the request
+        # doesn't partially apply.
+        if task.status in {"done", "archived"} and (
+            "title" in scalar_fields or "body" in scalar_fields
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot edit the title/body of a {task.status} task",
+            )
+        if "assignee" in fields:
+            try:
+                if not kanban_db.assign_task(conn, task_id, payload.assignee or None):
+                    raise HTTPException(status_code=404, detail="task not found")
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        if scalar_fields:
+            try:
+                kanban_db.edit_task_fields(
+                    conn,
+                    task_id,
+                    fields=scalar_fields,
+                    title=payload.title,
+                    body=payload.body,
+                    priority=payload.priority,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _task_response(conn, task_id)
+
+
+@router.post("/tasks/{task_id}/comment", status_code=201)
+def comment_task(
+    task_id: str,
+    payload: CommentRequest,
+    board: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        try:
+            comment_id = kanban_db.add_comment(conn, task_id, payload.author, payload.body)
+        except ValueError as exc:
+            raise _client_error(exc, fallback="comment rejected") from exc
+        row = conn.execute(
+            "SELECT created_at FROM task_comments WHERE id = ?", (comment_id,)
+        ).fetchone()
+        return {
+            "comment": {
+                "id": comment_id,
+                "task_id": task_id,
+                "created_at": row["created_at"] if row else int(time.time()),
+            }
+        }
+
+
+@router.post("/tasks/{task_id}/complete")
+def complete_task(
+    task_id: str,
+    payload: Optional[CompleteRequest] = None,
+    board: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        return _transition_response(
+            conn,
+            task_id,
+            kanban_db.complete_task(conn, task_id, summary=payload.summary if payload else None),
+            "completed",
+        )
+
+
+@router.post("/tasks/{task_id}/block")
+def block_task(
+    task_id: str,
+    payload: Optional[BlockRequest] = None,
+    board: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        try:
+            ok = kanban_db.block_task(
+                conn,
+                task_id,
+                reason=payload.reason if payload else None,
+                kind=payload.kind if payload else None,
+            )
+        except ValueError as exc:
+            raise _client_error(exc, fallback="task could not be blocked") from exc
+        return _transition_response(conn, task_id, ok, "blocked")
+
+
+@router.post("/tasks/{task_id}/unblock")
+def unblock_task(task_id: str, board: Optional[str] = Query(default=None)) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        return _transition_response(
+            conn, task_id, kanban_db.unblock_task(conn, task_id), "unblocked"
+        )
+
+
+@router.post("/tasks/{task_id}/archive")
+def archive_task(task_id: str, board: Optional[str] = Query(default=None)) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        return _transition_response(
+            conn, task_id, kanban_db.archive_task(conn, task_id), "archived"
+        )
+
+
+@router.post("/tasks/{parent_id}/links/{child_id}")
+def link_tasks(
+    parent_id: str,
+    child_id: str,
+    board: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        # A nonexistent parent/child is a 404 (consistent with unlink), not a
+        # 400 from kanban_db's "unknown task(s)" ValueError.
+        _require_task(conn, parent_id)
+        _require_task(conn, child_id)
+        try:
+            kanban_db.link_tasks(conn, parent_id, child_id)
+        except ValueError as exc:
+            raise _client_error(exc, fallback="link rejected") from exc
+        return {"parent_id": parent_id, "child_id": child_id, "linked": True}
+
+
+@router.delete("/tasks/{parent_id}/links/{child_id}")
+def unlink_tasks(
+    parent_id: str,
+    child_id: str,
+    board: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, parent_id)
+        _require_task(conn, child_id)
+        removed = kanban_db.unlink_tasks(conn, parent_id, child_id)
+        return {"parent_id": parent_id, "child_id": child_id, "removed": removed}
+
+
+@router.get("/tasks/{task_id}/events")
+def task_events(
+    task_id: str,
+    board: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        events = kanban_db.list_events(conn, task_id, limit=limit)
+        items = [
+            {
+                "id": event.id,
+                "task_id": event.task_id,
+                "kind": event.kind,
+                "created_at": event.created_at,
+                "run_id": event.run_id,
+            }
+            for event in events
+        ]
+        return {"events": items, "count": len(items)}
+
+
+@router.get("/tasks/{task_id}/runs")
+def task_runs(
+    task_id: str,
+    board: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    with _connection(board) as conn:
+        _require_task(conn, task_id)
+        runs = kanban_db.list_runs(conn, task_id, limit=limit)
+        items = [
+            {
+                "id": run.id,
+                # The profile that executed this attempt. Usually equals the
+                # task's assignee, but reassignment between retries makes the
+                # per-run value the only accurate execution record.
+                "profile": run.profile,
+                "status": run.status,
+                "outcome": run.outcome,
+                "started_at": run.started_at,
+                "ended_at": run.ended_at,
+            }
+            for run in runs
+        ]
+        return {"runs": items, "count": len(items)}
+
+
+@router.get("/tasks/{task_id}/log")
+def task_log(
+    task_id: str,
+    board: Optional[str] = Query(default=None),
+    tail_bytes: int = Query(default=_DEFAULT_LOG_TAIL, ge=1, le=_MAX_LOG_TAIL),
+) -> dict[str, Any]:
+    slug = _resolve_board_slug(board)
+    with _connection(slug) as conn:
+        _require_task(conn, task_id)
+    content = kanban_db.read_worker_log(task_id, tail_bytes=tail_bytes, board=slug)
+    size = 0
+    log_path = kanban_db.worker_log_path(task_id, board=slug)
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        pass
+    return {
+        "task_id": task_id,
+        "exists": content is not None,
+        "size_bytes": size,
+        "tail_bytes": tail_bytes,
+        "truncated": size > tail_bytes,
+        "excerpt": _sanitize_log(content or ""),
+    }

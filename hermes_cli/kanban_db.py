@@ -368,6 +368,17 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     return s
 
 
+def normalize_board_slug(slug: Optional[str]) -> Optional[str]:
+    """Public entry point for board-slug normalisation/validation.
+
+    Lowercases and strips ``slug``, returns ``None`` for empty input, and
+    raises :class:`ValueError` for a syntactically invalid slug. Exposed so
+    external adapters (e.g. the sanitized REST API) don't reach into the
+    private ``_normalize_board_slug`` helper.
+    """
+    return _normalize_board_slug(slug)
+
+
 def kanban_home() -> Path:
     """Return the shared Hermes root that anchors the kanban board.
 
@@ -2184,6 +2195,67 @@ def init_db(
     return path
 
 
+def _migrate_unique_idempotency_index(conn: sqlite3.Connection) -> None:
+    """Enforce at-most-one *live* task per non-null ``idempotency_key``.
+
+    Each board is its own SQLite file, so a partial UNIQUE index gives
+    board-scoped idempotency — exactly the scope the create/lookup path keys
+    on. It closes the TOCTOU window where two concurrent creators with the
+    same key both passed the SELECT-before-INSERT check and each inserted a
+    row.
+
+    Scope matches how ``create_task`` looks the key up: ``WHERE
+    idempotency_key = ? AND status != 'archived'``. The index predicate
+    therefore excludes archived rows, so archiving a task frees its key for
+    reuse (the documented "idempotency ignored for archived" behaviour) while
+    still rejecting a duplicate among live tasks.
+
+    Legacy DBs predate the constraint and may hold duplicate live keys (from
+    the pre-index create race). A UNIQUE index can't be built while such
+    duplicates exist, so null out the key on all but the survivor first — the
+    newest non-archived task, which is the row the lookup would return.
+    Nulling a loser's key is non-destructive: the key is only a dedupe marker,
+    not task state. Archived duplicates are left untouched (they're outside
+    the index predicate).
+
+    Runs as plain statements (no ``write_txn``): it executes inside
+    ``connect``'s init critical section, before any explicit transaction, and
+    the ``CREATE UNIQUE INDEX`` DDL commits the dedupe UPDATE. Opening a nested
+    ``BEGIN IMMEDIATE`` here would collide with the migration's pending
+    implicit transaction.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA index_list(tasks)")}
+    if "idx_tasks_idempotency_unique" in existing:
+        return
+    dupes = conn.execute(
+        "SELECT idempotency_key FROM tasks "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived' "
+        "GROUP BY idempotency_key HAVING COUNT(*) > 1"
+    ).fetchall()
+    for dupe in dupes:
+        key = dupe["idempotency_key"]
+        survivor = conn.execute(
+            "SELECT id FROM tasks "
+            "WHERE idempotency_key = ? AND status != 'archived' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (key,),
+        ).fetchone()["id"]
+        conn.execute(
+            "UPDATE tasks SET idempotency_key = NULL "
+            "WHERE idempotency_key = ? AND status != 'archived' AND id != ?",
+            (key, survivor),
+        )
+    # The old non-unique index is redundant once the partial UNIQUE index
+    # exists (equality lookups carry a concrete non-null key), so drop it to
+    # avoid two indexes on one column.
+    conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_unique "
+        "ON tasks(idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+    )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -2329,9 +2401,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
-    )
+    # Partial UNIQUE index over idempotency_key (replaces the old non-unique
+    # idx_tasks_idempotency). Also dedupes any legacy duplicate keys so the
+    # index builds on existing DBs.
+    _migrate_unique_idempotency_index(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -2718,7 +2791,7 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def create_task(
+def create_task_idempotent(
     conn: sqlite3.Connection,
     *,
     title: str,
@@ -2742,19 +2815,25 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
-) -> str:
+) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
-    Returns the new task id.  Status is ``ready`` when there are no
+    Returns ``(task_id, created)``.  Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
 
     If ``idempotency_key`` is provided and a non-archived task with the
-    same key already exists, returns the existing task's id instead of
-    creating a duplicate. Useful for retried webhooks / automation that
-    should not double-write.
+    same key already exists, returns the existing task's id with
+    ``created=False`` instead of creating a duplicate. Useful for retried
+    webhooks / automation that should not double-write. The guarantee is
+    concurrency-safe: a creator that loses the partial-UNIQUE-index race
+    to a simultaneous creator with the same key also resolves to the
+    winner's id (``created=False``) rather than raising. Callers that
+    surface idempotency to their own clients (e.g. the REST adapter's
+    201-vs-200 split) need the ``created`` flag; everyone else uses
+    :func:`create_task`.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -2871,20 +2950,16 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path — return the existing live task instead of
+    # creating a duplicate. Done BEFORE entering write_txn to keep the fast
+    # path fast and to avoid holding a write lock during the lookup. The
+    # check alone is racy (two concurrent creators can both miss), so the
+    # partial UNIQUE index on idempotency_key backstops it: the racing
+    # loser's INSERT fails and is resolved to the winner's id below.
     if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
+        row = _live_task_for_idempotency_key(conn, idempotency_key)
         if row:
-            return row["id"]
+            return row["id"], False
 
     now = int(time.time())
 
@@ -3015,13 +3090,98 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
-            return task_id
+            return task_id, True
         except sqlite3.IntegrityError:
+            # Two distinct causes land here: losing the idempotency-key race
+            # (a concurrent creator with the same key committed between our
+            # fast-path lookup and our INSERT, so the partial UNIQUE index
+            # rejected the row) and the extremely unlikely task-id collision.
+            # The key race must resolve to the winner's row — retrying with a
+            # fresh id would just fail again on the same key.
+            if idempotency_key:
+                row = _live_task_for_idempotency_key(conn, idempotency_key)
+                if row:
+                    return row["id"], False
             if attempt == 1:
                 raise
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _live_task_for_idempotency_key(
+    conn: sqlite3.Connection, idempotency_key: str
+) -> Optional[sqlite3.Row]:
+    """Return the live (non-archived) task row holding ``idempotency_key``.
+
+    The ordering tiebreak matches the survivor choice in
+    ``_migrate_unique_idempotency_index`` so every lookup path picks the
+    same row when legacy duplicates exist.
+    """
+    return conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (idempotency_key,),
+    ).fetchone()
+
+
+def create_task(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    body: Optional[str] = None,
+    assignee: Optional[str] = None,
+    created_by: Optional[str] = None,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    parents: Iterable[str] = (),
+    triage: bool = False,
+    idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = None,
+    skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None,
+    goal_mode: bool = False,
+    goal_max_turns: Optional[int] = None,
+    initial_status: str = "running",
+    session_id: Optional[str] = None,
+    board: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> str:
+    """Create a new task and return its id.
+
+    Thin wrapper over :func:`create_task_idempotent` (see it for the full
+    contract) that drops the ``created`` flag — the common entry point for
+    callers that don't distinguish a fresh insert from an idempotent replay.
+    """
+    task_id, _created = create_task_idempotent(
+        conn,
+        title=title,
+        body=body,
+        assignee=assignee,
+        created_by=created_by,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        tenant=tenant,
+        priority=priority,
+        parents=parents,
+        triage=triage,
+        idempotency_key=idempotency_key,
+        max_runtime_seconds=max_runtime_seconds,
+        skills=skills,
+        max_retries=max_retries,
+        goal_mode=goal_mode,
+        goal_max_turns=goal_max_turns,
+        initial_status=initial_status,
+        session_id=session_id,
+        board=board,
+        project_id=project_id,
+    )
+    return task_id
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -3139,6 +3299,62 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
         return True
+
+
+# Scalar task fields an external editor may set directly. ``assignee`` is
+# excluded on purpose — it has its own running-task guard in ``assign_task``.
+_EDITABLE_TASK_FIELDS = ("title", "body", "priority")
+# States in which content edits are refused: the task is finished and its
+# card text is a historical record.
+_TERMINAL_EDIT_STATES = frozenset({"done", "archived"})
+
+
+def edit_task_fields(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    fields: Iterable[str],
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    priority: Optional[int] = None,
+) -> bool:
+    """Edit mutable scalar fields (``title`` / ``body`` / ``priority``).
+
+    Only the fields named in ``fields`` are written, so a ``None`` value can
+    be stored explicitly (e.g. clearing a body). Records an ``edited`` event
+    naming the changed fields.
+
+    Editing the ``title`` or ``body`` of a task in a terminal state
+    (``done`` / ``archived``) is refused with :class:`RuntimeError` — the
+    finished card text is a historical record. ``priority`` may still be
+    changed (it only affects queue ordering, which is moot once terminal, but
+    is harmless and keeps re-prioritising bulk views working).
+
+    Returns ``True`` on success, ``False`` if the task does not exist.
+    """
+    requested = [f for f in fields if f in _EDITABLE_TASK_FIELDS]
+    if not requested:
+        return get_task(conn, task_id) is not None
+    values = {"title": title, "body": body, "priority": priority}
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] in _TERMINAL_EDIT_STATES and (
+            "title" in requested or "body" in requested
+        ):
+            raise RuntimeError(
+                f"cannot edit the title/body of a {row['status']} task"
+            )
+        assignments = ", ".join(f"{name} = ?" for name in requested)
+        conn.execute(
+            f"UPDATE tasks SET {assignments} WHERE id = ?",
+            [values[name] for name in requested] + [task_id],
+        )
+        _append_event(conn, task_id, "edited", {"fields": list(requested)})
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -3519,11 +3735,33 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     return att
 
 
-def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
-    rows = conn.execute(
-        "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
-        (task_id,),
-    ).fetchall()
+def list_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    limit: Optional[int] = None,
+) -> list[Event]:
+    """Return events for ``task_id`` in ascending (oldest-first) order.
+
+    When ``limit`` is set, return only the most recent ``limit`` events,
+    still ordered oldest-first. The LIMIT is applied in SQL (newest N, then
+    re-sorted ascending) rather than by slicing a fully materialised list, so
+    long histories don't load every row.
+    """
+    if limit is not None:
+        rows = conn.execute(
+            "SELECT * FROM ("
+            "  SELECT * FROM task_events WHERE task_id = ? "
+            "  ORDER BY created_at DESC, id DESC LIMIT ?"
+            ") ORDER BY created_at ASC, id ASC",
+            (task_id, int(limit)),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        ).fetchall()
     out = []
     for r in rows:
         try:
@@ -9481,6 +9719,7 @@ def list_runs(
     include_active: bool = True,
     state_type: Optional[str] = None,
     state_name: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> list[Run]:
     """Return all runs for ``task_id`` in start order.
 
@@ -9491,20 +9730,32 @@ def list_runs(
     When ``state_type`` and ``state_name`` are set, restrict to rows
     where that column equals ``state_name`` (``state_type`` is
     ``status`` or ``outcome``). Both must be passed together.
+
+    When ``limit`` is set, return only the most recent ``limit`` runs, still
+    ordered oldest-first. The LIMIT is applied in SQL (newest N, then
+    re-sorted ascending) so long attempt histories don't load every row.
     """
     if (state_type is None) ^ (state_name is None):
         raise ValueError("state_type and state_name must both be set or both omitted")
     if state_type is not None:
         if state_type not in ("status", "outcome"):
             raise ValueError("state_type must be 'status' or 'outcome'")
-    q = "SELECT * FROM task_runs WHERE task_id = ?"
+    where = "WHERE task_id = ?"
     params: list[Any] = [task_id]
     if not include_active:
-        q += " AND ended_at IS NOT NULL"
+        where += " AND ended_at IS NOT NULL"
     if state_type is not None:
-        q += f" AND {state_type} = ?"
+        where += f" AND {state_type} = ?"
         params.append(state_name)
-    q += " ORDER BY started_at ASC, id ASC"
+    if limit is not None:
+        q = (
+            f"SELECT * FROM (SELECT * FROM task_runs {where} "
+            "ORDER BY started_at DESC, id DESC LIMIT ?) "
+            "ORDER BY started_at ASC, id ASC"
+        )
+        params.append(int(limit))
+    else:
+        q = f"SELECT * FROM task_runs {where} ORDER BY started_at ASC, id ASC"
     rows = conn.execute(q, params).fetchall()
     return [Run.from_row(r) for r in rows]
 

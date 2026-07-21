@@ -36,14 +36,14 @@ def _load_plugin_router():
     mod_name = "hermes_dashboard_plugin_kanban_worker_runs_test"
     # Re-use a cached module if already loaded to avoid duplicate-router issues.
     if mod_name in sys.modules:
-        return sys.modules[mod_name].router
+        return sys.modules[mod_name]._dashboard_router
 
     spec = importlib.util.spec_from_file_location(mod_name, plugin_file)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod._dashboard_router
 
 
 @pytest.fixture

@@ -2,7 +2,8 @@
  * Hermes Kanban — Dashboard Plugin
  *
  * Board view for the multi-agent collaboration board backed by
- * ~/.hermes/kanban.db. Calls the plugin's backend at /api/plugins/kanban/
+ * the shared Kanban store. Calls the rich dashboard backend at
+ * /api/plugins/kanban/dashboard/
  * and tails task_events over a WebSocket for live updates.
  *
  * Plain IIFE, no build step. Uses window.__HERMES_PLUGIN_SDK__ for React +
@@ -192,7 +193,7 @@
     return Object.assign({}, patch, { result: summary, summary });
   }
 
-  const API = "/api/plugins/kanban";
+  const API = "/api/plugins/kanban/dashboard";
   const MIME_TASK = "text/x-hermes-task";
 
   // Docs link — surfaced as a `?` icon next to the board switcher and as

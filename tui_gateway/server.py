@@ -315,8 +315,26 @@ class _SlashWorker:
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
 
+        python_exe = sys.executable
+        python_env_overlay: dict[str, str] = {}
+        if sys.platform == "win32":
+            try:
+                from hermes_cli.gateway_windows import (
+                    _windowless_python_spawn_spec,
+                )
+
+                python_exe, python_env_overlay = _windowless_python_spawn_spec(
+                    sys.executable,
+                    Path(__file__).parent.parent,
+                )
+            except Exception:
+                # Keep slash commands available even if the windowless
+                # interpreter cannot be resolved on an unusual install.
+                python_exe = sys.executable
+                python_env_overlay = {}
+
         argv = [
-            sys.executable,
+            python_exe,
             "-m",
             "tui_gateway.slash_worker",
             "--session-key",
@@ -331,6 +349,7 @@ class _SlashWorker:
         # slash_worker runs the Hermes agent → needs provider credentials.
         # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
         env = hermes_subprocess_env(inherit_credentials=True)
+        env.update(python_env_overlay)
         if profile_home:
             # Global-remote / multi-profile sessions: the worker must resolve
             # config/skills/state against the session's profile home, not the

@@ -656,6 +656,150 @@ def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
     assert calls == ["restart", "stop", "wait", "run"]
 
 
+def test_windows_restart_watcher_uses_uv_base_pythonw_and_profile_env(
+    monkeypatch, tmp_path
+):
+    import hermes_cli._subprocess_compat as subprocess_compat
+    import hermes_cli.gateway_windows as gateway_windows
+
+    captured = []
+    project_root = tmp_path / "project"
+    venv_dir = tmp_path / "venv"
+    scripts_dir = venv_dir / "Scripts"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    uv_python_dir = tmp_path / "uv-python"
+    profile_home = tmp_path / ".hermes" / "profiles" / "work"
+    scripts_dir.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    uv_python_dir.mkdir(parents=True)
+    profile_home.mkdir(parents=True)
+    original_python = scripts_dir / "python.exe"
+    (scripts_dir / "pythonw.exe").touch()
+    base_pythonw = uv_python_dir / "pythonw.exe"
+    base_pythonw.touch()
+    (venv_dir / "pyvenv.cfg").write_text(
+        f"home = {uv_python_dir}\nuv = 0.11.29\n",
+        encoding="utf-8",
+    )
+    stable_cwd = r"C:\Users\me\.hermes"
+
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    monkeypatch.setattr(gateway.sys, "executable", str(original_python))
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_stable_gateway_working_dir",
+        lambda _root: stable_cwd,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_hermes_home",
+        lambda: profile_home,
+    )
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0x08000208},
+    )
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.append((cmd, kwargs)) or SimpleNamespace(),
+    )
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    assert gateway._spawn_gateway_restart_watcher(
+        4321,
+        [str(original_python), "-m", "hermes_cli.main", "gateway", "run"],
+    )
+
+    watcher_argv, kwargs = captured[0]
+    assert watcher_argv[0] == str(base_pythonw)
+    assert watcher_argv[4:] == [
+        str(base_pythonw),
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+    ]
+    assert kwargs["creationflags"] == 0x08000208
+    assert kwargs["cwd"] == stable_cwd
+    assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
+    assert kwargs["env"]["HERMES_HOME"] == str(profile_home.resolve())
+    pythonpath = kwargs["env"]["PYTHONPATH"].split(gateway_windows.os.pathsep)
+    assert str(project_root) in pythonpath
+    assert str(site_packages) in pythonpath
+
+
+def test_windows_restart_watcher_falls_back_when_pythonw_resolution_fails(
+    monkeypatch,
+):
+    import hermes_cli._subprocess_compat as subprocess_compat
+    import hermes_cli.gateway_windows as gateway_windows
+
+    captured = []
+    original_python = r"C:\venv\Scripts\python.exe"
+
+    def fail_resolution(_python):
+        raise OSError("missing pyvenv.cfg")
+
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    monkeypatch.setattr(gateway.sys, "executable", original_python)
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python", fail_resolution)
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0x08000208},
+    )
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.append((cmd, kwargs)) or SimpleNamespace(),
+    )
+
+    assert gateway._spawn_gateway_restart_watcher(
+        4321,
+        [original_python, "-m", "hermes_cli.main", "gateway", "run"],
+    )
+
+    watcher_argv, kwargs = captured[0]
+    assert watcher_argv[0] == original_python
+    assert watcher_argv[4] == original_python
+    assert "cwd" not in kwargs
+    assert "env" not in kwargs
+
+
+def test_non_windows_restart_watcher_keeps_sys_executable(monkeypatch):
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    captured = []
+    original_python = "/venv/bin/python"
+
+    monkeypatch.setattr(gateway.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway.sys, "executable", original_python)
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"start_new_session": True},
+    )
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.append((cmd, kwargs)) or SimpleNamespace(),
+    )
+
+    assert gateway._spawn_gateway_restart_watcher(
+        4321,
+        [original_python, "-m", "hermes_cli.main", "gateway", "run"],
+    )
+
+    watcher_argv, kwargs = captured[0]
+    assert watcher_argv[0] == original_python
+    assert watcher_argv[4] == original_python
+    assert kwargs["start_new_session"] is True
+    assert "cwd" not in kwargs
+    assert "env" not in kwargs
+
+
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")
@@ -1107,7 +1251,7 @@ def test_reap_unsupervised_orphans_sigterms_then_sigkills_survivor(monkeypatch):
 
     assert gateway._reap_unsupervised_gateway_orphans() is True
     assert (708, signal.SIGTERM) in sent
-    assert (708, signal.SIGKILL) in sent
+    assert (708, getattr(signal, "SIGKILL", signal.SIGTERM)) in sent
 
 
 def test_reap_unsupervised_orphans_returns_false_when_none_found(monkeypatch):
@@ -1123,10 +1267,19 @@ def test_reap_unsupervised_orphans_returns_false_when_none_found(monkeypatch):
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
     monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
-    monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
+    monkeypatch.setattr(
+        gateway.shutil,
+        "which",
+        lambda name: "wmic.exe" if name == "wmic" else None,  # windows-footgun: ok
+    )
 
     def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:
+        if cmd[:4] == [
+            "wmic.exe",  # windows-footgun: ok
+            "process",
+            "get",
+            "ProcessId,CommandLine",
+        ]:
             return SimpleNamespace(
                 returncode=0,
                 stdout=(

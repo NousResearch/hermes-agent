@@ -766,6 +766,37 @@ def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None
     env_overlay["PYTHONPATH"] = os.pathsep.join(clean_entries)
 
 
+def _windowless_python_spawn_spec(
+    python_exe: str,
+    project_root: str | Path,
+) -> tuple[str, dict[str, str]]:
+    """Return a windowless interpreter and import env for a Python child.
+
+    The base ``pythonw.exe`` used for uv-created venvs does not inherit the
+    venv launcher's import configuration, so callers must provide both the
+    venv marker and import paths.  On non-Windows, or when resolution fails,
+    preserve the original interpreter and environment unchanged.
+    """
+    if sys.platform != "win32":
+        return python_exe, {}
+
+    try:
+        windowless_python, venv_dir, extra_pythonpath = _resolve_detached_python(
+            python_exe
+        )
+    except Exception:
+        return python_exe, {}
+
+    env_overlay = {"VIRTUAL_ENV": str(venv_dir)}
+    _prepend_pythonpath(
+        env_overlay,
+        [str(project_root), *extra_pythonpath]
+        if extra_pythonpath
+        else [str(project_root)],
+    )
+    return windowless_python, env_overlay
+
+
 def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     """Build (argv, working_dir, env_overlay) for the gateway subprocess.
 
@@ -850,33 +881,28 @@ def windowless_gateway_restart_spec(
     # interpreter we can find a windowless sibling for.  If a caller passed
     # something else (a captured argv whose argv[0] is already pythonw, or a
     # non-python launcher), leave it alone.
-    try:
-        windowless_python, venv_dir, extra_pythonpath = _resolve_detached_python(
-            python_exe
-        )
-    except Exception:
+    windowless_python, python_env_overlay = _windowless_python_spawn_spec(
+        python_exe,
+        PROJECT_ROOT,
+    )
+    if not python_env_overlay:
         return run_argv, "", {}
 
     new_argv = [windowless_python, *rest]
 
     working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
-    project_root = str(PROJECT_ROOT)
     try:
         hermes_home = str(Path(get_hermes_home()).resolve())
     except Exception:
         hermes_home = ""
 
     env_overlay: dict[str, str] = {
+        **python_env_overlay,
         "PYTHONIOENCODING": "utf-8",
         "HERMES_GATEWAY_DETACHED": "1",
-        "VIRTUAL_ENV": str(venv_dir),
     }
     if hermes_home:
         env_overlay["HERMES_HOME"] = hermes_home
-    _prepend_pythonpath(
-        env_overlay,
-        [project_root, *extra_pythonpath] if extra_pythonpath else [project_root],
-    )
     return new_argv, working_dir, env_overlay
 
 

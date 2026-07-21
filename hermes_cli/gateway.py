@@ -765,32 +765,47 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         windows_detach_popen_kwargs,
     )
 
-    # On Windows the incoming ``run_argv`` leads with the venv's console
-    # ``python.exe`` (from ``get_python_path()``).  Respawning the gateway
-    # with that interpreter — even under CREATE_NO_WINDOW — leaves a
-    # persistent console window, because uv's venv launcher re-execs the
-    # base console interpreter, which allocates its own conhost.  Rewrite
-    # the argv to the windowless ``pythonw.exe`` (mirroring the clean-start
-    # ``_spawn_detached`` path) and capture the cwd + env overlay the base
-    # interpreter needs to resolve imports without the venv launcher.
-    # No-op on POSIX.  See gateway_windows.windowless_gateway_restart_spec.
+    # On Windows both the incoming ``run_argv`` and the watcher itself lead
+    # with a venv console ``python.exe``.  Even under CREATE_NO_WINDOW, uv's
+    # launcher re-execs the base console interpreter and allocates a conhost.
+    # Rewrite both legs to the base ``pythonw.exe`` and carry the cwd + env
+    # overlay it needs to resolve imports without the venv launcher.  No-op
+    # on POSIX.  See gateway_windows.windowless_gateway_restart_spec.
     respawn_cwd = ""
     respawn_env_overlay: dict[str, str] = {}
+    watcher_python = sys.executable
+    watcher_cwd = ""
+    watcher_env_overlay: dict[str, str] = {}
     if sys.platform == "win32":
         try:
             from hermes_cli.gateway_windows import (
                 windowless_gateway_restart_spec,
             )
-
-            run_argv, respawn_cwd, respawn_env_overlay = (
-                windowless_gateway_restart_spec(list(run_argv))
-            )
         except Exception:
-            # Best-effort: if the rewrite fails for any reason, fall back to
-            # the original argv.  A visible window is worse than nothing, but
-            # a failed respawn is worse still — keep the gateway coming back.
-            respawn_cwd = ""
-            respawn_env_overlay = {}
+            windowless_gateway_restart_spec = None
+
+        if windowless_gateway_restart_spec is not None:
+            try:
+                run_argv, respawn_cwd, respawn_env_overlay = (
+                    windowless_gateway_restart_spec(list(run_argv))
+                )
+            except Exception:
+                # Best-effort: a visible window is worse than nothing, but a
+                # failed respawn is worse still — keep the gateway coming back.
+                respawn_cwd = ""
+                respawn_env_overlay = {}
+
+            try:
+                watcher_argv_head, watcher_cwd, watcher_env_overlay = (
+                    windowless_gateway_restart_spec([sys.executable])
+                )
+                if watcher_argv_head:
+                    watcher_python = watcher_argv_head[0]
+            except Exception:
+                # The watcher must still start when interpreter discovery fails.
+                watcher_python = sys.executable
+                watcher_cwd = ""
+                watcher_env_overlay = {}
 
     # Serialized as JSON literals embedded in the watcher source so the
     # inner respawn can apply cwd= / env= without extra argv plumbing.
@@ -862,7 +877,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
     )
 
     watcher_argv = [
-        sys.executable,
+        watcher_python,
         "-c",
         watcher,
         str(old_pid),
@@ -871,11 +886,18 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
 
     # Same platform-aware detach for the watcher process itself — so
     # closing the user's terminal doesn't kill the watcher.
+    watcher_popen_kwargs: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if watcher_cwd:
+        watcher_popen_kwargs["cwd"] = watcher_cwd
+    if watcher_env_overlay:
+        watcher_popen_kwargs["env"] = {**os.environ, **watcher_env_overlay}
     try:
         subprocess.Popen(
             watcher_argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            **watcher_popen_kwargs,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
@@ -885,15 +907,14 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         # ``start_new_session=True`` cannot raise OSError — so the
         # fallback is only meaningful on Windows.
         try:
-            fallback_kwargs: dict = (
+            fallback_kwargs = dict(watcher_popen_kwargs)
+            fallback_kwargs.update(
                 {"creationflags": windows_detach_flags_without_breakaway()}
                 if sys.platform == "win32"
                 else {"start_new_session": True}
             )
             subprocess.Popen(
                 watcher_argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
                 **fallback_kwargs,
             )
         except OSError:

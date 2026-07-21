@@ -628,10 +628,28 @@ def test_skills_hub_gh_token_hides_windows(monkeypatch):
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
-def test_tui_slash_worker_hides_python_window(monkeypatch):
+def test_tui_slash_worker_uses_uv_base_pythonw_with_profile_env(monkeypatch, tmp_path):
     from tui_gateway import server
+    import hermes_cli._subprocess_compat as subprocess_compat
+    import hermes_cli.gateway_windows as gateway_windows
 
     captured = []
+    venv_dir = tmp_path / "venv"
+    scripts_dir = venv_dir / "Scripts"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    uv_python_dir = tmp_path / "uv-python"
+    scripts_dir.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    uv_python_dir.mkdir(parents=True)
+    venv_python = scripts_dir / "python.exe"
+    (scripts_dir / "pythonw.exe").touch()
+    base_pythonw = uv_python_dir / "pythonw.exe"
+    base_pythonw.touch()
+    (venv_dir / "pyvenv.cfg").write_text(
+        f"home = {uv_python_dir}\nuv = 0.11.29\n",
+        encoding="utf-8",
+    )
+    profile_home = r"C:\Users\me\.hermes\profiles\work"
 
     class _Proc:
         stdin = SimpleNamespace()
@@ -642,17 +660,98 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
         captured.append((cmd, kwargs))
         return _Proc()
 
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(server.sys, "executable", str(venv_python))
+    monkeypatch.setattr(
+        server,
+        "hermes_subprocess_env",
+        lambda **_kwargs: {"PATH": r"C:\Windows"},
+    )
     monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
-
-    import hermes_cli._subprocess_compat as subprocess_compat
-
     monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    server._SlashWorker("session-key", "model-x", profile_home=profile_home)
+
+    argv, kwargs = captured[0]
+    assert argv[:3] == [str(base_pythonw), "-m", "tui_gateway.slash_worker"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
+    pythonpath = kwargs["env"]["PYTHONPATH"].split(gateway_windows.os.pathsep)
+    assert str(Path(server.__file__).parent.parent) in pythonpath
+    assert str(site_packages) in pythonpath
+    assert kwargs["env"]["HERMES_HOME"] == profile_home
+
+
+def test_tui_slash_worker_falls_back_when_windowless_resolution_fails(monkeypatch):
+    from tui_gateway import server
+    import hermes_cli.gateway_windows as gateway_windows
+
+    captured = []
+    original_python = r"C:\venv\Scripts\python.exe"
+
+    class _Proc:
+        stdin = SimpleNamespace()
+        stdout = []
+        stderr = []
+
+    def fail_resolution(_python):
+        raise OSError("missing pyvenv.cfg")
+
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(server.sys, "executable", original_python)
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python", fail_resolution)
+    monkeypatch.setattr(
+        server,
+        "hermes_subprocess_env",
+        lambda **_kwargs: {"PATH": r"C:\Windows"},
+    )
+    monkeypatch.setattr(
+        server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.append((cmd, kwargs)) or _Proc(),
+    )
+    monkeypatch.setattr(
+        server.threading,
+        "Thread",
+        lambda *a, **k: SimpleNamespace(start=lambda: None),
+    )
 
     server._SlashWorker("session-key", "model-x")
 
-    assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    argv, kwargs = captured[0]
+    assert argv[0] == original_python
+    assert "VIRTUAL_ENV" not in kwargs["env"]
+
+
+def test_tui_slash_worker_non_windows_keeps_sys_executable(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+    original_python = "/venv/bin/python"
+
+    class _Proc:
+        stdin = SimpleNamespace()
+        stdout = []
+        stderr = []
+
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    monkeypatch.setattr(server.sys, "executable", original_python)
+    monkeypatch.setattr(
+        server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.append((cmd, kwargs)) or _Proc(),
+    )
+    monkeypatch.setattr(
+        server.threading,
+        "Thread",
+        lambda *a, **k: SimpleNamespace(start=lambda: None),
+    )
+
+    server._SlashWorker("session-key", "model-x")
+
+    assert captured[0][0][0] == original_python
 
 
 # ── #56747 GUI-reachable exec paths + provider transports (PR #56877) ──────

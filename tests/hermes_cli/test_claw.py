@@ -631,6 +631,33 @@ class TestCmdCleanup:
         assert not openclaw.exists()
         assert not clawdbot.exists()
 
+    def test_dry_run_still_shows_preview_when_running_in_non_interactive_session(self, tmp_path, capsys):
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+        ws = openclaw / "workspace"
+        ws.mkdir()
+        (ws / "todo.json").write_text("{}")
+
+        args = Namespace(source=None, dry_run=True, yes=False)
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = False
+
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(
+                claw_mod,
+                "_detect_openclaw_processes",
+                return_value=["openclaw process(es) (PIDs: 1234)"],
+            ),
+            patch("sys.stdin", fake_stdin),
+        ):
+            claw_mod._cmd_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be still running" in captured.out
+        assert "Non-interactive session — aborting" not in captured.out
+        assert "Would archive" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # _print_migration_report

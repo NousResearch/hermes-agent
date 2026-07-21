@@ -4,7 +4,6 @@ import {
   Brain,
   ChevronDown,
   Cpu,
-  DollarSign,
   Eye,
   RefreshCw,
   Settings2,
@@ -512,7 +511,6 @@ function ModelCard({
           <div className="flex items-center gap-3">
             {showTokens && entry.estimated_cost > 0 && (
               <span className="flex items-center gap-0.5">
-                <DollarSign className="h-2.5 w-2.5" />
                 {formatCost(entry.estimated_cost)}
               </span>
             )}

@@ -3,6 +3,7 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import logging
 import re
 import sqlite3
 import threading
@@ -12,6 +13,8 @@ try:
     from . import holographic as hrr
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -72,6 +75,11 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     dim        INTEGER NOT NULL,
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS _meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
 );
 """
 
@@ -179,6 +187,45 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        self._conn.commit()
+
+        self._load_or_persist_hrr_dim()
+
+    def _load_or_persist_hrr_dim(self) -> None:
+        """Adopt a persisted hrr_dim over the constructor/config value.
+
+        A config change between sessions (e.g. hrr_dim: 256 -> 1024) used to
+        be applied silently, mixing vector dimensions within one database and
+        crashing similarity() on the mismatch. The persisted dim is now the
+        source of truth; if none is stored yet, persist the constructor value.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+        ).fetchone()
+        if row is not None:
+            stored_dim = int(row["value"])
+            if stored_dim != self.hrr_dim:
+                logger.info(
+                    "holographic memory: persisted hrr_dim=%d overrides configured "
+                    "hrr_dim=%d for %s. Call rebuild_all_vectors(dim=%d) to migrate "
+                    "existing vectors if you intended the config change.",
+                    stored_dim,
+                    self.hrr_dim,
+                    self.db_path,
+                    self.hrr_dim,
+                )
+            self.hrr_dim = stored_dim
+        else:
+            self._persist_hrr_dim(self.hrr_dim)
+
+    def _persist_hrr_dim(self, dim: int) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO _meta (key, value) VALUES ('hrr_dim', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(dim),),
+        )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -593,6 +640,7 @@ class MemoryStore:
 
             if dim is not None:
                 self.hrr_dim = dim
+                self._persist_hrr_dim(dim)
 
             rows = self._conn.execute(
                 "SELECT fact_id, content, category FROM facts"

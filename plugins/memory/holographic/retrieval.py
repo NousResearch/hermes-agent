@@ -6,6 +6,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -17,6 +18,36 @@ try:
     from . import holographic as hrr
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_phases(data: bytes, expected_dim: int) -> "hrr.np.ndarray | None":
+    """Decode a stored HRR vector, guarding against corrupt or mismatched data.
+
+    Returns None (never raises) if the bytes fail to decode, or decode to a
+    vector whose length does not match ``expected_dim`` — the situation that
+    arises when hrr_dim changes between sessions and old vectors linger in
+    the database. Callers must skip None entries and aggregate a single
+    warning per operation rather than logging per-vector.
+    """
+    try:
+        vec = hrr.bytes_to_phases(data)
+    except Exception:
+        return None
+    if vec.shape[0] != expected_dim:
+        return None
+    return vec
+
+
+def _warn_skipped(operation: str, skipped: int) -> None:
+    if skipped:
+        logger.warning(
+            "%s: skipped %d vector(s) with mismatched/corrupt data; "
+            "run rebuild_all_vectors() to migrate.",
+            operation,
+            skipped,
+        )
 
 
 class FactRetriever:
@@ -71,6 +102,7 @@ class FactRetriever:
         # Stage 2: Rerank with Jaccard + trust + optional decay
         query_tokens = self._tokenize(query)
         scored = []
+        skipped = 0
 
         for fact in candidates:
             content_tokens = self._tokenize(fact["content"])
@@ -81,11 +113,17 @@ class FactRetriever:
             fts_score = fact.get("fts_rank", 0.0)
 
             # HRR similarity
-            if self.hrr_weight > 0 and fact.get("hrr_vector"):
-                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
+            fact_vec = (
+                _safe_phases(fact["hrr_vector"], self.hrr_dim)
+                if self.hrr_weight > 0 and fact.get("hrr_vector")
+                else None
+            )
+            if fact_vec is not None:
                 query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
+                if self.hrr_weight > 0 and fact.get("hrr_vector"):
+                    skipped += 1
                 hrr_sim = 0.5  # neutral
 
             # Combine FTS5 + Jaccard + HRR
@@ -102,6 +140,8 @@ class FactRetriever:
 
             fact["score"] = score
             scored.append(fact)
+
+        _warn_skipped("search", skipped)
 
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
@@ -144,12 +184,14 @@ class FactRetriever:
                 (bank_name,),
             ).fetchone()
             if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
-                extracted = hrr.unbind(bank_vec, probe_key)
-                # Use extracted signal to score individual facts
-                return self._score_facts_by_vector(
-                    extracted, category=category, limit=limit
-                )
+                bank_vec = _safe_phases(bank_row["vector"], self.hrr_dim)
+                if bank_vec is not None:
+                    extracted = hrr.unbind(bank_vec, probe_key)
+                    # Use extracted signal to score individual facts
+                    return self._score_facts_by_vector(
+                        extracted, category=category, limit=limit
+                    )
+                _warn_skipped("probe (bank vector)", 1)
 
         # Score against individual fact vectors directly
         where = "WHERE hrr_vector IS NOT NULL"
@@ -174,9 +216,13 @@ class FactRetriever:
             return self.search(entity, category=category, limit=limit)
 
         scored = []
+        skipped = 0
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = _safe_phases(fact.pop("hrr_vector"), self.hrr_dim)
+            if fact_vec is None:
+                skipped += 1
+                continue
             # Unbind probe key from fact to see if entity is structurally present
             residual = hrr.unbind(fact_vec, probe_key)
             # Compare residual against content signal
@@ -186,6 +232,7 @@ class FactRetriever:
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
 
+        _warn_skipped("probe", skipped)
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
@@ -235,9 +282,13 @@ class FactRetriever:
         # Score each fact by how much the entity's atom appears in its vector
         # This catches both role-bound entity matches AND content word matches
         scored = []
+        skipped = 0
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = _safe_phases(fact.pop("hrr_vector"), self.hrr_dim)
+            if fact_vec is None:
+                skipped += 1
+                continue
 
             # Check structural similarity: unbind entity from fact
             residual = hrr.unbind(fact_vec, entity_vec)
@@ -253,6 +304,8 @@ class FactRetriever:
 
             fact["score"] = (best_sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
+
+        _warn_skipped("related", skipped)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
@@ -318,9 +371,13 @@ class FactRetriever:
         role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
 
         scored = []
+        skipped = 0
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = _safe_phases(fact.pop("hrr_vector"), self.hrr_dim)
+            if fact_vec is None:
+                skipped += 1
+                continue
 
             entity_scores = []
             for probe_key in entity_residuals:
@@ -332,6 +389,7 @@ class FactRetriever:
             fact["score"] = (min_sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
 
+        _warn_skipped("reason", skipped)
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
@@ -400,6 +458,7 @@ class FactRetriever:
         # Compare all pairs: high entity overlap + low content similarity = contradiction
         facts = [dict(r) for r in rows]
         contradictions = []
+        skipped = 0
 
         for i in range(len(facts)):
             for j in range(i + 1, len(facts)):
@@ -417,8 +476,11 @@ class FactRetriever:
                     continue  # Not enough entity overlap to be contradictory
 
                 # Content similarity via HRR vectors
-                v1 = hrr.bytes_to_phases(f1["hrr_vector"])
-                v2 = hrr.bytes_to_phases(f2["hrr_vector"])
+                v1 = _safe_phases(f1["hrr_vector"], self.hrr_dim)
+                v2 = _safe_phases(f2["hrr_vector"], self.hrr_dim)
+                if v1 is None or v2 is None:
+                    skipped += 1
+                    continue
                 content_sim = hrr.similarity(v1, v2)
 
                 # High entity overlap + low content similarity = potential contradiction
@@ -438,6 +500,7 @@ class FactRetriever:
                         "shared_entities": sorted(ents1 & ents2),
                     })
 
+        _warn_skipped("contradict", skipped)
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
         return contradictions[:limit]
 
@@ -468,13 +531,18 @@ class FactRetriever:
         ).fetchall()
 
         scored = []
+        skipped = 0
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = _safe_phases(fact.pop("hrr_vector"), self.hrr_dim)
+            if fact_vec is None:
+                skipped += 1
+                continue
             sim = hrr.similarity(target_vec, fact_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
 
+        _warn_skipped("_score_facts_by_vector", skipped)
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 

@@ -241,3 +241,50 @@ class TestProviderShutdown:
         b._store.add_fact("write after sibling shutdown")
         b.shutdown()
         assert MemoryStore._shared == {}
+
+
+class TestHrrDimPersistence:
+    """A stored hrr_dim must survive process restarts. Before this fix,
+    hrr_dim came only from the constructor/config, so a config change
+    between sessions silently mixed vector dimensions across facts and
+    crashed similarity() (issue #68682)."""
+
+    def test_fresh_store_persists_constructor_dim(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=512)
+        try:
+            row = store._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert row is not None
+            assert int(row["value"]) == 512
+        finally:
+            store.close()
+
+    def test_reopen_adopts_persisted_dim_over_new_config(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.close()
+
+        # Simulate a later session with a *different* configured hrr_dim.
+        store2 = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            assert store2.hrr_dim == 256
+        finally:
+            store2.close()
+
+    def test_rebuild_all_vectors_updates_persisted_dim(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=256)
+        try:
+            store.add_fact("a fact to migrate")
+            store.rebuild_all_vectors(dim=1024)
+            row = store._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert int(row["value"]) == 1024
+        finally:
+            store.close()
+
+        store2 = MemoryStore(db_path, hrr_dim=999)
+        try:
+            assert store2.hrr_dim == 1024
+        finally:
+            store2.close()

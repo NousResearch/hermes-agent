@@ -105,6 +105,15 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     and -1.0 for perfectly anti-correlated vectors.
     """
     _require_numpy()
+    if a.shape != b.shape:
+        logger.debug(
+            "HRR similarity: dimension mismatch (a.shape=%s, b.shape=%s) — "
+            "returning neutral 0.0. Vectors were likely encoded with different "
+            "hrr_dim configs; run rebuild_all_vectors() to migrate.",
+            a.shape,
+            b.shape,
+        )
+        return 0.0
     return float(np.mean(np.cos(a - b)))
 
 

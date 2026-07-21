@@ -17,6 +17,7 @@ import logging
 import os
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, Mapping, Optional
 from utils import atomic_replace
 
@@ -27,13 +28,21 @@ _STATE_FILENAME = "nous.json"
 
 
 def _state_path() -> str:
-    """Return the path to the Nous rate limit state file."""
+    """Return the path to the Nous rate limit state file.
+
+    The ImportError fallback honors ``HERMES_HOME`` so that Docker
+    deployments (``HERMES_HOME=/opt/data``) and non-default profiles
+    (``HERMES_HOME=~/.hermes/profiles/<name>``) don't silently write
+    rate-limit state into ``~/.hermes`` while the rest of the process
+    reads from the configured root.  See issue #18594.
+    """
     try:
         from hermes_constants import get_hermes_home
-        base = get_hermes_home()
+        base = Path(get_hermes_home())
     except ImportError:
-        base = os.path.join(os.path.expanduser("~"), ".hermes")
-    return os.path.join(base, _STATE_SUBDIR, _STATE_FILENAME)
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+        base = Path(env_home) if env_home else Path.home() / ".hermes"
+    return str(base / _STATE_SUBDIR / _STATE_FILENAME)
 
 
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:

@@ -3445,6 +3445,13 @@ def _evict_cached_client_instance(target: Any) -> bool:
                 continue
             real = getattr(cached, "_real_client", None)
             if cached is target or real is target:
+                _force_close_async_httpx(cached)
+                try:
+                    close_fn = getattr(cached, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
                 del _client_cache[key]
                 evicted = True
     return evicted

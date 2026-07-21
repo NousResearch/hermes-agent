@@ -1205,3 +1205,45 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+
+class TestMakeSslConnector:
+    """Tests for _make_ssl_connector resolver selection."""
+
+    def test_windows_uses_threaded_resolver(self):
+        mock_connector = Mock()
+        mock_ssl_ctx = Mock()
+        mock_resolver = Mock()
+        with patch.object(weixin, "AIOHTTP_AVAILABLE", True), \
+             patch.object(weixin.aiohttp, "TCPConnector", return_value=mock_connector) as mock_tc, \
+             patch.object(weixin.aiohttp, "ThreadedResolver", return_value=mock_resolver) as mock_tr, \
+             patch("ssl.create_default_context", return_value=mock_ssl_ctx), \
+             patch("certifi.where", return_value="/tmp/ca-bundle.crt"):
+            with patch("os.name", "nt"):
+                result = weixin._make_ssl_connector()
+        assert result is mock_connector
+        _, kwargs = mock_tc.call_args
+        assert kwargs["resolver"] is mock_resolver
+        mock_tr.assert_called_once()
+
+    def test_posix_uses_default_resolver(self):
+        mock_connector = Mock()
+        mock_ssl_ctx = Mock()
+        with patch.object(weixin, "AIOHTTP_AVAILABLE", True), \
+             patch.object(weixin.aiohttp, "TCPConnector", return_value=mock_connector) as mock_tc, \
+             patch("ssl.create_default_context", return_value=mock_ssl_ctx), \
+             patch("certifi.where", return_value="/tmp/ca-bundle.crt"):
+            with patch("os.name", "posix"):
+                result = weixin._make_ssl_connector()
+        assert result is mock_connector
+        _, kwargs = mock_tc.call_args
+        assert kwargs["resolver"] is None
+
+    def test_returns_none_without_aiohttp(self):
+        with patch.object(weixin, "AIOHTTP_AVAILABLE", False):
+            assert weixin._make_ssl_connector() is None
+
+    def test_returns_none_without_certifi(self):
+        with patch.object(weixin, "AIOHTTP_AVAILABLE", True), \
+             patch("builtins.__import__", side_effect=ImportError):
+            assert weixin._make_ssl_connector() is None

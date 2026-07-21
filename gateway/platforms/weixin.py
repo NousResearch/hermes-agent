@@ -124,6 +124,10 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
     verification. Otherwise fall back to aiohttp's default (which honors
     ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+
+    On Windows, aiohttp's default async resolver (c-ares/pycares) can fail to
+    resolve hosts that the system DNS resolver handles fine.  Force the
+    thread-based resolver so DNS lookups go through the OS stack.
     """
     try:
         import ssl
@@ -133,7 +137,10 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+    resolver = None
+    if os.name == "nt":
+        resolver = aiohttp.ThreadedResolver()
+    return aiohttp.TCPConnector(ssl=ssl_ctx, resolver=resolver)
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2

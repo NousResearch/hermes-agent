@@ -4,17 +4,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="${TMPDIR:-/tmp}/dockter-hermes-test.$$"
 LOG_FILE="${TMP_DIR}/commands.log"
+REAL_DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
+REAL_HOME="$HOME"
 
 cleanup() {
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP_DIR/bin" "$TMP_DIR/home/.hermes/workspace" "$TMP_DIR/hermes-agent"
+mkdir -p "$TMP_DIR/bin" "$TMP_DIR/home/.hermes/dockter-hermes" \
+  "$TMP_DIR/home/.hermes/workspace" "$TMP_DIR/hermes-agent"
 touch "$LOG_FILE"
 touch "$TMP_DIR/hermes-agent/Dockerfile"
 touch "$TMP_DIR/hermes-agent/docker-compose.yml"
+touch "$TMP_DIR/hermes-agent/docker-compose.windows.yml"
 touch "$TMP_DIR/hermes-agent/docker-compose.extra.yml"
+touch "$TMP_DIR/home/.hermes/dockter-hermes/docker-compose.override.yml"
 
 cat > "$TMP_DIR/home/.hermes/config.yaml" <<'YAML'
 model:
@@ -120,6 +125,15 @@ compose_line() {
   command_line docker compose \
     -f "$TMP_DIR/hermes-agent/docker-compose.yml" \
     -f "$TMP_DIR/hermes-agent/docker-compose.extra.yml" \
+    -f "$TMP_DIR/home/.hermes/dockter-hermes/docker-compose.override.yml" \
+    "$@"
+}
+
+windows_compose_line() {
+  command_line docker compose \
+    -f "$TMP_DIR/hermes-agent/docker-compose.windows.yml" \
+    -f "$TMP_DIR/hermes-agent/docker-compose.extra.yml" \
+    -f "$TMP_DIR/home/.hermes/dockter-hermes/docker-compose.override.yml" \
     "$@"
 }
 
@@ -198,8 +212,80 @@ run_clean() {
   printf 'y\n' | dockter-hermes-clean
 }
 
+run_dashboard() {
+  DOCKTER_HERMES_DASHBOARD_PORT=19119 dockter-hermes-dashboard
+}
+
+run_windows_start() {
+  _dockter_hermes_is_native_windows() { return 0; }
+  dockter-hermes-start
+}
+
+run_windows_config() {
+  _dockter_hermes_is_native_windows() { return 0; }
+  dockter-hermes-config | grep -F "$TMP_DIR/hermes-agent/docker-compose.windows.yml" >/dev/null
+}
+
+run_windows_data_dir() {
+  _dockter_hermes_is_native_windows() { return 0; }
+  cygpath() {
+    [[ "$1" == "-am" && "$2" == "$HERMES_HOME" ]] || return 1
+    printf 'C:/Users/test/.hermes'
+  }
+  [[ "$(_dockter_hermes_data_dir)" == 'C:/Users/test/.hermes' ]]
+}
+
+run_windows_compose_model_case() {
+  if [[ -z "$REAL_DOCKER_BIN" ]] || ! HOME="$REAL_HOME" "$REAL_DOCKER_BIN" compose version >/dev/null 2>&1; then
+    printf 'SKIP windows-compose-model (Docker Compose unavailable)\n'
+    return 0
+  fi
+
+  local config manual_images
+  config=$(DOCKTER_HERMES_DATA_DIR="$TMP_DIR/windows-data" \
+    DOCKTER_HERMES_DASHBOARD_PORT=19119 \
+    DOCKTER_HERMES_IMAGE=hermes-agent \
+    HERMES_UID=501 HERMES_GID=20 \
+    HOME="$REAL_HOME" "$REAL_DOCKER_BIN" compose \
+      -f "$ROOT_DIR/../docker-compose.windows.yml" \
+      config --format json)
+  manual_images=$(unset DOCKTER_HERMES_IMAGE; \
+    USERPROFILE="$TMP_DIR/windows-profile" HOME="$REAL_HOME" \
+    "$REAL_DOCKER_BIN" compose \
+      -f "$ROOT_DIR/../docker-compose.windows.yml" \
+      config --images)
+
+  [[ "$config" == *'"build":'* ]] || {
+    printf 'Windows Compose model did not inherit the local image build\n' >&2
+    return 1
+  }
+  [[ "$config" == *'"image": "hermes-agent"'* ]] || {
+    printf 'Windows Compose model did not select the helper local image\n' >&2
+    return 1
+  }
+  [[ "$config" != *'"network_mode"'* ]] || {
+    printf 'Windows Compose model retained host networking\n' >&2
+    return 1
+  }
+  [[ "$config" == *'"published": "19119"'* ]] || {
+    printf 'Windows Compose model did not publish the configured dashboard port\n' >&2
+    return 1
+  }
+  [[ "$config" == *'"HERMES_UID": "10000"'* ]] || {
+    printf 'Windows Compose model did not replace host UID mapping\n' >&2
+    return 1
+  }
+  [[ "$manual_images" == *'nousresearch/hermes-agent:latest'* ]] || {
+    printf 'Standalone Windows Compose no longer defaults to the published image\n' >&2
+    return 1
+  }
+  printf 'TEST windows-compose-model\n'
+}
+
 run_case help dockter-hermes-help
 run_case config dockter-hermes-config
+run_case config-windows run_windows_config
+run_case data-dir-windows run_windows_data_dir
 run_case show-config dockter-hermes-show-config
 run_case cd dockter-hermes-cd
 run_case home dockter-hermes-home
@@ -207,6 +293,7 @@ run_case workspace dockter-hermes-workspace
 
 run_logged_case start-default "$(compose_line up -d gateway dashboard)" dockter-hermes-start
 run_logged_case start-gateway "$(compose_line up -d gateway)" dockter-hermes-start gateway
+run_logged_case start-windows "$(windows_compose_line up -d gateway dashboard)" run_windows_start
 run_logged_case restart-default "$(compose_line restart gateway)" dockter-hermes-restart
 run_logged_case restart-all "$(compose_line restart gateway dashboard)" dockter-hermes-restart all
 run_logged_case stop "$(compose_line down)" dockter-hermes-stop
@@ -224,7 +311,7 @@ run_logged_case chat "$(compose_line run --rm gateway chat)" dockter-hermes-chat
 run_logged_case setup "$(compose_line run --rm gateway setup)" dockter-hermes-setup
 
 run_logged_case dashboard "$(compose_line up -d dashboard)
-$(command_line open http://127.0.0.1:9119/)" dockter-hermes-dashboard
+$(command_line open http://127.0.0.1:19119/)" run_dashboard
 run_logged_case health "$(command_line docker exec hermes hermes gateway status --deep)" dockter-hermes-health
 
 run_logged_case rebuild "$(compose_line build gateway)
@@ -235,3 +322,4 @@ $(compose_line up -d gateway dashboard)"
 run_logged_case update "$update_log" dockter-hermes-update
 run_update_failure_case "$update_log"
 run_logged_case clean "$(compose_line down -v --remove-orphans)" run_clean
+run_windows_compose_model_case

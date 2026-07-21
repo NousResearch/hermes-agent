@@ -50,10 +50,21 @@ for the bundled `docker-compose.yml` workflow. The helper wraps common Compose
 commands and passes your host UID/GID automatically so files created by the
 container stay owned by your host user.
 
-The helper is supported in Linux and macOS shells, including Bash and zsh. It
-does not support native Windows or select `docker-compose.windows.yml`; on
-Docker Desktop for Windows, invoke Compose directly with
-`docker compose -f docker-compose.windows.yml ...`.
+The helper supports Linux and macOS shells, including Bash and zsh, and native
+Windows through Git Bash. In Git Bash it automatically selects
+`docker-compose.windows.yml` for every helper command, replacing Linux host
+networking and bind-mount paths while retaining local image builds. Optional
+project and user override files are applied afterward. Run
+`dockter-hermes-config` to see the selected Compose files.
+
+PowerShell cannot source this shell helper. WSL follows the Linux path; when its
+Docker CLI targets Docker Desktop, the standard Compose file requires Docker
+Desktop's host-networking feature to be enabled. To invoke the native Windows
+configuration without the helper, use:
+
+```sh
+docker compose -f docker-compose.windows.yml up -d
+```
 
 Source it from the checkout:
 
@@ -68,6 +79,8 @@ profile:
 ```sh
 echo 'source /path/to/hermes-agent/scripts/dockter-hermes-helpers.sh' >> ~/.zshrc
 ```
+
+In Git Bash, add the source line to `~/.bashrc` instead.
 
 The helper looks for a local `hermes-agent` checkout in common project
 directories. If it cannot find yours, set the checkout path directly:

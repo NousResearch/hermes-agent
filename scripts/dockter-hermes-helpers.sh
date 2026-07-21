@@ -150,6 +150,22 @@ _dockter_hermes_docker() {
   "$DOCKTER_HERMES_DOCKER_BIN" "$@"
 }
 
+_dockter_hermes_is_native_windows() {
+  case "$(command uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_dockter_hermes_data_dir() {
+  local data_dir="${HERMES_HOME:-${HOME}/.hermes}"
+  if _dockter_hermes_is_native_windows && command -v cygpath >/dev/null 2>&1; then
+    cygpath -am "$data_dir"
+    return $?
+  fi
+  printf '%s' "$data_dir"
+}
+
 _dockter_hermes_ensure_dir() {
   if [[ -n "$DOCKTER_HERMES_DIR" && -f "${DOCKTER_HERMES_DIR}/docker-compose.yml" ]]; then
     return 0
@@ -230,23 +246,48 @@ _dockter_hermes_gid() {
   return 1
 }
 
+_dockter_hermes_compose_files() {
+  local base_file
+  if _dockter_hermes_is_native_windows; then
+    base_file="${DOCKTER_HERMES_DIR}/docker-compose.windows.yml"
+  else
+    base_file="${DOCKTER_HERMES_DIR}/docker-compose.yml"
+  fi
+  if [[ ! -f "$base_file" ]]; then
+    echo "Error: Compose file not found: $base_file" >&2
+    return 1
+  fi
+  printf '%s\n' "$base_file"
+
+  if [[ -f "${DOCKTER_HERMES_DIR}/docker-compose.extra.yml" ]]; then
+    printf '%s\n' "${DOCKTER_HERMES_DIR}/docker-compose.extra.yml"
+  fi
+  if [[ -f "$DOCKTER_HERMES_USER_COMPOSE" ]]; then
+    printf '%s\n' "$DOCKTER_HERMES_USER_COMPOSE"
+  fi
+}
+
 _dockter_hermes_compose() {
   _dockter_hermes_ensure_docker || return 1
   _dockter_hermes_ensure_dir || return 1
 
-  local compose_args=(-f "${DOCKTER_HERMES_DIR}/docker-compose.yml")
-  if [[ -f "${DOCKTER_HERMES_DIR}/docker-compose.extra.yml" ]]; then
-    compose_args+=(-f "${DOCKTER_HERMES_DIR}/docker-compose.extra.yml")
-  fi
-  if [[ -f "${DOCKTER_HERMES_USER_COMPOSE}" ]]; then
-    compose_args+=(-f "${DOCKTER_HERMES_USER_COMPOSE}")
-  fi
+  local compose_files
+  compose_files=$(_dockter_hermes_compose_files) || return 1
+  local compose_args=()
+  local compose_file
+  while IFS= read -r compose_file; do
+    [[ -n "$compose_file" ]] && compose_args+=(-f "$compose_file")
+  done <<< "$compose_files"
 
-  local uid gid
+  local data_dir uid gid
+  data_dir=$(_dockter_hermes_data_dir) || return 1
   uid=$(_dockter_hermes_uid) || return 1
   gid=$(_dockter_hermes_gid) || return 1
 
-  HERMES_UID="$uid" HERMES_GID="$gid" \
+  DOCKTER_HERMES_DATA_DIR="$data_dir" \
+    DOCKTER_HERMES_DASHBOARD_PORT="${DOCKTER_HERMES_DASHBOARD_PORT:-9119}" \
+    DOCKTER_HERMES_IMAGE="hermes-agent" \
+    HERMES_UID="$uid" HERMES_GID="$gid" \
     "$DOCKTER_HERMES_DOCKER_BIN" compose "${compose_args[@]}" "$@"
 }
 
@@ -378,15 +419,16 @@ dockter-hermes-config() {
   echo ""
   echo -e "${_HD_CLR_BOLD}Compose files:${_HD_CLR_RESET}"
   if [[ -n "${DOCKTER_HERMES_DIR:-}" ]]; then
-    echo "  ${DOCKTER_HERMES_DIR}/docker-compose.yml"
-    if [[ -f "${DOCKTER_HERMES_DIR}/docker-compose.extra.yml" ]]; then
-      echo "  ${DOCKTER_HERMES_DIR}/docker-compose.extra.yml"
+    local compose_files compose_file
+    if compose_files=$(_dockter_hermes_compose_files); then
+      while IFS= read -r compose_file; do
+        [[ -n "$compose_file" ]] && echo "  $compose_file"
+      done <<< "$compose_files"
+    else
+      echo "  <unable to resolve Compose files>"
     fi
   else
     echo "  <project directory not set>"
-  fi
-  if [[ -f "$DOCKTER_HERMES_USER_COMPOSE" ]]; then
-    echo "  ${DOCKTER_HERMES_USER_COMPOSE}"
   fi
   echo ""
   echo -e "${_HD_CLR_DIM}Temporary override:${_HD_CLR_RESET} export DOCKTER_HERMES_DIR=/path/to/hermes-agent"
@@ -594,6 +636,6 @@ dockter-hermes-help() {
   echo -e "${_HD_CLR_BOLD}${_HD_CLR_CYAN}First Time Setup${_HD_CLR_RESET}"
   echo -e "  ${_HD_CLR_CYAN}1.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-setup)       ${_HD_CLR_DIM}# Configure ~/.hermes inside Docker${_HD_CLR_RESET}"
   echo -e "  ${_HD_CLR_CYAN}2.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-start)     ${_HD_CLR_DIM}# Start gateway and dashboard${_HD_CLR_RESET}"
-  echo -e "  ${_HD_CLR_CYAN}3.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard)   ${_HD_CLR_DIM}# Open http://127.0.0.1:9119${_HD_CLR_RESET}"
+  echo -e "  ${_HD_CLR_CYAN}3.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard)   ${_HD_CLR_DIM}# Open http://127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}${_HD_CLR_RESET}"
   echo ""
 }

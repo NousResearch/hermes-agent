@@ -13,7 +13,8 @@ const USAGE = 'usage: /grid-test [cols]x[rows]  ·  /grid-test [cols] [rows]  ·
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
-const clampSize = (value: number, fallback: number) => (Number.isFinite(value) ? clamp(Math.round(value), 1, MAX_SIZE) : fallback)
+const clampSize = (value: number, fallback: number) =>
+  Number.isFinite(value) ? clamp(Math.round(value), 1, MAX_SIZE) : fallback
 
 /** null/number cycle: auto → 0 → 1 → … → max → auto. */
 const cycleAutoNumber = (value: null | number, max: number) => (value === null ? 0 : value >= max ? null : value + 1)
@@ -198,7 +199,7 @@ export const gridTestApp = defineWidgetApp<GridTestState>({
     return (
       <Overlay zone="center">
         <FloatBox color={t.color.border}>
-          <GridTestOverlay cols={Math.max(24, Math.min(cols - 6, 120))} state={state} t={t} />
+          <GridTestOverlay cols={Math.max(1, Math.min(cols - 6, 120))} state={state} t={t} />
         </FloatBox>
       </Overlay>
     )

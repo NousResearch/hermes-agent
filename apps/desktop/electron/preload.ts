@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  getLocalHermesHome: () => ipcRenderer.invoke('hermes:hermes-home:local'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

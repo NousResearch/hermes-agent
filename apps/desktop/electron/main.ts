@@ -59,6 +59,7 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { desktopPluginHome } from './desktop-plugin-home'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -8768,6 +8769,14 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
     throw new Error('Invalid external URL')
   }
 })
+
+// Disk plugins execute with full renderer authority, so they must always come
+// from the trusted desktop machine rather than a remote gateway's filesystem.
+ipcMain.handle('hermes:hermes-home:local', () =>
+  desktopPluginHome(HERMES_HOME, readActiveDesktopProfile(), () =>
+    fs.readFileSync(path.join(HERMES_HOME, 'active_profile'), 'utf8')
+  )
+)
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {

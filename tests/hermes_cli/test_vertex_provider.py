@@ -286,3 +286,30 @@ def test_vertex_normalization_agrees_with_anthropic_detection():
         normalized = normalize_model_for_provider(alias, "vertex")
         assert normalized == "claude-fable-5"
         assert is_anthropic_vertex_model(normalized)
+
+
+@pytest.mark.parametrize("short_alias", ["sonnet", "fable", "claude"])
+def test_short_claude_aliases_resolve_on_vertex(short_alias):
+    """Short Claude aliases for models actually in Vertex's curated catalog
+    (_PROVIDER_MODELS["vertex"]: claude-fable-5, claude-sonnet-5) must resolve
+    to a bare, is_anthropic_vertex_model-recognized ID.
+
+    A missing MODEL_ALIASES entry (e.g. "fable" was absent) makes
+    resolve_alias() return None, so switch_model() falls through and passes
+    the literal short alias straight to the wire. Vertex's OpenAI-compatible
+    /openapi endpoint then 400s with "Malformed publisher model (model:
+    'fable')" because the bare short name was never routed through the
+    AnthropicVertex SDK path in the first place.
+
+    Note: "opus"/"haiku" are deliberately excluded — Vertex's curated catalog
+    doesn't currently list an opus/haiku model, so those aliases legitimately
+    fail to resolve there (a separate, pre-existing gap).
+    """
+    from agent.vertex_adapter import is_anthropic_vertex_model
+    from hermes_cli.model_switch import resolve_alias
+
+    result = resolve_alias(short_alias, "vertex")
+    assert result is not None, f"'{short_alias}' did not resolve on vertex — check MODEL_ALIASES"
+    provider, resolved_model, _alias_name = result
+    assert provider == "vertex"
+    assert is_anthropic_vertex_model(resolved_model)

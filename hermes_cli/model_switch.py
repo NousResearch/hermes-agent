@@ -280,6 +280,7 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     "sonnet":    ModelIdentity("anthropic", "claude-sonnet"),
     "opus":      ModelIdentity("anthropic", "claude-opus"),
     "haiku":     ModelIdentity("anthropic", "claude-haiku"),
+    "fable":     ModelIdentity("anthropic", "claude-fable"),
     "claude":    ModelIdentity("anthropic", "claude"),
 
     # OpenAI

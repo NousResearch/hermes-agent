@@ -87,7 +87,10 @@ class AudioBridge:
                         check=False,
                         capture_output=True,
                         stdin=subprocess.DEVNULL,
+                        timeout=10,
                     )
+                except subprocess.TimeoutExpired:
+                    pass
                 except Exception:
                     # Best-effort teardown — never raise from here.
                     pass
@@ -113,11 +116,14 @@ class AudioBridge:
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
+                timeout=10,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
                 "pactl not found — install PulseAudio/pipewire-pulse"
             ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("pactl load-module null-sink timed out") from exc
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 f"pactl load-module null-sink failed: {exc.stderr or exc}"
@@ -138,7 +144,18 @@ class AudioBridge:
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
+                timeout=10,
             )
+        except subprocess.TimeoutExpired as exc:
+            # Roll back the null-sink we just created so we don't leak it.
+            subprocess.run(
+                ["pactl", "unload-module", str(sink_mod_id)],
+                check=False,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=10,
+            )
+            raise RuntimeError("pactl load-module virtual-source timed out") from exc
         except subprocess.CalledProcessError as exc:
             # Roll back the null-sink we just created so we don't leak it.
             subprocess.run(
@@ -146,6 +163,7 @@ class AudioBridge:
                 check=False,
                 capture_output=True,
                 stdin=subprocess.DEVNULL,
+                timeout=10,
             )
             raise RuntimeError(
                 f"pactl load-module virtual-source failed: {exc.stderr or exc}"

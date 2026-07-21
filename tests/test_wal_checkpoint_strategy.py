@@ -134,6 +134,31 @@ class TestCloseUsesTruncate:
         )
 
 
+class TestVacuumUsesTruncate:
+    """vacuum() should surface checkpoint failures and still reclaim space."""
+
+    def test_checkpoint_failure_is_logged_and_vacuum_continues(self, db, caplog):
+        """A best-effort checkpoint failure must not prevent VACUUM."""
+        execute_calls = []
+        mock_conn = MagicMock()
+
+        def execute(sql, *args, **kwargs):
+            execute_calls.append(sql)
+            if sql == "PRAGMA wal_checkpoint(TRUNCATE)":
+                raise sqlite3.OperationalError("disk I/O error")
+            return MagicMock()
+
+        mock_conn.execute.side_effect = execute
+        db._conn = mock_conn
+        db.optimize_fts = MagicMock(return_value=0)
+
+        with caplog.at_level(logging.DEBUG):
+            assert db.vacuum() == 0
+
+        assert execute_calls == ["PRAGMA wal_checkpoint(TRUNCATE)", "VACUUM"]
+        assert "WAL checkpoint (TRUNCATE) before VACUUM failed" in caplog.text
+
+
 class TestCheckpointFrequency:
     """Checkpoint triggers every N writes."""
 

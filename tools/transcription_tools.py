@@ -158,6 +158,38 @@ def _find_ffmpeg_binary() -> Optional[str]:
     return _find_binary("ffmpeg")
 
 
+def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
+    """Transcode ``file_path`` to a compact, broadly-accepted .m4a for STT upload.
+
+    Newer OpenAI transcription models (``gpt-4o-transcribe``,
+    ``gpt-4o-mini-transcribe``) reject some containers the legacy ``whisper-1``
+    endpoint accepted -- notably the Ogg/Opus voice notes messaging apps send --
+    and gateway downloads occasionally arrive with a misleading extension.
+    Normalizing to 16 kHz mono AAC/m4a produces a small file the endpoints
+    accept. Returns ``(converted_path, None)`` on success or ``(None, error)``.
+    """
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return None, "audio needs transcoding for the STT API, but ffmpeg was not found"
+    converted_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-stt.m4a")
+    command = [
+        ffmpeg, "-y", "-i", file_path,
+        "-vn", "-ac", "1", "-ar", "16000",
+        "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
+        converted_path,
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
+        return converted_path, None
+    except subprocess.CalledProcessError as exc:
+        details = exc.stderr.strip() or exc.stdout.strip() or str(exc)
+        logger.error("ffmpeg STT transcode failed for %s: %s", file_path, details)
+        return None, f"failed to transcode audio for the STT API: {details}"
+    except Exception as exc:  # noqa: BLE001 - transcode is best-effort
+        logger.error("unexpected STT transcode failure for %s: %s", file_path, exc, exc_info=True)
+        return None, f"failed to transcode audio for the STT API: {exc}"
+
+
 def _find_whisper_binary() -> Optional[str]:
     return _find_binary("whisper")
 
@@ -1380,15 +1412,42 @@ def _transcribe_openai(
         model_name = DEFAULT_STT_MODEL
 
     try:
-        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+        from openai import (
+            OpenAI,
+            APIError,
+            APIConnectionError,
+            APITimeoutError,
+            BadRequestError,
+        )
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
-        try:
-            with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
+
+        def _create_transcription(path: str):
+            with open(path, "rb") as audio_file:
+                return client.audio.transcriptions.create(
                     model=model_name,
                     file=audio_file,
                     response_format="text" if model_name == "whisper-1" else "json",
                 )
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
+                try:
+                    transcription = _create_transcription(file_path)
+                except BadRequestError as exc:
+                    message = str(exc).lower()
+                    if not any(k in message for k in ("unsupported", "corrupted", "invalid file")):
+                        raise
+                    # Newer models (e.g. gpt-4o-transcribe) reject some containers
+                    # whisper-1 accepted (notably Ogg/Opus voice notes). Transcode
+                    # to a compact .m4a and retry once.
+                    converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
+                    if transcode_error:
+                        return {"success": False, "transcript": "", "error": transcode_error}
+                    logger.info(
+                        "Retrying %s STT after transcoding %s to m4a (API rejected the original container)",
+                        provider_label, Path(file_path).name,
+                    )
+                    transcription = _create_transcription(converted_path)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info(

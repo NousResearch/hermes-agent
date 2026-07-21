@@ -979,9 +979,11 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"] == codex_items
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
-    def test_replace_messages_deduplicates_consecutive_user_messages(self, db):
-        """replace_messages must defensively remove consecutive duplicate user messages
-        with identical content to preserve database history integrity.
+    def test_replace_messages_preserves_repeated_consecutive_user_messages(self, db):
+        """replace_messages must not silently drop consecutive user messages
+        with identical content — a legitimate repeated prompt (e.g. a retry)
+        is real user input, not a duplicate write, and callers that want to
+        merge/repair such sequences do so upstream (agent_runtime_helpers.py).
         """
         db.create_session(session_id="s1", source="cli")
         db.replace_messages(
@@ -995,8 +997,13 @@ class TestMessageStorage:
         )
 
         conv = db.get_messages_as_conversation("s1")
-        assert [m["role"] for m in conv] == ["user", "assistant", "user"]
-        assert [m["content"] for m in conv] == ["hello duplicated", "how can I help?", "hello duplicated"]
+        assert [m["role"] for m in conv] == ["user", "user", "assistant", "user"]
+        assert [m["content"] for m in conv] == [
+            "hello duplicated",
+            "hello duplicated",
+            "how can I help?",
+            "hello duplicated",
+        ]
 
 
 # =========================================================================

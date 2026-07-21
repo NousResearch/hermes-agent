@@ -729,6 +729,17 @@ class GatewayStreamConsumer:
                 self._native_last_pushed_len = 0
                 self._awaiting_reopen_after_boundary = True
                 self._reset_segment_state()
+                # INFO (temporary latency probe): boundary finalize is done and
+                # the old bubble is closed.  From here the consumer waits for
+                # the LLM's first post-answer delta before re-seeding the C
+                # bubble — so the gap between THIS line and the
+                # "Re-opened native stream" INFO below is exactly the
+                # "typing slow to reappear after clarify" delay.
+                logger.info(
+                    "[latency] Clarify boundary finalized, awaiting first "
+                    "post-answer delta to re-seed (chat=%s, turn=%s)",
+                    self.chat_id, self._turn_id,
+                )
             else:
                 # Approval boundary: disable native streaming for post-approval
                 # output, which goes through regular send() (unconditionally
@@ -2413,8 +2424,14 @@ class GatewayStreamConsumer:
                         # stream into it, so got_done no longer needs the
                         # lone-placeholder guard for this turn.
                         self._awaiting_reopen_after_boundary = False
-                        logger.debug(
-                            "Re-opened native stream after boundary (turn=%s)",
+                        # INFO (temporary latency probe): this is the moment the
+                        # C bubble / typing animation first becomes visible after
+                        # a clarify answer.  Comparing this timestamp to the
+                        # boundary-finalize log below quantifies the "typing is
+                        # slow to reappear" delay the user reported.
+                        logger.info(
+                            "[latency] Re-opened native stream after boundary "
+                            "(turn=%s, waited for first delta)",
                             self._turn_id,
                         )
                     else:

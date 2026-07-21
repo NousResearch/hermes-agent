@@ -133,6 +133,7 @@ def _placement(
     lane_path: str,
     is_main: bool,
     is_kanban: bool,
+    is_git: bool,
 ) -> dict:
     return {
         "repo_key": repo_root,
@@ -143,6 +144,7 @@ def _placement(
         "lane_path": lane_path,
         "is_main": is_main,
         "is_kanban": is_kanban,
+        "git_kind": "git" if is_git else "directory",
     }
 
 
@@ -155,14 +157,14 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
     kanban_dir = kanban_worktree_dir(path)
     if kanban_dir:
         repo_path = re.sub(r"[/\\]+$", "", _with_base_name(kanban_dir, ""))
-        return _placement(repo_path, _kanban_lane_id(repo_path), "kanban", kanban_dir, False, True)
+        return _placement(repo_path, _kanban_lane_id(repo_path), "kanban", kanban_dir, False, True, False)
 
     m = re.match(r"^(.+)-wt-(.+)$", base)
     if m:
         repo_path = _with_base_name(path, m.group(1))
-        return _placement(repo_path, path, m.group(2), path, False, False)
+        return _placement(repo_path, path, m.group(2), path, False, False, False)
 
-    return _placement(path, path, base, path, True, False)
+    return _placement(path, path, base, path, True, False, False)
 
 
 def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str) -> Optional[dict]:
@@ -177,23 +179,23 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
             # Unrecorded branch folds into the one trunk lane, so a repo never
             # shows two "main" lanes (recorded "main" + the empty-branch bucket).
             b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
-            return _placement(repo_root, _branch_lane_id(repo_root, b), b, repo_root, True, False)
+            return _placement(repo_root, _branch_lane_id(repo_root, b), b, repo_root, True, False, True)
 
         kanban_dir = kanban_worktree_dir(worktree_root)
         if kanban_dir:
-            return _placement(repo_root, _kanban_lane_id(repo_root), "kanban", kanban_dir, False, True)
+            return _placement(repo_root, _kanban_lane_id(repo_root), "kanban", kanban_dir, False, True, True)
 
         label = base_name(worktree_root) or worktree_root
-        return _placement(repo_root, worktree_root, label, worktree_root, False, False)
+        return _placement(repo_root, worktree_root, label, worktree_root, False, False, True)
 
     # No live probe: trust the backend-persisted root (group by it, split main by
     # the session's recorded branch). Kanban tasks still collapse by path shape.
     if persisted_root:
         kanban_dir = kanban_worktree_dir(cwd)
         if kanban_dir:
-            return _placement(persisted_root, _kanban_lane_id(persisted_root), "kanban", kanban_dir, False, True)
+            return _placement(persisted_root, _kanban_lane_id(persisted_root), "kanban", kanban_dir, False, True, True)
         b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
-        return _placement(persisted_root, _branch_lane_id(persisted_root, b), b, persisted_root, True, False)
+        return _placement(persisted_root, _branch_lane_id(persisted_root, b), b, persisted_root, True, False, True)
 
     return _place_by_heuristic(cwd)
 
@@ -300,6 +302,7 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "repo_key": placement["repo_key"],
                 "repo_label": placement["repo_label"],
                 "repo_path": placement["repo_path"],
+                "git_kind": placement["git_kind"],
             }
             lanes[lane_identity] = entry
         entry["group"]["sessions"].append(session)
@@ -319,10 +322,15 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "id": entry["repo_key"],
                 "label": entry["repo_label"],
                 "path": entry["repo_path"],
+                "gitKind": entry["git_kind"],
                 "groups": [],
                 "sessionCount": 0,
             }
             repos[repo_identity] = repo
+        elif entry["git_kind"] == "git":
+            # A persisted/live git placement is stronger evidence than a
+            # path-only heuristic if historical rows happen to share a root.
+            repo["gitKind"] = "git"
         repo["groups"].append(group)
         repo["sessionCount"] += count
 
@@ -366,7 +374,16 @@ def _seed_folder_repos(
         root_key = _path_key(root)
         if not root_key or root_key in seen:
             continue
-        seeded.append({"id": root, "label": base_name(root) or root, "path": root, "groups": [], "sessionCount": 0})
+        seeded.append(
+            {
+                "id": root,
+                "label": base_name(root) or root,
+                "path": root,
+                "gitKind": "git" if info and info.get("repo_root") else "directory",
+                "groups": [],
+                "sessionCount": 0,
+            }
+        )
         seen.add(root_key)
 
     if len(seeded) != len(repos):
@@ -624,7 +641,16 @@ def build_tree(
                 pid=root,
                 label=label,
                 path=root,
-                repos=[{"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}],
+                repos=[
+                    {
+                        "id": root,
+                        "label": label,
+                        "path": root,
+                        "gitKind": "git",
+                        "groups": [],
+                        "sessionCount": 0,
+                    }
+                ],
                 session_count=int(repo.get("sessions") or 0),
                 last_active=float(repo.get("last_active") or 0),
                 preview_sessions=[],

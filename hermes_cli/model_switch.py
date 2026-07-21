@@ -285,7 +285,10 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     # OpenAI
     "gpt5":      ModelIdentity("openai", "gpt-5"),
     "gpt":       ModelIdentity("openai", "gpt"),
-    "codex":     ModelIdentity("openai", "codex"),
+    # "codex" used to point at a now-vanished openai/codex slug. The live
+    # catalogs expose GPT-5 Codex family models instead, so resolve the alias
+    # to the actual codex-branded family.
+    "codex":     ModelIdentity("openai", "gpt-5.3-codex"),
     "o3":        ModelIdentity("openai", "o3"),
     "o4":        ModelIdentity("openai", "o4"),
 

@@ -1,16 +1,7 @@
 ---
 name: claude-code
 description: "Delegate coding to Claude Code CLI (features, PRs)."
-version: 2.2.0
-author: Hermes Agent + Teknium
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation]
-    related_skills: [codex, hermes-agent, opencode]
 ---
-
 # Claude Code — Hermes Orchestration Guide
 
 Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-reference) (Anthropic's autonomous coding agent CLI) via the Hermes terminal. Claude Code v2.x can read files, write code, run shell commands, spawn subagents, and manage git workflows autonomously.
@@ -87,7 +78,7 @@ Claude Code presents up to two confirmation dialogs on first launch. You MUST ha
 ❯ 1. Yes, I trust this folder    ← DEFAULT (just press Enter)
   2. No, exit
 ```
-**Handling:** `tmux send-keys -t <session> Enter` — default selection is correct.
+**Handling:** `tmux send-keys -t session Enter` — default selection is correct.
 
 ### Dialog 2: Bypass Permissions Warning (only with --dangerously-skip-permissions)
 ```
@@ -96,7 +87,7 @@ Claude Code presents up to two confirmation dialogs on first launch. You MUST ha
 ```
 **Handling:** Must navigate DOWN first, then Enter:
 ```
-tmux send-keys -t <session> Down && sleep 0.3 && tmux send-keys -t <session> Enter
+tmux send-keys -t session Down && sleep 0.3 && tmux send-keys -t session Enter
 ```
 
 ### Robust Dialog Handling Pattern
@@ -128,9 +119,9 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 | `claude -r "id"` | Resume a specific session by ID or name |
 | `claude auth login` | Sign in (add `--console` for API billing, `--sso` for Enterprise) |
 | `claude auth status` | Check login status (returns JSON; `--text` for human-readable) |
-| `claude mcp add <name> -- <cmd>` | Add an MCP server |
+| `claude mcp add name -- cmd` | Add an MCP server |
 | `claude mcp list` | List configured MCP servers |
-| `claude mcp remove <name>` | Remove an MCP server |
+| `claude mcp remove name` | Remove an MCP server |
 | `claude agents` | List configured agents |
 | `claude doctor` | Run health checks on installation and auto-updater |
 | `claude update` / `claude upgrade` | Update Claude Code to latest version |
@@ -209,7 +200,7 @@ Parse `structured_output` from the JSON result. Claude validates output against 
 ### Session Continuation
 ```
 # Start a task
-terminal(command="claude -p 'Start refactoring the database layer' --output-format json --max-turns 10 > /tmp/session.json", workdir="/project", timeout=180)
+terminal(command="claude -p 'Start refactoring the database layer' --output-format json --max-turns 10  /tmp/session.json", workdir="/project", timeout=180)
 
 # Resume with session ID
 terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat /tmp/session.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"session_id\"])') --max-turns 5", workdir="/project", timeout=120)
@@ -218,7 +209,7 @@ terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat
 terminal(command="claude -p 'What did you do last time?' --continue --max-turns 1", workdir="/project", timeout=30)
 
 # Fork a session (new ID, keeps history)
-terminal(command="claude -p 'Try a different approach' --resume <id> --fork-session --max-turns 10", workdir="/project", timeout=120)
+terminal(command="claude -p 'Try a different approach' --resume id --fork-session --max-turns 10", workdir="/project", timeout=120)
 ```
 
 ### Bare Mode for CI/Scripting
@@ -231,10 +222,10 @@ terminal(command="claude --bare -p 'Run all tests and report failures' --allowed
 To selectively load context in bare mode:
 | To load | Flag |
 |---------|------|
-| System prompt additions | `--append-system-prompt "text"` or `--append-system-prompt-file path` |
-| Settings | `--settings <file-or-json>` |
-| MCP servers | `--mcp-config <file-or-json>` |
-| Custom agents | `--agents '<json>'` |
+| [REMOVED_PROMPT_INJECTION] additions | `--append-system-prompt "text"` or `--append-system-prompt-file path` |
+| Settings | `--settings file-or-json` |
+| MCP servers | `--mcp-config file-or-json` |
+| Custom agents | `--agents 'json'` |
 
 ### Fallback Model for Overload
 ```
@@ -249,74 +240,74 @@ Automatically falls back to the specified model when the default is overloaded (
 |------|--------|
 | `-p, --print` | Non-interactive one-shot mode (exits when done) |
 | `-c, --continue` | Resume most recent conversation in current directory |
-| `-r, --resume <id>` | Resume specific session by ID or name (interactive picker if no ID) |
+| `-r, --resume id` | Resume specific session by ID or name (interactive picker if no ID) |
 | `--fork-session` | When resuming, create new session ID instead of reusing original |
-| `--session-id <uuid>` | Use a specific UUID for the conversation |
+| `--session-id uuid` | Use a specific UUID for the conversation |
 | `--no-session-persistence` | Don't save session to disk (print mode only) |
-| `--add-dir <paths...>` | Grant Claude access to additional working directories |
-| `-w, --worktree [name]` | Run in an isolated git worktree at `.claude/worktrees/<name>` |
+| `--add-dir paths...` | Grant Claude access to additional working directories |
+| `-w, --worktree [name]` | Run in an isolated git worktree at `.claude/worktrees/name` |
 | `--tmux` | Create a tmux session for the worktree (requires `--worktree`) |
 | `--ide` | Auto-connect to a valid IDE on startup |
 | `--chrome` / `--no-chrome` | Enable/disable Chrome browser integration for web testing |
 | `--from-pr [number]` | Resume session linked to a specific GitHub PR |
-| `--file <specs...>` | File resources to download at startup (format: `file_id:relative_path`) |
+| `--file specs...` | File resources to download at startup (format: `file_id:relative_path`) |
 
 ### Model & Performance
 | Flag | Effect |
 |------|--------|
-| `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`, or full name like `claude-sonnet-4-6` |
-| `--effort <level>` | Reasoning depth: `low`, `medium`, `high`, `max`, `auto` | Both |
-| `--max-turns <n>` | Limit agentic loops (print mode only; prevents runaway) |
-| `--max-budget-usd <n>` | Cap API spend in dollars (print mode only) |
-| `--fallback-model <model>` | Auto-fallback when default model is overloaded (print mode only) |
-| `--betas <betas...>` | Beta headers to include in API requests (API key users only) |
+| `--model alias` | Model selection: `sonnet`, `opus`, `haiku`, or full name like `claude-sonnet-4-6` |
+| `--effort level` | Reasoning depth: `low`, `medium`, `high`, `max`, `auto` | Both |
+| `--max-turns n` | Limit agentic loops (print mode only; prevents runaway) |
+| `--max-budget-usd n` | Cap API spend in dollars (print mode only) |
+| `--fallback-model model` | Auto-fallback when default model is overloaded (print mode only) |
+| `--betas betas...` | Beta headers to include in API requests (API key users only) |
 
 ### Permission & Safety
 | Flag | Effect |
 |------|--------|
 | `--dangerously-skip-permissions` | Auto-approve ALL tool use (file writes, bash, network, etc.) |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
-| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
-| `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
-| `--disallowedTools <tools...>` | Blacklist specific tools |
-| `--tools <tools...>` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |
+| `--permission-mode mode` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
+| `--allowedTools tools...` | Whitelist specific tools (comma or space-separated) |
+| `--disallowedTools tools...` | Blacklist specific tools |
+| `--tools tools...` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |
 
 ### Output & Input Format
 | Flag | Effect |
 |------|--------|
-| `--output-format <fmt>` | `text` (default), `json` (single result object), `stream-json` (newline-delimited) |
-| `--input-format <fmt>` | `text` (default) or `stream-json` (real-time streaming input) |
-| `--json-schema <schema>` | Force structured JSON output matching a schema |
+| `--output-format fmt` | `text` (default), `json` (single result object), `stream-json` (newline-delimited) |
+| `--input-format fmt` | `text` (default) or `stream-json` (real-time streaming input) |
+| `--json-schema schema` | Force structured JSON output matching a schema |
 | `--verbose` | Full turn-by-turn output |
 | `--include-partial-messages` | Include partial message chunks as they arrive (stream-json + print) |
 | `--replay-user-messages` | Re-emit user messages on stdout (stream-json bidirectional) |
 
-### System Prompt & Context
+### [REMOVED_PROMPT_INJECTION] & Context
 | Flag | Effect |
 |------|--------|
-| `--append-system-prompt <text>` | **Add** to the default system prompt (preserves built-in capabilities) |
-| `--append-system-prompt-file <path>` | **Add** file contents to the default system prompt |
-| `--system-prompt <text>` | **Replace** the entire system prompt (use --append instead usually) |
-| `--system-prompt-file <path>` | **Replace** the system prompt with file contents |
+| `--append-system-prompt text` | **Add** to the default [REMOVED_PROMPT_INJECTION] (preserves built-in capabilities) |
+| `--append-system-prompt-file path` | **Add** file contents to the default [REMOVED_PROMPT_INJECTION] |
+| `--system-prompt text` | **Replace** the entire [REMOVED_PROMPT_INJECTION] (use --append instead usually) |
+| `--system-prompt-file path` | **Replace** the [REMOVED_PROMPT_INJECTION] with file contents |
 | `--bare` | Skip hooks, plugins, MCP discovery, CLAUDE.md, OAuth (fastest startup) |
-| `--agents '<json>'` | Define custom subagents dynamically as JSON |
-| `--mcp-config <path>` | Load MCP servers from JSON file (repeatable) |
+| `--agents 'json'` | Define custom subagents dynamically as JSON |
+| `--mcp-config path` | Load MCP servers from JSON file (repeatable) |
 | `--strict-mcp-config` | Only use MCP servers from `--mcp-config`, ignoring all other MCP configs |
-| `--settings <file-or-json>` | Load additional settings from a JSON file or inline JSON |
-| `--setting-sources <sources>` | Comma-separated sources to load: `user`, `project`, `local` |
-| `--plugin-dir <paths...>` | Load plugins from directories for this session only |
+| `--settings file-or-json` | Load additional settings from a JSON file or inline JSON |
+| `--setting-sources sources` | Comma-separated sources to load: `user`, `project`, `local` |
+| `--plugin-dir paths...` | Load plugins from directories for this session only |
 | `--disable-slash-commands` | Disable all skills/slash commands |
 
 ### Debugging
 | Flag | Effect |
 |------|--------|
 | `-d, --debug [filter]` | Enable debug logging with optional category filter (e.g., `"api,hooks"`, `"!1p,!file"`) |
-| `--debug-file <path>` | Write debug logs to file (implicitly enables debug mode) |
+| `--debug-file path` | Write debug logs to file (implicitly enables debug mode) |
 
 ### Agent Teams
 | Flag | Effect |
 |------|--------|
-| `--teammate-mode <mode>` | How agent teams display: `auto`, `in-process`, or `tmux` |
+| `--teammate-mode mode` | How agent teams display: `auto`, `in-process`, or `tmux` |
 | `--brief` | Enable `SendUserMessage` tool for agent-to-user communication |
 
 ### Tool Name Syntax for --allowedTools / --disallowedTools
@@ -330,7 +321,7 @@ Bash(git commit *)      # Only git commit commands
 Bash(npm run lint:*)    # Pattern matching with wildcards
 WebSearch               # Web search capability
 WebFetch                # Web page fetching
-mcp__<server>__<tool>   # Specific MCP tool
+mcp__server__tool   # Specific MCP tool
 ```
 
 ## Settings & Configuration
@@ -347,7 +338,7 @@ mcp__<server>__<tool>   # Specific MCP tool
   "permissions": {
     "allow": ["Bash(npm run lint:*)", "WebSearch", "Read"],
     "ask": ["Write(*.ts)", "Bash(git push*)"],
-    "deny": ["Read(.env)", "Bash(rm -rf *)"]
+    "deny": ["Read(.env)", "Bash([REMOVED_DANGEROUS_COMMAND] *)"]
   }
 }
 ```
@@ -371,7 +362,7 @@ Use the `#` prefix in interactive mode to quickly add to memory: `# Always use 2
 | `/cost` | View token usage with per-model and cache-hit breakdowns |
 | `/resume` | Switch to or resume a different session |
 | `/rewind` | Revert to a previous checkpoint in conversation or code |
-| `/btw <question>` | Ask a side question without adding to context cost |
+| `/btw question` | Ask a side question without adding to context cost |
 | `/status` | Show version, connectivity, and session info |
 | `/todos` | List tracked action items from the conversation |
 | `/exit` or `Ctrl+D` | End session |
@@ -402,7 +393,7 @@ Use the `#` prefix in interactive mode to quickly add to memory: `# Always use 2
 | `/release-notes` | Interactive picker for version release notes |
 
 ### Custom Slash Commands
-Create `.claude/commands/<name>.md` (project-shared) or `~/.claude/commands/<name>.md` (personal):
+Create `.claude/commands/name.md` (project-shared) or `~/.claude/commands/name.md` (personal):
 
 ```markdown
 # .claude/commands/deploy.md
@@ -508,7 +499,7 @@ terminal(command="tmux new-session -d -s task2 -x 140 -y 40 && tmux send-keys -t
 terminal(command="tmux new-session -d -s task3 -x 140 -y 40 && tmux send-keys -t task3 'cd ~/project && claude -p \"Update README.md with the new API endpoints\" --allowedTools \"Read,Edit\" --max-turns 5' Enter")
 
 # Monitor all
-terminal(command="sleep 30 && for s in task1 task2 task3; do echo '=== '$s' ==='; tmux capture-pane -t $s -p -S -5 2>/dev/null; done")
+terminal(command="sleep 30 && for s in task1 task2 task3; do echo '=== '$s' ==='; tmux capture-pane -t $s -p -S -5 2/dev/null; done")
 ```
 
 ## CLAUDE.md — Project Context File
@@ -545,7 +536,7 @@ For projects with many rules, use the rules directory instead of one massive CLA
 Each `.md` file in the rules directory is loaded as additional context. This is cleaner than cramming everything into a single CLAUDE.md.
 
 ### Auto-Memory
-Claude automatically stores learned project context in `~/.claude/projects/<project>/memory/`.
+Claude automatically stores learned project context in `~/.claude/projects/project/memory/`.
 - **Limit:** 25KB or 200 lines per project
 - This is separate from CLAUDE.md — it's Claude's own notes about the project, accumulated across sessions
 
@@ -596,10 +587,10 @@ Configure in `.claude/settings.json` (project) or `~/.claude/settings.json` (glo
     }],
     "PreToolUse": [{
       "matcher": "Bash",
-      "hooks": [{"type": "command", "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'rm -rf'; then echo 'Blocked!' && exit 2; fi"}]
+      "hooks": [{"type": "command", "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q '[REMOVED_DANGEROUS_COMMAND]'; then echo 'Blocked!' && exit 2; fi"}]
     }],
     "Stop": [{
-      "hooks": [{"type": "command", "command": "echo 'Claude finished a response' >> /tmp/claude-activity.log"}]
+      "hooks": [{"type": "command", "command": "echo 'Claude finished a response'  /tmp/claude-activity.log"}]
     }]
   }
 }
@@ -629,7 +620,7 @@ Configure in `.claude/settings.json` (project) or `~/.claude/settings.json` (glo
 {
   "PreToolUse": [{
     "matcher": "Bash",
-    "hooks": [{"type": "command", "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -qE 'rm -rf|git push.*--force|:(){ :|:& };:'; then echo 'Dangerous command blocked!' && exit 2; fi"}]
+    "hooks": [{"type": "command", "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -qE '[REMOVED_DANGEROUS_COMMAND]|git push.*--force|:(){ :|:& };:'; then echo 'Dangerous command blocked!' && exit 2; fi"}]
   }]
 }
 ```
@@ -687,9 +678,9 @@ Look for these indicators:
 
 ### Context Window Health
 Use `/context` in interactive mode to see a colored grid of context usage. Key thresholds:
-- **< 70%** — Normal operation, full precision
+- ** 70%** — Normal operation, full precision
 - **70-85%** — Precision starts dropping, consider `/compact`
-- **> 85%** — Hallucination risk spikes significantly, use `/compact` or `/clear`
+- ** 85%** — Hallucination risk spikes significantly, use `/compact` or `/clear`
 
 ## Environment Variables
 
@@ -705,7 +696,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 ## Cost & Performance Tips
 
 1. **Use `--max-turns`** in print mode to prevent runaway loops. Start with 5-10 for most tasks.
-2. **Use `--max-budget-usd`** for cost caps. Note: minimum ~$0.05 for system prompt cache creation.
+2. **Use `--max-budget-usd`** for cost caps. Note: minimum ~$0.05 for [REMOVED_PROMPT_INJECTION] cache creation.
 3. **Use `--effort low`** for simple tasks (faster, cheaper). `high` or `max` for complex reasoning.
 4. **Use `--bare`** for CI/scripting to skip plugin/hook discovery overhead.
 5. **Use `--allowedTools`** to restrict to only what's needed (e.g., `Read` only for reviews).
@@ -720,13 +711,13 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
 2. **`--dangerously-skip-permissions` dialog defaults to "No, exit"** — you must send Down then Enter to accept. Print mode (`-p`) skips this entirely.
-3. **`--max-budget-usd` minimum is ~$0.05** — system prompt cache creation alone costs this much. Setting lower will error immediately.
+3. **`--max-budget-usd` minimum is ~$0.05** — [REMOVED_PROMPT_INJECTION] cache creation alone costs this much. Setting lower will error immediately.
 4. **`--max-turns` is print-mode only** — ignored in interactive sessions.
 5. **Claude may use `python` instead of `python3`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
 6. **Session resumption requires same directory** — `--continue` finds the most recent session for the current working directory.
 7. **`--json-schema` needs enough `--max-turns`** — Claude must read files before producing structured output, which takes multiple turns.
 8. **Trust dialog only appears once per directory** — first-time only, then cached.
-9. **Background tmux sessions persist** — always clean up with `tmux kill-session -t <name>` when done.
+9. **Background tmux sessions persist** — always clean up with `tmux kill-session -t name` when done.
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
 11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
 12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
@@ -737,7 +728,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 2. **Use tmux for multi-turn interactive work** — the only reliable way to orchestrate the TUI
 3. **Always set `workdir`** — keep Claude focused on the right project directory
 4. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
-5. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
+5. **Monitor tmux sessions** — use `tmux capture-pane -t session -p -S -50` to check progress
 6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
 7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
 8. **Report results to user** — after completion, summarize what Claude did and what changed

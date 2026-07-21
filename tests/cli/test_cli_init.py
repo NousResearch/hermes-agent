@@ -45,13 +45,28 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),
     }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), \
-         patch.dict("os.environ", clean_env, clear=False):
-        import cli as _cli_mod
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
-             patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
-            return _cli_mod.HermesCLI(**kwargs)
+    try:
+        with patch.dict(sys.modules, prompt_toolkit_stubs), \
+             patch.dict("os.environ", clean_env, clear=False):
+            import cli as _cli_mod
+            _cli_mod = importlib.reload(_cli_mod)
+            with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
+                 patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
+                return _cli_mod.HermesCLI(**kwargs)
+    finally:
+        # The reload above re-executed cli.py while prompt_toolkit was stubbed
+        # with MagicMocks, permanently rebinding cli's module globals
+        # (``_pt_print``, ``_PT_ANSI``, …) to those mocks. ``patch.dict``
+        # restores ``sys.modules`` on exit, but NOT the names the reloaded
+        # module already bound — so ``sys.modules["cli"]`` is left with a
+        # mock ``_pt_print``, and ``cli._cprint`` then silently no-ops for
+        # every later test (one half of the order-dependent
+        # ``test_resume_quiet_stderr`` full-suite failure; the other half is
+        # the prompt_toolkit output cache reset in this dir's conftest).
+        # Reload once more with the real modules visible so cli's globals
+        # rebind cleanly.
+        import cli as _cli_restore
+        importlib.reload(_cli_restore)
 
 
 class TestMaxTurnsResolution:

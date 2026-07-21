@@ -4864,7 +4864,11 @@ class MessageSender:
         cached = self._adapter._member_cache.get(group_code)
         if cached:
             ts, member_list = cached
-            members = member_list if (time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S) else []
+            if time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S:
+                members = member_list
+            else:
+                del self._adapter._member_cache[group_code]
+                members = []
         else:
             members = []
         if not members:

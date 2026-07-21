@@ -75,18 +75,41 @@ export function WorkspaceShowMoreButton({
   )
 }
 
-// Per-worktree actions (linked worktree lanes only), mirroring the session row
-// and ProjectMenu kebab: reveal in the file manager, copy path, and remove the
-// worktree (runs a real `git worktree remove` via the caller's confirm dialog).
-export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
+// Shared linked-worktree actions. The normal lane menu and the compact entered-
+// folder menu both use these exact items so neither surface loses management.
+export function WorkspaceMenuItems({ path, onRemove }: { path: null | string; onRemove: () => void }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
+
+  return (
+    <>
+      <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
+        <Codicon name="folder-opened" size="0.875rem" />
+        <span>{p.reveal}</span>
+      </DropdownMenuItem>
+      <DropdownMenuItem disabled={!path} onSelect={() => void copyPath(path)}>
+        <Codicon name="copy" size="0.875rem" />
+        <span>{p.copyPath}</span>
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onSelect={onRemove} variant="destructive">
+        <Codicon name="trash" size="0.875rem" />
+        <span>{`${p.removeWorktree}…`}</span>
+      </DropdownMenuItem>
+    </>
+  )
+}
+
+// Per-worktree actions (linked worktree lanes only), mirroring the session row
+// and ProjectMenu kebab.
+export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
+  const { t } = useI18n()
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          aria-label={p.menu}
+          aria-label={t.sidebar.projects.menu}
           className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
           onClick={event => event.stopPropagation()}
           type="button"
@@ -95,19 +118,7 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
-        <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
-          <Codicon name="folder-opened" size="0.875rem" />
-          <span>{p.reveal}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={!path} onSelect={() => void copyPath(path)}>
-          <Codicon name="copy" size="0.875rem" />
-          <span>{p.copyPath}</span>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onRemove} variant="destructive">
-          <Codicon name="trash" size="0.875rem" />
-          <span>{`${p.removeWorktree}…`}</span>
-        </DropdownMenuItem>
+        <WorkspaceMenuItems onRemove={onRemove} path={path} />
       </DropdownMenuContent>
     </DropdownMenu>
   )

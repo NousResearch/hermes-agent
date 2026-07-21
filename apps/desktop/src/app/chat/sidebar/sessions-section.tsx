@@ -1,6 +1,6 @@
 import type { useSensors } from '@dnd-kit/core'
 import type * as React from 'react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -111,8 +111,8 @@ interface SidebarSessionsSectionProps {
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
-  // The entered project's flattened content: main-checkout sessions render
-  // directly (no redundant repo/branch header); only linked worktrees nest.
+  // The entered project's folder drill-down and complete session list for the
+  // focused (or only) repo.
   projectContent?: SidebarProjectTree
   // Live git lanes (`git worktree list`) for repos in the entered project —
   // a VISUAL enhancer only (empty lanes), never session membership.
@@ -139,6 +139,58 @@ interface SidebarSessionsSectionProps {
   // lists (Pinned / search results) in the All-profiles view, where no group
   // header communicates ownership (#66003).
   showProfileTags?: boolean
+}
+
+interface EnteredProjectSectionProps extends Pick<
+  SidebarSessionsSectionProps,
+  | 'emptyState'
+  | 'liveSessions'
+  | 'onNewSessionInWorkspace'
+  | 'projectBackRow'
+  | 'projectRepoWorktrees'
+  | 'removedSessionIds'
+> {
+  hasProjectContent: boolean
+  projectContent: SidebarProjectTree
+  renderRows: (sessions: SessionInfo[]) => React.ReactNode
+}
+
+function EnteredProjectSection({
+  emptyState,
+  hasProjectContent,
+  liveSessions,
+  onNewSessionInWorkspace,
+  projectBackRow,
+  projectContent,
+  projectRepoWorktrees,
+  removedSessionIds,
+  renderRows
+}: EnteredProjectSectionProps) {
+  const [focusedRepoId, setFocusedRepoId] = useState<null | string>(null)
+
+  const activeFocusedRepoId =
+    focusedRepoId && projectContent.repos.some(repo => repo.id === focusedRepoId) ? focusedRepoId : null
+
+  return (
+    <>
+      {!activeFocusedRepoId && projectBackRow}
+      {hasProjectContent ? (
+        <EnteredProjectContent
+          focusedRepoId={activeFocusedRepoId}
+          liveSessions={liveSessions}
+          onExitRepo={() => setFocusedRepoId(null)}
+          onFocusRepo={setFocusedRepoId}
+          onNewSession={onNewSessionInWorkspace}
+          project={projectContent}
+          removedSessionIds={removedSessionIds}
+          renderRows={renderRows}
+          repoWorktrees={projectRepoWorktrees}
+        />
+      ) : (
+        emptyState
+      )}
+    </>
+  )
 }
 
 export function SidebarSessionsSection({
@@ -246,21 +298,18 @@ export function SidebarSessionsSection({
     // (overlay-aware) content or a clean empty state — never a bare spinner or a
     // blank pane while lanes hydrate.
     inner = (
-      <>
-        {projectBackRow}
-        {hasProjectContent ? (
-          <EnteredProjectContent
-            liveSessions={liveSessions}
-            onNewSession={onNewSessionInWorkspace}
-            project={projectContent}
-            removedSessionIds={removedSessionIds}
-            renderRows={renderRows}
-            repoWorktrees={projectRepoWorktrees}
-          />
-        ) : (
-          emptyState
-        )}
-      </>
+      <EnteredProjectSection
+        emptyState={emptyState}
+        hasProjectContent={hasProjectContent}
+        key={projectContent.id}
+        liveSessions={liveSessions}
+        onNewSessionInWorkspace={onNewSessionInWorkspace}
+        projectBackRow={projectBackRow}
+        projectContent={projectContent}
+        projectRepoWorktrees={projectRepoWorktrees}
+        removedSessionIds={removedSessionIds}
+        renderRows={renderRows}
+      />
     )
   } else if (showEmptyState) {
     inner = emptyState

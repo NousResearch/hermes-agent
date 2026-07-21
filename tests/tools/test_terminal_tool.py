@@ -30,6 +30,20 @@ def test_terminal_schema_advertises_persistent_env_state():
     assert "do not re-source the same environment before every command" in description
 
 
+def test_terminal_schema_exposes_optional_security_risk_annotation():
+    schema = terminal_tool.TERMINAL_SCHEMA["parameters"]
+    props = schema["properties"]
+
+    assert "security_risk" in props
+    assert props["security_risk"]["enum"] == ["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
+    assert "security_risk" not in schema["required"]
+    description = props["security_risk"]["description"]
+    assert "Optional but recommended" in description
+    assert "not a security scan" in description
+    assert "LOW/MEDIUM are not proof" in description
+    assert "trusted environments can set that policy to never" in description
+
+
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

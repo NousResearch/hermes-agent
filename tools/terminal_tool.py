@@ -279,11 +279,13 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 
 def _check_all_guards(command: str, env_type: str,
+                      security_risk: Optional[str] = None,
                       has_host_access: bool = False) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access,
+                                  security_risk=security_risk)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -2108,6 +2110,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    security_risk: Optional[str] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2123,6 +2126,8 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        security_risk: Optional advisory LLM self-annotation: LOW, MEDIUM,
+            HIGH, or UNKNOWN. This is not a security scan.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2382,6 +2387,7 @@ def terminal_tool(
         if not force:
             approval = _check_all_guards(
                 command, env_type,
+                security_risk=security_risk,
                 has_host_access=_docker_has_host_access(config),
             )
             if not approval["approved"]:
@@ -3109,6 +3115,24 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+            },
+            "security_risk": {
+                "type": "string",
+                "enum": ["LOW", "MEDIUM", "HIGH", "UNKNOWN"],
+                "description": (
+                    "Optional but recommended advisory LLM self-annotation for this "
+                    "command's security risk. This is not a security scan or an "
+                    "authoritative safety decision: LOW/MEDIUM are not proof that a "
+                    "command is safe, and deterministic guards still run separately. "
+                    "LOW = read-only or inspection-only commands. MEDIUM = "
+                    "project-scoped changes such as builds, installs, edits, or "
+                    "tests. HIGH = destructive/system-level changes, credential "
+                    "exposure, privileged operations, or data leaving the environment. "
+                    "UNKNOWN = uncertain risk; prefer UNKNOWN over under-classifying. "
+                    "HIGH/UNKNOWN may trigger the existing approval flow depending on "
+                    "terminal.confirmation_policy; trusted environments can set that "
+                    "policy to never while hardline guards still apply."
+                ),
             }
         },
         "required": ["command"]
@@ -3127,6 +3151,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        security_risk=args.get("security_risk"),
     )
 
 

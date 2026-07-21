@@ -40,7 +40,13 @@ def _clean_state():
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     saved = {}
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    for k in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "TERMINAL_CONFIRMATION_POLICY",
+    ):
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
@@ -49,7 +55,13 @@ def _clean_state():
     approval_module._permanent_approved.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    for k in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "TERMINAL_CONFIRMATION_POLICY",
+    ):
         os.environ.pop(k, None)
 
 
@@ -91,6 +103,108 @@ class TestTirithAllowSafeCommand:
         result = check_all_command_guards("echo hello", "local")
         assert result["approved"] is True
         mock_tirith.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Optional LLM security_risk annotations
+# ---------------------------------------------------------------------------
+
+class TestSecurityRiskAnnotation:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_high_risk_annotation_prompts_through_existing_flow(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        os.environ["TERMINAL_CONFIRMATION_POLICY"] = "risky"
+        cb = MagicMock(return_value="once")
+
+        result = check_all_command_guards(
+            "python scripts/deploy.py --prod",
+            "local",
+            approval_callback=cb,
+            security_risk="HIGH",
+        )
+
+        assert result["approved"] is True
+        cb.assert_called_once()
+        assert "HIGH risk" in cb.call_args[0][1]
+        assert "advisory signal, not a security scan" in cb.call_args[0][1]
+        assert cb.call_args[1]["allow_permanent"] is False
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_low_and_medium_annotations_do_not_prompt(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        os.environ["TERMINAL_CONFIRMATION_POLICY"] = "risky"
+        cb = MagicMock(return_value="deny")
+
+        assert check_all_command_guards(
+            "git status", "local", approval_callback=cb, security_risk="LOW"
+        )["approved"] is True
+        assert check_all_command_guards(
+            "python -m pytest tests/unit",
+            "local",
+            approval_callback=cb,
+            security_risk="MEDIUM",
+        )["approved"] is True
+        cb.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_missing_annotation_falls_back_to_pattern_matching(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        cb = MagicMock(return_value="deny")
+
+        result = check_all_command_guards(
+            "rm -rf /tmp/build-cache", "local", approval_callback=cb
+        )
+
+        assert result["approved"] is False
+        cb.assert_called_once()
+        assert cb.call_args[0][1]
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_unknown_annotation_escalates(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        cb = MagicMock(return_value="once")
+
+        result = check_all_command_guards(
+            "python scripts/migrate.py",
+            "local",
+            approval_callback=cb,
+            security_risk="not-a-level",
+        )
+
+        assert result["approved"] is True
+        cb.assert_called_once()
+        assert "UNKNOWN risk" in cb.call_args[0][1]
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("warn", [{"rule_id": "x"}], "x"))
+    def test_never_policy_bypasses_prompt_checks_after_hardline_floor(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        os.environ["TERMINAL_CONFIRMATION_POLICY"] = "never"
+        cb = MagicMock(return_value="deny")
+
+        result = check_all_command_guards(
+            "rm -rf /tmp/build-cache",
+            "local",
+            approval_callback=cb,
+            security_risk="HIGH",
+        )
+
+        assert result["approved"] is True
+        cb.assert_not_called()
+        mock_tirith.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_always_policy_uses_command_specific_session_keys(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        os.environ["TERMINAL_CONFIRMATION_POLICY"] = "always"
+        cb = MagicMock(return_value="session")
+
+        first = check_all_command_guards("echo first", "local", approval_callback=cb)
+        second = check_all_command_guards("echo second", "local", approval_callback=cb)
+
+        assert first["approved"] is True
+        assert second["approved"] is True
+        assert cb.call_count == 2
+        assert all(call.kwargs["allow_permanent"] is False for call in cb.mock_calls)
 
 
 # ---------------------------------------------------------------------------

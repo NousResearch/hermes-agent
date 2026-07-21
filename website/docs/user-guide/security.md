@@ -58,6 +58,32 @@ The full set of keys:
 Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
 :::
 
+### Terminal Confirmation Policy
+
+Terminal calls may include an optional `security_risk` annotation from the
+agent. This is an advisory self-report, not a security scan: `LOW` or `MEDIUM`
+does not prove that a command is safe, and deterministic command guards still
+run independently.
+
+Configure the policy under `terminal`:
+
+```yaml
+terminal:
+  confirmation_policy: risky  # risky | always | never
+```
+
+| Policy | Behavior |
+|---|---|
+| `risky` (default) | Ask for confirmation when the annotation is `HIGH` or `UNKNOWN`. Missing, `LOW`, and `MEDIUM` annotations do not by themselves trigger a prompt. |
+| `always` | Ask for confirmation for each distinct terminal command, regardless of its advisory annotation. |
+| `never` | Skip ordinary terminal approval prompts in a trusted environment. This is a broad bypass similar to YOLO mode, not a security guarantee. |
+
+This setting is separate from `approvals.mode` and the session-scoped
+`--yolo`/`/yolo` controls: those govern the broader approval workflow, while
+`confirmation_policy` controls how terminal commands are confirmed. The
+hardline blocklist, the sudo-stdin guard, and `approvals.deny` remain enforced
+as safety floors under every policy, including `never`.
+
 ### YOLO Mode
 
 YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:

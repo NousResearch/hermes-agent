@@ -1,6 +1,7 @@
 """Tests for acp_adapter.entry startup wiring."""
 
 import sys
+from io import BytesIO
 
 import acp
 import pytest
@@ -11,16 +12,56 @@ from acp_adapter import entry
 def test_main_enables_unstable_protocol(monkeypatch):
     calls = {}
 
+    async def fake_stdio_streams():
+        return "writer", "reader"
+
     async def fake_run_agent(agent, **kwargs):
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(entry, "_acp_stdio_streams", fake_stdio_streams)
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
+    assert calls["kwargs"]["input_stream"] == "writer"
+    assert calls["kwargs"]["output_stream"] == "reader"
+
+
+def test_acp_stdout_transport_writes_and_flushes_without_closing_stream():
+    class FlushTrackingBuffer(BytesIO):
+        flush_count = 0
+
+        def flush(self):
+            self.flush_count += 1
+            super().flush()
+
+    stream = FlushTrackingBuffer()
+    transport = entry._ACPStdoutTransport(stream)
+
+    transport.write(b'{"jsonrpc":"2.0"}\n')
+    transport.close()
+
+    assert stream.getvalue() == b'{"jsonrpc":"2.0"}\n'
+    assert stream.flush_count == 2
+    assert transport.is_closing() is True
+    assert stream.closed is False
+
+
+def test_swarm_read_only_auth_flag_suppresses_auth_store_writes(tmp_path, monkeypatch):
+    from hermes_cli import auth
+
+    target = tmp_path / "auth.json"
+    payload = {"version": 1, "providers": {}}
+    monkeypatch.setenv("HERMES_AUTH_STORE_READ_ONLY", "1")
+
+    result = auth._save_auth_store(payload, target_path=target)
+
+    assert result == target
+    assert target.exists() is False
+    assert "updated_at" not in payload
 
 
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):

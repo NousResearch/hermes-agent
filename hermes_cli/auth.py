@@ -1155,6 +1155,9 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     # OAuth grants (#43589) — reusing this function's atomic O_EXCL + 0o600
     # write so the root auth.json gets the same TOCTOU-safe treatment.
     auth_file = target_path if target_path is not None else _auth_file_path()
+    if os.environ.get("HERMES_AUTH_STORE_READ_ONLY") == "1":
+        logger.debug("Auth store persistence suppressed for this isolated runtime")
+        return auth_file
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.

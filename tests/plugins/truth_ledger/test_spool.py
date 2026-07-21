@@ -277,9 +277,57 @@ def test_ack_cannot_race_stale_recovery_into_dangling_pending(
     assert ack.is_alive() is False
     assert ack_finished_while_recovery_paused is False
     assert list(spool.processing_dir.glob("*.json")) == []
-    assert len(list(spool.pending_dir.glob("*.json"))) == 1
-    assert list(spool.completed_dir.glob("*.json")) == []
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert len(list(spool.completed_dir.glob("*.json"))) == 1
+    assert payload_path.exists() is False
+
+
+def test_retry_reconciles_a_stale_claim_already_recovered_to_pending(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    spool.enqueue({**_source_envelope(), "turn_id": "stale-retry-race"})
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    payload_path = Path(str(claim["record"]["payload_path"]))
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    assert spool.recover_stale_processing(stale_seconds=60) == 1
+    result = spool.retry_processing(processing_path, "extractor_timeout", delay_ms=50)
+
+    assert result["ok"] is True
+    assert list(spool.processing_dir.glob("*.json")) == []
+    pending = list(spool.pending_dir.glob("*.json"))
+    assert len(pending) == 1
+    record = json.loads(pending[0].read_text(encoding="utf-8"))
+    assert record["attempt_count"] == 1
+    assert record["flow"]["last_error_code"] == "extractor_timeout"
     assert payload_path.exists() is True
+
+
+def test_dead_letter_reconciles_a_stale_claim_already_recovered_to_pending(
+    tmp_path, spool_mod
+):
+    spool = spool_mod.TruthSpool(tmp_path)
+    spool.enqueue({**_source_envelope(), "turn_id": "stale-dead-letter-race"})
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    payload_path = Path(str(claim["record"]["payload_path"]))
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    assert spool.recover_stale_processing(stale_seconds=60) == 1
+    result = spool.dead_letter(processing_path, "permanent_failure")
+
+    assert result["ok"] is True
+    assert list(spool.processing_dir.glob("*.json")) == []
+    assert list(spool.pending_dir.glob("*.json")) == []
+    dead = list(spool.dead_letter_dir.glob("*.json"))
+    assert len(dead) == 1
+    record = json.loads(dead[0].read_text(encoding="utf-8"))
+    assert record["flow"]["dead_letter_reason"] == "permanent_failure"
+    assert payload_path.exists() is False
 
 
 def test_ack_processing_removes_record_and_only_owned_payloads(tmp_path, spool_mod):
@@ -380,14 +428,85 @@ def test_ack_crash_before_processing_removal_does_not_requeue_completed_work(
     assert payload_path.exists() is True
     assert len(list(spool.completed_dir.glob("*.json"))) == 1
 
-    stale = time.time() - 600
-    os.utime(processing_path, (stale, stale))
     restarted = spool_mod.TruthSpool(tmp_path)
-    assert restarted.recover_stale_processing(stale_seconds=60) == 1
+    assert restarted.recover_stale_processing(stale_seconds=900) == 1
     assert processing_path.exists() is False
     assert payload_path.exists() is False
     assert list(restarted.pending_dir.glob("*.json")) == []
     assert len(list(restarted.completed_dir.glob("*.json"))) == 1
+
+
+def test_envelope_aggregate_cap_uses_encoded_utf8_bytes(tmp_path, spool_mod):
+    envelope = _source_envelope()
+    encoded_size = len(
+        json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+    spool = spool_mod.TruthSpool(
+        tmp_path,
+        envelope_soft_bytes=encoded_size,
+        envelope_hard_bytes=encoded_size + 1024,
+    )
+
+    exact = spool.enqueue(envelope)
+    assert exact["ok"] is True
+    exact_record = _load_json(Path(exact["path"]))
+    assert _load_json(Path(str(exact_record["payload_path"]))) == envelope
+
+    over = _source_envelope()
+    over["turn_id"] = "turn-2"
+    over["input"] = {"user_message": "Keep responses concise.é"}
+    oversized = spool.enqueue(over)
+
+    assert oversized["ok"] is True
+    assert oversized["reason"] == "envelope_oversize"
+    compact_record = _load_json(Path(oversized["path"]))
+    compact = _load_json(Path(str(compact_record["payload_path"])))
+    assert compact["input"] == {"user_message": "[envelope_oversize]"}
+    assert compact["output"] == {"assistant_response": "[envelope_oversize]"}
+    assert (
+        len(json.dumps(compact, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        <= spool.envelope_hard_bytes
+    )
+
+
+def test_queue_byte_caps_use_actual_active_disk_usage(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path, soft_count=10, hard_count=10)
+    assert spool.soft_bytes == 256 * 1024 * 1024
+    assert spool.hard_bytes == 384 * 1024 * 1024
+
+    first = spool.enqueue({**_source_envelope(), "turn_id": "bytes-1"})
+    assert first["ok"] is True
+    actual_bytes = sum(
+        path.stat().st_size
+        for directory in (spool.pending_dir, spool.processing_dir, spool.payloads_dir)
+        for path in directory.glob("*.json")
+    )
+    assert spool._queue_bytes() == actual_bytes
+
+    spool.hard_bytes = actual_bytes
+    rejected = spool.enqueue({**_source_envelope(), "turn_id": "bytes-2"})
+    assert rejected == {"ok": False, "reason": "queue_hard_cap", "path": None}
+    assert spool._queue_bytes() == actual_bytes
+
+
+def test_queue_soft_byte_cap_sheds_oldest_pending_payload(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path, soft_count=10, hard_count=10)
+    first = spool.enqueue({**_source_envelope(), "turn_id": "soft-bytes-1"})
+    assert first["ok"] is True
+    first_record = _load_json(Path(first["path"]))
+    first_payload = Path(str(first_record["payload_path"]))
+    spool.soft_bytes = spool._queue_bytes()
+
+    second = spool.enqueue({**_source_envelope(), "turn_id": "soft-bytes-2"})
+
+    assert second["ok"] is True
+    assert spool._queue_bytes() <= spool.soft_bytes
+    assert first_payload.exists() is False
+    dead = [_load_json(path) for path in spool.dead_letter_dir.glob("*.json")]
+    assert len(dead) == 1
+    dead_flow = dead[0]["flow"]
+    assert isinstance(dead_flow, dict)
+    assert dead_flow["dead_letter_reason"] == "queue_overflow"
 
 
 def test_dead_letter_and_soft_overflow_remove_payload_files(tmp_path, spool_mod):
@@ -487,6 +606,20 @@ def test_recover_stale_processing_tolerates_record_disappearing_mid_recovery(tmp
     assert moved == 0
     assert list(spool.pending_dir.glob("*.json")) == []
     assert list(spool.dead_letter_dir.glob("*.json")) == []
+
+
+def test_orphan_recovery_does_not_read_symlinked_payloads(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    external = tmp_path / "external" / "source-envelope.json"
+    external.parent.mkdir(parents=True, exist_ok=True)
+    external.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+    symlink_path = spool.payloads_dir / "orphan-link.json"
+    symlink_path.symlink_to(external)
+
+    assert spool.recover_orphan_payloads() == 0
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert external.read_text(encoding="utf-8") == json.dumps(_source_envelope())
+    assert symlink_path.is_symlink() is True
 
 
 def test_claim_next_quarantines_malformed_and_schema_invalid_spool_records(tmp_path, spool_mod):

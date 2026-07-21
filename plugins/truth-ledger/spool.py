@@ -24,10 +24,14 @@ def _mkdir_private(path: Path) -> None:
         pass
 
 
+def _encode_json(payload: Dict[str, Any]) -> bytes:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
 def _write_private_json_atomic(path: Path, payload: Dict[str, Any]) -> Path:
     _mkdir_private(path.parent)
     tmp = path.parent / f".tmp-{uuid.uuid4().hex}.json"
-    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    encoded = _encode_json(payload)
     try:
         with tmp.open("wb") as fh:
             fh.write(encoded)
@@ -91,10 +95,23 @@ def _spool_lock(path: Path, timeout_seconds: float = 0.5):
 
 
 class TruthSpool:
-    def __init__(self, root: Path, soft_count: int = 5000, hard_count: int = 8000) -> None:
+    def __init__(
+        self,
+        root: Path,
+        soft_count: int = 5000,
+        hard_count: int = 8000,
+        soft_bytes: int = 256 * 1024 * 1024,
+        hard_bytes: int = 384 * 1024 * 1024,
+        envelope_soft_bytes: int = 64 * 1024,
+        envelope_hard_bytes: int = 128 * 1024,
+    ) -> None:
         self.root = Path(root)
         self.soft_count = soft_count
         self.hard_count = hard_count
+        self.soft_bytes = soft_bytes
+        self.hard_bytes = hard_bytes
+        self.envelope_soft_bytes = envelope_soft_bytes
+        self.envelope_hard_bytes = envelope_hard_bytes
         self.spool_dir = self.root / "spool"
         self.pending_dir = self.spool_dir / "pending"
         self.processing_dir = self.spool_dir / "processing"
@@ -301,6 +318,16 @@ class TruthSpool:
         processing = sum(1 for _ in self.processing_dir.glob("*.json"))
         return pending, processing
 
+    def _queue_bytes(self) -> int:
+        total = 0
+        for directory in (self.pending_dir, self.processing_dir, self.payloads_dir):
+            for path in directory.glob("*.json"):
+                try:
+                    total += path.lstat().st_size
+                except OSError:
+                    continue
+        return total
+
     def _record_dirs(self) -> tuple[Path, ...]:
         return (
             self.pending_dir,
@@ -322,6 +349,18 @@ class TruthSpool:
 
     def enqueue(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
         idempotency_key = self._idempotency_key(envelope)
+        stored_envelope = dict(envelope)
+        reason: Optional[str] = None
+        if len(_encode_json(stored_envelope)) > self.envelope_soft_bytes:
+            stored_envelope["input"] = {"user_message": "[envelope_oversize]"}
+            stored_envelope["output"] = {"assistant_response": "[envelope_oversize]"}
+            reason = "envelope_oversize"
+        validate_document("source-envelope.v1", stored_envelope)
+        payload_bytes = _encode_json(stored_envelope)
+        if len(payload_bytes) > self.envelope_hard_bytes:
+            self._write_error({"code": "envelope_hard_cap", "at": time.time()})
+            return {"ok": False, "reason": "envelope_hard_cap", "path": None}
+
         with _spool_lock(self.lock_path):
             existing = self._find_idempotency_key(idempotency_key)
             if existing is not None:
@@ -338,15 +377,21 @@ class TruthSpool:
                 return {"ok": False, "reason": "queue_hard_cap", "path": None}
 
             payload_path = self.payloads_dir / f"{self._envelope_id()}.json"
-            _write_private_json_atomic(payload_path, dict(envelope))
+            record_path = self.pending_dir / self._new_record_name()
+            record = self._record_from_envelope(
+                envelope=stored_envelope,
+                payload_path=payload_path,
+                state="pending",
+            )
+            record["idempotency_key"] = idempotency_key
+            candidate_bytes = len(payload_bytes) + len(_encode_json(record))
+            if self._queue_bytes() + candidate_bytes > self.hard_bytes:
+                self._write_error({"code": "queue_hard_cap", "at": time.time()})
+                return {"ok": False, "reason": "queue_hard_cap", "path": None}
+
+            _write_private_json_atomic(payload_path, stored_envelope)
             try:
-                record = self._record_from_envelope(
-                    envelope=dict(envelope),
-                    payload_path=payload_path,
-                    state="pending",
-                )
-                record["idempotency_key"] = idempotency_key
-                out = _write_private_json_atomic(self.pending_dir / self._new_record_name(), record)
+                out = _write_private_json_atomic(record_path, record)
             except Exception:
                 try:
                     payload_path.unlink()
@@ -355,7 +400,7 @@ class TruthSpool:
                 raise
 
             self._shed_soft_overflow_if_needed()
-            return {"ok": True, "reason": None, "path": str(out)}
+            return {"ok": True, "reason": reason, "path": str(out)}
 
     def snapshot_pending(self, limit: int) -> list[Path]:
         return sorted(self.pending_dir.glob("*.json"))[: max(0, int(limit))]
@@ -416,9 +461,14 @@ class TruthSpool:
         path = Path(processing_path)
         with _spool_lock(self.lock_path):
             record: Dict[str, Any] = {}
-            if path.exists():
+            record_path = path
+            if not record_path.exists():
+                recovered_path = self.pending_dir / path.name
+                if recovered_path.exists():
+                    record_path = recovered_path
+            if record_path.exists():
                 try:
-                    record = self._load_record(path)
+                    record = self._load_record(record_path)
                 except Exception:
                     record = {}
             if not record:
@@ -429,8 +479,8 @@ class TruthSpool:
             record["flow"] = flow
             validate_document("spool-record.v1", record)
             completed = _write_private_json_atomic(self.completed_dir / path.name, record)
-            if path.exists():
-                path.unlink()
+            if record_path.exists():
+                record_path.unlink()
             self._unlink_payload_if_owned(record)
         return {"ok": True, "path": str(completed)}
 
@@ -456,6 +506,15 @@ class TruthSpool:
                         continue
 
             for payload_path in sorted(self.payloads_dir.glob("*.json")):
+                if payload_path.is_symlink() or not self._is_owned_payload_path(payload_path):
+                    self._write_error(
+                        {
+                            "code": "orphan_payload_unowned",
+                            "at": time.time(),
+                            "payload": payload_path.name,
+                        }
+                    )
+                    continue
                 resolved_payload = payload_path.resolve(strict=False)
                 if resolved_payload in active_references:
                     continue
@@ -483,35 +542,51 @@ class TruthSpool:
         return recovered
 
     def retry_processing(self, processing_path: Path, error_code: str, delay_ms: int = 0) -> Dict[str, Any]:
-        src = Path(processing_path)
-        record = self._load_record(src)
-        flow = dict(record.get("flow") or {})
-        flow["last_error_code"] = str(error_code)
-        flow["next_retry_at"] = time.time() + max(0, int(delay_ms)) / 1000.0
-        record["attempt_count"] = int(record.get("attempt_count", 0)) + 1
-        record["state"] = "pending"
-        record["flow"] = flow
+        path = Path(processing_path)
+        with _spool_lock(self.lock_path):
+            src = path
+            if not src.exists():
+                recovered_path = self.pending_dir / path.name
+                if recovered_path.exists():
+                    src = recovered_path
+            if not src.exists():
+                return {"ok": True, "reason": "already_transitioned"}
+            record = self._load_record(src)
+            flow = dict(record.get("flow") or {})
+            flow["last_error_code"] = str(error_code)
+            flow["next_retry_at"] = time.time() + max(0, int(delay_ms)) / 1000.0
+            record["attempt_count"] = int(record.get("attempt_count", 0)) + 1
+            record["state"] = "pending"
+            record["flow"] = flow
 
-        dst = _write_private_json_atomic(self.pending_dir / self._new_record_name(), record)
-        if src.exists():
-            src.unlink()
+            dst = _write_private_json_atomic(self.pending_dir / path.name, record)
+            if src != dst and src.exists():
+                src.unlink()
         return {"ok": True, "path": str(dst)}
 
     def dead_letter(self, processing_path: Path, reason: str) -> Dict[str, Any]:
-        src = Path(processing_path)
-        record = self._load_record(src)
-        flow = dict(record.get("flow") or {})
-        flow["dead_letter_reason"] = str(reason)
-        flow["dead_letter_at"] = time.time()
-        record["state"] = "dead_lettered"
-        record["flow"] = flow
-        dst = _write_private_json_atomic(
-            self.dead_letter_dir / self._new_record_name(),
-            record,
-        )
-        if src.exists():
-            src.unlink()
-        self._unlink_payload_if_owned(record)
+        path = Path(processing_path)
+        with _spool_lock(self.lock_path):
+            src = path
+            if not src.exists():
+                recovered_path = self.pending_dir / path.name
+                if recovered_path.exists():
+                    src = recovered_path
+            if not src.exists():
+                return {"ok": True, "reason": "already_transitioned"}
+            record = self._load_record(src)
+            flow = dict(record.get("flow") or {})
+            flow["dead_letter_reason"] = str(reason)
+            flow["dead_letter_at"] = time.time()
+            record["state"] = "dead_lettered"
+            record["flow"] = flow
+            dst = _write_private_json_atomic(
+                self.dead_letter_dir / path.name,
+                record,
+            )
+            if src.exists():
+                src.unlink()
+            self._unlink_payload_if_owned(record)
         return {"ok": True, "path": str(dst)}
 
     def recover_stale_processing(self, stale_seconds: int = 900) -> int:
@@ -522,8 +597,6 @@ class TruthSpool:
                 try:
                     age = now - src.stat().st_mtime
                 except FileNotFoundError:
-                    continue
-                if age < stale_seconds:
                     continue
                 try:
                     record = self._load_record(src)
@@ -543,16 +616,21 @@ class TruthSpool:
                         self._unlink_payload_if_owned(record)
                         moved += 1
                         continue
+                    if age < stale_seconds:
+                        continue
                     record["state"] = "pending"
                     flow = dict(record.get("flow") or {})
                     flow["recovered_at"] = now
                     record["flow"] = flow
-                    _write_private_json_atomic(self.pending_dir / self._new_record_name(), record)
+                    _write_private_json_atomic(self.pending_dir / src.name, record)
                     src.unlink()
                     moved += 1
                 except Exception:
                     if not src.exists():
                         # Benign race: another lifecycle path (ack/close) removed the record.
+                        continue
+                    if age < stale_seconds:
+                        # Preserve the existing age gate for malformed active records.
                         continue
                     try:
                         self._quarantine_record(src, "invalid_spool_record")
@@ -563,7 +641,9 @@ class TruthSpool:
 
     def _shed_soft_overflow_if_needed(self) -> None:
         pending_files = sorted(self.pending_dir.glob("*.json"))
-        while len(pending_files) > self.soft_count:
+        while pending_files and (
+            len(pending_files) > self.soft_count or self._queue_bytes() > self.soft_bytes
+        ):
             src = pending_files.pop(0)
             try:
                 record = self._load_record(src)

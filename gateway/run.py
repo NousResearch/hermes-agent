@@ -11036,34 +11036,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if plugin_candidate != command and is_gateway_known_command(plugin_candidate):
                 canonical = plugin_candidate
 
-        # Expand alias quick commands before built-in dispatch so targets like
-        # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
-        # Preserve built-in precedence; aliases only need early handling when
-        # the typed command is not already known.
+        # Resolve alias quick-command chains before built-in/plugin dispatch,
+        # authorization, and hooks. Preserve built-in precedence: quick aliases
+        # are considered only while the current target is not registry-known.
+        # A bounded walk prevents cyclic or adversarial configurations from
+        # deferring another alias expansion to the later dispatch sink.
         if command and _cmd_def is None:
             if isinstance(self.config, dict):
                 quick_commands = self.config.get("quick_commands", {}) or {}
             else:
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if isinstance(quick_commands, dict) and command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
-                    target = (qcmd.get("target") or "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command.split()[0] if target_command else target_command
-                        _cmd_def = _resolve_cmd(command) if command else None
-                        canonical = _cmd_def.name if _cmd_def else command
-                        if command and _cmd_def is None:
-                            plugin_candidate = command.replace("_", "-")
-                            if (
-                                plugin_candidate != command
-                                and is_gateway_known_command(plugin_candidate)
-                            ):
-                                canonical = plugin_candidate
+            if not isinstance(quick_commands, dict):
+                quick_commands = {}
+            seen_aliases: set[str] = set()
+            for _alias_depth in range(16):
+                if _cmd_def is not None or is_gateway_known_command(canonical):
+                    break
+                qcmd = quick_commands.get(command)
+                if qcmd is None:
+                    break
+                if not isinstance(qcmd, dict):
+                    return f"Quick command '/{command}' has invalid configuration."
+                if qcmd.get("type") != "alias":
+                    break
+                if command in seen_aliases:
+                    return f"Quick command alias cycle detected at '/{command}'."
+                seen_aliases.add(command)
+                raw_target = qcmd.get("target")
+                if not isinstance(raw_target, str) or not raw_target.strip():
+                    return f"Quick command '/{command}' has no target defined."
+                target = raw_target.strip()
+                target = target if target.startswith("/") else f"/{target}"
+                target_command = target.lstrip("/")
+                user_args = event.get_command_args().strip()
+                event.text = f"{target} {user_args}".strip()
+                command = target_command.split()[0] if target_command else target_command
+                _cmd_def = _resolve_cmd(command) if command else None
+                canonical = _cmd_def.name if _cmd_def else command
+                if command and _cmd_def is None:
+                    plugin_candidate = command.replace("_", "-")
+                    if (
+                        plugin_candidate != command
+                        and is_gateway_known_command(plugin_candidate)
+                    ):
+                        canonical = plugin_candidate
+                if _cmd_def is not None or is_gateway_known_command(canonical):
+                    break
+            else:
+                return "Quick command alias chain exceeds the maximum depth of 16."
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM

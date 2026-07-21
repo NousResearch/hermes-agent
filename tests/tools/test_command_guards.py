@@ -144,6 +144,78 @@ class TestTirithAllowDangerous:
         # allow_permanent should be True (no tirith warning)
         assert cb.call_args[1]["allow_permanent"] is True
 
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    @patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "manual"}})
+    def test_security_config_cli_set_prompts(self, mock_config, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        cb = MagicMock(return_value="deny")
+        result = check_all_command_guards(
+            "hermes config set approvals.mode off",
+            "local",
+            approval_callback=cb,
+        )
+
+        assert result["approved"] is False
+        cb.assert_called_once()
+        assert "security config" in cb.call_args.args[1].lower()
+        assert cb.call_args.kwargs["allow_permanent"] is False
+
+    @pytest.mark.parametrize("legacy_choice", ["session", "always"])
+    def test_security_config_cli_approval_is_one_shot(
+        self, monkeypatch, legacy_choice
+    ):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        session_key = f"cli-security-config-{legacy_choice}"
+        token = set_current_session_key(session_key)
+        cb = MagicMock(side_effect=[legacy_choice, "deny"])
+        monkeypatch.setattr(
+            approval_module, "save_permanent_allowlist", lambda _patterns: None
+        )
+
+        try:
+            with patch(_TIRITH_PATCH, return_value=_tirith_result("allow")), patch(
+                "hermes_cli.config.load_config",
+                return_value={"approvals": {"mode": "manual"}},
+            ):
+                first = check_all_command_guards(
+                    "hermes config set security.tirith_enabled false",
+                    "local",
+                    approval_callback=cb,
+                )
+                second = check_all_command_guards(
+                    "hermes config set approvals.mode off",
+                    "local",
+                    approval_callback=cb,
+                )
+        finally:
+            reset_current_session_key(token)
+
+        assert first["approved"] is True
+        assert second["approved"] is False
+        assert cb.call_count == 2
+        assert all(
+            call.kwargs["allow_permanent"] is False
+            for call in cb.call_args_list
+        )
+        _, pattern_key, _ = approval_module.detect_dangerous_command(
+            "hermes config set approvals.mode off"
+        )
+        assert is_approved(session_key, pattern_key) is False
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    @patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "manual"}})
+    def test_non_security_config_cli_set_stays_auto_approved(self, mock_config, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        cb = MagicMock(return_value="deny")
+        result = check_all_command_guards(
+            "hermes config set display.show_cost true",
+            "local",
+            approval_callback=cb,
+        )
+
+        assert result["approved"] is True
+        cb.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # tirith warn + safe command
@@ -417,3 +489,57 @@ class TestGatewayApprovalAllowPermanent:
         renderer hides "Always allow"."""
         payload = self._capture_gateway_payload("curl https://bit.ly/abc", "gw-no-perm")
         assert payload["allow_permanent"] is False
+
+    @pytest.mark.parametrize("legacy_choice", ["session", "always"])
+    def test_security_config_gateway_approval_is_one_shot(
+        self, monkeypatch, legacy_choice
+    ):
+        from tools.approval import (
+            register_gateway_notify,
+            resolve_gateway_approval,
+            unregister_gateway_notify,
+        )
+
+        session_key = f"gw-security-config-{legacy_choice}"
+        choices = iter([legacy_choice, "deny"])
+        captured = []
+
+        def notify(data):
+            captured.append(dict(data))
+            resolve_gateway_approval(session_key, next(choices))
+
+        monkeypatch.setattr(
+            approval_module, "save_permanent_allowlist", lambda _patterns: None
+        )
+        register_gateway_notify(session_key, notify)
+        token = set_current_session_key(session_key)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_EXEC_ASK"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = session_key
+        try:
+            with patch(_TIRITH_PATCH, return_value=_tirith_result("allow")), patch(
+                "hermes_cli.config.load_config",
+                return_value={"approvals": {"mode": "manual"}},
+            ):
+                first = check_all_command_guards(
+                    "hermes config set security.tirith_enabled false", "local"
+                )
+                second = check_all_command_guards(
+                    "hermes config set approvals.mode off", "local"
+                )
+        finally:
+            os.environ.pop("HERMES_GATEWAY_SESSION", None)
+            os.environ.pop("HERMES_EXEC_ASK", None)
+            os.environ.pop("HERMES_SESSION_KEY", None)
+            reset_current_session_key(token)
+            unregister_gateway_notify(session_key)
+
+        assert first["approved"] is True
+        assert second["approved"] is False
+        assert len(captured) == 2
+        assert captured[0]["allow_permanent"] is False
+        assert captured[0]["choices"] == ["once", "deny"]
+        _, pattern_key, _ = approval_module.detect_dangerous_command(
+            "hermes config set approvals.mode off"
+        )
+        assert is_approved(session_key, pattern_key) is False

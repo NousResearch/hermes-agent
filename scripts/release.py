@@ -296,6 +296,7 @@ LEGACY_AUTHOR_MAP = {
     "qdaszx@naver.com": "qdaszx",  # PR #29190 salvage (non-blocking OSV malware preflight; #29184)
     "w31rdm4ch1n3z@protonmail.com": "w31rdm4ch1nZ",
     "xtpeeps@gmail.com": "x7peeps",
+    "x7peeps@users.noreply.github.com": "x7peeps",
     "ahmad@madsgency.com": "ahmadashfq",
     "182213728+yinkev@users.noreply.github.com": "yinkev",  # scratch artifact preservation salvage
     "rratmansky@gmail.com": "rratmansky",
@@ -931,6 +932,7 @@ LEGACY_AUTHOR_MAP = {
     "amr@ghanem.sa": "amroessam",
     "paperlantern.agent@gmail.com": "Hinotoi-agent",
     "valda@underscore.jp": "valda",
+    "valda68k@gmail.com": "valda",
     "162235745+0z1-ghb@users.noreply.github.com": "0z1-ghb",
     "yes999zc@163.com": "yes999zc",
     "343873859@qq.com": "DrStrangerUJN",
@@ -1600,7 +1602,6 @@ LEGACY_AUTHOR_MAP = {
     "xdord@xdorddeMac-mini.local": "foreverxdord",
     "k2767567815@gmail.com": "QifengKuang",
     "88077783+jjjojoj@users.noreply.github.com": "jjjojoj",
-    "valda@underscore.jp": "valda",
     "lling486@163.com": "M3RCUR2Y",
     "buraysandro9@gmail.com": "ygd58",
     "ideathinklab01-source@users.noreply.github.com": "ideathinklab01-source",

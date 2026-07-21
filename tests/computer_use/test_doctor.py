@@ -76,6 +76,25 @@ def _degraded_report() -> dict:
     }
 
 
+def _cli_doctor_report(*, ok: bool = True) -> dict:
+    """Current ``cua-driver doctor --json`` response shape."""
+    return {
+        "ok": ok,
+        "probes": [
+            {
+                "label": "binary",
+                "status": "ok",
+                "message": "cua-driver 0.10.0 (x86_64-windows)",
+            },
+            {
+                "label": "UI Automation",
+                "status": "ok" if ok else "err",
+                "message": "CoCreateInstance(CUIAutomation) succeeded" if ok else "failed",
+            },
+        ],
+    }
+
+
 # ── exit codes ─────────────────────────────────────────────────────────────
 
 
@@ -209,6 +228,84 @@ class TestResponseShapeParsing:
             code = doctor.run_doctor()
         assert code == 2
         assert "method not found" in capsys.readouterr().err
+
+    def test_mcp_error_envelope_falls_back_to_cli_doctor(self):
+        """A policy denial must not be rendered as a successful question-mark report."""
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {
+                "jsonrpc": "2.0", "id": 2,
+                "result": {
+                    "isError": True,
+                    "content": [{"type": "text", "text": "Permission denied"}],
+                    "structuredContent": {"exit_code": 1},
+                },
+            },
+        )
+        completed = MagicMock(
+            stdout=json.dumps(_cli_doctor_report()), stderr="", returncode=0
+        )
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("subprocess.run", return_value=completed), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor()
+
+        assert code == 0
+        text = out.getvalue()
+        assert "0.10.0" in text
+        assert "win32" in text
+        assert "? on ?" not in text
+
+    def test_cli_doctor_failure_exits_1(self):
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {
+                "jsonrpc": "2.0", "id": 2,
+                "result": {
+                    "isError": True,
+                    "content": [{"type": "text", "text": "Permission denied"}],
+                    "structuredContent": {"exit_code": 1},
+                },
+            },
+        )
+        completed = MagicMock(
+            stdout=json.dumps(_cli_doctor_report(ok=False)), stderr="", returncode=1
+        )
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("subprocess.run", return_value=completed), \
+             patch("sys.stdout", new_callable=StringIO):
+            code = doctor.run_doctor()
+        assert code == 1
+
+    def test_non_policy_mcp_error_does_not_fall_back(self, capsys):
+        """A driver/tool failure must remain visible instead of being masked."""
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {
+                "jsonrpc": "2.0", "id": 2,
+                "result": {
+                    "isError": True,
+                    "content": [{"type": "text", "text": "driver internal failure"}],
+                    "structuredContent": {"exit_code": 1},
+                },
+            },
+        )
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("subprocess.run") as run:
+            code = doctor.run_doctor()
+
+        assert code == 2
+        run.assert_not_called()
+        assert "driver internal failure" in capsys.readouterr().err
 
 
 # ── args / arg passthrough ─────────────────────────────────────────────────

@@ -13894,15 +13894,14 @@ def main():
     )
     computer_use_doctor = computer_use_sub.add_parser(
         "doctor",
-        help="Run cua-driver `health_report` and surface the check matrix",
+        help="Run cua-driver diagnostics and surface the check matrix",
         description=(
-            "Drive cua-driver's stable `health_report` MCP tool and render\n"
-            "its check matrix (TCC permissions, bundle identity, version,\n"
-            "platform support, screenshot probe, …) as human-readable\n"
-            "output. cua-driver owns the health model; this command stays\n"
-            "thin so new checks added upstream surface here without code\n"
-            "changes. Exits 0 when overall=ok, 1 when degraded/failed, 2\n"
-            "when the binary is missing or unreachable."
+            "Run cua-driver's diagnostic interface and render its check\n"
+            "matrix as human-readable output. The health_report MCP tool\n"
+            "is preferred; if current driver policy denies that call, the\n"
+            "supported `cua-driver doctor --json` interface is used without\n"
+            "weakening the policy. Exits 0 when healthy, 1 when checks fail,\n"
+            "and 2 when the binary or diagnostic interface is unavailable."
         ),
     )
     computer_use_doctor.add_argument(
@@ -13926,7 +13925,7 @@ def main():
     computer_use_doctor.add_argument(
         "--json",
         action="store_true",
-        help="Emit the raw structured payload as JSON (same shape as `tools/call`).",
+        help="Emit the raw structured payload from the diagnostic interface.",
     )
     computer_use_perms = computer_use_sub.add_parser(
         "permissions",

@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import threading
+from types import SimpleNamespace
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.run import (
     _gateway_loop_exception_handler,
     _is_transient_network_error,
@@ -208,3 +212,63 @@ def test_unhandled_transient_error_in_task_does_not_propagate_to_loop():
     # the real assertion is that no unhandled exception escapes the
     # ``run`` boundary.
     asyncio.run(main())
+
+
+# ---------------------------------------------------------------------
+# Last-resort crash diagnostics (#52942)
+# ---------------------------------------------------------------------
+
+
+def _caught_exception(message: str) -> tuple[type[BaseException], BaseException, object]:
+    """Return a real exception triple suitable for calling an exception hook."""
+    try:
+        raise RuntimeError(message)
+    except RuntimeError as exc:
+        return type(exc), exc, exc.__traceback__
+
+
+def test_sys_excepthook_writes_a_redacted_diagnostic(tmp_path, monkeypatch):
+    """The global hook persists a redacted traceback under the active Hermes home."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_redact_gateway_user_facing_secrets", lambda text: text.replace("secret-value", "[REDACTED]"))
+    exc_type, exc, tb = _caught_exception("secret-value")
+
+    gateway_run._gateway_excepthook(exc_type, exc, tb)
+
+    diagnostic = (tmp_path / "logs" / "gateway-crash-diag.log").read_text()
+    assert "sys.excepthook" in diagnostic
+    assert "[REDACTED]" in diagnostic
+    assert "secret-value" not in diagnostic
+
+
+def test_threading_excepthook_writes_a_redacted_diagnostic(tmp_path, monkeypatch):
+    """Thread exceptions use the same redacted diagnostic writer."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_redact_gateway_user_facing_secrets", lambda text: text.replace("thread-secret", "[REDACTED]"))
+    exc_type, exc, tb = _caught_exception("thread-secret")
+
+    gateway_run._gateway_threading_excepthook(
+        SimpleNamespace(exc_type=exc_type, exc_value=exc, exc_traceback=tb, thread=SimpleNamespace(name="worker-1"))
+    )
+
+    diagnostic = (tmp_path / "logs" / "gateway-crash-diag.log").read_text()
+    assert "threading:worker-1" in diagnostic
+    assert "[REDACTED]" in diagnostic
+    assert "thread-secret" not in diagnostic
+
+
+def test_install_crash_diagnostic_hooks_is_idempotent(monkeypatch):
+    """Installing twice preserves the gateway hook objects without recursion."""
+    monkeypatch.setattr(gateway_run, "_CRASH_HOOK_INSTALLED", False)
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+    original_thread_hook = getattr(threading, "excepthook", None)
+    try:
+        gateway_run._install_crash_diagnostic_hooks()
+        assert sys.excepthook is gateway_run._gateway_excepthook
+        assert threading.excepthook is gateway_run._gateway_threading_excepthook
+        gateway_run._install_crash_diagnostic_hooks()
+        assert sys.excepthook is gateway_run._gateway_excepthook
+    finally:
+        sys.excepthook = sys.__excepthook__
+        if original_thread_hook is not None:
+            threading.excepthook = original_thread_hook

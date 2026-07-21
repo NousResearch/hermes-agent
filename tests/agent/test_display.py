@@ -215,6 +215,54 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
 
+    def test_fact_store_add(self):
+        result = build_tool_preview("fact_store", {"action": "add", "content": "user prefers dark mode"})
+        assert result is not None
+        assert "dark mode" in result
+        assert result.startswith("+")
+
+    def test_fact_store_add_truncates_long_content(self):
+        result = build_tool_preview("fact_store", {"action": "add", "content": "x" * 100})
+        assert result is not None
+        assert "..." in result
+
+    def test_fact_store_search(self):
+        result = build_tool_preview("fact_store", {"action": "search", "query": "deploy process"})
+        assert result is not None
+        assert "deploy" in result
+
+    def test_fact_store_probe(self):
+        result = build_tool_preview("fact_store", {"action": "probe", "entity": "alice"})
+        assert result is not None
+        assert "alice" in result
+        assert "probe" in result
+
+    def test_fact_store_reason(self):
+        result = build_tool_preview("fact_store", {"action": "reason", "entities": ["alice", "bob"]})
+        assert result is not None
+        assert "alice" in result
+
+    def test_fact_store_update(self):
+        result = build_tool_preview("fact_store", {"action": "update", "fact_id": 42})
+        assert result is not None
+        assert "42" in result
+
+    def test_fact_store_remove(self):
+        result = build_tool_preview("fact_store", {"action": "remove", "fact_id": 7})
+        assert result is not None
+        assert "7" in result
+
+    def test_fact_store_list(self):
+        result = build_tool_preview("fact_store", {"action": "list"})
+        assert result is not None
+        assert result == "list"
+
+    def test_fact_feedback(self):
+        result = build_tool_preview("fact_feedback", {"action": "helpful", "fact_id": 136})
+        assert result is not None
+        assert "helpful" in result
+        assert "136" in result
+
 
 class TestCuteToolMessagePreviewLength:
     def test_terminal_preview_unlimited_when_config_is_zero(self):

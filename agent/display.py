@@ -517,6 +517,30 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return f"-{target}: \"{old[:20]}\""
         return action
 
+    if tool_name == "fact_store":
+        action = args.get("action", "")
+        if action == "add":
+            content = _oneline(args.get("content", ""))
+            return f"+ \"{content[:30]}{'...' if len(content) > 30 else ''}\""
+        elif action == "search":
+            query = _oneline(args.get("query", ""))
+            return f"search: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+        elif action == "probe":
+            entity = args.get("entity", "")
+            return f"probe: {entity[:20]}"
+        elif action == "reason":
+            entities = args.get("entities", [])
+            return f"reason: {', '.join(str(e)[:15] for e in entities[:3])}"
+        elif action in ("update", "remove"):
+            fact_id = args.get("fact_id", "?")
+            return f"{action}: #{fact_id}"
+        return action
+
+    if tool_name == "fact_feedback":
+        action = args.get("action", "")
+        fact_id = args.get("fact_id", "?")
+        return f"{action}: #{fact_id}"
+
     if tool_name == "send_message":
         target = args.get("target", "?")
         msg = _oneline(args.get("message", ""))

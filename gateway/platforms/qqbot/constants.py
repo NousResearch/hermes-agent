@@ -18,7 +18,8 @@ QQBOT_VERSION = "1.1.0"
 # or test environments.  Default: q.qq.com (production).
 PORTAL_HOST = os.getenv("QQ_PORTAL_HOST", "q.qq.com")
 
-API_BASE = "https://api.sgroup.qq.com"
+_SANDBOX = os.getenv("QQ_SANDBOX", "").strip().lower() in ("true", "1", "yes")
+API_BASE = "https://sandbox.api.sgroup.qq.com" if _SANDBOX else "https://api.sgroup.qq.com"
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 GATEWAY_URL_PATH = "/gateway"
 

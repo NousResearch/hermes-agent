@@ -948,6 +948,17 @@ refactor/description   # Code restructuring
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
+### Automated checks
+
+Pull requests may also run repository automation beyond the test suite,
+including OSV vulnerability scanning, supply-chain auditing, and contributor
+identity / contributor-list checks.
+
+If one of these checks fails, read the failing workflow log first. Fix
+dependency or security issues when the log points to a concrete problem. For
+contributor identity checks, ask maintainers whether the contributor mapping
+needs a repo-side update or whether the failure needs clarification.
+
 ### PR description
 
 Include:

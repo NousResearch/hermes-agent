@@ -40,13 +40,21 @@ def _import_audio():
     return sd, np
 
 
-def _audio_available() -> bool:
-    """Return True if audio libraries can be imported."""
+def _voice_audio_import_status() -> tuple[bool, Optional[str]]:
+    """Return (ok, failure_kind) — failure_kind is ``import`` or ``oserror`` when not ok."""
     try:
         _import_audio()
-        return True
-    except (ImportError, OSError):
-        return False
+        return True, None
+    except ImportError:
+        return False, "import"
+    except OSError:
+        return False, "oserror"
+
+
+def _audio_available() -> bool:
+    """Return True if audio libraries can be imported."""
+    ok, _ = _voice_audio_import_status()
+    return ok
 
 
 from hermes_constants import is_termux as _is_termux_environment
@@ -56,6 +64,29 @@ def _voice_capture_install_hint() -> str:
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
     return "pip install sounddevice numpy"
+
+
+def _portaudio_system_install_hint() -> str:
+    """User-facing hints when PortAudio native libs are missing (not Python wheels)."""
+    if _is_termux_environment():
+        return (
+            "PortAudio system library not found -- install it first:\n"
+            "  Termux: pkg install portaudio\n"
+            "Then retry /voice on."
+        )
+    tail = "Then retry /voice on."
+    if platform.system().lower() == "windows":
+        return (
+            "PortAudio runtime not available for this Python build -- install matching native libs "
+            "or run under WSL2 with PulseAudio for capture.\n"
+            + tail
+        )
+    return (
+        "PortAudio system library not found -- install it first:\n"
+        "  Linux:  sudo apt-get install libportaudio2\n"
+        "  macOS:  brew install portaudio\n"
+        + tail
+    )
 
 
 def _termux_microphone_command() -> Optional[str]:
@@ -249,19 +280,8 @@ def detect_audio_environment() -> dict:
             warnings.append(
                 "Termux:API Android app is not installed. Install/update the Termux:API app to use termux-microphone-record."
             )
-        elif _is_termux_environment():
-            warnings.append(
-                "PortAudio system library not found -- install it first:\n"
-                "  Termux: pkg install portaudio\n"
-                "Then retry /voice on."
-            )
         else:
-            warnings.append(
-                "PortAudio system library not found -- install it first:\n"
-                "  Linux:  sudo apt-get install libportaudio2\n"
-                "  macOS:  brew install portaudio\n"
-                "Then retry /voice on."
-            )
+            warnings.append(_portaudio_system_install_hint())
 
     return {
         "available": not warnings,
@@ -667,13 +687,18 @@ class AudioRecorder:
         Raises ``RuntimeError`` if sounddevice/numpy are not installed
         or if a recording is already in progress.
         """
-        try:
-            _import_audio()
-        except (ImportError, OSError) as e:
+        ok, kind = _voice_audio_import_status()
+        if not ok:
+            if kind == "import":
+                raise RuntimeError(
+                    "Voice mode requires sounddevice and numpy.\n"
+                    f"Install with: {sys.executable} -m pip install sounddevice numpy\n"
+                    "Or: pip install hermes-agent[voice]"
+                )
             raise RuntimeError(
-                "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy"
-            ) from e
+                "sounddevice imported but audio capture failed (typically missing PortAudio).\n"
+                + _portaudio_system_install_hint()
+            )
 
         with self._lock:
             if self._recording:
@@ -1137,10 +1162,14 @@ def check_voice_requirements() -> Dict[str, Any]:
 
     missing: List[str] = []
     termux_capture = _termux_voice_capture_available()
-    has_audio = _audio_available() or termux_capture
+    audio_ok, audio_kind = _voice_audio_import_status()
+    has_audio = audio_ok or termux_capture
 
-    if not has_audio:
-        missing.extend(["sounddevice", "numpy"])
+    if not has_audio and not termux_capture:
+        if audio_kind == "import":
+            missing.extend(["sounddevice", "numpy"])
+        elif audio_kind == "oserror":
+            missing.append("portaudio (system)")
 
     # Environment detection
     env_check = detect_audio_environment()
@@ -1153,7 +1182,12 @@ def check_voice_requirements() -> Dict[str, Any]:
     elif has_audio:
         details_parts.append("Audio capture: OK")
     else:
-        details_parts.append(f"Audio capture: MISSING ({_voice_capture_install_hint()})")
+        if audio_kind == "oserror":
+            details_parts.append(
+                "Audio capture: MISSING - PortAudio/native runtime (see Environment section below)."
+            )
+        else:
+            details_parts.append(f"Audio capture: MISSING ({_voice_capture_install_hint()})")
 
     if not stt_enabled:
         details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")

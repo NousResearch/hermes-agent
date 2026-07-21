@@ -1,6 +1,7 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import sys
 import struct
 import time
 import wave
@@ -472,7 +473,7 @@ class TestCheckVoiceRequirements:
         assert result["missing_packages"] == []
 
     def test_missing_audio_packages(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: False)
+        monkeypatch.setattr("tools.voice_mode._voice_audio_import_status", lambda: (False, "import"))
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
                             lambda: {"available": False, "warnings": ["Audio libraries not installed"]})
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test-key")
@@ -484,6 +485,27 @@ class TestCheckVoiceRequirements:
         assert result["audio_available"] is False
         assert "sounddevice" in result["missing_packages"]
         assert "numpy" in result["missing_packages"]
+
+    def test_missing_portaudio_oserror_lists_system_dependency(self, monkeypatch):
+        """Missing PortAudio (OSError) must not pretend Python wheels are missing."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test-key")
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio",
+            lambda: (_ for _ in ()).throw(OSError("PortAudio library not found")),
+        )
+        monkeypatch.setattr("tools.voice_mode._termux_microphone_command", lambda: None)
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is False
+        assert result["audio_available"] is False
+        assert "sounddevice" not in result["missing_packages"]
+        assert any("portaudio" in p for p in result["missing_packages"])
+        assert any("PortAudio" in line for line in result["details"].splitlines())
 
     def test_missing_stt_provider(self, monkeypatch):
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
@@ -591,6 +613,21 @@ class TestAudioRecorder:
         recorder = AudioRecorder()
         with pytest.raises(RuntimeError, match="sounddevice and numpy"):
             recorder.start()
+
+    def test_start_raises_portaudio_oserror_not_pip_wheels(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.voice_mode._voice_audio_import_status",
+            lambda: (False, "oserror"),
+        )
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError) as ei:
+            recorder.start()
+        lowered = str(ei.value).lower()
+        assert "portaudio" in lowered
+        assert "pip install sounddevice" not in lowered
 
     def test_start_creates_and_starts_stream(self, mock_sd):
         mock_stream = MagicMock()
@@ -1416,6 +1453,7 @@ class TestConfigurableSilenceParams:
 class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix sleep binary not available on Windows PATH")
     def test_timeout_kills_process(self):
         import subprocess
         proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

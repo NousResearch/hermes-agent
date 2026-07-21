@@ -1291,7 +1291,6 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
                 db.close()
             except Exception:
                 pass
-    return None
 
 
 def _probe_container(cmd: list, backend: str, via_sudo: bool = False):

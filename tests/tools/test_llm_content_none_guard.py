@@ -212,3 +212,18 @@ class TestExtractContentOrReasoning:
         """When both content and reasoning exist, content wins."""
         response = _make_response("Actual answer", reasoning="Internal reasoning")
         assert extract_content_or_reasoning(response) == "Actual answer"
+
+    def test_empty_choices_returns_empty(self):
+        """Empty choices list (content filtering, provider error) must not crash."""
+        response = types.SimpleNamespace(choices=[])
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_none_choices_returns_empty(self):
+        """None choices attribute must not crash."""
+        response = types.SimpleNamespace(choices=None)
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_missing_choices_attr_returns_empty(self):
+        """Response without choices attribute must not crash."""
+        response = types.SimpleNamespace()
+        assert extract_content_or_reasoning(response) == ""

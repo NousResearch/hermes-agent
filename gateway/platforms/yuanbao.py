@@ -93,6 +93,8 @@ from gateway.platforms.yuanbao_proto import (
     encode_send_group_heartbeat,
     encode_query_group_info,
     encode_get_group_member_list,
+    encode_query_bot_info,
+    decode_query_bot_info_rsp,
     next_seq_no,
 )
 from gateway.session import build_session_key
@@ -2018,99 +2020,108 @@ class PlaceholderFilterMiddleware(InboundMiddleware):
 
 
 class OwnerCommandMiddleware(InboundMiddleware):
-    """Detect bot-owner slash commands in group chat.
+    """Detect and gate owner slash commands in group chat.
 
-    Identifies in-group allowlisted slash commands and determines sender identity.
-    Owner commands skip @Bot detection; non-owner attempts are rejected.
+    Only the bot owner may execute allowlisted slash commands in group chat;
+    non-owner attempts are rejected.  Private chat is passed through to hermes.
     """
 
     name = "owner-command"
 
-    # Slash command allowlist that bot owner can execute in group without @Bot
-    ALLOWLIST: frozenset = frozenset({
+    # Owner commands allowed in group chat
+    GROUP_ALLOWLIST: frozenset = frozenset({
         "/new", "/reset", "/retry", "/undo", "/stop",
         "/approve", "/deny", "/background", "/bg",
         "/btw", "/queue", "/q",
     })
 
-    @staticmethod
-    def _rewrite_slash_command(text: str) -> str:
-        """Normalize full-width slash to ASCII slash and strip whitespace."""
-        text = text.strip()
-        if text.startswith('\uff0f'):  # Full-width slash
-            text = '/' + text[1:]
-        return text
-
     @classmethod
-    def _detect_owner_command(
-        cls,
-        *,
-        push: dict,
-        msg_body: list,
-        chat_type: str,
-        from_account: str,
-    ) -> Tuple[Optional[str], Optional[str], bool]:
-        """Identify allowlisted slash commands and determine sender identity.
+    def _parse_slash_command(cls, msg_body: list) -> Tuple[Optional[str], Optional[str]]:
+        """Extract slash command from msg_body.
 
-        Returns (cmd, cmd_line, is_owner):
-          - (None, None, False): Not an allowlisted command
-          - (cmd, cmd_line, True): Owner match
-          - (cmd, cmd_line, False): Allowlisted command but sender is not owner
+        Returns (cmd, cmd_line) or (None, None) if not a slash command.
         """
-        if chat_type != "group" or not cls.ALLOWLIST:
-            return None, None, False
-
-        # Extract TIMTextElem: only do command recognition with exactly one text segment
         text_elems = [
             e for e in (msg_body or [])
             if e.get("msg_type") == "TIMTextElem"
         ]
         if len(text_elems) != 1:
-            return None, None, False
+            return None, None
 
         text = (text_elems[0].get("msg_content") or {}).get("text", "")
-        cmd_line = cls._rewrite_slash_command(text)
-        if not cmd_line.startswith("/"):
-            return None, None, False
-        cmd = cmd_line.split(maxsplit=1)[0].lower()
-        if cmd not in cls.ALLOWLIST:
-            return None, None, False
+        text = text.strip()
+        if text.startswith('\uff0f'):
+            text = '/' + text[1:]
+        if not text.startswith("/"):
+            return None, None
+        cmd = text.split(maxsplit=1)[0].lower()
+        return cmd, text
 
-        # Sender identity check: bot owner <-> push.from_account == push.bot_owner_id.
-        # The allowlisted commands (/approve, /deny, /stop, /reset, ...) are
-        # privileged — leaking them to non-owners lets any group member approve
-        # a dangerous tool call, kill the owner's task, or wipe session state.
-        owner_id = str((push or {}).get("bot_owner_id") or "").strip()
-        is_owner = bool(owner_id) and owner_id == from_account
-        return cmd, cmd_line, is_owner
+    @staticmethod
+    def _is_owner(adapter, push: dict, from_account: str) -> bool:
+        """Check whether from_account is the bot owner."""
+        bot_info = adapter.bot_info if adapter else None
+        owner_id = (
+            str(bot_info.get("owner_id") or "").strip() if bot_info
+            else str((push or {}).get("bot_owner_id") or "").strip()
+        )
+        return bool(owner_id) and owner_id == from_account
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        matched_cmd, cmd_line, is_owner = self._detect_owner_command(
-            push=ctx.push,
-            msg_body=ctx.msg_body,
-            chat_type=ctx.chat_type,
-            from_account=ctx.from_account,
-        )
-        if matched_cmd and not is_owner:
-            # Non-owner tried an owner-only command — reject and stop
+        cmd, cmd_line = self._parse_slash_command(ctx.msg_body)
+
+        if not cmd:
+            await next_fn()
+            return
+        
+        from hermes_cli.commands import is_gateway_known_command
+        if not is_gateway_known_command(cmd.lstrip("/")):
+            await next_fn()
+            return
+
+        if ctx.chat_type == "group" and not GroupAtGuardMiddleware._is_at_bot(ctx.msg_body, adapter._bot_id):
+            await next_fn()
+            return
+
+        from hermes_cli.commands import is_gateway_known_command
+        if not is_gateway_known_command(cmd.lstrip("/")):
+            await next_fn()
+            return
+
+        if ctx.chat_type == "group" and not GroupAtGuardMiddleware._is_at_bot(ctx.msg_body, adapter._bot_id):
+            await next_fn()
+            return
+
+        if not self._is_owner(adapter, ctx.push, ctx.from_account):
             logger.info(
                 "[%s] Reject non-owner slash command: chat=%s from=%s cmd=%s",
-                adapter.name, ctx.chat_id, ctx.from_account, matched_cmd,
+                adapter.name, ctx.chat_id, ctx.from_account, cmd,
             )
             adapter._track_task(asyncio.create_task(
-                adapter.send(ctx.chat_id, f"⚠️ {matched_cmd} is only available to the creator in private chat mode"),
-                name=f"yuanbao-owner-cmd-denial-{matched_cmd}",
+                adapter.send(ctx.chat_id, f"⚠️ {cmd} is only available to the creator"),
+                name=f"yuanbao-owner-cmd-denial-{cmd}",
             ))
-            return  # Stop pipeline
+            return
 
-        if matched_cmd and is_owner and cmd_line:
+        # Group chat: only GROUP_ALLOWLIST commands are allowed
+        if ctx.chat_type == "group" and cmd not in self.GROUP_ALLOWLIST:
             logger.info(
-                "[%s] Bot owner slash command: chat=%s from=%s cmd=%s",
-                adapter.name, ctx.chat_id, ctx.from_account, matched_cmd,
+                "[%s] Command %s not allowed in group chat: chat=%s from=%s",
+                adapter.name, cmd, ctx.chat_id, ctx.from_account,
             )
-            ctx.owner_command = matched_cmd
-            ctx.raw_text = cmd_line  # Override with clean command text
+            adapter._track_task(asyncio.create_task(
+                adapter.send(ctx.chat_id, f"⚠️ {cmd} is not available in group chat"),
+                name=f"yuanbao-group-cmd-denied-{cmd}",
+            ))
+            return
+
+        logger.info(
+            "[%s] Owner slash command: chat=%s from=%s cmd=%s cmd_line=%s",
+            adapter.name, ctx.chat_id, ctx.from_account, cmd, cmd_line,
+        )
+        ctx.owner_command = cmd
+        ctx.raw_text = cmd_line
         await next_fn()
 
 
@@ -3266,7 +3277,7 @@ class DispatchMiddleware(InboundMiddleware):
                         del cache[k]
             await adapter.handle_message(event)
 
-        if ctx.chat_type == "group":
+        if ctx.chat_type == "group" and not ctx.owner_command:
             is_new = _sk not in adapter._group_queues
             queue = adapter._group_queues.setdefault(_sk, asyncio.Queue())
             queue.put_nowait(_dispatch_inbound_event)
@@ -3497,6 +3508,8 @@ class ConnectionManager:
             )
 
             YuanbaoAdapter.set_active(adapter)
+
+            await self._query_bot_info()
 
             return True
 
@@ -3911,6 +3924,49 @@ class ConnectionManager:
             raise
         finally:
             self._pending_acks.pop(req_id, None)
+
+    # -- Bot info query ----------------------------------------------------
+
+    async def _query_bot_info(self) -> None:
+        """Query bot info via WS and cache the result in adapter._bot_info.
+
+        Called once after auth-bind succeeds. Failures are non-fatal.
+        """
+        adapter = self._adapter
+        bot_id = adapter._bot_id
+        if not bot_id:
+            logger.warning("[%s] _query_bot_info: bot_id not set, skipping", adapter.name)
+            return
+        try:
+            encoded = encode_query_bot_info(bot_id)
+            decoded_req = decode_conn_msg(encoded)
+            req_id = decoded_req["head"]["msg_id"]
+            response = await self.send_biz_request(encoded, req_id=req_id)
+            head = response.get("head", {})
+            status = head.get("status", 0)
+            if status != 0:
+                logger.warning(
+                    "[%s] query_bot_info failed: status=%d", adapter.name, status
+                )
+                return
+            biz_data = response.get("data", b"") or response.get("body", b"")
+            if biz_data and isinstance(biz_data, bytes):
+                info = decode_query_bot_info_rsp(biz_data)
+                if info:
+                    adapter._bot_info = {
+                        "bot_id": info.get("bot_id", ""),
+                        "owner_id": info.get("encrypt_owner_id", ""),
+                    }
+                    logger.info(
+                        "[%s] bot_info cached: bot_id=%s owner_id=%s",
+                        adapter.name,
+                        adapter._bot_info["bot_id"],
+                        adapter._bot_info["owner_id"],
+                    )
+        except asyncio.TimeoutError:
+            logger.warning("[%s] _query_bot_info timed out", adapter.name)
+        except Exception as exc:
+            logger.warning("[%s] _query_bot_info failed: %s", adapter.name, exc)
 
     # -- Reconnect ---------------------------------------------------------
 
@@ -5191,6 +5247,11 @@ class YuanbaoAdapter(BasePlatformAdapter):
         # Set of background tasks — prevent GC from collecting fire-and-forget tasks
         self._background_tasks: set[asyncio.Task] = set()
 
+        # Bot info cache: populated once after WS connect by _query_bot_info().
+        # Contains {"bot_id": str, "owner_id": str} from QueryBotInfoRsp.
+        # Reset to None on disconnect; re-fetched on every reconnect.
+        self._bot_info: Optional[dict] = None
+
         # Member cache: group_code -> (updated_ts, [{"user_id":..., "nickname":..., ...}, ...])
         # Populated by get_group_member_list(), used by @mention resolution.
         # Entries older than MEMBER_CACHE_TTL_S are treated as stale.
@@ -5262,6 +5323,15 @@ class YuanbaoAdapter(BasePlatformAdapter):
             config.home_channel.chat_id if config.home_channel else ""
         )
         self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
+
+    # ------------------------------------------------------------------
+    # Bot info accessor
+    # ------------------------------------------------------------------
+
+    @property
+    def bot_info(self) -> Optional[dict]:
+        """Return cached bot info fetched after WS connect, or None if not yet available."""
+        return self._bot_info
 
     # ------------------------------------------------------------------
     # Task tracking helper

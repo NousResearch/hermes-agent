@@ -9932,6 +9932,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        steer_followup = None  # leftover /steer after last tool batch
         one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
             from tools.approval import (
@@ -10190,6 +10191,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
+                # Leftover /steer: if a steer arrived after the last tool batch
+                # (or during a hard API failure with no further tool window),
+                # the agent cannot inject it into a tool result. Hand it back
+                # so we deliver it as the next user turn (parity with CLI and
+                # messaging gateway). Without this, Desktop shows "Steer queued"
+                # while the text is silently dropped.
+                _leftover_steer = result.get("pending_steer")
+                if isinstance(_leftover_steer, str) and _leftover_steer.strip():
+                    steer_followup = _leftover_steer.strip()
             else:
                 raw = str(result)
                 status = "complete"
@@ -10398,6 +10408,36 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # the goal judge / notifications re-evaluate at the end of that turn.
         if _drain_queued_prompt(rid, sid, session):
             return
+
+        # Deliver leftover steer as the next turn when the model never got a
+        # tool-result injection window. User mid-turn queue already drained
+        # above wins over this auto follow-up.
+        if steer_followup:
+            with session["history_lock"]:
+                if session.get("running"):
+                    return
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                # System note so the transcript shows the steer was promoted
+                # from mid-turn queue to a real turn (not lost).
+                _emit(
+                    "status.update",
+                    sid,
+                    {
+                        "kind": "steer",
+                        "text": "Steer delivered as next turn (no tool window left on prior turn).",
+                    },
+                )
+                _run_prompt_submit(rid, sid, session, steer_followup)
+            except Exception as _steer_exc:
+                print(
+                    f"[tui_gateway] leftover steer dispatch failed: "
+                    f"{type(_steer_exc).__name__}: {_steer_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

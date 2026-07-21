@@ -711,6 +711,197 @@ class TestSendTelegramMediaDelivery:
 # ---------------------------------------------------------------------------
 
 
+class TestSendGoogleChatMediaDelivery:
+    @pytest.mark.asyncio
+    async def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
+        image_path = tmp_path / "photo.png"
+        image_path.write_text("fake image")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = type("R", (), {"success": True, "message_id": "msg1", "error": None})()
+        adapter.send_image_file.return_value = type("R", (), {"success": True, "message_id": "msg2", "error": None})()
+
+        runner = MagicMock()
+        
+        class FakePlatform:
+            def __init__(self, value):
+                self.value = value
+            def __eq__(self, other):
+                return self.value == other
+            def __hash__(self):
+                return hash(self.value)
+                
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+        monkeypatch.setattr("gateway.config.Platform", FakePlatform)
+        
+        runner.adapters = {FakePlatform("google_chat"): adapter}
+
+        from tools.send_message_tool import _send_google_chat
+        
+        result = await _send_google_chat(
+            pconfig=None,
+            chat_id="spaces/S",
+            message="Here is the photo",
+            media_files=[(str(image_path), False)]
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg2"
+        adapter.send.assert_called_once_with("spaces/S", "Here is the photo", metadata=None)
+        adapter.send_image_file.assert_called_once_with("spaces/S", str(image_path), metadata=None)
+
+    @pytest.mark.asyncio
+    async def test_sends_voice_for_ogg_with_voice_directive(self, tmp_path, monkeypatch):
+        voice_path = tmp_path / "voice.ogg"
+        voice_path.write_text("fake voice")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = type("R", (), {"success": True, "message_id": "msg1", "error": None})()
+        adapter.send_voice.return_value = type("R", (), {"success": True, "message_id": "msg2", "error": None})()
+
+        runner = MagicMock()
+        class FakePlatform:
+            def __init__(self, value):
+                self.value = value
+            def __eq__(self, other):
+                return self.value == other
+            def __hash__(self):
+                return hash(self.value)
+                
+        runner.adapters = {FakePlatform("google_chat"): adapter}
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+        monkeypatch.setattr("gateway.config.Platform", FakePlatform)
+
+        from tools.send_message_tool import _send_google_chat
+        result = await _send_google_chat(
+            pconfig=None,
+            chat_id="spaces/S",
+            message="Listen to this",
+            media_files=[(str(voice_path), True)]
+        )
+
+        assert result["success"] is True
+        adapter.send.assert_called_once_with("spaces/S", "Listen to this", metadata=None)
+        adapter.send_voice.assert_called_once_with("spaces/S", str(voice_path), metadata=None)
+
+    @pytest.mark.asyncio
+    async def test_missing_adapter_falls_back_to_standalone(self, tmp_path, monkeypatch):
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        
+        standalone_mock = AsyncMock()
+        standalone_mock.return_value = {"success": True, "message_id": "standalone_msg"}
+        
+        registry_mock = MagicMock()
+        entry_mock = MagicMock()
+        entry_mock.standalone_sender_fn = standalone_mock
+        registry_mock.get.return_value = entry_mock
+        
+        monkeypatch.setattr("gateway.platform_registry.platform_registry", registry_mock)
+
+        from tools.send_message_tool import _send_google_chat
+        result = await _send_google_chat(
+            pconfig="fake_config",
+            chat_id="spaces/S",
+            message="Standalone message",
+            media_files=None,
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "standalone_msg"
+        standalone_mock.assert_called_once_with(
+            pconfig="fake_config",
+            chat_id="spaces/S",
+            message="Standalone message",
+            thread_id=None,
+            media_files=None,
+            force_document=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_adapter_with_media_files_returns_error(self, monkeypatch):
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        from tools.send_message_tool import _send_google_chat
+        result = await _send_google_chat(
+            pconfig="fake_config",
+            chat_id="spaces/S",
+            message="Standalone message",
+            media_files=[("/tmp/photo.png", False)],
+        )
+
+        assert "error" in result
+        assert "native attachment" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_empty_message_plus_media_skips_text_send(self, tmp_path, monkeypatch):
+        image_path = tmp_path / "photo.png"
+        image_path.write_text("fake image")
+
+        adapter = AsyncMock()
+        adapter.send_image_file.return_value = type("R", (), {"success": True, "message_id": "msg2", "error": None})()
+
+        runner = MagicMock()
+        class FakePlatform:
+            def __init__(self, value):
+                self.value = value
+            def __eq__(self, other):
+                return self.value == other
+            def __hash__(self):
+                return hash(self.value)
+                
+        runner.adapters = {FakePlatform("google_chat"): adapter}
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+        monkeypatch.setattr("gateway.config.Platform", FakePlatform)
+
+        from tools.send_message_tool import _send_google_chat
+        
+        result = await _send_google_chat(
+            pconfig=None,
+            chat_id="spaces/S",
+            message="   \n",
+            media_files=[(str(image_path), False)]
+        )
+
+        assert result["success"] is True
+        adapter.send.assert_not_called()
+        adapter.send_image_file.assert_called_once_with("spaces/S", str(image_path), metadata=None)
+
+    @pytest.mark.asyncio
+    async def test_media_send_error_returns_error(self, tmp_path, monkeypatch):
+        image_path = tmp_path / "photo.png"
+        image_path.write_text("fake image")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = type("R", (), {"success": True, "message_id": "msg1", "error": None})()
+        adapter.send_image_file.return_value = type("R", (), {"success": False, "message_id": None, "error": "upload failed"})()
+
+        runner = MagicMock()
+        class FakePlatform:
+            def __init__(self, value):
+                self.value = value
+            def __eq__(self, other):
+                return self.value == other
+            def __hash__(self):
+                return hash(self.value)
+                
+        runner.adapters = {FakePlatform("google_chat"): adapter}
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+        monkeypatch.setattr("gateway.config.Platform", FakePlatform)
+
+        from tools.send_message_tool import _send_google_chat
+        
+        result = await _send_google_chat(
+            pconfig=None,
+            chat_id="spaces/S",
+            message="Text",
+            media_files=[(str(image_path), False)]
+        )
+
+        assert "error" in result
+        assert "upload failed" in result["error"]
+
+
 class TestSendToPlatformChunking:
     def test_long_message_is_chunked(self):
         """Messages exceeding the platform limit are split into multiple sends."""

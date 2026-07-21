@@ -173,14 +173,11 @@ def _load_google_modules() -> bool:
 
 from gateway.config import Platform, PlatformConfig
 
-# Trigger registration of the dynamic ``google_chat`` enum member at module
-# import time.  ``_missing_()`` caches the pseudo-member in
-# ``_value2member_map_`` *and* ``_member_map_``, so after this call
-# ``Platform.GOOGLE_CHAT`` resolves via attribute access too.  Without this
-# line, any code (including tests) that references ``Platform.GOOGLE_CHAT``
-# before an adapter instance is constructed would hit ``AttributeError``.
-# Built-ins avoid this because they have explicit enum members; plugin
-# platforms earn the attribute by asking for it once.
+# Trigger registration of the dynamic "google_chat" pseudo-member at module
+# import time.  _missing_() caches the member in _value2member_map_ so
+# Platform("google_chat") works from any other module without needing
+# a static enum entry.  Bundled plugin platforms are looked up by value,
+# not attribute (matches Teams, IRC).
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -645,10 +642,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
     _RECONNECT_MAX_DELAY = 120.0
 
     def __init__(self, config: PlatformConfig):
-        # ``Platform("google_chat")`` resolves via ``_missing_()`` → pseudo-member
-        # cached in ``_value2member_map_``.  We deliberately do NOT add an enum
-        # attribute to ``gateway.config.Platform`` — bundled platform plugins
-        # are looked up by value, not attribute (matches Teams, IRC).
         super().__init__(config, Platform("google_chat"))
         # Trigger the deferred google-cloud + googleapiclient import here so
         # that any code path which constructs the adapter and then calls
@@ -1563,14 +1556,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Short-circuit /setup-files before the agent dispatch.
             text = (event.text or "").strip()
             if text.startswith("/setup-files") and event.source is not None:
-                # The sender's email (user_id_alt) is the per-user OAuth
+                # The sender's email (user_id) is the per-user OAuth
                 # key — the bot stores this user's token at
                 # ${HERMES_HOME}/google_chat_user_tokens/<sanitized>.json
                 # so when User B asks for a file later in B's DM, B's
                 # token gets used (not the first person who set up files).
                 sender_email = (
-                    event.source.user_id_alt
-                    if event.source and event.source.user_id_alt
+                    event.source.user_id
+                    if event.source and event.source.user_id
                     else None
                 )
                 handled = await self._handle_setup_files_command(

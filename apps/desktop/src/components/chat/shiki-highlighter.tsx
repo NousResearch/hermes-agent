@@ -1,8 +1,7 @@
 'use client'
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
-import { type FC, useMemo } from 'react'
-import ShikiHighlighter from 'react-shiki'
+import { type CSSProperties, type FC, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   CodeCard,
@@ -17,13 +16,17 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
 
+import type { ShikiWorkerToken } from './shiki-worker'
+import { startShikiHighlight } from './shiki-worker-client'
+
 /**
  * Streamdown's code adapter renders header + body as inline siblings, so we
  * own the wrapping `<CodeCard>` here and neutralize the upstream
  * `data-streamdown="code-block"` chrome from styles.css. Anything that wants
  * a card-shaped code surface should compose `CodeCard*` directly.
  *
- * `react-shiki` full bundle so all `bundledLanguages` work; theme switches
+ * Shiki runs in a shared, lazily-created worker so all bundled languages remain
+ * available without putting grammar work on the renderer thread. Theme switches
  * follow the document `color-scheme` via `defaultColor="light-dark()"`.
  */
 interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
@@ -51,6 +54,113 @@ const MAX_HIGHLIGHT_CHARS = 150_000
 const MAX_HIGHLIGHT_LINES = 3_000
 const CHUNK_LINES = 200
 const EST_LINE_PX = 16
+
+function useNearViewportHighlight(enabled: boolean) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [nearViewport, setNearViewport] = useState(() => typeof IntersectionObserver === 'undefined')
+
+  useEffect(() => {
+    const target = ref.current
+
+    if (!enabled || nearViewport || !target) {
+      return
+    }
+
+    if (typeof IntersectionObserver === 'undefined') {
+      setNearViewport(true)
+
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          setNearViewport(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '300px 0px' }
+    )
+
+    observer.observe(target)
+
+    return () => observer.disconnect()
+  }, [enabled, nearViewport])
+
+  return { nearViewport, ref }
+}
+
+function useWorkerHighlight(code: string, enabled: boolean, language: string) {
+  const [tokens, setTokens] = useState<ShikiWorkerToken[][] | null>(null)
+
+  useEffect(() => {
+    setTokens(null)
+
+    if (!enabled) {
+      return
+    }
+
+    const job = startShikiHighlight(code, language)
+    let active = true
+
+    void job.promise
+      .then(result => {
+        if (active) {
+          setTokens(result)
+        }
+      })
+      .catch(() => {
+        // Plain code is the intentional fallback when a grammar/worker fails.
+      })
+
+    return () => {
+      active = false
+      job.dispose()
+    }
+  }, [code, enabled, language])
+
+  return tokens
+}
+
+function tokenStyle(style: Record<string, string> | undefined): CSSProperties | undefined {
+  if (!style) {
+    return undefined
+  }
+
+  return Object.fromEntries(
+    Object.entries(style).map(([property, value]) => {
+      // Dual-theme Shiki tokens put the light color in both `color:
+      // light-dark(...)` and `--shiki-light`. Never rewrite `--shiki-dark`:
+      // color replacements are intentionally theme-scoped.
+      const adjusted =
+        property === 'color' || property === '--shiki-light'
+          ? Object.entries(SHIKI_COLOR_REPLACEMENTS['github-light-default']).reduce(
+              (next, [from, to]) => next.replaceAll(from.toLowerCase(), to),
+              value.toLowerCase()
+            )
+          : value
+
+      return [property, adjusted]
+    })
+  ) as CSSProperties
+}
+
+function HighlightedCode({ tokens }: { tokens: ShikiWorkerToken[][] }) {
+  return (
+    <code className="block whitespace-pre">
+      {tokens.map((line, lineIndex) => (
+        <span key={lineIndex}>
+          {line.map((token, tokenIndex) => (
+            <span key={tokenIndex} style={tokenStyle(token.htmlStyle)}>
+              {token.content}
+            </span>
+          ))}
+          {lineIndex < tokens.length - 1 ? '\n' : null}
+        </span>
+      ))}
+    </code>
+  )
+}
 
 export function exceedsHighlightBudget(code: string): boolean {
   if (code.length > MAX_HIGHLIGHT_CHARS) {
@@ -123,6 +233,9 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
 }) => {
   const { t } = useI18n()
   const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
+  const overBudget = exceedsHighlightBudget(trimmed)
+  const { nearViewport, ref } = useNearViewportHighlight(!defer && !overBudget && Boolean(trimmed.trim()))
+  const highlighted = useWorkerHighlight(trimmed, !defer && !overBudget && nearViewport, language || 'text')
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
   // than a transient empty card.
@@ -136,10 +249,9 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
 
   const cleanLanguage = sanitizeLanguageTag(language || '')
   const label = cleanLanguage && cleanLanguage !== 'unknown' ? cleanLanguage : ''
-  const plain = defer || exceedsHighlightBudget(trimmed)
 
   return (
-    <CodeCard data-streaming={defer ? 'true' : undefined}>
+    <CodeCard data-streaming={defer ? 'true' : undefined} ref={ref}>
       <CodeCardHeader>
         <CodeCardTitle>
           <CodeCardIcon name={codiconForLanguage(label)} />
@@ -158,22 +270,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       <CodeCardBody>
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
-            {plain ? (
-              <PlainCode code={trimmed} />
-            ) : (
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                colorReplacements={SHIKI_COLOR_REPLACEMENTS}
-                defaultColor="light-dark()"
-                delay={120}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {trimmed}
-              </ShikiHighlighter>
-            )}
+            {highlighted ? <HighlightedCode tokens={highlighted} /> : <PlainCode code={trimmed} />}
           </Pre>
         </ExpandableBlock>
       </CodeCardBody>

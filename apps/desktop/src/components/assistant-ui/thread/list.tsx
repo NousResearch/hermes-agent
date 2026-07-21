@@ -47,6 +47,7 @@ const RENDER_BUDGET = 300
 // in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
 // past the initial commit, so the switch feels instant.
 const FIRST_PAINT_BUDGET = 60
+const HISTORY_PAGE_BUDGET = FIRST_PAINT_BUDGET
 
 interface ThreadMessageListProps {
   clampToComposer: boolean
@@ -134,6 +135,24 @@ export function isVirtualizedGroup(indexInVisible: number, visibleCount: number,
   return indexInVisible < visibleCount - liveTail
 }
 
+export function shouldAutoBackfill(groups: readonly MessageGroup[]): boolean {
+  return groups.reduce((weight, group) => weight + group.weight, 0) <= RENDER_BUDGET
+}
+
+export function nextHistoryBudget(groups: readonly MessageGroup[], budget: number): number {
+  const firstVisible = firstVisibleGroupIndex(groups, budget)
+
+  if (firstVisible <= 0) {
+    return budget
+  }
+
+  const requiredForEarlierGroup = groups
+    .slice(firstVisible - 1)
+    .reduce((weight, group) => weight + group.weight, 0)
+
+  return Math.max(budget + HISTORY_PAGE_BUDGET, requiredForEarlierGroup)
+}
+
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
   components,
@@ -191,15 +210,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }
 
-  // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
-  // commit painted — as a TRANSITION, so the heavy markdown + syntax
-  // highlight render of the older turns is interruptible instead of one long
-  // synchronous commit that freezes input right after the switch. Route
-  // changes stay urgent (main.tsx disables router transitions); it's exactly
-  // this backfill that belongs at background priority. "Show earlier" pages
-  // (budget > RENDER_BUDGET) never re-enter here.
+  // After first paint, backfill bounded transcripts in a transition.
+  // Long histories stay at the first-paint budget and page on explicit demand,
+  // avoiding a second automatic markdown/tool render that can block typing.
+  const autoBackfill = shouldAutoBackfill(groups)
+
   useEffect(() => {
-    if (renderBudget >= RENDER_BUDGET) {
+    if (renderBudget >= RENDER_BUDGET || !autoBackfill) {
       return
     }
 
@@ -211,7 +228,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [renderBudget])
+  }, [autoBackfill, renderBudget])
 
   const hiddenCount = firstVisibleGroupIndex(groups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
@@ -319,8 +336,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
 
     restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null
-    setRenderBudget(budget => budget + RENDER_BUDGET)
-  }, [scrollRef])
+    setRenderBudget(budget => nextHistoryBudget(groups, budget))
+  }, [groups, scrollRef])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -373,7 +390,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           >
             {hiddenCount > 0 && (
               <button
-                className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+                className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={showEarlier}
                 type="button"
               >

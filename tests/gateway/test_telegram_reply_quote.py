@@ -142,3 +142,29 @@ def test_empty_quote_text_falls_back_to_full_reply():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Prior message body"
+
+
+def test_object_object_sentinel_treated_as_absent():
+    """Telegram echoes rich messages as '[object Object]' in reply_to_message.text.
+
+    When a user replies to a sendRichMessage (Bot API 10.1) message, Telegram
+    does NOT echo the rich content back — it returns the literal string
+    ``[object Object]`` as ``.text``. The adapter must treat this sentinel as
+    absent so the rich-reply and sent-store fallbacks can recover the real
+    content, instead of injecting ``[object Object]`` as the reply-to text.
+    """
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(
+        text="What is this?",
+        reply_to_text="[object Object]",
+        quote_text=None,
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # The sentinel must NOT be passed through as reply_to_text.
+    # It should be None (no rich-message echo or sent-store entry in this mock)
+    # rather than the literal "[object Object]" string.
+    assert event.reply_to_text != "[object Object]"

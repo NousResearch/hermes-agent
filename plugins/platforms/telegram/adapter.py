@@ -9063,6 +9063,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     or message.reply_to_message.caption
                     or None
                 )
+                # Telegram echoes rich messages (sendRichMessage, Bot API 10.1)
+                # as the literal string "[object Object]" in reply_to_message.text
+                # instead of returning empty/None. Treat this sentinel as absent
+                # so the rich-reply and sent-store fallbacks below can recover the
+                # real content.
+                if reply_to_text == "[object Object]":
+                    reply_to_text = None
                 if not reply_to_text:
                     # Prefer Telegram's native rich-message echo when present;
                     # keep the local send-time index only as a fallback for

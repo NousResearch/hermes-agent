@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.compression_policy import should_compress_mid_turn
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -1263,7 +1264,7 @@ def run_conversation(
             and not _preflight_compression_blocked
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
-            and _compressor.should_compress(request_pressure_tokens)
+            and should_compress_mid_turn(agent, request_pressure_tokens)
         ):
             if _moa_prepared_request is not None:
                 pending_moa_prepared_request = _moa_prepared_request
@@ -5332,7 +5333,7 @@ def run_conversation(
                 if (
                     agent.compression_enabled
                     and compression_attempts < max_compression_attempts
-                    and _compressor.should_compress(_real_tokens)
+                    and should_compress_mid_turn(agent, _real_tokens)
                 ):
                     compression_attempts += 1
                     agent._safe_print("  ⟳ compacting context…")
@@ -5988,6 +5989,7 @@ def run_conversation(
         turn_id=turn_id,
         user_message=user_message,
         original_user_message=original_user_message,
+        system_message=system_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,

@@ -25,7 +25,10 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.compression_policy import should_compress_at_turn_end
+from agent.conversation_compression import conversation_history_after_compression
 from agent.message_content import flatten_message_text
+from agent.model_metadata import estimate_request_tokens_rough
 
 
 def _is_pure_tool_call_tail(msg: dict) -> bool:
@@ -81,6 +84,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    system_message=None,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -319,6 +323,55 @@ def finalize_turn(
         _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
         if callable(_apply_override):
             _apply_override(messages)
+
+        # Optional turn-boundary compaction. In deferred mode the normal soft
+        # threshold (for example 80%) is deliberately ignored while tools are
+        # still running; the emergency threshold remains the only mid-turn
+        # interruption point. Once a successful final response has closed the
+        # transcript, compact here before the durable snapshot is written so
+        # the next user request starts from the smaller context.
+        if completed and final_response and not interrupted:
+            _turn_end_pressure = int(
+                getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0
+            )
+            if _turn_end_pressure <= 0:
+                _turn_end_pressure = estimate_request_tokens_rough(
+                    messages,
+                    tools=getattr(agent, "tools", None) or None,
+                )
+            if should_compress_at_turn_end(agent, _turn_end_pressure):
+                logger.info(
+                    "Turn-boundary compression: %s prompt tokens >= %s soft "
+                    "threshold (session=%s)",
+                    f"{_turn_end_pressure:,}",
+                    f"{int(getattr(agent.context_compressor, 'threshold_tokens', 0) or 0):,}",
+                    agent.session_id or "none",
+                )
+                try:
+                    agent._emit_status(
+                        "↻ Turn complete — compacting context before the next request"
+                    )
+                    messages, _active_system_prompt = agent._compress_context(
+                        messages,
+                        system_message,
+                        approx_tokens=_turn_end_pressure,
+                        task_id=effective_task_id,
+                    )
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
+                    agent._session_messages = messages
+                except Exception as _compress_err:
+                    # A failed boundary compaction must never discard either
+                    # the completed answer or the uncompressed durable turn.
+                    _cleanup_errors.append(
+                        f"turn_end_compression: {_compress_err}"
+                    )
+                    logger.error(
+                        "finalize_turn: turn-end compression failed: %s",
+                        _compress_err,
+                        exc_info=True,
+                    )
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
@@ -536,7 +589,9 @@ def finalize_turn(
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,
-        "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0,
+        "last_prompt_tokens": max(
+            0, int(getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0)
+        ),
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,

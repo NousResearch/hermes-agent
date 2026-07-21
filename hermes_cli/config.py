@@ -1473,6 +1473,14 @@ DEFAULT_CONFIG = {
                                       # triggers at the lower of the ratio-based
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
+        "defer_until_turn_end": False,  # When True, crossing the normal threshold
+                                      # does not interrupt an active tool-calling
+                                      # turn. The completed turn is compacted at its
+                                      # final response boundary instead. A separate
+                                      # emergency threshold remains active mid-turn.
+        "emergency_threshold": 0.92,  # In deferred mode only: permit mid-turn
+                                      # compression at this ratio of the effective
+                                      # input window to avoid a hard context overflow.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "max_attempts": 3,            # compression retry rounds before a turn gives up

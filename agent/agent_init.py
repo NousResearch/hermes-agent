@@ -1755,7 +1755,17 @@ def init_agent(
     _compression_cfg = _agent_cfg.get("compression", {})
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    _compression_threshold_raw = os.environ.get("HERMES_COMPRESSION_THRESHOLD")
+    if _compression_threshold_raw is None:
+        _compression_threshold_raw = _compression_cfg.get("threshold", 0.50)
+    try:
+        compression_threshold = float(_compression_threshold_raw)
+    except (TypeError, ValueError):
+        _ra().logger.warning(
+            "Invalid HERMES_COMPRESSION_THRESHOLD/config compression.threshold; "
+            "using 0.50."
+        )
+        compression_threshold = 0.50
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
     # raise to 85% (the Codex backend caps both families at 272K, so the
     # default 50% would compact at ~136K — half the usable context). Gated by
@@ -1801,6 +1811,31 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    compression_defer_until_turn_end = is_truthy_value(
+        os.environ.get(
+            "HERMES_COMPRESSION_DEFER_UNTIL_TURN_END",
+            _compression_cfg.get("defer_until_turn_end"),
+        ),
+        default=False,
+    )
+    _compression_emergency_raw = os.environ.get(
+        "HERMES_COMPRESSION_EMERGENCY_THRESHOLD"
+    )
+    if _compression_emergency_raw is None:
+        _compression_emergency_raw = _compression_cfg.get(
+            "emergency_threshold", 0.92
+        )
+    try:
+        compression_emergency_threshold = float(_compression_emergency_raw)
+        if not 0.0 < compression_emergency_threshold <= 1.0:
+            raise ValueError
+    except (TypeError, ValueError):
+        _ra().logger.warning(
+            "Invalid compression.emergency_threshold=%r; using 0.92. "
+            "Expected a ratio greater than 0 and at most 1.",
+            _compression_emergency_raw,
+        )
+        compression_emergency_threshold = 0.92
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # Cap on compression retry rounds before a turn gives up with "max
@@ -2313,6 +2348,8 @@ def init_agent(
         except Exception:
             pass
     agent.compression_enabled = compression_enabled
+    agent.compression_defer_until_turn_end = compression_defer_until_turn_end
+    agent.compression_emergency_threshold = compression_emergency_threshold
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.max_compression_attempts = compression_max_attempts

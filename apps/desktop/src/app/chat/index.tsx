@@ -20,12 +20,12 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
+import { migrateSessionDraft } from '@/store/composer'
+import { migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $gatewaySwapTarget, $profiles } from '@/store/profile'
-import { migrateSessionDraft } from '@/store/composer'
-import { migrateQueuedPrompts } from '@/store/composer-queue'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -281,6 +281,7 @@ export function ChatView({
   const selectedSessionId = useStore(view.$storedId)
   const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
   // does not wipe an in-progress draft or orphan /queue entries.
   const queueSessionKey = useMemo(

@@ -245,6 +245,7 @@ export function useSessionActions({
     const nextId = storedIdRotation.nextStoredSessionId
     const sessions = $sessions.get()
     const resolvedNext = resolveComposerSessionKey(nextId, sessions)
+
     const durableKey =
       resolvedNext && resolvedNext !== nextId
         ? resolvedNext

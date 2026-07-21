@@ -348,6 +348,19 @@ class GatewayStreamConsumer:
         # Set by close_for_approval_prompt(); race-free because boundaries are
         # processed serially.
         self._boundary_reason = "Approval"
+        # When True, the interaction boundary finalizes the current stream but
+        # KEEPS native streaming enabled so post-prompt output re-opens a fresh
+        # native stream (via the lazy re-seed in _send_or_edit) instead of
+        # degrading to a one-shot send().  Clarify sets this (short waits, low
+        # stream-staleness risk); approval leaves it False (long, unbounded
+        # waits — the stream may go stale, so send() is safer).  Set by
+        # close_for_approval_prompt(); race-free (boundaries are serial).
+        self._boundary_reopen = False
+        # Marks that a boundary asked to reopen the native stream but no
+        # post-prompt content has re-seeded it yet.  Guards got_done from
+        # re-seeding a fresh stream just to emit a lone "✅" placeholder when
+        # the agent produced nothing after the prompt.
+        self._awaiting_reopen_after_boundary = False
 
 
     def _metadata_for_send(
@@ -458,16 +471,20 @@ class GatewayStreamConsumer:
         self._queue.put(_NEW_SEGMENT)
 
     def close_for_approval_prompt(
-        self, placeholder: str | None = None, reason: str = "Approval",
+        self,
+        placeholder: str | None = None,
+        reason: str = "Approval",
+        reopen: bool = False,
     ) -> asyncio.Future:
-        """Signal an interaction boundary — finalize stream and disable native.
+        """Signal an interaction boundary — finalize stream, then either disable
+        native (approval) or keep it for a fresh re-opened stream (clarify).
 
         Used for any mid-stream interaction that must not keep updating the
         current native-stream bubble: a dangerous-command approval prompt or a
         clarify decision prompt.  Queues a boundary signal that the consumer
         processes serially: finalize the current stream with accumulated text
-        (creating a stable message), then disable native streaming so
-        post-interaction output goes through reliable send().
+        (creating a stable message for pre-prompt content), then handle
+        post-prompt output per ``reopen``.
 
         ``placeholder`` is the finalize text used only when there is no
         accumulated content yet (the prompt fired as the agent's first action).
@@ -477,6 +494,14 @@ class GatewayStreamConsumer:
         ``reason`` is a human-readable label ("Approval"/"Clarify") used only
         for the boundary handler's log prefixes so a clarify boundary doesn't
         surface as an "Approval boundary" failure during troubleshooting.
+
+        ``reopen`` controls post-prompt delivery.  False (approval): disable
+        native streaming and buffer post-prompt output into a single reliable
+        send() — approval waits are long and unbounded, so the stream may go
+        stale.  True (clarify): keep native streaming enabled so post-prompt
+        output re-opens a fresh native stream via the existing lazy re-seed,
+        restoring the typing-bubble experience; if the re-seed later fails the
+        consumer degrades to send() automatically.
 
         Returns a (Future, cancelled_flag) tuple. The Future resolves True
         when the boundary has been processed. cancelled_flag is included
@@ -502,11 +527,13 @@ class GatewayStreamConsumer:
             f.set_result(True)
             return f
 
-        # Stash the empty-content placeholder and log label for the serial
-        # boundary handler.  Boundaries are processed one at a time, so instance
-        # attributes are race-free and keep the queue signal shape unchanged.
+        # Stash the empty-content placeholder, log label, and reopen mode for
+        # the serial boundary handler.  Boundaries are processed one at a time,
+        # so instance attributes are race-free and keep the queue signal shape
+        # unchanged.
         self._boundary_placeholder = placeholder or _DEFAULT_BOUNDARY_PLACEHOLDER
         self._boundary_reason = reason or "Approval"
+        self._boundary_reopen = bool(reopen)
 
         # Create a future that run() will resolve after processing.
         # cancelled_flag is retained for backward compatibility with callers
@@ -687,20 +714,36 @@ class GatewayStreamConsumer:
                         _reason, self.chat_id, self._turn_id,
                     )
 
-            # Disable native streaming for post-approval output.
-            # Post-approval content will go through regular send() which is
-            # unconditionally reliable (no client-side stream state dependency).
-            # Also set buffer_only=True so the consumer accumulates all
-            # post-approval text and delivers it in one shot on got_done,
-            # avoiding mid-stream flushes that would create multiple messages
-            # on non-editable platforms like WeCom.
-            self._use_native_streaming = False
-            self._native_stream_opened = False
-            self._native_last_pushed_len = 0
-            self.cfg.buffer_only = True
+            if self._boundary_reopen:
+                # Clarify boundary: KEEP native streaming enabled.  The current
+                # stream was finalized above (pre-prompt content is now a stable
+                # bubble); marking it closed makes the next post-prompt delta
+                # re-open a fresh native stream via the lazy re-seed in
+                # _send_or_edit, restoring the typing-bubble experience.  Do NOT
+                # set buffer_only — post-prompt output should stream, not batch.
+                # If the re-seed later fails, the consumer degrades to send()
+                # on its own.  _awaiting_reopen_after_boundary guards got_done
+                # from re-seeding a stream just to emit a lone "✅" when the
+                # agent produced no post-prompt content.
+                self._native_stream_opened = False
+                self._native_last_pushed_len = 0
+                self._awaiting_reopen_after_boundary = True
+                self._reset_segment_state()
+            else:
+                # Approval boundary: disable native streaming for post-approval
+                # output, which goes through regular send() (unconditionally
+                # reliable, no client-side stream state dependency).  Set
+                # buffer_only=True so the consumer accumulates all post-approval
+                # text and delivers it in one shot on got_done, avoiding
+                # mid-stream flushes that would create multiple messages on
+                # non-editable platforms like WeCom.
+                self._use_native_streaming = False
+                self._native_stream_opened = False
+                self._native_last_pushed_len = 0
+                self.cfg.buffer_only = True
 
-            # Reset segment state so post-approval output starts fresh via send().
-            self._reset_segment_state()
+                # Reset segment state so post-approval output starts fresh via send().
+                self._reset_segment_state()
 
             boundary_ok = not delivery_failed
 
@@ -1227,7 +1270,24 @@ class GatewayStreamConsumer:
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
                     # full response again.
-                    if self._use_native_streaming:
+                    if (
+                        self._awaiting_reopen_after_boundary
+                        and not self._native_stream_opened
+                        and not self._accumulated
+                    ):
+                        # Clarify reopen boundary, but the agent produced no
+                        # post-prompt content.  The pre-prompt stream was already
+                        # finalized into a stable bubble at the boundary, so there
+                        # is nothing left to deliver.  Do NOT re-seed a fresh
+                        # stream just to emit a lone "✅" placeholder — that would
+                        # leave a meaningless empty bubble below the question.
+                        # Close quietly; the finalized pre-prompt bubble stands.
+                        logger.debug(
+                            "Clarify reopen boundary with no post-prompt content "
+                            "— skipping lone-placeholder finalize (turn=%s)",
+                            self._turn_id,
+                        )
+                    elif self._use_native_streaming:
                         # Native streaming MUST always close the stream with
                         # finish=true — even when _accumulated is empty (e.g.
                         # tool-only turns with no text output). Mirror OpenClaw's
@@ -2349,6 +2409,10 @@ class GatewayStreamConsumer:
                     )
                     if seed_ok:
                         self._native_stream_opened = True
+                        # A fresh stream is open — post-prompt content will
+                        # stream into it, so got_done no longer needs the
+                        # lone-placeholder guard for this turn.
+                        self._awaiting_reopen_after_boundary = False
                         logger.debug(
                             "Re-opened native stream after boundary (turn=%s)",
                             self._turn_id,

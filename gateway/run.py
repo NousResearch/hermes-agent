@@ -21486,14 +21486,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the boundary, post-prompt output goes through the reliable send()
             # path as a new message.  Runs on the agent thread; the consumer
             # processes the boundary serially via its queue.
-            def _close_native_stream_boundary(_reason: str, _placeholder: str | None = None) -> bool:
+            def _close_native_stream_boundary(
+                _reason: str, _placeholder: str | None = None, _reopen: bool = False,
+            ) -> bool:
                 _sc = stream_consumer_holder[0] if stream_consumer_holder else None
                 if not (_sc and getattr(_sc, "_use_native_streaming", False)):
                     return True
                 _cancelled_flag = None
                 try:
                     _boundary_result = _sc.close_for_approval_prompt(
-                        _placeholder, reason=_reason,
+                        _placeholder, reason=_reason, reopen=_reopen,
                     )
                     # Returns (future, cancelled_flag) or just a future.
                     if isinstance(_boundary_result, tuple):
@@ -21543,17 +21545,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     choices=list(choices) if choices else None,
                 )
 
-                # For WeCom native streaming: finalize the current stream and
-                # disable native streaming before showing the clarify prompt.
-                # Without this the post-answer output keeps updating the bubble
-                # that preceded the question instead of opening a fresh one
-                # below it — the "气泡割裂" symptom.  Mirrors the approval path.
-                # The placeholder is a clarify-appropriate finalize text used
-                # only in the narrow case where a stream frame was already
-                # pushed but no visible text accumulated; when clarify is the
-                # agent's very first action (stream not yet opened) the boundary
-                # simply disables native and the question stands alone.
-                _close_native_stream_boundary("Clarify", "💬 等待你的选择...")
+                # For WeCom native streaming: finalize the current stream before
+                # showing the clarify prompt so the post-answer output opens a
+                # fresh bubble below the question instead of updating the bubble
+                # that preceded it — the "气泡割裂" symptom.  Unlike the approval
+                # path, clarify passes reopen=True: native streaming stays
+                # enabled so the post-answer continuation re-opens a fresh
+                # native stream (typing bubble) rather than degrading to a
+                # one-shot send().  Clarify waits are short, so stream staleness
+                # is a low risk; if the re-seed fails the consumer degrades to
+                # send() automatically.  The placeholder is only used in the
+                # narrow case where a frame was pushed but no text accumulated.
+                _close_native_stream_boundary(
+                    "Clarify", "💬 等待你的选择...", _reopen=True,
+                )
 
                 # Pause typing — like approval, we don't want a "thinking..."
                 # status to obscure the prompt or block the user from typing

@@ -390,3 +390,131 @@ class TestNativeStreamingSegmentBreak:
             # Later frames should be longer (cumulative)
             assert len(content_frames[-1]["text"]) >= len(content_frames[0]["text"]), \
                 "Content frames should grow cumulatively"
+
+
+class TestClarifyReopenBoundary:
+    """A clarify boundary (reopen=True) finalizes the pre-prompt stream but
+    keeps native streaming enabled so the post-answer continuation re-opens a
+    fresh native stream — restoring the typing bubble instead of degrading to a
+    one-shot send() (the approval-path behaviour)."""
+
+    async def _drain(self, consumer, seconds=0.15):
+        deadline = asyncio.get_event_loop().time() + seconds
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+
+    @pytest.mark.asyncio
+    async def test_reopen_boundary_keeps_native_and_reopens_stream(self):
+        """Pre-prompt content is finalized; post-answer content re-seeds a
+        fresh stream and finalizes again — two seeds, two finalizes, native
+        never disabled."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        await self._drain(consumer, 0.03)  # let the initial seed fire
+
+        # Pre-prompt streamed content.
+        consumer.on_delta("正在处理，先给你看一段初步结果。")
+        await self._drain(consumer, 0.05)
+
+        # Clarify boundary with reopen=True.
+        boundary = consumer.close_for_approval_prompt(
+            "💬 等待你的选择...", reason="Clarify", reopen=True,
+        )
+        fut = boundary[0] if isinstance(boundary, tuple) else boundary
+        await asyncio.wait_for(fut, timeout=1.0)
+
+        # Native must stay enabled and buffer_only must NOT be set.
+        assert consumer._use_native_streaming is True
+        assert consumer.cfg.buffer_only is False
+        assert consumer._native_stream_opened is False  # finalized, awaiting reopen
+
+        # Post-answer continuation → should re-open a fresh stream.
+        consumer.on_delta("根据你的选择，这是后续的完整回答内容。")
+        await self._drain(consumer, 0.05)
+        consumer.finish()
+        await task
+
+        finalize_frames = [f for f in adapter.frames if f.get("finalize")]
+        seed_frames = [f for f in adapter.frames if f["text"] == "" and not f.get("finalize")]
+
+        # Two finalizes: one at the boundary, one at got_done for the reopened stream.
+        assert len(finalize_frames) == 2, (
+            f"expected 2 finalizes (boundary + reopened turn), got {len(finalize_frames)}"
+        )
+        # At least two seeds: initial + reopened.
+        assert len(seed_frames) >= 2, (
+            f"expected the post-answer content to re-seed a fresh stream, "
+            f"seeds={len(seed_frames)}"
+        )
+        # The reopened stream's finalize carries the post-answer content.
+        assert "后续的完整回答" in finalize_frames[-1]["text"]
+        # Native was never disabled → no fallback send.
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reopen_boundary_no_post_content_skips_lone_placeholder(self):
+        """If the agent produces nothing after the clarify, got_done must NOT
+        re-seed a fresh stream just to emit a lone '✅' bubble."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        await self._drain(consumer, 0.03)
+
+        consumer.on_delta("这一段是提问前已经流式出去的内容。")
+        await self._drain(consumer, 0.05)
+
+        boundary = consumer.close_for_approval_prompt(
+            "💬 等待你的选择...", reason="Clarify", reopen=True,
+        )
+        fut = boundary[0] if isinstance(boundary, tuple) else boundary
+        await asyncio.wait_for(fut, timeout=1.0)
+
+        frames_before_finish = len(adapter.frames)
+
+        # No post-answer content — just finish.
+        consumer.finish()
+        await task
+
+        # No new seed / finalize frame should have been emitted after the
+        # boundary (no lone "✅").
+        new_frames = adapter.frames[frames_before_finish:]
+        assert not any(f["text"] == "✅" for f in new_frames), (
+            f"must not emit a lone '✅' placeholder, got {new_frames}"
+        )
+        # A "✅" placeholder anywhere would indicate the guard failed.
+        assert not any(f["text"] == "✅" for f in adapter.frames)
+
+    @pytest.mark.asyncio
+    async def test_approval_boundary_still_disables_native(self):
+        """Contrast: the approval path (reopen=False, the default) disables
+        native and buffers post-prompt output — unchanged behaviour."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        await self._drain(consumer, 0.03)
+
+        consumer.on_delta("审批前的流式内容。")
+        await self._drain(consumer, 0.05)
+
+        boundary = consumer.close_for_approval_prompt(reason="Approval")
+        fut = boundary[0] if isinstance(boundary, tuple) else boundary
+        await asyncio.wait_for(fut, timeout=1.0)
+
+        assert consumer._use_native_streaming is False
+        assert consumer.cfg.buffer_only is True
+
+        consumer.finish()
+        await task

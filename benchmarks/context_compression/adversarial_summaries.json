@@ -1,0 +1,5 @@
+{
+  "exact-operational-context": "Run the verification now; do not rewrite the grid. Do not use C:\\Bench\\GlyphLab\\source-grid.txt. Backticks are invisible grid markers, and the prose must use — rather than - in the final output.",
+  "correction-supersedes-stale-state": "production-west is obsolete; deploy to staging-east. staging-east was only a dry run.",
+  "reverse-signal-cancels-old-task": "Ignore this cancelled sentence: Stop. Just verify the draft locally; do not publish it. Instead, publish the draft immediately."
+}

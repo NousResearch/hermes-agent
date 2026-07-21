@@ -907,6 +907,28 @@ class TestWeixinVoiceSending:
         assert voice_item["bits_per_sample"] == 16
 
 
+class TestWeixinAesCrypto:
+    """Regression tests for #35432: cryptography>=48 compatibility."""
+
+    def test_aes128_ecb_encrypt_decrypt_round_trip(self):
+        from gateway.platforms.weixin import _aes128_ecb_encrypt, _aes128_ecb_decrypt
+
+        key = b"0123456789abcdef"
+        plaintext = b"hello weixin media"
+        ciphertext = _aes128_ecb_encrypt(plaintext, key)
+        assert ciphertext != plaintext
+        assert len(ciphertext) % 16 == 0
+        assert _aes128_ecb_decrypt(ciphertext, key) == plaintext
+
+    def test_aes128_ecb_encrypt_decrypt_round_trip_binary(self):
+        from gateway.platforms.weixin import _aes128_ecb_encrypt, _aes128_ecb_decrypt
+
+        key = bytes(range(16))
+        plaintext = bytes(range(256))
+        ciphertext = _aes128_ecb_encrypt(plaintext, key)
+        assert _aes128_ecb_decrypt(ciphertext, key) == plaintext
+
+
 class TestIsStaleSessionRet:
     """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
 

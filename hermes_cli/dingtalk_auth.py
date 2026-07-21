@@ -152,75 +152,13 @@ def wait_for_registration_success(
 
 
 # ── QR code rendering ─────────────────────────────────────────────────────
+# Canonical implementations moved to hermes_cli/terminal_qr.py (shared with
+# `hermes dashboard --qr`); re-exported here for existing callers.
 
-def _ensure_qrcode_installed() -> bool:
-    """Try to import qrcode; if missing, auto-install it via pip/uv."""
-    try:
-        import qrcode  # noqa: F401
-        return True
-    except ImportError:
-        pass
-
-    import subprocess
-
-    from hermes_cli.tools_config import _pip_install
-
-    try:
-        result = _pip_install(["-q", "qrcode"], timeout=120)
-        if result.returncode == 0:
-            import qrcode  # noqa: F401,F811
-            return True
-    except (subprocess.SubprocessError, ImportError, OSError):
-        pass
-    return False
-
-
-def render_qr_to_terminal(url: str) -> bool:
-    """Render *url* as a compact QR code in the terminal.
-
-    Returns True if the QR code was printed, False if the library is missing.
-    """
-    try:
-        import qrcode
-    except ImportError:
-        return False
-
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=1,
-        border=1,
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
-
-    # Use half-block characters for compact rendering (2 rows per character)
-    matrix = qr.get_matrix()
-    rows = len(matrix)
-    lines: list[str] = []
-
-    TOP_HALF = "\u2580"      # ▀
-    BOTTOM_HALF = "\u2584"   # ▄
-    FULL_BLOCK = "\u2588"    # █
-    EMPTY = " "
-
-    for r in range(0, rows, 2):
-        line_chars: list[str] = []
-        for c in range(len(matrix[r])):
-            top = matrix[r][c]
-            bottom = matrix[r + 1][c] if r + 1 < rows else False
-            if top and bottom:
-                line_chars.append(FULL_BLOCK)
-            elif top:
-                line_chars.append(TOP_HALF)
-            elif bottom:
-                line_chars.append(BOTTOM_HALF)
-            else:
-                line_chars.append(EMPTY)
-        lines.append("    " + "".join(line_chars))
-
-    print("\n".join(lines))
-    return True
+from hermes_cli.terminal_qr import (  # noqa: E402
+    ensure_qrcode_installed as _ensure_qrcode_installed,
+    render_qr_to_terminal,
+)
 
 
 # ── High-level entry point for the setup wizard ───────────────────────────

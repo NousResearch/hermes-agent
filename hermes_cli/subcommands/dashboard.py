@@ -107,6 +107,27 @@ def build_dashboard_parser(
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"
     )
+    dashboard_parser.add_argument(
+        "--qr",
+        dest="show_qr",
+        action="store_true",
+        help=(
+            "Print a phone-scannable QR of the Web UI URL once the server is "
+            "up. Encodes --public-url when given, otherwise the machine's LAN "
+            "IP for a wildcard bind. Auth is unchanged: the scanned page lands "
+            "on the sign-in screen when the auth gate is engaged."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--public-url",
+        dest="public_url",
+        default="",
+        metavar="URL",
+        help=(
+            "Externally reachable URL for this dashboard (e.g. your tunnel "
+            "hostname). Used by --qr instead of the bind address."
+        ),
+    )
     # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
     # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
     # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is

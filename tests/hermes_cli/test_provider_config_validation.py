@@ -149,6 +149,41 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
+    def test_type_alias_maps_to_api_mode_without_warning(self, caplog):
+        """Keyed providers may use type as an OpenAI-compatible api_mode alias."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "type": "openai",
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="ollama-local")
+        assert result is not None
+        assert result["api_mode"] == "openai"
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_api_mode_precedence_over_transport_and_type(self):
+        """api_mode remains the highest-precedence provider transport field."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_mode": "chat_completions",
+            "transport": "responses",
+            "type": "openai",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "chat_completions"
+
+    def test_transport_precedence_over_type(self):
+        """transport keeps precedence over the lower-precedence type alias."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "transport": "chat_completions",
+            "type": "openai",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "chat_completions"
+
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""
         entry = {

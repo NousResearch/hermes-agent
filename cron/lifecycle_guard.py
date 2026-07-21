@@ -25,7 +25,7 @@ command shape.
 
 This is a defence-in-depth layer.  ``tools/terminal_tool.py`` already
 blocks these commands at *execution* time when ``_HERMES_GATEWAY=1``, and
-``hermes gateway stop|restart`` refuse to self-target from inside the
+``hermes gateway stop|restart|uninstall`` refuse to self-target from inside the
 gateway.  Blocking at *creation* time as well means the agent gets an
 immediate, informative rejection instead of scheduling a job that will
 only fail (silently) when it fires.
@@ -47,16 +47,16 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
+    # Branch A: destructive `hermes gateway` operations.
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    r"(?:hermes\s+gateway\s+(?:restart|stop|uninstall))"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
     # `launchctl unload ai.hermes.update-checker.plist`).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:bootout|kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
@@ -134,7 +134,7 @@ def check_gateway_lifecycle(
     if contains_gateway_lifecycle_command(combined):
         raise GatewayLifecycleBlocked(
             "Blocked: cron job contains a gateway lifecycle command "
-            "(restart/stop/kill). This is blocked to prevent agent-driven "
+            "(restart/stop/uninstall/kill). This is blocked to prevent agent-driven "
             "SIGTERM-respawn loops under launchd/systemd supervision "
             "(#30719). Run `hermes gateway restart` from a shell outside "
             "the running gateway instead."

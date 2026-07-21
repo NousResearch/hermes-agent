@@ -132,6 +132,63 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
 )
 
 
+def _load_gateway_runtime_env() -> None:
+    """Load gateway env files needed by direct tool calls.
+
+    The CLI send command already bridges ~/.hermes/.env and top-level scalar
+    config.yaml values into os.environ before calling this tool. Gateway MCP
+    tool calls can arrive in a process that does not have those values loaded,
+    so do the same lightweight bridge here before load_gateway_config() runs.
+    """
+    try:
+        from hermes_cli.config import get_hermes_home, load_env
+    except Exception:
+        return
+
+    try:
+        for key, value in load_env().items():
+            os.environ[key] = str(value)
+    except Exception:
+        pass
+
+    try:
+        home = get_hermes_home()
+    except Exception:
+        return
+
+    config_path = home / "config.yaml"
+    if not config_path.exists():
+        return
+
+    try:
+        import yaml  # type: ignore[import-not-found]
+    except Exception:
+        return
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+    except Exception:
+        return
+
+    try:
+        from hermes_cli.config import _expand_env_vars
+
+        raw = _expand_env_vars(raw)
+    except Exception:
+        pass
+
+    if not isinstance(raw, dict):
+        return
+
+    for key, value in raw.items():
+        if key in os.environ:
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            continue
+        os.environ[key] = str(value)
+
+
 def _sanitize_error_text(text) -> str:
     """Redact secrets from error text before surfacing it to users/models."""
     redacted = redact_sensitive_text(text)
@@ -391,6 +448,8 @@ def _handle_send(args):
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
+
+    _load_gateway_runtime_env()
 
     try:
         from gateway.config import load_gateway_config, Platform

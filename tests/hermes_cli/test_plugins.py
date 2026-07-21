@@ -512,6 +512,33 @@ class TestPluginDiscovery:
 
         assert _get_extra_plugin_paths() == [external_root.resolve()]
 
+    def test_unresolvable_extra_path_does_not_hide_later_valid_path(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        hermes_home = tmp_path / "hermes_test"
+        unresolvable = tmp_path / "unresolvable-plugin-path"
+        valid = tmp_path / "valid-plugins"
+        valid.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        original_resolve = Path.resolve
+
+        def _resolve(path, *, strict=False):
+            if path == unresolvable:
+                raise OSError("simulated resolution failure")
+            return original_resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", _resolve)
+        _write_plugins_config(
+            hermes_home,
+            extra_paths=[str(unresolvable), str(valid)],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            paths = _get_extra_plugin_paths()
+
+        assert paths == [original_resolve(valid)]
+        assert "could not resolve configured plugin extra path" in caplog.text.lower()
+
     def test_invalid_extra_paths_config_logs_actionable_warning(self, tmp_path, monkeypatch, caplog):
         hermes_home = tmp_path / "hermes_test"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))

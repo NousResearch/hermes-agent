@@ -73,7 +73,22 @@ from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
-    _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
+
+    def _preferred_cursor_shape():
+        """Pick a cursor shape that avoids input glyph occlusion on macOS terminals.
+
+        A steady block cursor fixed border flashing in ghostty+tmux, but on
+        iTerm/Terminal.app it can visually cover the current glyph in the input
+        area and make typed text look blacked out/invisible. Keep the block
+        cursor only for tmux/ghostty-style environments that needed the original
+        workaround; otherwise use a beam cursor for normal text entry.
+        """
+        term_program = os.environ.get("TERM_PROGRAM", "").strip().lower()
+        if os.environ.get("TMUX") or term_program in {"ghostty", "wezterm"}:
+            return CursorShape.BLOCK
+        return CursorShape.BEAM
+
+    _STEADY_CURSOR = _preferred_cursor_shape()
 except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 

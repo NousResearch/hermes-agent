@@ -283,6 +283,40 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def request_overrides_for_turn(agent, turn_overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-turn ``request_overrides`` for a reused (cached) gateway agent.
+
+    The gateway reconfigures a cached agent on every turn. Replacing
+    ``agent.request_overrides`` outright with the turn route's value keeps a
+    transient turn override (e.g. ``service_tier`` from ``/fast``) from leaking
+    into later turns, but it also drops the durable
+    ``custom_providers[].extra_body`` that ``_merge_custom_provider_extra_body``
+    applied at init — silently disabling it on messaging paths while the CLI
+    keeps working (issue #54922).
+
+    Recompute that ``extra_body`` from the agent's config each turn (never
+    reading ``agent.request_overrides`` as the base, so nothing accumulates
+    across turns) and overlay the turn route on top so the turn wins on
+    conflict. With no custom-provider ``extra_body`` this returns the turn
+    overrides unchanged, identical to the previous behavior.
+    """
+    result = dict(turn_overrides or {})
+    extra_body = _custom_provider_extra_body_for_agent(
+        provider=getattr(agent, "provider", "") or "",
+        model=getattr(agent, "model", "") or "",
+        base_url=getattr(agent, "base_url", "") or "",
+        custom_providers=getattr(agent, "_custom_providers", None) or [],
+    )
+    if not extra_body:
+        return result
+    merged_extra_body = dict(extra_body)
+    turn_extra_body = result.get("extra_body")
+    if isinstance(turn_extra_body, dict):
+        merged_extra_body.update(turn_extra_body)
+    result["extra_body"] = merged_extra_body
+    return result
+
+
 def init_agent(
     agent,
     base_url: str = None,

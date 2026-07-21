@@ -1168,6 +1168,18 @@ def _resolve_profile_context_length(
                 api_key=api_key,
                 base_url=base_url or None,
             )
+            if fetched is not None and not isinstance(fetched, list):
+                logger.debug(
+                    "Provider %s live metadata returned unsupported type %s",
+                    profile_name,
+                    type(fetched).__name__,
+                )
+                fetched = None
+            valid_fetched = (
+                [entry for entry in fetched if isinstance(entry, dict)]
+                if fetched
+                else []
+            )
         except Exception as exc:
             logger.debug(
                 "Provider %s live metadata lookup failed: %s",
@@ -1175,12 +1187,7 @@ def _resolve_profile_context_length(
                 exc,
             )
             fetched = None
-
-        valid_fetched = (
-            [entry for entry in fetched if isinstance(entry, dict)]
-            if fetched
-            else []
-        )
+            valid_fetched = []
         if valid_fetched:
             entries = valid_fetched
             _profile_model_metadata_cache[cache_key] = entries

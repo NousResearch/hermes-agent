@@ -1066,6 +1066,31 @@ class TestProviderProfileLiveMetadataContextResolution:
         assert context_length == repeated_context_length == 202_752
         profile.fetch_model_metadata.assert_called_once()
 
+    def test_malformed_live_metadata_is_cached_and_preserves_fallback_chain(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "malformed-vendor"
+        profile.models_url = ""
+        profile.fetch_model_metadata.return_value = 42
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=202_752,
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                provider="malformed-vendor",
+            )
+            repeated_context_length = get_model_context_length(
+                model="vendor/model",
+                provider="malformed-vendor",
+            )
+
+        assert context_length == repeated_context_length == 202_752
+        profile.fetch_model_metadata.assert_called_once()
+
     def test_repeated_resolution_reuses_profile_metadata_within_ttl(self):
         profile = MagicMock(use_live_model_metadata=True)
         profile.name = "cached-vendor"

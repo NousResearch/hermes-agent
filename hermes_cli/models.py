@@ -3733,6 +3733,31 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# Catalog entries whose ``status`` marks them unusable (case-insensitive).
+# ARK-style providers (e.g. Volcengine) tag decommissioned models with
+# ``Shutdown``/``Retiring`` but keep returning them from ``/models``; passing
+# them through floods the ``/model`` picker with entries that fail on use
+# (#68536). Entries with no ``status`` field (OpenAI-style catalogs) are
+# always kept.
+_UNAVAILABLE_MODEL_STATUSES = frozenset({"shutdown", "retiring", "retired"})
+
+
+def _is_model_entry_available(entry: Any) -> bool:
+    """Return True when a ``/models`` catalog entry is usable for the picker.
+
+    Drops entries without a non-empty ``id`` (malformed rows previously
+    surfaced as ``""``) and entries whose ``status`` is a known
+    decommissioned marker. Unknown or absent statuses pass through — the
+    filter must never hide a working model.
+    """
+    if not isinstance(entry, dict) or not entry.get("id"):
+        return False
+    status = entry.get("status")
+    if isinstance(status, str) and status.strip().lower() in _UNAVAILABLE_MODEL_STATUSES:
+        return False
+    return True
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3802,7 +3827,11 @@ def probe_api_models(
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": [
+                        m["id"]
+                        for m in data.get("data", [])
+                        if _is_model_entry_available(m)
+                    ],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,

@@ -12,7 +12,7 @@ import asyncio
 import base64
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -27,6 +27,7 @@ from agent.plugin_llm import (
     _check_overrides,
     _coerce_allowlist,
     _parse_structured_text,
+    _resolve_profile_credentials,
     _strip_code_fences,
     _TrustPolicy,
     make_plugin_llm_for_test,
@@ -532,6 +533,108 @@ class TestPluginLlmFacade:
         assert captured["temperature"] == 0.0
         assert captured["max_tokens"] == 128
         assert captured["timeout"] == 10.0
+
+    def test_profile_override_passes_pool_api_key_to_call_llm(self, monkeypatch):
+        """Trusted profile= must select a credential-pool entry and pass
+        its runtime key into call_llm — not bury the name in extra_body."""
+        entry = SimpleNamespace(
+            runtime_api_key="sk-work-account",
+            runtime_base_url="https://openrouter.ai/api/v1",
+            access_token="sk-work-account",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        pool = SimpleNamespace(
+            resolve_target=lambda target: (
+                (1, entry, None)
+                if str(target) == "work"
+                else (None, None, f'No credential matching "{target}".')
+            )
+        )
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: pool,
+        )
+
+        captured: dict = {}
+
+        def fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _fake_response("ok")
+
+        llm = PluginLlm(plugin_id="my-plugin")
+        llm._policy_loader = lambda _pid: _trusted_policy("my-plugin")
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+            result = llm.complete(
+                [{"role": "user", "content": "hi"}],
+                provider="openrouter",
+                model="openai/gpt-4o-mini",
+                profile="work",
+                purpose="repro",
+            )
+
+        assert result.audit["profile"] == "work"
+        assert captured["provider"] == "openrouter"
+        assert captured["api_key"] == "sk-work-account"
+        assert captured["base_url"] == "https://openrouter.ai/api/v1"
+        assert captured["model"] == "openai/gpt-4o-mini"
+        extra = captured.get("extra_body") or {}
+        metadata = extra.get("metadata") or {}
+        assert "auth_profile" not in metadata
+
+    def test_profile_override_unknown_target_raises(self, monkeypatch):
+        pool = SimpleNamespace(
+            resolve_target=lambda target: (
+                None,
+                None,
+                f'No credential matching "{target}".',
+            )
+        )
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: pool,
+        )
+        llm = PluginLlm(plugin_id="my-plugin")
+        llm._policy_loader = lambda _pid: _trusted_policy("my-plugin")
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=AssertionError("call_llm must not run"),
+        ):
+            with pytest.raises(ValueError, match="No credential matching"):
+                llm.complete(
+                    [{"role": "user", "content": "hi"}],
+                    provider="anthropic",
+                    profile="missing-label",
+                )
+
+    def test_resolve_profile_credentials_uses_active_provider_when_unset(
+        self, monkeypatch
+    ):
+        entry = SimpleNamespace(
+            runtime_api_key="sk-active",
+            runtime_base_url=None,
+            access_token="sk-active",
+            base_url=None,
+        )
+        seen: dict = {}
+
+        def fake_load_pool(provider):
+            seen["provider"] = provider
+            return SimpleNamespace(
+                resolve_target=lambda _t: (1, entry, None),
+            )
+
+        monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_requested_provider",
+            lambda _requested=None: "anthropic",
+        )
+        provider, api_key, base_url = _resolve_profile_credentials(None, "work")
+        assert seen["provider"] == "anthropic"
+        assert provider == "anthropic"
+        assert api_key == "sk-active"
+        assert base_url is None
 
     def test_complete_structured_returns_parsed_json(self):
         def fake_caller(**_kwargs):

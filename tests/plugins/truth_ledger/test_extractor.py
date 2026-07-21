@@ -206,6 +206,53 @@ def test_extract_canonicalizes_contextual_response_style_value():
     assert out["facts"][0]["value"] == "detailed"
 
 
+def test_extract_canonicalizes_workflow_and_rollout_aliases():
+    extractor = _load_extractor_module()
+    raw_facts = []
+    for key, value, scope, kind in (
+        ("proposals.presentation_order", "options_first", "user", "workflow"),
+        ("proposals.delivery_format", "google_docs_with_links", "user", "workflow"),
+        (
+            "rollout.review_requirement",
+            "An independent exact-commit review is required before rollout.",
+            "project",
+            "constraint",
+        ),
+        (
+            "merge.approval_requirement",
+            "Do not merge without explicit approval.",
+            "project",
+            "constraint",
+        ),
+        (
+            "default_profile_enablement.approval_requirement",
+            "Do not enable the default profile without explicit approval.",
+            "project",
+            "constraint",
+        ),
+    ):
+        candidate = _candidate(value=value)
+        candidate["fact"].update({"key": key, "scope": scope, "kind": kind})
+        raw_facts.append(candidate)
+
+    llm = _FakeLLM(
+        lambda **_kwargs: _FakeStructuredResult(
+            parsed={"schema_name": "truth-ledger.fact-candidates.v1", "facts": raw_facts}
+        )
+    )
+
+    out = _run(extractor.extract_candidates(ctx=_FakeCtx(llm), envelope=_envelope()))
+
+    assert out["status"] == "ok"
+    assert [(fact["key"], fact["value"]) for fact in out["facts"]] == [
+        ("proposal.presentation_order", "options first"),
+        ("proposal.delivery_format", "Google Docs with links"),
+        ("rollout.independent_exact_commit_review_required", True),
+        ("rollout.merge_requires_explicit_approval", True),
+        ("rollout.default_profile_change_requires_explicit_approval", True),
+    ]
+
+
 def test_extractor_prompt_declares_response_style_value_contract():
     extractor = _load_extractor_module()
     llm = _FakeLLM(
@@ -219,7 +266,29 @@ def test_extractor_prompt_declares_response_style_value_contract():
     assert out["status"] == "none"
     instructions = llm.calls[0]["instructions"]
     assert "response.style value must be exactly concise or detailed" in instructions
-    assert out["extraction"]["prompt_version"] == 2
+    assert "Use canonical key response.style only for an unqualified global response preference" in instructions
+    assert "response.style.engineering_review" in instructions
+    assert "response.style.slack_progress" in instructions
+    assert "proposal.presentation_order" in instructions
+    assert "proposal.delivery_format" in instructions
+    assert "rollout.independent_exact_commit_review_required" in instructions
+    assert "rollout.merge_requires_explicit_approval" in instructions
+    assert "rollout.default_profile_change_requires_explicit_approval" in instructions
+    assert out["extraction"]["prompt_version"] == 4
+
+
+def test_default_timeout_is_bounded_above_observed_structured_latency():
+    extractor = _load_extractor_module()
+    llm = _FakeLLM(
+        lambda **_kwargs: _FakeStructuredResult(
+            parsed={"schema_name": "truth-ledger.fact-candidates.v1", "facts": []}
+        )
+    )
+
+    out = _run(extractor.extract_candidates(ctx=_FakeCtx(llm), envelope=_envelope()))
+
+    assert out["status"] == "none"
+    assert llm.calls[0]["timeout"] == 30.0
 
 
 def test_extract_canonicalizes_timezone_kind():

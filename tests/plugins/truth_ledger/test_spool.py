@@ -203,6 +203,34 @@ def test_ack_processing_removes_record_and_only_owned_payloads(tmp_path, spool_m
     assert foreign_payload.exists() is True
 
 
+def test_ack_crash_after_processing_removal_does_not_retain_completed_payload(
+    tmp_path, spool_mod, monkeypatch
+):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue({**_source_envelope(), "turn_id": "ack-crash"})["ok"] is True
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+
+    processing_path = Path(claim["path"])
+    payload_path = Path(str(claim["record"]["payload_path"]))
+
+    def _simulate_process_death(_record):
+        raise SystemExit("synthetic ack process death")
+
+    monkeypatch.setattr(spool, "_unlink_payload_if_owned", _simulate_process_death)
+    with pytest.raises(SystemExit, match="synthetic ack process death"):
+        spool.ack_processing(processing_path)
+
+    assert processing_path.exists() is False
+    assert payload_path.exists() is True
+    assert len(list(spool.completed_dir.glob("*.json"))) == 1
+
+    restarted = spool_mod.TruthSpool(tmp_path)
+    assert restarted.recover_orphan_payloads() == 0
+    assert payload_path.exists() is False
+    assert list(restarted.pending_dir.glob("*.json")) == []
+
+
 def test_dead_letter_and_soft_overflow_remove_payload_files(tmp_path, spool_mod):
     spool = spool_mod.TruthSpool(tmp_path, soft_count=1, hard_count=5)
 

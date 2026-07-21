@@ -435,22 +435,32 @@ class TruthSpool:
         return {"ok": True, "path": str(completed)}
 
     def recover_orphan_payloads(self) -> int:
-        """Reconstruct pending records for valid payloads left by process death."""
+        """Reconstruct live orphan payloads and purge terminal-state payloads."""
         recovered = 0
         with _spool_lock(self.lock_path):
-            referenced: set[Path] = set()
+            active_references: set[Path] = set()
+            terminal_references: set[Path] = set()
             for directory in self._record_dirs():
+                references = (
+                    active_references
+                    if directory in {self.pending_dir, self.processing_dir}
+                    else terminal_references
+                )
                 for record_path in directory.glob("*.json"):
                     try:
                         record = self._load_record(record_path)
                         payload_path = self._payload_path_from_record(record)
                         if payload_path is not None:
-                            referenced.add(payload_path.resolve(strict=False))
+                            references.add(payload_path.resolve(strict=False))
                     except Exception:
                         continue
 
             for payload_path in sorted(self.payloads_dir.glob("*.json")):
-                if payload_path.resolve(strict=False) in referenced:
+                resolved_payload = payload_path.resolve(strict=False)
+                if resolved_payload in active_references:
+                    continue
+                if resolved_payload in terminal_references:
+                    payload_path.unlink()
                     continue
                 try:
                     envelope = json.loads(payload_path.read_text(encoding="utf-8"))

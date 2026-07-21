@@ -19,10 +19,30 @@ _REASON_SCHEMA_MISMATCH = "schema_mismatch"
 _REASON_EXTRACTION_FAILED = "extraction_failed"
 _KEY_ALIASES = {
     "response.default_conciseness": "response.style",
+    "proposals.presentation_order": "proposal.presentation_order",
+    "proposals.delivery_format": "proposal.delivery_format",
+    "rollout.review_requirement": "rollout.independent_exact_commit_review_required",
+    "merge.approval_requirement": "rollout.merge_requires_explicit_approval",
+    "default_profile_enablement.approval_requirement": (
+        "rollout.default_profile_change_requires_explicit_approval"
+    ),
 }
 _KIND_BY_KEY = {
     "response.style": "preference",
     "timezone": "preference",
+}
+_VALUE_ALIASES_BY_KEY = {
+    "proposal.presentation_order": {
+        "options_first": "options first",
+    },
+    "proposal.delivery_format": {
+        "google_docs_with_links": "Google Docs with links",
+    },
+}
+_BOOLEAN_REQUIREMENT_KEYS = {
+    "rollout.independent_exact_commit_review_required",
+    "rollout.merge_requires_explicit_approval",
+    "rollout.default_profile_change_requires_explicit_approval",
 }
 _RESPONSE_STYLE_VALUE_ALIASES = {
     "concise by default": "concise",
@@ -31,6 +51,16 @@ _RESPONSE_STYLE_VALUE_ALIASES = {
 
 
 def _normalize_fact_value(key: str, value: Any) -> Any:
+    if isinstance(value, str):
+        normalized_text = value.strip().lower()
+        aliases = _VALUE_ALIASES_BY_KEY.get(key, {})
+        if normalized_text in aliases:
+            return aliases[normalized_text]
+        if key in _BOOLEAN_REQUIREMENT_KEYS and (
+            ("required" in normalized_text and "not required" not in normalized_text)
+            or "without explicit approval" in normalized_text
+        ):
+            return True
     if key != "response.style":
         return value
     if isinstance(value, str):
@@ -45,11 +75,11 @@ def _normalize_fact_value(key: str, value: Any) -> Any:
 
 @dataclass(frozen=True)
 class ExtractorSettings:
-    timeout_seconds: float = 8.0
+    timeout_seconds: float = 30.0
     max_attempts: int = 6
     base_delay_ms: int = 500
     max_delay_ms: int = 60_000
-    prompt_version: int = 2
+    prompt_version: int = 4
     override_mode: str = "off"  # off | explicit
     provider_override: str | None = None
     model_override: str | None = None
@@ -205,8 +235,17 @@ async def extract_candidates(
     instructions = (
         "Extract only durable atomic facts for truth-ledger.fact-candidates.v1. "
         "Return JSON matching schema_name truth-ledger.fact-candidates.v1 with facts array. "
-        "Use canonical key response.style for response verbosity or conciseness preferences; "
+        "Use canonical key response.style only for an unqualified global response preference; "
         "a response.style value must be exactly concise or detailed. "
+        "For a context-specific response preference, preserve the context in a dotted key; "
+        "for example, use response.style.engineering_review for engineering reviews and "
+        "response.style.slack_progress for Slack progress updates, with a concise or detailed value. "
+        "Emit separate atomic facts when one message states preferences for multiple contexts. "
+        "For proposal workflows, use proposal.presentation_order with value options first and "
+        "proposal.delivery_format with value Google Docs with links. "
+        "For rollout constraints, use rollout.independent_exact_commit_review_required, "
+        "rollout.merge_requires_explicit_approval, and "
+        "rollout.default_profile_change_requires_explicit_approval with boolean values. "
         "Use canonical key timezone for timezone preferences. "
         "User-scoped subjects are derived from trusted origin metadata after extraction. "
         "Conversational gratitude, acknowledgements, pleasantries, and transient remarks are not durable facts. "

@@ -524,7 +524,7 @@ class ResponsesApiTransport(ProviderTransport):
         """Convert OpenAI tool schemas to Responses API function definitions."""
         from agent.codex_responses_adapter import _responses_tools
 
-        return _responses_tools(tools)
+        return _responses_tools(self.project_tools(tools))
 
     def build_kwargs(
         self, model: str, messages: list[dict[str, Any]], tools: Optional[list[dict[str, Any]]] = None, **params,

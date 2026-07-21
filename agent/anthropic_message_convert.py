@@ -146,15 +146,35 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
 def convert_tools_to_anthropic(tools: List[Dict], base_url: str | None = None) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format. Duplicate names are dropped with a
     warning (Anthropic hard-400s on them); ``cache_control`` on the OpenAI tool dict is forwarded.
-    A function schema may carry an ``_anthropic_server_tool`` marker: on Anthropic's native endpoint
-    it replaces the client-side function definition with a copy of that server-tool spec;
-    compatible third-party endpoints keep the ordinary function definition because support for
-    Anthropic-hosted tools cannot be assumed there."""
+    A function schema may carry a generic ``_hermes_server_tool`` binding: on Anthropic's native
+    endpoint a matching binding replaces the client-side function definition with a copy of its
+    provider-native spec. Compatible third-party endpoints omit server-only tools because neither
+    the endpoint nor Hermes's local dispatcher can execute them."""
     result = []
     seen_names: set = set()
     for t in tools or []:
         fn = t.get("function", {})
         name = fn.get("name", "")
+        if (server_binding := fn.get("_hermes_server_tool")) is not None:
+            server_spec = (
+                server_binding.get("definition")
+                if isinstance(server_binding, dict) and server_binding.get("api_mode") == "anthropic_messages"
+                else None
+            )
+            if isinstance(server_spec, dict) and server_spec.get("type") and not _is_third_party_anthropic_endpoint(base_url):
+                server_name = server_spec.get("name", "")
+                if server_name and server_name in seen_names:
+                    logger.warning(
+                        "convert_tools_to_anthropic: duplicate tool name '%s' — dropping second occurrence", server_name
+                    )
+                else:
+                    result.append(copy.deepcopy(server_spec))
+                    if server_name:
+                        seen_names.add(server_name)
+            # Server-only bindings never degrade to local function tools: a third-party
+            # Anthropic-compatible endpoint cannot execute the native definition, while the selected
+            # local backend is also intentionally non-executable.
+            continue
         # Defensive dedup: Anthropic rejects requests with duplicate tool names. Upstream injection paths
         # already dedup, but this guard converts a hard API failure into a warning. See: #18478
         if name and name in seen_names:
@@ -162,10 +182,6 @@ def convert_tools_to_anthropic(tools: List[Dict], base_url: str | None = None) -
             continue
         if name:
             seen_names.add(name)
-        server_spec = fn.get("_anthropic_server_tool")
-        if isinstance(server_spec, dict) and server_spec.get("type") and not _is_third_party_anthropic_endpoint(base_url):
-            result.append(copy.deepcopy(server_spec))
-            continue
         anthropic_tool: Dict[str, Any] = {
             "name": name, "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(fn.get("parameters") or {}),

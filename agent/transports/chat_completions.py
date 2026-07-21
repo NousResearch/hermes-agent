@@ -355,8 +355,8 @@ class ChatCompletionsTransport(ProviderTransport):
         return [m if s is None else s for m, s in sanitized_pairs]
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Tools are already in OpenAI format — identity."""
-        return tools
+        """Project tools for this transport; ordinary tools stay OpenAI-shaped."""
+        return self.project_tools(tools) or []
 
     def build_kwargs(
         self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **params,
@@ -367,6 +367,7 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         sanitized = self.convert_messages(messages, model=model)
+        tools = self.convert_tools(tools) if tools else tools
         _profile = params.get("provider_profile")
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)

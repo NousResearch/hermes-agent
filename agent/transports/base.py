@@ -8,6 +8,38 @@ from typing import Any, Dict, List, Optional
 
 from agent.transports.types import NormalizedResponse
 
+_HERMES_SERVER_TOOL_KEY = "_hermes_server_tool"
+
+
+def project_tools_for_transport(
+    tools: Optional[List[Dict[str, Any]]], api_mode: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Project logical Hermes tools onto one provider transport.
+
+    A function definition carrying ``_hermes_server_tool`` is server-only: it may be advertised solely to the
+    api_mode named by that binding. The target transport consumes the binding and emits its provider-native
+    tool definition; every other transport omits the tool entirely. This keeps Hermes-internal metadata off
+    the wire and prevents fallbacks from exposing a client function whose handler cannot execute locally.
+    Ordinary tools retain their original objects so the common path does not copy the tool list per request.
+    """
+    if tools is None:
+        return None
+    projected: List[Dict[str, Any]] = []
+    changed = False
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict) or _HERMES_SERVER_TOOL_KEY not in function:
+            projected.append(tool)
+            continue
+        binding = function.get(_HERMES_SERVER_TOOL_KEY)
+        if isinstance(binding, dict) and binding.get("api_mode") == api_mode:
+            projected.append(tool)
+        else:
+            # A malformed or foreign binding is deliberately omitted: forwarding it either leaks internal
+            # metadata or exposes an unexecutable tool.
+            changed = True
+    return projected if changed else tools
+
 
 class ProviderTransport(ABC):
     """Base class for provider-specific format conversion and normalization."""
@@ -51,3 +83,7 @@ class ProviderTransport(ABC):
     def map_finish_reason(self, raw_reason: str) -> str:
         """Map a provider stop reason via ``_STOP_REASON_MAP`` (unknown -> 'stop'); passthrough when no map."""
         return raw_reason if self._STOP_REASON_MAP is None else self._STOP_REASON_MAP.get(raw_reason, "stop")
+
+    def project_tools(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        """Return only tool definitions executable through this transport."""
+        return project_tools_for_transport(tools, self.api_mode)

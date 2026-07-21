@@ -459,7 +459,13 @@ class TestDocumentDownloadBlock:
 
     @pytest.mark.asyncio
     async def test_voice_cache_failure_replies_and_signals_agent(self, adapter):
-        """Same fail-closed contract applies to the voice site (#23045 Bug 2 class)."""
+        """Retry exhaustion still surfaces failure to both user and agent."""
+        adapter.config.extra.update(
+            {
+                "media_download_attempts": 2,
+                "media_download_retry_delay_seconds": 0,
+            }
+        )
         msg = _make_message()
         msg.voice = MagicMock()
         msg.voice.file_size = 100
@@ -468,11 +474,89 @@ class TestDocumentDownloadBlock:
 
         await adapter._handle_media_message(update, MagicMock())
 
+        assert msg.voice.get_file.await_count == 2
         msg.reply_text.assert_awaited_once()
         assert "voice message" in msg.reply_text.await_args.args[0]
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_voice_cache_retry_succeeds_without_failure_notice(self, adapter):
+        """A transient Telegram CDN failure retries only the media download."""
+        adapter.config.extra.update(
+            {
+                "media_download_attempts": 2,
+                "media_download_retry_delay_seconds": 0,
+            }
+        )
+        file_obj = _make_file_obj(b"voice-bytes")
+        msg = _make_message()
+        msg.voice = MagicMock()
+        msg.voice.file_size = 100
+        msg.voice.get_file = AsyncMock(
+            side_effect=[RuntimeError("CDN timeout"), file_obj]
+        )
+        update = _make_update(msg)
+
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_audio_from_bytes",
+            return_value="/tmp/cached-voice.ogg",
+        ) as cache_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        assert msg.voice.get_file.await_count == 2
+        cache_mock.assert_called_once_with(b"voice-bytes", ext=".ogg")
+        msg.reply_text.assert_not_awaited()
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args.args[0]
+        assert event.media_urls == ["/tmp/cached-voice.ogg"]
+        assert event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
+    async def test_audio_cache_retry_uses_the_same_bounded_download_path(self, adapter):
+        adapter.config.extra.update(
+            {
+                "media_download_attempts": 2,
+                "media_download_retry_delay_seconds": 0,
+            }
+        )
+        file_obj = _make_file_obj(b"audio-bytes")
+        msg = _make_message()
+        msg.audio = MagicMock()
+        msg.audio.file_size = 100
+        msg.audio.get_file = AsyncMock(
+            side_effect=[RuntimeError("CDN timeout"), file_obj]
+        )
+
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_audio_from_bytes",
+            return_value="/tmp/cached-audio.mp3",
+        ) as cache_mock:
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert msg.audio.get_file.await_count == 2
+        cache_mock.assert_called_once_with(b"audio-bytes", ext=".mp3")
+        msg.reply_text.assert_not_awaited()
+        event = adapter.handle_message.call_args.args[0]
+        assert event.media_urls == ["/tmp/cached-audio.mp3"]
+        assert event.media_types == ["audio/mp3"]
+
+    @pytest.mark.asyncio
+    async def test_media_download_retry_attempts_are_clamped(self, adapter):
+        adapter.config.extra.update(
+            {
+                "media_download_attempts": 99,
+                "media_download_retry_delay_seconds": -10,
+            }
+        )
+        media = MagicMock()
+        media.get_file = AsyncMock(side_effect=RuntimeError("CDN down"))
+
+        with pytest.raises(RuntimeError, match="CDN down"):
+            await adapter._download_telegram_media_bytes(media, "voice")
+
+        assert media.get_file.await_count == 5
 
 
 class TestVideoDownloadBlock:

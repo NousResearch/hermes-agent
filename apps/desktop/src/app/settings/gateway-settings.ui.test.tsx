@@ -7,6 +7,8 @@ import { GatewaySettings } from './gateway-settings'
 
 const getConnectionConfig = vi.fn()
 const selectConnectionConfig = vi.fn()
+const applyConnectionConfig = vi.fn()
+const probeConnectionConfig = vi.fn()
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
   return {
@@ -39,7 +41,7 @@ beforeEach(() => {
     configurable: true,
     value: {
       api: vi.fn().mockResolvedValue({ current: 'default', profiles: [] }),
-      applyConnectionConfig: vi.fn(),
+      applyConnectionConfig,
       cloud: {
         agentSignIn: vi.fn(),
         discover: vi.fn(),
@@ -51,7 +53,7 @@ beforeEach(() => {
       getConnectionConfig,
       oauthLoginConnectionConfig: vi.fn(),
       oauthLogoutConnectionConfig: vi.fn(),
-      probeConnectionConfig: vi.fn(),
+      probeConnectionConfig,
       revealLogs: vi.fn(),
       saveConnectionConfig: vi.fn(),
       selectConnectionConfig,
@@ -78,7 +80,97 @@ describe('GatewaySettings connection picker', () => {
 
     await waitFor(() => expect(name).toBe(name.ownerDocument.activeElement))
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
-    expect(screen.getByPlaceholderText('https://gateway.example.com/hermes')).not.toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Remote URL' })).not.toBeNull()
+  })
+
+  it('creates a named remote with the entered name and credentials', async () => {
+    const connection = {
+      id: 'cluster-manager',
+      name: 'Cluster Manager',
+      remoteAuthMode: 'token' as const,
+      remoteOauthConnected: false,
+      remoteTokenPreview: 'se…et',
+      remoteTokenSet: true,
+      remoteUrl: 'https://cluster.example'
+    }
+
+    probeConnectionConfig.mockResolvedValue({
+      authMode: 'token',
+      baseUrl: connection.remoteUrl,
+      error: null,
+      providers: [],
+      reachable: true,
+      version: '0.17.0'
+    })
+    applyConnectionConfig.mockResolvedValue(
+      config({
+        connections: [connection],
+        mode: 'remote',
+        remoteTokenPreview: connection.remoteTokenPreview,
+        remoteTokenSet: true,
+        remoteUrl: connection.remoteUrl,
+        selectedConnectionId: connection.id,
+        selectedConnectionName: connection.name
+      })
+    )
+    render(<GatewaySettings />)
+
+    await screen.findByText('Connections')
+    fireEvent.click(screen.getByRole('button', { name: 'Add remote' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Connection name' }), {
+      target: { value: connection.name }
+    })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Remote URL' }), {
+      target: { value: connection.remoteUrl }
+    })
+
+    await waitFor(() => expect(probeConnectionConfig).toHaveBeenCalledWith(connection.remoteUrl), { timeout: 1500 })
+    fireEvent.change(await screen.findByLabelText('Session token'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save and connect' }))
+
+    await waitFor(() =>
+      expect(applyConnectionConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionId: null,
+          connectionName: connection.name,
+          mode: 'remote',
+          remoteAuthMode: 'token',
+          remoteToken: 'secret',
+          remoteUrl: connection.remoteUrl
+        })
+      )
+    )
+    expect(screen.getByRole('group', { name: connection.name }).getAttribute('aria-current')).toBe('true')
+  })
+
+  it('marks a blank connection name invalid before creating a remote', async () => {
+    const remoteUrl = 'https://cluster.example'
+
+    probeConnectionConfig.mockResolvedValue({
+      authMode: 'token',
+      baseUrl: remoteUrl,
+      error: null,
+      providers: [],
+      reachable: true,
+      version: '0.17.0'
+    })
+    render(<GatewaySettings />)
+
+    await screen.findByText('Connections')
+    fireEvent.click(screen.getByRole('button', { name: 'Add remote' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Remote URL' }), {
+      target: { value: remoteUrl }
+    })
+
+    await waitFor(() => expect(probeConnectionConfig).toHaveBeenCalledWith(remoteUrl), { timeout: 1500 })
+    fireEvent.change(await screen.findByLabelText('Session token'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save and connect' }))
+
+    const name = screen.getByRole('textbox', { name: 'Connection name' })
+
+    expect(name.getAttribute('aria-invalid')).toBe('true')
+    expect(screen.getByText('Name this remote gateway before saving or signing in.')).not.toBeNull()
+    expect(applyConnectionConfig).not.toHaveBeenCalled()
   })
 
   it('switches directly back to Local from an active saved remote', async () => {
@@ -141,6 +233,76 @@ describe('GatewaySettings connection picker', () => {
     expect(screen.getByDisplayValue('Home Lab')).not.toBeNull()
     expect(selectConnectionConfig).not.toHaveBeenCalled()
     expect(screen.getByText('Local gateway').parentElement?.parentElement?.textContent).toContain('Active')
+  })
+
+  it('renames a saved remote without changing its stable ID', async () => {
+    const connection = {
+      id: 'home-lab',
+      name: 'Home Lab',
+      remoteAuthMode: 'token' as const,
+      remoteOauthConnected: false,
+      remoteTokenPreview: 'se…et',
+      remoteTokenSet: true,
+      remoteUrl: 'https://home.example'
+    }
+
+    const renamed = { ...connection, name: 'Cluster Manager' }
+
+    getConnectionConfig.mockResolvedValue(config({ connections: [connection] }))
+    applyConnectionConfig.mockResolvedValue(
+      config({
+        connections: [renamed],
+        mode: 'remote',
+        remoteTokenPreview: renamed.remoteTokenPreview,
+        remoteTokenSet: true,
+        remoteUrl: renamed.remoteUrl,
+        selectedConnectionId: renamed.id,
+        selectedConnectionName: renamed.name
+      })
+    )
+    render(<GatewaySettings />)
+
+    await screen.findByText(connection.name)
+    fireEvent.click(screen.getByRole('button', { name: `Change ${connection.name}` }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Connection name' }), { target: { value: renamed.name } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save and connect' }))
+
+    await waitFor(() =>
+      expect(applyConnectionConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionId: connection.id,
+          connectionName: renamed.name,
+          remoteUrl: connection.remoteUrl
+        })
+      )
+    )
+    expect(screen.getByRole('group', { name: renamed.name }).getAttribute('aria-current')).toBe('true')
+  })
+
+  it('discards a rename when editing is cancelled', async () => {
+    const connection = {
+      id: 'home-lab',
+      name: 'Home Lab',
+      remoteAuthMode: 'token' as const,
+      remoteOauthConnected: false,
+      remoteTokenPreview: 'se…et',
+      remoteTokenSet: true,
+      remoteUrl: 'https://home.example'
+    }
+
+    getConnectionConfig.mockResolvedValue(config({ connections: [connection] }))
+    render(<GatewaySettings />)
+
+    await screen.findByText(connection.name)
+    fireEvent.click(screen.getByRole('button', { name: `Change ${connection.name}` }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Connection name' }), {
+      target: { value: 'Discarded rename' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(applyConnectionConfig).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Connection name' })).toBeNull()
+    expect(screen.getByRole('group', { name: connection.name })).not.toBeNull()
   })
 
   it('connects a saved remote immediately from the picker', async () => {

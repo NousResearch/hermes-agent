@@ -222,6 +222,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [activeConfig, setActiveConfig] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [globalPanel, setGlobalPanel] = useState<GlobalConnectionPanel>(null)
+  const [connectionNameInvalid, setConnectionNameInvalid] = useState(false)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
@@ -335,6 +336,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
     setLoading(true)
     setGlobalPanel(null)
+    setConnectionNameInvalid(false)
     // Clear scope-local entry state so a token from one scope can't leak into
     // the next when switching profiles.
     setRemoteToken('')
@@ -503,6 +505,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const startNewConnection = () => {
+    setConnectionNameInvalid(false)
     setRemoteToken('')
     setLastTest(null)
     setState(stateForNewRemote(activeConfig))
@@ -510,6 +513,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const editSavedConnection = (connection: DesktopSavedConnection) => {
+    setConnectionNameInvalid(false)
     setRemoteToken('')
     setLastTest(null)
     setState(stateForSavedRemote(activeConfig, connection))
@@ -517,6 +521,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const cancelGlobalEditor = () => {
+    setConnectionNameInvalid(false)
     setRemoteToken('')
     setLastTest(null)
     setState(activeConfig)
@@ -604,6 +609,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
 
     if (scope === null && state.mode === 'remote' && !state.selectedConnectionName.trim()) {
+      setConnectionNameInvalid(true)
       notify({ kind: 'warning', title: g.connectionNameRequiredTitle, message: g.connectionNameRequired })
 
       return
@@ -653,6 +659,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
 
     if (scope === null && !state.selectedConnectionName.trim()) {
+      setConnectionNameInvalid(true)
       notify({ kind: 'warning', title: g.connectionNameRequiredTitle, message: g.connectionNameRequired })
 
       return
@@ -1365,15 +1372,29 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             <ListRow
               action={
                 <Input
+                  aria-invalid={connectionNameInvalid}
+                  aria-label={g.connectionNameTitle}
                   className={cn('h-8', CONTROL_TEXT)}
-                  onChange={event => setState(current => ({ ...current, selectedConnectionName: event.target.value }))}
+                  onChange={event => {
+                    const value = event.target.value
+
+                    if (value.trim()) {
+                      setConnectionNameInvalid(false)
+                    }
+
+                    setState(current => ({ ...current, selectedConnectionName: value }))
+                  }}
                   placeholder={g.connectionNamePlaceholder}
                   ref={connectionNameInputRef}
                   value={state.selectedConnectionName}
                 />
               }
               description={
-                state.selectedConnectionId ? g.connectionIdDesc(state.selectedConnectionId) : g.connectionNameDesc
+                connectionNameInvalid
+                  ? g.connectionNameRequired
+                  : state.selectedConnectionId
+                    ? g.connectionIdDesc(state.selectedConnectionId)
+                    : g.connectionNameDesc
               }
               title={g.connectionNameTitle}
             />
@@ -1381,6 +1402,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           <ListRow
             action={
               <Input
+                aria-label={g.remoteUrlTitle}
                 className={cn('h-8', CONTROL_TEXT)}
                 disabled={state.envOverride}
                 onChange={event => setState(current => ({ ...current, remoteUrl: event.target.value }))}
@@ -1445,6 +1467,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             <ListRow
               action={
                 <Input
+                  aria-label={g.tokenTitle}
                   autoComplete="off"
                   className={cn('h-8 font-mono', CONTROL_TEXT)}
                   disabled={state.envOverride}

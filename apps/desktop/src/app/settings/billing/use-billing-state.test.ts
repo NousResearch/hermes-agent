@@ -222,6 +222,7 @@ describe('deriveBillingView', () => {
         ]
       })
     )
+
     const subscription = view.accountRows.find(row => row.id === 'subscription')
 
     expect(subscription?.description).toBe('Paid models need a subscription — pick a plan to start it on the portal.')
@@ -259,6 +260,7 @@ describe('deriveBillingView', () => {
         ]
       })
     )
+
     const subscription = view.accountRows.find(row => row.id === 'subscription')
 
     expect(subscription?.chips).toEqual([
@@ -272,6 +274,7 @@ describe('deriveBillingView', () => {
       okBilling(todayBillingState),
       okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
     )
+
     const team = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
 
     expect(member.accountRows.find(row => row.id === 'subscription')?.chips).toBeUndefined()

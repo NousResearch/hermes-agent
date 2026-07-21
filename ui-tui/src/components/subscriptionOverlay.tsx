@@ -374,6 +374,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // Admin/owner on a personal paid plan can change it in-terminal; otherwise the
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
+
   // On Free the catalog renders inline; picking a plan hands off to the portal,
   // where starting a subscription needs card capture + checkout.
   const freePlans = isFree

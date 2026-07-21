@@ -25,6 +25,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $filePreviewTarget, type PreviewTarget } from '@/store/preview'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -39,6 +40,12 @@ export interface ViewportRect {
   height: number
   /** Below the app's sidebar-collapse breakpoint (rails become overlays). */
   narrow: boolean
+}
+
+export interface CodeClientLaunch {
+  client: 'claude-code' | 'codex'
+  cwd: string
+  prompt: string
 }
 
 const readViewport = (): ViewportRect => ({
@@ -81,6 +88,24 @@ export const host = {
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+
+  /** Immutable snapshot of the active file-preview target. */
+  previewTarget: (): null | Readonly<PreviewTarget> => {
+    const target = $filePreviewTarget.get()
+
+    return target ? Object.freeze({ ...target }) : null
+  },
+
+  /** Open a review-before-send prompt in an allowlisted local code client. */
+  openCodeClient: async (input: CodeClientLaunch): Promise<void> => {
+    const openCodeClient = window.hermesDesktop?.openCodeClient
+
+    if (!openCodeClient) {
+      throw new Error('Code-client launch is unavailable outside Hermes Desktop')
+    }
+
+    await openCodeClient(input)
+  },
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {

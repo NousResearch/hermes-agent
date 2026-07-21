@@ -99,6 +99,7 @@ declare global {
       setKeepAwake?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      openCodeClient: (payload: DesktopCodeClientLaunch) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
@@ -233,6 +234,12 @@ declare global {
       }
     }
   }
+}
+
+export interface DesktopCodeClientLaunch {
+  client: 'claude-code' | 'codex'
+  cwd: string
+  prompt: string
 }
 
 export interface DesktopMarketplaceSearchItem {

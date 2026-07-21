@@ -91,6 +91,12 @@ def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
         "cost_usd": getattr(acct, "cost_usd", None),
         "cost_status": getattr(acct, "cost_status", None),
         "cost_source": getattr(acct, "cost_source", None),
+        "sensitive_retry": {
+            "fable_refusals": getattr(acct, "fable_refusals", 0),
+            "rewrite_attempts": getattr(acct, "rewrite_attempts", 0),
+            "rewrite_successes": getattr(acct, "rewrite_successes", 0),
+            "rerouted_to_fallback": getattr(acct, "rerouted_to_fallback", 0),
+        },
     }
 
 
@@ -136,6 +142,18 @@ def save_moa_turn(
             _output_location = "inline_from_stream"
         else:
             _output_location = "assistant_message_in_session_db"
+        retry_counters = {
+            key: sum(
+                getattr(acct, key, 0)
+                for _label, _text, acct in reference_outputs
+            )
+            for key in (
+                "fable_refusals",
+                "rewrite_attempts",
+                "rewrite_successes",
+                "rerouted_to_fallback",
+            )
+        }
         record = {
             "ts": time.time(),
             "session_id": session_id,
@@ -144,6 +162,7 @@ def save_moa_turn(
                 _slot_trace(acct, label)
                 for label, _text, acct in reference_outputs
             ],
+            "sensitive_retry": retry_counters,
             "aggregator": {
                 "label": aggregator_label,
                 "model": aggregator_model,

@@ -493,7 +493,7 @@ if __name__ == "__main__":
 # surfaces (tool args, tool results, streamed assistant text), and every other
 # sink for that data already routes through the canonical redactor.
 
-_BEARER = "sk-ant-api03-" + "R" * 24
+_BEARER = "sk-live-" + "R" * 32
 _ENV_KEY = "sk-proj-" + "L" * 24
 _AWS = "wJalrXUtnFEMIK7MDENG" + "bPxRfiCY"
 

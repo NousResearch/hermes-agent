@@ -18,7 +18,8 @@ from typing import Any, Optional
 
 from utils import is_truthy_value
 
-DEFAULT_MAX_VERIFY_NUDGES = 3
+DEFAULT_MAX_VERIFY_NUDGES = 8
+DEFAULT_MIDRUN_PRIMARY_RESTORE_INTERVAL = 10
 
 # Shipped guidance appended to the verification-stop nudge when code lacks fresh
 # verification evidence. Wording mirrors the user-facing "clean your work"
@@ -40,6 +41,18 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return DEFAULT_MAX_VERIFY_NUDGES
+
+
+def midrun_primary_restore_interval(config: Optional[dict[str, Any]] = None) -> int:
+    """Fallback iterations between primary-runtime restore attempts (0 disables)."""
+    agent_cfg = _agent_cfg(config)
+    raw = agent_cfg.get(
+        "midrun_primary_restore_interval", DEFAULT_MIDRUN_PRIMARY_RESTORE_INTERVAL
+    )
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MIDRUN_PRIMARY_RESTORE_INTERVAL
 
 
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
@@ -64,6 +77,8 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
 __all__ = [
     "CODING_VERIFY_GUIDANCE",
     "DEFAULT_MAX_VERIFY_NUDGES",
+    "DEFAULT_MIDRUN_PRIMARY_RESTORE_INTERVAL",
     "coding_verify_guidance",
     "max_verify_nudges",
+    "midrun_primary_restore_interval",
 ]

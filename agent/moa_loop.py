@@ -14,7 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agent.auxiliary_client import call_llm
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_content import flatten_message_text
+from agent.sensitive_retry import parse_sensitive_retry_config, reframe_messages
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,10 @@ class _RefAccounting:
         "model",
         "provider",
         "temperature",
+        "fable_refusals",
+        "rewrite_attempts",
+        "rewrite_successes",
+        "rerouted_to_fallback",
     )
 
     def __init__(
@@ -70,6 +76,10 @@ class _RefAccounting:
         model: str | None = None,
         provider: str | None = None,
         temperature: Any = None,
+        fable_refusals: int = 0,
+        rewrite_attempts: int = 0,
+        rewrite_successes: int = 0,
+        rerouted_to_fallback: int = 0,
     ):
         self.usage = usage
         self.cost_usd = cost_usd
@@ -80,6 +90,10 @@ class _RefAccounting:
         self.model = model
         self.provider = provider
         self.temperature = temperature
+        self.fable_refusals = fable_refusals
+        self.rewrite_attempts = rewrite_attempts
+        self.rewrite_successes = rewrite_successes
+        self.rerouted_to_fallback = rerouted_to_fallback
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -293,35 +307,75 @@ def _run_reference(
     concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
     """
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
+    from hermes_cli.config import load_config
 
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
+    retry_cfg = parse_sensitive_retry_config(
+        ((load_config() or {}).get("moa") or {}).get("reference_retry")
+    )
+    fable_refusals = 0
+    rewrite_attempts = 0
+    rewrite_successes = 0
+    rerouted_to_fallback = 0
     try:
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
-        # Apply the same Anthropic-style prompt-caching decoration the main
-        # agent loop applies (system_and_3 breakpoints). The advisory view is
-        # append-only across iterations (new turns append before the trailing
-        # synthetic marker), so on cache-honoring routes (Claude via
-        # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
-        # replays iteration N's cached prefix. Without this, Claude advisors
-        # served ZERO cache reads across an entire benchmark run (measured:
-        # 0/1227 calls, 11.5M re-billed input tokens) because Anthropic
-        # caching is opt-in per request. OpenAI-family advisors are untouched
-        # (their caching is automatic; markers are ignored harmlessly, but we
-        # only decorate when the policy says the route honors them).
-        messages = _maybe_apply_moa_cache_control(messages, runtime)
-        response = call_llm(
-            task="moa_reference",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            reasoning_config=_slot_reasoning_config(slot),
-            **runtime,
-        )
+        base_messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        messages = base_messages
+        response = None
+        output_text = ""
+        while True:
+            request_messages = (
+                reframe_messages(
+                    base_messages,
+                    attempt=rewrite_attempts,
+                    strategy="soften",
+                )
+                if rewrite_attempts
+                else base_messages
+            )
+            messages = _maybe_apply_moa_cache_control(request_messages, runtime)
+            try:
+                response = call_llm(
+                    task="moa_reference",
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reasoning_config=_slot_reasoning_config(slot),
+                    **runtime,
+                )
+            except Exception as exc:
+                classified = classify_api_error(
+                    exc,
+                    provider=str(runtime.get("provider") or ""),
+                    model=str(runtime.get("model") or ""),
+                    num_messages=len(messages),
+                )
+                if classified.reason != FailoverReason.content_policy_blocked:
+                    raise
+                fable_refusals += 1
+                if not retry_cfg.enabled or rewrite_attempts >= retry_cfg.max_rewrites:
+                    rerouted_to_fallback = int(rewrite_attempts > 0)
+                    raise
+                rewrite_attempts += 1
+                continue
+            output_text = _extract_text(response)
+            refused = _reference_response_refused(response)
+            if output_text and not refused:
+                if rewrite_attempts:
+                    rewrite_successes = 1
+                break
+            fable_refusals += 1
+            if not retry_cfg.enabled or rewrite_attempts >= retry_cfg.max_rewrites:
+                rerouted_to_fallback = int(rewrite_attempts > 0)
+                if refused:
+                    output_text = "[failed: content_filter]"
+                break
+            rewrite_attempts += 1
+
         usage = CanonicalUsage()
         raw_usage = getattr(response, "usage", None)
         if raw_usage:
@@ -353,7 +407,7 @@ def _run_reference(
             cost_source = cost.source
         except Exception:  # pragma: no cover - defensive
             pass
-        _output_text = _extract_text(response) or "(empty response)"
+        _output_text = output_text or "(empty response)"
         acct = _RefAccounting(
             usage,
             cost_usd,
@@ -364,10 +418,32 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            fable_refusals=fable_refusals,
+            rewrite_attempts=rewrite_attempts,
+            rewrite_successes=rewrite_successes,
+            rerouted_to_fallback=rerouted_to_fallback,
+        )
+        logger.debug(
+            "MoA sensitive retry %s: fable_refusals=%d rewrite_attempts=%d "
+            "rewrite_successes=%d rerouted_to_fallback=%d",
+            label,
+            fable_refusals,
+            rewrite_attempts,
+            rewrite_successes,
+            rerouted_to_fallback,
         )
         return label, _output_text, acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
+        logger.debug(
+            "MoA sensitive retry %s: fable_refusals=%d rewrite_attempts=%d "
+            "rewrite_successes=%d rerouted_to_fallback=%d",
+            label,
+            fable_refusals,
+            rewrite_attempts,
+            rewrite_successes,
+            rerouted_to_fallback,
+        )
         return label, f"[failed: {exc}]", _RefAccounting(
             CanonicalUsage(),
             messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
@@ -375,6 +451,10 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            fable_refusals=fable_refusals,
+            rewrite_attempts=rewrite_attempts,
+            rewrite_successes=rewrite_successes,
+            rerouted_to_fallback=rerouted_to_fallback,
         )
 
 
@@ -637,6 +717,20 @@ def _extract_text(response: Any) -> str:
         return content.strip()
     except Exception:
         return ""
+
+
+def _reference_response_refused(response: Any) -> bool:
+    try:
+        transport = get_transport("chat_completions")
+        if transport is not None:
+            normalized = transport.normalize_response(response)
+            return normalized.finish_reason == "content_filter"
+    except Exception:
+        pass
+    try:
+        return response.choices[0].finish_reason == "content_filter"
+    except Exception:
+        return False
 
 
 def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:

@@ -459,6 +459,66 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     assert msgs[-1]["role"] == "user"
 
 
+def test_run_reference_rewrites_refusal_then_returns_real_answer(monkeypatch):
+    from agent.moa_loop import _run_reference
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("content_filter")
+        return _response("usable advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"moa": {"reference_retry": {"enabled": True, "max_rewrites": 2}}},
+    )
+
+    _label, text, acct = _run_reference(
+        {"provider": "openrouter", "model": "anthropic/claude-fable-5"},
+        [{"role": "user", "content": "keep this task unchanged"}],
+    )
+
+    assert text == "usable advice"
+    assert len(calls) == 2
+    assert acct.fable_refusals == 1
+    assert acct.rewrite_attempts == 1
+    assert acct.rewrite_successes == 1
+    assert acct.rerouted_to_fallback == 0
+    assert calls[0]["messages"][-1] == calls[1]["messages"][-1]
+    assert calls[0]["messages"][0] != calls[1]["messages"][0]
+
+
+def test_run_reference_exhausts_rewrites_before_failed_note(monkeypatch):
+    from agent.moa_loop import _run_reference
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"moa": {"reference_retry": {"enabled": True, "max_rewrites": 2}}},
+    )
+
+    _label, text, acct = _run_reference(
+        {"provider": "openrouter", "model": "anthropic/claude-fable-5"},
+        [{"role": "user", "content": "keep this task unchanged"}],
+    )
+
+    assert text == "(empty response)"
+    assert len(calls) == 3
+    assert acct.fable_refusals == 3
+    assert acct.rewrite_attempts == 2
+    assert acct.rewrite_successes == 0
+    assert acct.rerouted_to_fallback == 1
+
+
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

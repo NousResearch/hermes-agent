@@ -12,6 +12,7 @@ from typing import Any
 
 # Canonical model-emitted control token for intentional silence.
 SILENT_REPLY_TOKEN = "NO_REPLY"
+BACKGROUND_NOTIFICATION_METADATA_KEY = "background_notification"
 
 # Exact whole-response markers that mean "the agent intentionally chose not to
 # reply".  Keep this list small and explicit; arbitrary empty output remains an
@@ -77,6 +78,29 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     if agent_result.get("failed"):
         return False
     return is_intentional_silence_response(response)
+
+
+def add_background_notification_silent_ack_contract(notification: str) -> str:
+    return (
+        f"{notification}\n\n"
+        "<background_notification>"
+        "If this notification adds no new result, action, or needed information, "
+        f"reply with exactly {SILENT_REPLY_TOKEN}. Otherwise report the new information."
+        "</background_notification>"
+    )
+
+
+def is_background_notification_silent_ack(
+    agent_result: dict | None,
+    *,
+    is_background_notification: bool,
+) -> bool:
+    if not is_background_notification or not isinstance(agent_result, dict):
+        return False
+    return is_intentional_silence_agent_result(
+        agent_result,
+        agent_result.get("final_response"),
+    )
 
 
 def is_partial_silence_marker(text: Any) -> bool:

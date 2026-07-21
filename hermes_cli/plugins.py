@@ -143,9 +143,9 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
-    # Verification-loop gate. Fired once per turn when the agent has edited code
-    # and is about to verify/finish (after the verify-on-stop guard). A callback
-    # may keep the agent going — run a check, defer it, tidy the diff — instead
+    # Candidate-final-answer gate. Fired whenever the agent is about to finish
+    # (after the code-specific verify-on-stop guard). A callback may keep the
+    # same turn going — recover work, gather evidence, run a check, tidy a diff — instead
     # of stopping by returning:
     #   {"action": "continue", "message": "<follow-up instruction>"}
     # The Claude-Code Stop shape {"decision": "block", "reason": "..."} (block
@@ -2288,8 +2288,9 @@ def get_pre_verify_continue_message(
 ) -> Optional[str]:
     """Check user ``pre_verify`` hooks for a directive to keep the agent going.
 
-    Fired once per turn when the agent edited code and is about to verify/finish.
-    A hook keeps the turn going (run a check, defer it, tidy the diff) by
+    Fired for every candidate final answer. A hook keeps the same turn going
+    (recover a failed tool path, gather missing evidence, run a check, tidy the
+    diff) by
     returning::
 
         {"action": "continue", "message": "<follow-up for the model>"}
@@ -2299,9 +2300,9 @@ def get_pre_verify_continue_message(
     non-empty message wins; any other return lets the turn finish. Mirrors
     :func:`get_pre_tool_call_block_message` — the call site stays a one-liner.
 
-    ``coding`` / ``attempt`` let a hook scope itself (``if not coding`` …) and
-    self-throttle (``if attempt`` …), the same way a ``pre_tool_call`` hook
-    scopes on ``tool_name``.
+    ``coding`` / ``changed_paths`` let code-specific hooks scope themselves,
+    while ``attempt`` lets every hook self-throttle. ``changed_paths`` is empty
+    for turns without file edits.
     """
     hook_results = invoke_hook(
         "pre_verify",

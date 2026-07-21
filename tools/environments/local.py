@@ -343,6 +343,36 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # these markers is safe and only prevents the cross-project clobber (#23473).
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
 
+# TLS trust-store variables are paths, not credentials, but a malformed value is
+# dangerous in two ways: TLS-aware CLIs (curl/uv/pip/requests) echo the invalid
+# path in diagnostics, and if a torn shell snapshot glued ``declare -x ...``
+# lines onto SSL_CERT_FILE that diagnostic becomes an env/secret dump in tool
+# output and delegation live transcripts. Keep ordinary path values intact and
+# drop only impossible shell-dump-shaped values before any subprocess inherits
+# them. Dropping a poisoned CA path is safer than making every child CLI print it.
+_CERTIFICATE_PATH_ENV_VARS = frozenset({
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+})
+
+
+def _certificate_path_env_value_is_poisoned(value: object) -> bool:
+    if value is None:
+        return False
+    text = str(value)
+    if "\x00" in text or "\n" in text or "\r" in text:
+        return True
+    lowered = text.lower()
+    return "declare -x " in lowered or "export " in lowered
+
+
+def _drop_poisoned_certificate_env(env: dict) -> None:
+    for key in _CERTIFICATE_PATH_ENV_VARS:
+        if key in env and _certificate_path_env_value_is_poisoned(env.get(key)):
+            env.pop(key, None)
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """Return True for Hermes-internal secrets injected under *dynamic* names.
@@ -488,6 +518,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 
+    _drop_poisoned_certificate_env(sanitized)
+
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     return sanitized
@@ -599,6 +631,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Active-venv markers must not clobber another project's environment.
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
+
+    _drop_poisoned_certificate_env(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
@@ -1171,6 +1205,8 @@ def _make_run_env(env: dict) -> dict:
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
+
+    _drop_poisoned_certificate_env(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
 

@@ -1116,7 +1116,10 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Upper bound on consecutive `pre_verify` "continue" nudges in a single
         # turn, so a user/plugin hook can never trap the loop.
-        "max_verify_nudges": 3,
+        "max_verify_nudges": 8,
+        # While running on a fallback provider, retry the primary runtime after
+        # this many loop iterations.  0 disables mid-turn restoration.
+        "midrun_primary_restore_interval": 10,
         # Verification closure: after the agent edits files in a code workspace,
         # do not accept a final answer until fresh verification evidence exists
         # or the agent explains why it cannot run checks. The loop is bounded
@@ -2411,6 +2414,13 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    "sensitive_retry": {
+        "enabled": False,
+        "max_rewrites": 3,
+        "models": ["claude-fable-5"],
+        "strategy": "soften",
+    },
+
     # Mixture of Agents — named presets used by /moa. A preset is an execution
     # mode around the main model, not a provider/model itself: references +
     # aggregator synthesize private guidance before each main-model iteration.
@@ -2425,6 +2435,10 @@ DEFAULT_CONFIG = {
         # override the output directory.
         "save_traces": False,
         "trace_dir": "",
+        "reference_retry": {
+            "enabled": False,
+            "max_rewrites": 2,
+        },
         "presets": {
             "default": {
                 "reference_models": [

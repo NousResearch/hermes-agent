@@ -60,6 +60,12 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length,
 )
+from agent.sensitive_retry import (
+    SensitiveRetryConfig,
+    applies_to_model,
+    parse_sensitive_retry_config,
+    reframe_messages,
+)
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import (
@@ -76,6 +82,36 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_restore_primary_midrun(agent, interval: int) -> bool:
+    """Periodically retry the primary runtime while an in-turn fallback is live."""
+    if not getattr(agent, "_fallback_activated", False) or interval <= 0:
+        return False
+
+    fallback_iterations = getattr(agent, "_iters_since_fallback", 0) + 1
+    agent._iters_since_fallback = fallback_iterations
+    if fallback_iterations < interval:
+        return False
+
+    # Reset after every attempt so a cooldown-gated failure retries only after
+    # another full interval rather than on every subsequent API call.
+    agent._iters_since_fallback = 0
+    if not agent._restore_primary_runtime():
+        return False
+
+    logger.info(
+        "Mid-run primary restore: back on %s (%s) after %d fallback iterations",
+        agent.model,
+        agent.provider,
+        fallback_iterations,
+    )
+    if not getattr(agent, "quiet_mode", False):
+        agent._buffer_status(
+            f"🔄 Primary model restored: {agent.model} ({agent.provider})"
+        )
+    return True
+
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -543,11 +579,9 @@ def _content_policy_blocked_result(
 ) -> Dict[str, Any]:
     """Build the terminal turn result for a content-policy block.
 
-    A content-policy refusal is deterministic for the unchanged prompt, so the
-    turn ends here (no retry). Both the HTTP-200 refusal handler and the
-    exception-path handler return the identical shape — a failed, non-completed
-    turn carrying the user-facing message and a ``content_policy_blocked:``
-    prefixed error — so they funnel through this one builder.
+    Both refusal paths reach this only after configured reframed attempts and
+    fallback routing are unavailable or exhausted. They return the identical
+    failed, non-completed shape with a ``content_policy_blocked:`` error.
     """
     return {
         "final_response": final_response,
@@ -557,6 +591,18 @@ def _content_policy_blocked_result(
         "failed": True,
         "error": f"content_policy_blocked: {error_detail}",
     }
+
+
+def _main_sensitive_retry_config(model: str) -> tuple[SensitiveRetryConfig, bool]:
+    try:
+        from hermes_cli.config import load_config
+
+        config = parse_sensitive_retry_config(
+            (load_config() or {}).get("sensitive_retry")
+        )
+    except Exception:
+        config = SensitiveRetryConfig()
+    return config, applies_to_model(config, model)
 
 
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
@@ -684,6 +730,15 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    fable_refusals = 0
+    rewrite_attempts = 0
+    rewrite_successes = 0
+    rerouted_to_fallback = 0
+    sensitive_retry_config = SensitiveRetryConfig()
+    sensitive_retry_resolved = False
+    sensitive_retry_applies = False
+    sensitive_retry_pending = False
+    sensitive_retry_sequence_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -733,6 +788,9 @@ def run_conversation(
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
+
+        from agent.verify_hooks import midrun_primary_restore_interval
+        _maybe_restore_primary_midrun(agent, midrun_primary_restore_interval())
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
@@ -1830,14 +1888,44 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
-                    # Deterministic for the unchanged prompt — never retry.
-                    # Try a configured fallback once (a different model may not
-                    # refuse); otherwise surface the refusal terminally.
+                    if not sensitive_retry_resolved:
+                        sensitive_retry_config, sensitive_retry_applies = (
+                            _main_sensitive_retry_config(agent.model)
+                        )
+                        sensitive_retry_resolved = True
+                    if sensitive_retry_applies:
+                        fable_refusals += 1
+                        if sensitive_retry_sequence_attempts < sensitive_retry_config.max_rewrites:
+                            sensitive_retry_sequence_attempts += 1
+                            rewrite_attempts += 1
+                            api_messages = reframe_messages(
+                                api_messages,
+                                attempt=sensitive_retry_sequence_attempts,
+                                strategy=sensitive_retry_config.strategy,
+                            )
+                            sensitive_retry_pending = True
+                            continue
+
+                    # The opt-in path above changes only request-local framing.
+                    # Disabled, filtered, and exhausted paths retain the original
+                    # immediate fallback behavior for the unchanged prompt.
                     if agent._has_pending_fallback():
                         agent._buffer_status(
                             "⚠️ Model declined to respond (safety refusal) — trying fallback..."
                         )
                     if agent._try_activate_fallback():
+                        if sensitive_retry_applies:
+                            rerouted_to_fallback += 1
+                            sensitive_retry_pending = False
+                            sensitive_retry_sequence_attempts = 0
+                            logger.debug(
+                                "Sensitive retry: fable_refusals=%d rewrite_attempts=%d "
+                                "rewrite_successes=%d rerouted_to_fallback=%d",
+                                fable_refusals,
+                                rewrite_attempts,
+                                rewrite_successes,
+                                rerouted_to_fallback,
+                            )
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -1845,6 +1933,15 @@ def run_conversation(
                         _retry.primary_recovery_attempted = False
                         continue
 
+                    if sensitive_retry_applies:
+                        logger.debug(
+                            "Sensitive retry: fable_refusals=%d rewrite_attempts=%d "
+                            "rewrite_successes=%d rerouted_to_fallback=%d",
+                            fable_refusals,
+                            rewrite_attempts,
+                            rewrite_successes,
+                            rerouted_to_fallback,
+                        )
                     agent._flush_status_buffer()
                     _refusal_log = (
                         _refusal_text[:500] + "..."
@@ -1880,6 +1977,19 @@ def run_conversation(
                         api_call_count,
                         final_response=_refusal_response,
                         error_detail=_refusal_text or "model declined (content_filter)",
+                    )
+
+                if sensitive_retry_pending:
+                    rewrite_successes += 1
+                    sensitive_retry_pending = False
+                    sensitive_retry_sequence_attempts = 0
+                    logger.debug(
+                        "Sensitive retry: fable_refusals=%d rewrite_attempts=%d "
+                        "rewrite_successes=%d rerouted_to_fallback=%d",
+                        fable_refusals,
+                        rewrite_attempts,
+                        rewrite_successes,
+                        rerouted_to_fallback,
                     )
 
                 if finish_reason == "length":
@@ -2776,6 +2886,25 @@ def run_conversation(
                     retryable=classified.retryable,
                     reason=classified.reason.value,
                 )
+
+                if classified.reason == FailoverReason.content_policy_blocked:
+                    if not sensitive_retry_resolved:
+                        sensitive_retry_config, sensitive_retry_applies = (
+                            _main_sensitive_retry_config(agent.model)
+                        )
+                        sensitive_retry_resolved = True
+                    if sensitive_retry_applies:
+                        fable_refusals += 1
+                        if sensitive_retry_sequence_attempts < sensitive_retry_config.max_rewrites:
+                            sensitive_retry_sequence_attempts += 1
+                            rewrite_attempts += 1
+                            api_messages = reframe_messages(
+                                api_messages,
+                                attempt=sensitive_retry_sequence_attempts,
+                                strategy=sensitive_retry_config.strategy,
+                            )
+                            sensitive_retry_pending = True
+                            continue
 
                 if (
                     classified.reason == FailoverReason.billing
@@ -3927,12 +4056,33 @@ def run_conversation(
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
+                        if sensitive_retry_applies and fable_refusals:
+                            rerouted_to_fallback += 1
+                            sensitive_retry_pending = False
+                            sensitive_retry_sequence_attempts = 0
+                            logger.debug(
+                                "Sensitive retry: fable_refusals=%d rewrite_attempts=%d "
+                                "rewrite_successes=%d rerouted_to_fallback=%d",
+                                fable_refusals,
+                                rewrite_attempts,
+                                rewrite_successes,
+                                rerouted_to_fallback,
+                            )
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
                         continue
+                    if sensitive_retry_applies and fable_refusals:
+                        logger.debug(
+                            "Sensitive retry: fable_refusals=%d rewrite_attempts=%d "
+                            "rewrite_successes=%d rerouted_to_fallback=%d",
+                            fable_refusals,
+                            rewrite_attempts,
+                            rewrite_successes,
+                            rerouted_to_fallback,
+                        )
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -5564,11 +5714,13 @@ def run_conversation(
                     final_response = None
                     continue
 
-                # User verification-loop gate: when the agent edited code this
-                # turn, let a registered `pre_verify` hook (plugin/shell) keep it
-                # going one more turn. The shipped guidance is folded into the
-                # evidence-based verify-on-stop nudge above, so this path has no
-                # default continuation cost.
+                # User stop-loop gate: let a registered ``pre_verify`` hook
+                # (plugin/shell) inspect every candidate final answer and keep
+                # the same turn going. ``changed_paths`` remains available for
+                # code-verification policies, but is deliberately not an
+                # invocation precondition: recovery policies also need to steer
+                # browser/search/communication work before an incomplete answer
+                # escapes to the user.
                 _verify_nudge2 = None
                 _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
                 _attempt = getattr(agent, "_pre_verify_nudges", 0)
@@ -5576,7 +5728,7 @@ def run_conversation(
                     from agent.verify_hooks import max_verify_nudges
                     from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
 
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                    if has_hook("pre_verify") and _attempt < max_verify_nudges():
                         # Posture is fixed for the session — resolve once + cache.
                         coding = getattr(agent, "_resolved_is_coding", None)
                         if coding is None:
@@ -5599,12 +5751,10 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    # The assistant response is real content — persist it and
-                    # emit to the UI as an interim message so the user sees the
-                    # attempted final answer before the pre_verify loop runs.
-                    # Only the nudge is flagged synthetic so it gets stripped
-                    # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
+                    # A pre_verify-rejected candidate is not user-visible output.
+                    # Persist it as loop context for the next model iteration, but
+                    # never stream/preview it: recovery gates must not leak the
+                    # very canned or unsupported sentence they are steering away.
                     messages.append(final_msg)
                     try:
                         agent._flush_messages_to_session_db(messages, conversation_history)

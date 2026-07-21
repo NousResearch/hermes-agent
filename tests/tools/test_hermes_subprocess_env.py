@@ -100,6 +100,28 @@ class TestInheritCredentials:
     def test_pythonutf8_set_when_inheriting(self):
         assert _build(inherit_credentials=True).get("PYTHONUTF8") == "1"
 
+    def test_poisoned_ssl_cert_file_stripped_even_when_inheriting(self):
+        poisoned = (
+            "/private/etc/ssl/cert.pem\n"
+            "declare -x OPENAI_API_KEY=sk-leaked-by-invalid-cert-path"
+        )
+        result = _build(
+            {**_PROVIDER_SAMPLE, "SSL_CERT_FILE": poisoned},
+            inherit_credentials=True,
+        )
+        assert "SSL_CERT_FILE" not in result
+        # Provider credentials still flow for model-driving CLIs; only the
+        # poisoned CA-path carrier is removed.
+        for var in _PROVIDER_SAMPLE:
+            assert var in result
+
+    def test_valid_certificate_path_preserved_when_inheriting(self):
+        result = _build(
+            {"SSL_CERT_FILE": "/private/etc/ssl/cert.pem"},
+            inherit_credentials=True,
+        )
+        assert result["SSL_CERT_FILE"] == "/private/etc/ssl/cert.pem"
+
 
 class TestTierInvariants:
     def test_tier1_always_stripped_both_paths(self):

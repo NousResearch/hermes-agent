@@ -58,6 +58,11 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.response_filters import (
+    BACKGROUND_NOTIFICATION_METADATA_KEY,
+    add_background_notification_silent_ack_contract,
+    is_background_notification_silent_ack,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -727,13 +732,14 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    ``interactive`` selects how an empty startup turn is reported.  Both
+    variants continue the interrupted work automatically: interactive chat
+    platforms may briefly report that recovery succeeded, while non-interactive
+    event platforms (webhook, API server — adapters with
+    ``interactive_resume = False``) must not emit an acknowledgement that has
+    nowhere useful to go (#57056).  Neither variant asks the user what to do
+    next; startup auto-resume exists specifically to finish the interrupted
+    task without requiring another message.
     """
     reason_phrase = (
         "a gateway restart"
@@ -753,12 +759,15 @@ def build_resume_recovery_note(
         )
     elif interactive:
         resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
+            "The session was restored successfully. Do NOT ask the user what "
+            "to do next and do not stop at a recovery acknowledgement. Review "
+            "the conversation history and CONTINUE the interrupted task to "
+            "completion, then report the completed result to the user."
         )
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
+            "Do NOT re-run tool calls whose results already "
+            "appear in the history — resume from the first step "
+            "that has no recorded result."
         )
     else:
         resume_guidance = (
@@ -4155,7 +4164,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolved_session_key or "", model, override_model,
                     override_runtime.get("provider"),
                 )
-                return override_model, override_runtime
+                return self._resolve_session_logical_model_role(
+                    resolved_session_key, override_model, override_runtime
+                )
             # Override exists but has no api_key — fall through to env-based
             # resolution and apply model/provider from the override on top.
             logger.debug(
@@ -4257,7 +4268,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _last_good[resolved_session_key] = model
                 _last_good["*"] = model
 
-        return model, runtime_kwargs
+        return self._resolve_session_logical_model_role(
+            resolved_session_key, model, runtime_kwargs
+        )
+
+    def _resolve_session_logical_model_role(
+        self, session_key: str | None, model: str, runtime_kwargs: dict
+    ) -> tuple[str, dict]:
+        """Resolve a logical role once per gateway session and reuse its tuple."""
+        if not isinstance(model, str) or not model.startswith("role:"):
+            return model, runtime_kwargs
+        cache = getattr(self, "_logical_model_role_routes", None)
+        if cache is None:
+            cache = self._logical_model_role_routes = {}
+        cache_key = (session_key or "", model)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            resolved_model, resolved_runtime = cached
+            return resolved_model, dict(resolved_runtime)
+        from hermes_cli.runtime_provider import resolve_logical_model_runtime
+
+        resolved = resolve_logical_model_runtime(model)
+        assert resolved is not None
+        cache[cache_key] = (resolved[0], dict(resolved[1]))
+        return resolved
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -11988,6 +12022,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        # Startup recovery deliberately dispatches an empty internal event.  Save
+        # that semantic fact before inbound preprocessing adds sender attribution
+        # (for example ``[민서] `` in a shared Slack thread), otherwise the
+        # recovery path mistakes the synthetic turn for a real user message.
+        _orig_empty_internal = (
+            bool(getattr(event, "internal", False))
+            and not (getattr(event, "text", "") or "").strip()
+            and not getattr(event, "media_urls", None)
+        )
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
         logger.info(
@@ -12954,7 +12997,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                background_notification=bool(
+                    event.internal
+                    and (event.metadata or {}).get(BACKGROUND_NOTIFICATION_METADATA_KEY)
+                ),
+                event_internal=bool(getattr(event, "internal", False)),
+                event_has_media=bool(getattr(event, "media_urls", None)),
+                orig_empty_internal=_orig_empty_internal,
             )
+            if agent_result.get("_dropped_empty_internal_auto_resume"):
+                return None
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -16907,12 +16959,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return None
         try:
-            metadata = {}
+            metadata = {BACKGROUND_NOTIFICATION_METADATA_KEY: True}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
             synth_event = MessageEvent(
-                text=synth_text,
+                text=add_background_notification_silent_ack_contract(synth_text),
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
@@ -18784,6 +18836,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        background_notification: bool = False,
+        event_internal: bool = False,
+        event_has_media: bool = False,
+        orig_empty_internal: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -18802,6 +18858,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                background_notification=background_notification,
+                event_internal=event_internal,
+                event_has_media=event_has_media,
+                orig_empty_internal=orig_empty_internal,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -18813,6 +18873,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                background_notification=background_notification,
+                event_internal=event_internal,
+                event_has_media=event_has_media,
+                orig_empty_internal=orig_empty_internal,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -18934,6 +18998,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        background_notification: bool = False,
+        event_internal: bool = False,
+        event_has_media: bool = False,
+        orig_empty_internal: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -20762,6 +20830,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message so stale guidance never replays as user-authored text.
             _persist_user_message_override: Optional[Any] = persist_user_message
             _persist_user_timestamp_override: Optional[float] = persist_user_timestamp
+            _empty_internal_auto_resume = bool(
+                event_internal
+                and not event_has_media
+                and (
+                    orig_empty_internal
+                    or (isinstance(message, str) and not message.strip())
+                )
+            )
+            # Keep the post-preprocessing value (which may be a bare sender
+            # prefix) so we can tell whether any real one-shot guidance was
+            # added before deciding to drop a synthetic empty turn.
+            _empty_internal_auto_resume_message = (
+                message if _empty_internal_auto_resume else None
+            )
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -20836,21 +20918,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _persist_user_message_override = message
+                # A shared-channel sender prefix does not turn the synthetic
+                # startup event into a real user message.  Persist no phantom
+                # ``[name] `` row and use empty-message recovery guidance.
+                _persist_user_message_override = (
+                    "" if _empty_internal_auto_resume else message
+                )
+                _resume_user_message = "" if _empty_internal_auto_resume else message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address.  Guidance is adapter-aware:
-                # interactive platforms report the restore and ask what next;
-                # non-interactive event platforms (webhook, API server)
-                # continue the interrupted work instead, because nobody is
-                # present to answer and an acknowledgement would silently
-                # abandon the task (#57056).
+                # no NEW user message to address. Guidance is adapter-aware,
+                # but every platform continues the interrupted work. Interactive
+                # chat may mention restoration before reporting the final result;
+                # non-interactive event platforms suppress that acknowledgement
+                # because nobody is present to benefit from it (#57056).
                 _resume_adapter = self._adapter_for_source(source)
                 _interactive_resume = bool(
                     getattr(_resume_adapter, "interactive_resume", True)
                 )
                 message = build_resume_recovery_note(
-                    _reason, message, interactive=_interactive_resume,
+                    _reason, _resume_user_message, interactive=_interactive_resume,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -20884,10 +20971,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # wrapped as native content below) are untouched.
             if (
                 isinstance(message, str)
-                and not message.strip()
+                and (
+                    not message.strip()
+                    or (
+                        _empty_internal_auto_resume
+                        and message == _empty_internal_auto_resume_message
+                    )
+                )
                 and _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
             ):
+                if _empty_internal_auto_resume:
+                    _persist_user_message_override = ""
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
@@ -20899,6 +20994,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         getattr(_sn_adapter, "interactive_resume", True)
                     ),
                 )
+
+            # Last defense: if the marker disappeared after startup scheduling,
+            # or another branch failed to add guidance, never send the empty
+            # synthetic event (including a sender-prefix-only variant) to the
+            # model or Slack.  Ordinary empty media turns are excluded.
+            if (
+                event_internal
+                and isinstance(message, str)
+                and not event_has_media
+                and (
+                    not message.strip()
+                    or (
+                        _empty_internal_auto_resume
+                        and message == _empty_internal_auto_resume_message
+                    )
+                )
+            ):
+                logger.info(
+                    "Dropping empty internal auto-resume turn for session %s "
+                    "(resume note did not apply)",
+                    session_key or "",
+                )
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "completed": False,
+                    "interrupted": True,
+                    "tools": tools_holder[0] or [],
+                    "history_offset": len(agent_history),
+                    "session_id": session_id,
+                    "_dropped_empty_internal_auto_resume": True,
+                }
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
@@ -21869,6 +21997,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _delivery_result = response if isinstance(response, dict) else (result or {})
                     _previewed = bool(_delivery_result.get("response_previewed"))
                     first_response = _delivery_result.get("final_response", "")
+                    _silent_background_ack = is_background_notification_silent_ack(
+                        _delivery_result,
+                        is_background_notification=background_notification,
+                    )
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
@@ -21889,7 +22021,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
-                    elif first_response and not _already_streamed:
+                    elif first_response and not _already_streamed and not _silent_background_ack:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
@@ -21904,8 +22036,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:
                         logger.info(
-                            "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
-                            session_key or "?",
+                            "Queued follow-up for session %s: skipping first response delivery (streamed=%s silent_background_ack=%s).",
+                            session_key or "?", _already_streamed, _silent_background_ack,
                         )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
@@ -22014,6 +22146,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    event_internal=bool(getattr(pending_event, "internal", False)),
+                    event_has_media=bool(getattr(pending_event, "media_urls", None)),
+                    orig_empty_internal=bool(
+                        pending_event is not None
+                        and getattr(pending_event, "internal", False)
+                        and not (getattr(pending_event, "text", "") or "").strip()
+                        and not getattr(pending_event, "media_urls", None)
+                    ),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
@@ -22089,6 +22229,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
+        if is_background_notification_silent_ack(
+            response if isinstance(response, dict) else None,
+            is_background_notification=background_notification,
+        ):
+            response["already_sent"] = True
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"

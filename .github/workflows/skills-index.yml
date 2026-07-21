@@ -43,7 +43,7 @@ jobs:
       - name: Build skills index
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: python scripts/build_skills_index.py
+        run: python3 scripts/build_skills_index.py
 
       - name: Upload index artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

@@ -32,7 +32,7 @@ jobs:
       - name: Install ascii-guard
         uses: ./.github/actions/retry
         with:
-          command: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
+          command: python3 -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

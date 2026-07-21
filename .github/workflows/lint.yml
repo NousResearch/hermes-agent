@@ -103,7 +103,7 @@ jobs:
         env:
           HEAD_REF: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
-          python scripts/lint_diff.py \
+          python3 scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
             --head-ruff .lint-reports/head/ruff.json \
             --base-ty   .lint-reports/base/ty.json \
@@ -159,4 +159,4 @@ jobs:
           python-version: "3.11"
 
       - name: Run footgun checker
-        run: python scripts/check-windows-footguns.py --all
+        run: python3 scripts/check-windows-footguns.py --all

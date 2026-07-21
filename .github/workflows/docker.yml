@@ -28,12 +28,12 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: arc-runner-set
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: arc-runner-arm64
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64

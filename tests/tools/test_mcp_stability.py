@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -82,6 +83,68 @@ class TestMCPLoopExceptionHandler:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()
             mcp_mod._stop_mcp_loop()
+
+    def test_shutdown_finalizes_async_generators_before_closing_loop(self):
+        """Stopping the MCP loop drains async generators on its owner thread."""
+        import tools.mcp_tool as mcp_mod
+
+        finalized = threading.Event()
+
+        async def _stream():
+            try:
+                yield "ready"
+            finally:
+                finalized.set()
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+
+        mcp_mod._ensure_mcp_loop()
+        with mcp_mod._lock:
+            loop = mcp_mod._mcp_loop
+
+        streams = []
+
+        async def _start_stream():
+            # Construct and first-iterate the generator on the MCP loop so it
+            # is registered with that loop's async-generator hooks.
+            stream = _stream()
+            streams.append(stream)
+            return await stream.__anext__()
+
+        first_item = asyncio.run_coroutine_threadsafe(_start_stream(), loop)
+        assert first_item.result(timeout=2) == "ready"
+
+        assert mcp_mod._stop_mcp_loop() is True
+        assert finalized.wait(timeout=2)
+        assert loop.is_closed()
+
+    def test_shutdown_closes_loop_when_recorded_thread_is_already_dead(self):
+        """A stale non-null thread record still takes the defensive fallback."""
+        import tools.mcp_tool as mcp_mod
+
+        loop = asyncio.new_event_loop()
+        dead_thread = threading.Thread(target=lambda: None)
+        dead_thread.start()
+        dead_thread.join(timeout=2)
+        assert not dead_thread.is_alive()
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+            mcp_mod._mcp_loop = loop
+            mcp_mod._mcp_thread = dead_thread
+
+        try:
+            assert mcp_mod._stop_mcp_loop() is True
+            assert loop.is_closed()
+        finally:
+            with mcp_mod._lock:
+                mcp_mod._mcp_loop = None
+                mcp_mod._mcp_thread = None
+            if not loop.is_closed():
+                loop.close()
 
 
 # ---------------------------------------------------------------------------

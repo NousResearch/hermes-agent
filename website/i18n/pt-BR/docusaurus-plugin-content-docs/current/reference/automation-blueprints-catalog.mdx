@@ -1,0 +1,36 @@
+---
+sidebar_position: 7
+title: "Catálogo de Blueprints de Automação"
+description: "Blueprints de automação prontos para usar — configure pelo dashboard, CLI, TUI, qualquer messenger ou o app desktop."
+---
+
+import AutomationBlueprintsCatalog from '@site/src/components/AutomationBlueprintsCatalog';
+
+# Blueprints de Automação {#automation-blueprints}
+
+Blueprints de Automação são automações prontas para rodar. Escolha uma, preencha
+alguns campos, e o Hermes agenda como um job cron — sem precisar de sintaxe cron.
+
+Todo blueprint funciona em **toda superfície**:
+
+- **Dashboard / app desktop** — abra a página Cron, mude para a aba **Blueprints**,
+  preencha o formulário e clique em *Schedule it*.
+- **CLI, TUI e messengers** — digite `/blueprint <name>` (ex.:
+  `/blueprint morning-brief`) e o Hermes pergunta o que precisa, uma
+  pergunta por vez, e então agenda. A correspondência de nome é tolerante — um
+  prefixo ou grafia aproximada resolve. Usuários avançados podem pular as perguntas
+  passando valores inline: `/blueprint morning-brief time=08:00`.
+- **App desktop** — clique em **Send to App** em qualquer blueprint e ele abre com o
+  comando pré-carregado no composer.
+
+Blueprints nunca agendam nada em silêncio — você sempre confirma antes do job
+ser criado. Gerencie os jobs criados a qualquer momento com `/cron`.
+
+<AutomationBlueprintsCatalog />
+
+## Escrevendo o seu próprio {#writing-your-own}
+
+Um blueprint é só uma skill com um bloco `metadata.hermes.blueprint` no
+frontmatter do `SKILL.md`. Veja
+[Criando Skills → Automation Blueprints](../developer-guide/creating-skills.md) para o
+schema de slots e como publicar um.

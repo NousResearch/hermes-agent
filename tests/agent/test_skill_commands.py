@@ -761,6 +761,32 @@ class TestSkillDirectoryHeader:
         assert str(skill_dir / "scripts" / "run.js") in msg
         assert f"node {skill_dir}/scripts/foo.js" in msg
 
+    def test_fallback_supporting_file_scan_skips_dependency_dirs_and_caps(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "bounded-scan")
+            scripts_dir = skill_dir / "scripts"
+            allowed_dir = scripts_dir / "misc"
+            dependency_dir = scripts_dir / "node_modules" / "fake-dep" / "lib"
+            allowed_dir.mkdir(parents=True)
+            dependency_dir.mkdir(parents=True)
+            (scripts_dir / "empty.txt").write_text("")
+            for i in range(205):
+                (allowed_dir / f"file_{i:03}.txt").write_text("ok")
+            for i in range(5):
+                (dependency_dir / f"module_{i:03}.js").write_text("skip")
+
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/bounded-scan")
+
+        assert msg is not None
+        supporting_lines = [
+            line for line in msg.splitlines() if line.startswith("- scripts/misc/file_")
+        ]
+        assert len(supporting_lines) == 200
+        assert "scripts/empty.txt" not in msg
+        assert "node_modules" not in msg
+        assert "truncated at 200 supporting files" in msg
+
 
 class TestTemplateVarSubstitution:
     """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body

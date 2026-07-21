@@ -25,6 +25,44 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SUPPORTING_FILE_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".tox",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+)
+_MAX_SUPPORTING_FILES = 200
+
+
+def _iter_fallback_supporting_files(skill_dir: Path, subdir: str):
+    """Yield bounded fallback supporting files without traversing dependency caches."""
+    subdir_path = skill_dir / subdir
+    if not subdir_path.exists():
+        return
+
+    for root, dirs, files in os.walk(subdir_path):
+        dirs[:] = sorted(d for d in dirs if d not in _SUPPORTING_FILE_SKIP_DIRS)
+        root_path = Path(root)
+        for filename in sorted(files):
+            f = root_path / filename
+            if f.is_symlink() or not f.is_file():
+                continue
+            try:
+                if f.stat().st_size == 0:
+                    continue
+            except OSError:
+                continue
+            yield str(f.relative_to(skill_dir))
+
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -276,19 +314,25 @@ def _build_skill_message(
         )
 
     supporting = []
+    supporting_truncated = False
     linked_files = loaded_skill.get("linked_files") or {}
     for entries in linked_files.values():
         if isinstance(entries, list):
-            supporting.extend(entries)
+            for entry in entries:
+                if len(supporting) >= _MAX_SUPPORTING_FILES:
+                    supporting_truncated = True
+                    break
+                supporting.append(entry)
 
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
-            subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
-                        rel = str(f.relative_to(skill_dir))
-                        supporting.append(rel)
+            for rel in _iter_fallback_supporting_files(skill_dir, subdir):
+                if len(supporting) >= _MAX_SUPPORTING_FILES:
+                    supporting_truncated = True
+                    break
+                supporting.append(rel)
+            if supporting_truncated:
+                break
 
     if supporting and skill_dir:
         try:
@@ -300,6 +344,8 @@ def _build_skill_message(
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
             parts.append(f"- {sf}  ->  {skill_dir / sf}")
+        if supporting_truncated:
+            parts.append(f"- ... (truncated at {_MAX_SUPPORTING_FILES} supporting files)")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '

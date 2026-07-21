@@ -140,6 +140,18 @@ class TestGetAndPoll:
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
 
+    def test_poll_hides_session_from_other_task(self, registry):
+        s = _make_session(task_id="task-a")
+        registry._running[s.id] = s
+        result = registry.poll(s.id, task_id="task-b")
+        assert result["status"] == "not_found"
+
+    def test_kill_hides_session_from_other_task(self, registry):
+        s = _make_session(task_id="task-a")
+        registry._running[s.id] = s
+        result = registry.kill_process(s.id, task_id="task-b")
+        assert result["status"] == "not_found"
+
 
 def test_request_close_terminal_without_sink_is_desktop_only_error(registry):
     """No UI close sink wired (CLI/messaging) → clear desktop-only error, no raise."""
@@ -445,6 +457,18 @@ class TestReadLog:
 class TestStdinHelpers:
     def test_close_stdin_not_found(self, registry):
         result = registry.close_stdin("nonexistent")
+        assert result["status"] == "not_found"
+
+    def test_close_stdin_hides_session_from_other_task(self, registry):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        s = _make_session(task_id="task-a")
+        s.process = proc
+        registry._running[s.id] = s
+
+        result = registry.close_stdin(s.id, task_id="task-b")
+
+        proc.stdin.close.assert_not_called()
         assert result["status"] == "not_found"
 
     def test_close_stdin_pipe_mode(self, registry):
@@ -1180,6 +1204,29 @@ class TestProcessToolHandler:
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
+
+    def test_poll_action_hides_other_task_processes(self, monkeypatch):
+        from tools.process_registry import _handle_process, ProcessRegistry
+
+        isolated_registry = ProcessRegistry()
+        s = _make_session(task_id="task-a")
+        isolated_registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry.process_registry", isolated_registry)
+
+        result = json.loads(_handle_process({"action": "poll", "session_id": s.id}, task_id="task-b"))
+        assert result["status"] == "not_found"
+
+    def test_poll_action_allows_owner_task(self, monkeypatch):
+        from tools.process_registry import _handle_process, ProcessRegistry
+
+        isolated_registry = ProcessRegistry()
+        s = _make_session(task_id="task-a", output="hello")
+        isolated_registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry.process_registry", isolated_registry)
+
+        result = json.loads(_handle_process({"action": "poll", "session_id": s.id}, task_id="task-a"))
+        assert result["status"] == "running"
+        assert result["session_id"] == s.id
 
 
 # =========================================================================
@@ -2229,3 +2276,67 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+# =========================================================================
+# Task-scoped actions: same-gateway-session carve-out (#29177)
+# =========================================================================
+
+class TestTaskScopeSessionCarveOut:
+    """Targeted actions stay task-scoped, but a process from another task in
+    the SAME gateway session remains actionable — mirroring list_sessions'
+    cross-task exposure so a forgotten preview server can still be killed.
+    """
+
+    def test_get_for_task_allows_same_session_other_task(self):
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        s = _make_session(sid="proc_carve1", task_id="t_old")
+        s.session_key = "gw1"
+        reg._running[s.id] = s
+
+        assert reg.get_for_task(s.id, task_id="t_now", session_key="gw1") is s
+
+    def test_get_for_task_hides_other_session_other_task(self):
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        s = _make_session(sid="proc_carve2", task_id="t_old")
+        s.session_key = "gw1"
+        reg._running[s.id] = s
+
+        assert reg.get_for_task(s.id, task_id="t_now", session_key="gw2") is None
+        assert reg.get_for_task(s.id, task_id="t_now") is None
+
+    def test_kill_action_allows_same_session_other_task(self, monkeypatch):
+        from tools import process_registry as pr
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        s = _make_session(sid="proc_carve3", task_id="t_old", exited=True, exit_code=0)
+        s.session_key = "gw1"
+        reg._running[s.id] = s
+        monkeypatch.setattr(pr, "process_registry", reg)
+        monkeypatch.setattr(
+            "tools.approval.get_current_session_key", lambda default="": "gw1"
+        )
+
+        out = json.loads(pr._handle_process({"action": "kill", "session_id": s.id}, task_id="t_now"))
+        assert out["status"] == "already_exited"
+
+    def test_kill_action_hides_other_session_other_task(self, monkeypatch):
+        from tools import process_registry as pr
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        s = _make_session(sid="proc_carve4", task_id="t_old", exited=True, exit_code=0)
+        s.session_key = "gw1"
+        reg._running[s.id] = s
+        monkeypatch.setattr(pr, "process_registry", reg)
+        monkeypatch.setattr(
+            "tools.approval.get_current_session_key", lambda default="": "gw2"
+        )
+
+        out = json.loads(pr._handle_process({"action": "kill", "session_id": s.id}, task_id="t_now"))
+        assert out["status"] == "not_found"

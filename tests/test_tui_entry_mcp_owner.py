@@ -16,6 +16,13 @@ from tui_gateway import entry
 
 def test_wait_falls_through_to_shared_owner(monkeypatch):
     monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
+    # The fall-through to the shared owner only exists for the stdio TUI,
+    # which arms this flag in main(); other surfaces call the startup wait
+    # directly from _make_agent and must NOT be waited twice.
+    monkeypatch.setattr(entry, "_mcp_discovery_enabled", True)
+    monkeypatch.setattr(
+        mcp_startup, "start_background_mcp_discovery", lambda **kw: None
+    )
     thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
     thread.start()
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", thread)

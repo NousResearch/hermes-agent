@@ -196,6 +196,28 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["providers"][1:] == rows
 
 
+def test_build_models_payload_keeps_current_model_when_curated_slice_omits_it():
+    """The desktop status-bar picker receives a capped provider model slice.
+
+    Newly launched provider models can be outside that slice (NVIDIA Ultra was
+    model #84 in the live NVIDIA list while /api/model/options requested only
+    50).  The active model still has to be present so the UI can render its row
+    and expose the per-model options submenu.
+    """
+    current = "nvidia/nemotron-3-ultra-550b-a55b"
+    rows = [
+        {"slug": "nvidia", "name": "NVIDIA", "models": ["nvidia/model-1"],
+         "total_models": 120, "is_current": True, "is_user_defined": False,
+         "source": "built-in"},
+    ]
+    ctx = _empty_ctx(provider="nvidia", model=current, base_url="")
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+    nvidia = payload["providers"][0]
+    assert nvidia["models"] == ["nvidia/model-1", current]
+    assert nvidia["total_models"] == 120
+
+
 def test_build_models_payload_does_not_call_provider_model_ids():
     """``build_models_payload`` is a thin shape adapter — it delegates the
     actual curation to ``list_authenticated_providers`` (which DOES call

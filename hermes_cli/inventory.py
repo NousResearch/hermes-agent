@@ -184,6 +184,7 @@ def build_models_payload(
         probe_current_custom_provider=probe_current_custom_provider,
         excluded_providers=ctx.excluded_providers or [],
     )
+    _ensure_current_model_visible(rows, ctx)
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -261,6 +262,38 @@ def build_models_payload(
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def _ensure_current_model_visible(rows: list[dict], ctx: ConfigContext) -> None:
+    """Append the active model to its provider row when a capped slice omitted it.
+
+    ``list_authenticated_providers(..., max_models=N)`` intentionally returns a
+    capped, relevance-ordered slice for large provider catalogs.  The desktop
+    status-bar picker builds per-model option rows from that slice, so if the
+    configured active model sits beyond the cap (common for newly launched
+    hosted catalogs) the UI can display the active model in the status bar but
+    cannot show/select its option submenu.  Keep the cap for the rest of the
+    provider while guaranteeing the active model is present.
+    """
+    current_model = (ctx.current_model or "").strip()
+    current_provider = (ctx.current_provider or "").strip().lower()
+    if not current_model:
+        return
+
+    for row in rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        if not (row.get("is_current") or (current_provider and slug == current_provider)):
+            continue
+
+        models = list(row.get("models") or [])
+        if current_model not in models:
+            models.append(current_model)
+            row["models"] = models
+            try:
+                row["total_models"] = max(int(row.get("total_models") or 0), len(models))
+            except Exception:
+                row["total_models"] = len(models)
+        return
 
 
 def _apply_capabilities(rows: list[dict]) -> None:

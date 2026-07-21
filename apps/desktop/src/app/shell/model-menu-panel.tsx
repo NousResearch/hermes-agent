@@ -414,7 +414,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 // provider serving 19 models (e.g. opencode-go) must show all 19 when the user
 // searches for it, not a truncated subset. (#47077 follow-up)
 
-function groupModels(
+export function groupModels(
   providers: ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
@@ -466,9 +466,17 @@ function groupModels(
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Keep the active provider first so the status-bar menu opens on the model
+  // the user is actually running; non-active providers remain alphabetical.
+  groups.sort((a, b) => {
+    const aCurrent = a.provider.slug === current.provider
+    const bCurrent = b.provider.slug === current.provider
+    if (aCurrent !== bCurrent) {
+      return aCurrent ? -1 : 1
+    }
+
+    return a.provider.name.localeCompare(b.provider.name)
+  })
 
   return groups
 }

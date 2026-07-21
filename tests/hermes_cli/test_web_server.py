@@ -6820,6 +6820,25 @@ class TestModelInfoEndpoint:
         assert caps["max_output_tokens"] == 32000
         assert caps["model_family"] == "claude-opus"
 
+    def test_model_info_nvidia_ultra_reasoning_fallback(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "nvidia/nemotron-3-ultra-550b-a55b",
+                "provider": "nvidia",
+            }
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=131072), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None):
+            resp = self.client.get("/api/model/info")
+
+        caps = resp.json()["capabilities"]
+        assert caps["supports_reasoning"] is True
+        assert caps["context_window"] == 131072
+        assert caps["model_family"] == "nemotron-3-ultra"
+
     def test_model_info_graceful_on_metadata_error(self, monkeypatch):
         """Endpoint should return zeros on import/resolution errors, not 500."""
         import hermes_cli.web_server as ws

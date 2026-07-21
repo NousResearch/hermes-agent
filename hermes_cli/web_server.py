@@ -6269,6 +6269,15 @@ def get_model_info(profile: Optional[str] = None):
                 }
         except Exception:
             pass
+        if not caps and provider == "nvidia" and "nemotron-3-ultra" in model_name.lower():
+            caps = {
+                "supports_tools": True,
+                "supports_vision": False,
+                "supports_reasoning": True,
+                "context_window": effective_ctx or auto_ctx or 131072,
+                "max_output_tokens": 16384,
+                "model_family": "nemotron-3-ultra",
+            }
 
         return {
             "model": model_name,

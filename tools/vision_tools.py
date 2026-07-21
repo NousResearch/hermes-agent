@@ -770,8 +770,8 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         ``image_url`` parts.
       * OpenAI Responses (``openai-codex``): ``function_call_output.output``
         accepts an array of ``input_text``/``input_image`` items.
-      * Gemini 3 (and proxied via aggregators): supports multimodal tool
-        results. Older Gemini does NOT.
+      * Gemini 2.0+ (and proxied via aggregators): supports multimodal tool
+        results.
 
     For unknown / legacy providers we conservatively return False — the
     caller falls back to the legacy aux-LLM text path.  The check is relaxed
@@ -803,12 +803,18 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return True
 
     # Gemini — gate on model name; older Gemini variants did not support
-    # multimodal functionResponse. Gemini 3.x does.
+    # multimodal functionResponse. Gemini 2.0+ does.
     if p in {"google", "gemini", "google-gemini", "google-vertex-gemini"}:
         if not isinstance(model, str):
             return False
         m = model.strip().lower()
-        if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
+        if (
+            "gemini-3" in m
+            or "gemini-pro-3" in m
+            or "gemini-flash-3" in m
+            or "gemini-2.5" in m
+            or "gemini-2.0" in m
+        ):
             return True
         return False
 

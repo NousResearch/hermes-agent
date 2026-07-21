@@ -50,8 +50,15 @@ class TestSupportsMediaInToolResults:
     def test_gemini_3_yes(self):
         assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
 
-    def test_gemini_2_no(self):
-        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is False
+    @pytest.mark.parametrize(
+        "model",
+        ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+    )
+    def test_gemini_2_0_and_2_5_yes(self, model):
+        assert _supports_media_in_tool_results("google", model) is True
+
+    def test_older_gemini_no(self):
+        assert _supports_media_in_tool_results("google", "gemini-1.5-pro") is False
 
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False

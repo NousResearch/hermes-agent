@@ -189,6 +189,21 @@ def test_required_all_missing_is_dropped():
     assert "required" not in out[0]["function"]["parameters"]
 
 
+def test_required_null_is_dropped():
+    """``required: null`` is invalid JSON Schema and causes HTTP 400 on
+    strict OpenAI-compatible backends (issue #60752)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"msg": {"type": "string"}},
+        "required": None,
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert "required" not in params
+    # Properties must survive.
+    assert "msg" in params["properties"]
+
+
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",

@@ -93,6 +93,15 @@ def _format_reset(dt: Optional[datetime]) -> str:
 
 
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
+    """Render an AccountUsageSnapshot into display-ready lines.
+
+    Args:
+        snapshot: The usage snapshot to render, or None.
+        markdown: If True, format the header with bold markdown.
+
+    Returns:
+        List of formatted strings, or empty list when snapshot is None.
+    """
     if not snapshot:
         return []
     header = f"📈 {'**' if markdown else ''}{snapshot.title}{'**' if markdown else ''}"
@@ -875,6 +884,18 @@ def fetch_account_usage(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
+    """Fetch account usage data for a supported provider.
+
+    Args:
+        provider: Provider identifier (e.g., "anthropic", "openai-codex", "openrouter").
+            "auto", "custom", or empty short-circuit to None.
+        base_url: Base URL for the API (used by openrouter).
+        api_key: API key for the provider (used by openrouter).
+
+    Returns:
+        AccountUsageSnapshot on success, None for unsupported provider or on any error.
+        Exceptions are swallowed and turned into None.
+    """
     normalized = str(provider or "").strip().lower()
     if normalized in {"", "auto", "custom"}:
         return None

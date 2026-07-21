@@ -1,7 +1,7 @@
 ---
 name: manim-video
 description: "Manim CE animations: 3Blue1Brown math/algo videos."
-version: 1.0.0
+version: 2.0.0
 platforms: [linux, macos, windows]
 ---
 
@@ -29,7 +29,16 @@ This is educational cinema. Every frame teaches. Every animation reveals structu
 
 ## Prerequisites
 
-Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition v0.20+ (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg. Reference docs tested against Manim CE v0.20.1.
+Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition v0.20+, LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg.
+
+**macOS specific**: `pip install manim` will fail with "Python dependency not found" unless `pkg-config` and `cairo` are installed first:
+
+```bash
+brew install pkg-config cairo
+pip install manim
+```
+
+Reference docs tested against Manim CE v0.20.1.
 
 ## Modes
 
@@ -50,7 +59,8 @@ Single Python script per project. No browser, no Node.js, no GPU required.
 | Layer | Tool | Purpose |
 |-------|------|---------|
 | Core | Manim Community Edition | Scene rendering, animation engine |
-| Math | LaTeX (texlive/MiKTeX) | Equation rendering via `MathTex` |
+| Math | LaTeX (texlive/MiKTeX) via `MathTex` / `Tex` | Equation rendering | 
+|     | — or — `Text` with Unicode math glyphs | Fallback when LaTeX unavailable |
 | Video I/O | ffmpeg | Scene stitching, format conversion, audio muxing |
 | TTS | ElevenLabs / Qwen3-TTS (optional) | Narration voiceover |
 
@@ -92,14 +102,21 @@ project-name/
 
 ### Animation Speed
 
+**This table is the minimum. Double any wait if you're unsure.**
+
 | Context | run_time | self.wait() after |
 |---------|----------|-------------------|
-| Title/intro appear | 1.5s | 1.0s |
-| Key equation reveal | 2.0s | 2.0s |
-| Transform/morph | 1.5s | 1.5s |
-| Supporting label | 0.8s | 0.5s |
+| Title/intro appear | 1.0s | 1.0s |
+| Any new shape/object | 0.4–0.6s | 0.5s |
+| Supporting label | 0.5–0.8s | 0.5s |
+| Transform/morph | 1.0–1.5s | 1.0s |
+| Key reveal / "aha moment" | 1.5–2.5s | 1.5–2.0s |
+| Between scene stages | 0.3–0.5s (fade) | 0.5s |
+| End of scene (before fade-out) | — | 1.5s |
 | FadeOut cleanup | 0.5s | 0.3s |
-| "Aha moment" reveal | 2.5s | 3.0s |
+| Final title card | 1.2s | 2.0s |
+
+A 60s video with proper breathing room is better than a 30s one the viewer has to rewatch. Speed is not a quality metric.
 
 ### Typography Scale
 
@@ -113,17 +130,127 @@ project-name/
 
 ### Fonts
 
-**Use monospace fonts for all text.** Manim's Pango renderer produces broken kerning with proportional fonts at all sizes. See `references/visual-design.md` for full recommendations.
+**Proportional fonts work well with Manim's Pango renderer.** The old claim that monospace is required was incorrect — `Text()` and `MarkupText()` use Pango/Cairo and support any installed font with proper kerning:
 
 ```python
-MONO = "Menlo"  # define once at top of file
-
-Text("Fourier Series", font_size=48, font=MONO, weight=BOLD)  # titles
-Text("n=1: sin(x)", font_size=20, font=MONO)                  # labels
-MathTex(r"\nabla L")                                            # math (uses LaTeX)
+Text("Hello World", font_size=48, weight=BOLD)                    # default font (sans-serif)
+Text("Hello World", font_size=24, font="Open Sans")               # any installed font
+MarkupText('Red <span fgcolor="#FF6B6B">warning</span>')          # PangoMarkup for inline styling
+Paragraph("Multi-paragraph\ntext layout", font_size=24)           # block text
 ```
 
-Minimum `font_size=18` for readability.
+**Font management:**
+- Use `manimpango.list_fonts()` to enumerate system-available fonts
+- Manim picks up fonts from your OS font directory — no special configuration needed
+- Text objects use `disable_ligatures=True` when you need character-level indexing (e.g., `t2c` coloring). Without this, ligatures like "fi" merge into one glyph and break per-character coloring
+
+**Math requires LaTeX.** For formulas, use `Tex()` or `MathTex()` which require a working LaTeX installation (texlive/basictex). There is no non-LaTeX path for math typesetting in Manim.
+
+**Simple math without LaTeX:** For basic labels and annotations, you can use Unicode math symbols in `Text()` objects to avoid the LaTeX dependency:
+```python
+Text("P ∝ cos(θ)", font_size=36)   # simplified math, no LaTeX needed
+Text("α + β = 180°", font_size=28) # Unicode Greek + degree symbol
+```
+This works for display but lacks LaTeX's proper spacing, alignment, and formula rendering.
+
+### LaTeX Requirement: What Needs It
+
+| Feature | Needs LaTeX? | Workaround |
+|---------|-------------|------------|
+| `Text("hello")` | ❌ No | — |
+| `MarkupText("<span>styled</span>")` | ❌ No | — |
+| `Paragraph("multi\nline")` | ❌ No | — |
+| `Tex(r"\\frac{1}{2}")` | ✅ **Yes** | None |
+| `MathTex(r"E = mc^2")` | ✅ **Yes** | None |
+| `Axes(include_numbers=True)` | ✅ **Yes** | Set `include_numbers=False`, add `Text` labels manually |
+| `DecimalNumber(3.14)` | ❌ No | — |
+| `Integer(42)` | ❌ No | — |
+| `Matrix([[1,2],[3,4]])` | ✅ **Yes** | None |
+
+**If LaTeX is not installed**, Manim will crash with `FileNotFoundError: No such file or directory: 'latex'` when it encounters any `Tex`/`MathTex` or `include_numbers=True`. Render iteratively with `-ql` — the LaTeX call only happens once per expression (then cached).
+
+### Layout Management
+
+**Frame safety.** Manim 1080p bounds are approximately `-7.5..7.5 × -4.2..4.2`. Never trust `next_to` to keep objects on screen — always clamp:
+
+```python
+SAFE_L = -7.0; SAFE_R = 7.0; SAFE_B = -3.8; SAFE_T = 3.8
+
+def clamp(mob):
+    if mob.get_left()[0] < SAFE_L:
+        mob.shift(RIGHT * (SAFE_L - mob.get_left()[0]))
+    if mob.get_right()[0] > SAFE_R:
+        mob.shift(LEFT * (mob.get_right()[0] - SAFE_R))
+    if mob.get_bottom()[1] < SAFE_B:
+        mob.shift(UP * (SAFE_B - mob.get_bottom()[1]))
+    if mob.get_top()[1] > SAFE_T:
+        mob.shift(DOWN * (mob.get_top()[1] - SAFE_T))
+```
+
+Call `clamp()` after every `next_to()` and `move_to()`.
+
+**Vertical stacking budget.** Plan your y-coordinates before writing any animation code:
+
+| Zone | y range | Use |
+|---|---|---|
+| Title | +3.5 to +4.0 | Scene title |
+| Header | +2.5 to +3.5 | Descriptive text |
+| Primary content | -1.0 to +2.0 | Main visualization |
+| Annotation | -2.5 to -1.0 | Decode text, labels |
+| Detail | -3.8 to -2.5 | Secondary info, legends |
+
+If you need more than 4 vertical layers, split the scene — fade down one stage, set up the next.
+
+**Stage separation.** Within a single scene, use explicit fade-out/stage transitions rather than piling elements vertically:
+
+```python
+# Stage 1
+self.play(...)
+self.wait(0.5)
+self.play(FadeOut(stage_1_group, shift=UP*0.1), run_time=0.3)
+self.wait(0.2)
+# Stage 2: fresh screen
+self.play(...)
+```
+
+This prevents the "everything piled at the bottom" look.
+
+**The legend approach** is the default for any bar/region visualization with 3+ labeled segments. Do NOT place multi-line labels above narrow rectangles — they extend beyond the rect bounds and collide with neighbors. Instead:
+
+1. Number each region with a small colored `[1]`–`[N]` tag placed above/inline with the rect
+2. List the legend below the frame: `[1] = Header (1B)   [2] = Transport Codes (4B)`
+
+```python
+def legend_from(names, colors, y_pos):
+    """Build a horizontal legend row at y_pos: [1] Name  [2] Name ..."""
+    items = VGroup()
+    cx = 0
+    for i, (name, color) in enumerate(zip(names, colors), start=1):
+        tag = Text(f"[{i}]", font_size=14, color=color, weight=BOLD, font=MONO)
+        label = Text(name, font_size=14, color=TEXT_COLOR, font=MONO)
+        group = VGroup(tag, label)
+        group.arrange(RIGHT, buff=0.12)
+        group.move_to([cx, y_pos, 0])
+        items.add(group)
+        cx += group.width + 0.6
+    total_w = items[-1].get_right()[0] - items[0].get_left()[0]
+    items.shift(LEFT * total_w / 2)
+    return items
+```
+
+**`aligned_edge=None` breaks `next_to`** in some Manim versions. Always pass an explicit `aligned_edge` or omit the kwarg entirely — never pass `None`.
+
+**Pre-render checklist** (after `-ql` draft):
+- [ ] Every object placed with `move_to` or `next_to` — no default positions
+- [ ] All `next_to` calls use `buff >= 0.2` (0.15 absolute minimum)
+- [ ] All labels inside safe frame — run `clamp()` on every placed mobject
+- [ ] No pair of Text/VGroup objects have overlapping bounding boxes (step through frame by frame in QuickTime/mpv)
+- [ ] Key reveals followed by `wait(1.5)` minimum
+- [ ] Scenes use `Text`/`MarkupText` for labels (not `MathTex`, which needs LaTeX)
+- [ ] Bar charts and axes use manual Text labels (not `include_numbers=True`, which needs LaTeX)
+- [ ] Scene-end FadeOut uses `Group(*self.mobjects)` not `VGroup(*self.mobjects)`
+- [ ] `self.add_subcaption(...)` on every scene
+- [ ] Render draft at `-ql` first, visually verify every second, then `-qh` final
 
 ### Per-Scene Variation
 
@@ -173,16 +300,29 @@ Key patterns:
 ```bash
 manim -ql script.py Scene1_Introduction Scene2_CoreConcept  # draft
 manim -qh script.py Scene1_Introduction Scene2_CoreConcept  # production
+
+# Render all scenes in sequence non-interactively:
+for s in Scene1_Introduction Scene2_CoreConcept Scene3_Conclusion; do
+  manim -qh script.py "$s"
+done
 ```
 
 ### Step 4: Stitch
 
 ```bash
+# Option A: file list
 cat > concat.txt << 'EOF'
 file 'media/videos/script/480p15/Scene1_Introduction.mp4'
 file 'media/videos/script/480p15/Scene2_CoreConcept.mp4'
 EOF
 ffmpeg -y -f concat -safe 0 -i concat.txt -c copy final.mp4
+
+# Option B: one-liner (no temp file, bash/zsh)
+ffmpeg -y -f concat -safe 0 -i <(
+  for f in Scene1_Introduction.mp4 Scene2_CoreConcept.mp4; do
+    echo "file '$PWD/$f'"
+  done
+) -c copy final.mp4
 ```
 
 ### Step 5: Review
@@ -190,6 +330,218 @@ ffmpeg -y -f concat -safe 0 -i concat.txt -c copy final.mp4
 ```bash
 manim -ql --format=png -s script.py Scene2_CoreConcept  # preview still
 ```
+
+## No-LaTeX Workaround
+
+Manim's `MathTex` and `Tex` require a LaTeX distribution (`texlive`/`mactex`). On systems without LaTeX (or to avoid multi-GB LaTeX installs), use `Text` with Unicode math characters instead.
+
+### Replace MathTex with Text
+
+Simple formulas use basic Unicode math glyphs — no LaTeX needed:
+
+```python
+# INSTEAD OF:   MathTex(r"P \propto \cos(\theta)", ...)
+# USE:
+Text("P ∝ cos(θ)", font_size=36, color=SECONDARY, font=MONO)
+Text("tilt = latitude × 0.87", font_size=28, color=SECONDARY, font=MONO)
+Text("cos(θ) = 77%", font_size=36, color=ACCENT, font=MONO)
+Text("θ = 40°", font_size=28, color=PRIMARY, font=MONO)
+```
+
+Common Unicode math characters available without LaTeX:
+| Symbol | Unicode | Use |
+|--------|---------|-----|
+| ∝ | U+221D | proportional to |
+| θ | U+03B8 | theta |
+| ° | U+00B0 | degrees |
+| × | U+00D7 | multiplication |
+| ± | U+00B1 | plus-minus |
+| ≈ | U+2248 | approximately |
+| → | U+2192 | arrow |
+| ∑ | U+2211 | sum |
+| √ | U+221A | square root |
+
+### Manual Axis Labels (Axes without LaTeX)
+
+`Axes` with `include_numbers=True` uses LaTeX internally. Set `include_numbers=False` and add labels manually with `Text`:
+
+```python
+axes = Axes(
+    x_range=[-5, 95, 10],
+    y_range=[50, 105, 10],
+    x_length=10, y_length=4,
+    axis_config={"color": DIM, "include_numbers": False}
+)
+axes.move_to([0, 0.5, 0])
+
+# Manual x-axis labels
+ax_labels = VGroup()
+for x_val in [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]:
+    pt = axes.coords_to_point(x_val, 50)
+    label = Text(str(x_val), font_size=14, color=DIM, font=MONO)
+    label.move_to([pt[0], 0.5 - 0.3, 0])
+    ax_labels.add(label)
+
+# Manual y-axis labels
+for y_val in [50, 60, 70, 80, 90, 100]:
+    pt = axes.coords_to_point(0, y_val)
+    label = Text(str(y_val), font_size=14, color=DIM, font=MONO)
+    label.move_to([pt[0] - 0.4, pt[1], 0])
+    ax_labels.add(label)
+
+self.play(Create(axes), Write(ax_labels), run_time=0.8)
+```
+
+### Housekeeping: Scene End FadeOut
+
+To fade out all mobjects at scene end, use `Group` (NOT `VGroup`), because `self.mobjects` may contain plain `Mobject` instances that cannot be added to a `VGroup`:
+
+```python
+# RIGHT — works with any mobject type:
+self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
+
+# WRONG — TypeError: only VMobject can be added to VGroup:
+self.play(FadeOut(VGroup(*self.mobjects)), run_time=0.5)  # fails!
+```
+
+## Craftsmanship Patterns (from 3Blue1Brown's actual workflow)
+
+The skill previously had API knowledge but no understanding of what makes Manim videos *good*. These patterns come from studying Grant Sanderson's actual scene structure in the `3b1b/videos` repository and the ManiBench paper's analysis of his 53,000 lines of source code.
+
+### Scene Granularity: One Concept Per Scene
+
+**Grant's pattern:** 4–16 scenes per 10–20 minute video. Each scene is a single self-contained visual point, 30–90 seconds long. The `construct()` method reads like a script — sequential, declarative, one reveal at a time.
+
+**My old pattern (wrong):** Cramming 5 "stages" into one scene with fade-out transitions. This produces a cluttered, rushed feel.
+
+**Correct approach:**
+```python
+# Each scene = one conceptual unit
+class Scene1_Setup(Scene):      # ~30s — introduce the problem
+class Scene2_Intuition(Scene):  # ~45s — build geometric intuition
+class Scene3_Formula(Scene):    # ~40s — show the math
+class Scene4_Result(Scene):     # ~30s — show the payoff
+```
+
+Each scene starts fresh, has one job, and ends clean. The viewer's mental model resets between scenes. This is **better** than staging within a scene because:
+- Manim's scene transitions are clean fades (visual reset)
+- Each scene can have its own camera setup
+- Shorter render iteration (render one scene, not the whole thing)
+- Easier to rearrange/edit narrative
+
+### MovingCamera: The Secret Weapon
+
+Grant's signature cinematic feel comes from `MovingCamera`. Panning and zooming creates the sense of being guided through a 2D space rather than watching slides:
+
+```python
+class MovingCameraScene(Scene):
+    def construct(self):
+        self.camera.frame.save_state()
+
+        # Zoom into a detail
+        self.play(
+            self.camera.frame.animate.scale(0.5).move_to(target_point),
+            run_time=2.0
+        )
+        self.wait(1.0)
+
+        # Restore to full view
+        self.play(Restore(self.camera.frame), run_time=1.5)
+```
+
+**Use cases:**
+- **Zoom into a detail** when revealing a subtle point
+- **Pan across a timeline** for sequential explanations
+- **Pull back to show context** after zooming into specifics
+- **Follow a moving object** by animating the camera frame to track it
+
+Without `MovingCamera`, every scene feels like a static slide. With it, the video feels cinematic.
+
+### VGroup Composition: Build Complex Objects Hierarchically
+
+Grant never writes flat scenes. He builds composite objects as `VGroup` trees:
+
+```python
+# Build a labeled axis system as a composite object
+class MyScene(Scene):
+    def construct(self):
+        # Build components
+        axis = NumberLine(x_range=[0, 10, 1])
+        labels = VGroup(*[MathTex(str(i)).next_to(axis.n2p(i), DOWN) for i in range(0, 11)])
+        title = Text("Position Over Time", font_size=36).to_edge(UP)
+
+        # Compose into groups
+        graph_panel = VGroup(axis, labels).move_to(ORIGIN)
+        full_diagram = VGroup(graph_panel, title)
+
+        # Animate the whole composition
+        self.play(Write(full_diagram))
+        self.wait()
+
+        # Transform a sub-part
+        self.play(graph_panel.animate.shift(LEFT))
+```
+
+The key insight: **VGroup is not just a container, it's a composition tool.** Every sub-group should be independently animatable.
+
+### Pacing: Grant's Timing Patterns
+
+Analysis of 3B1B's actual code shows these timing patterns repeat constantly:
+
+- **Concept setup:** `run_time=1.5` followed by `wait(1.0)`
+- **Reveal/emphasis:** `run_time=0.5` followed by `wait(2.0)` (fast animation, long pause to absorb)
+- **Transform between states:** `run_time=2.0` followed by `wait(0.5)`
+- **Simple appearance (FadeIn):** `run_time=0.8` followed by `wait(0.3)`
+- **Narration-synced:** `run_time` matches the time needed to speak ~1 sentence
+
+The most common mistake in AI-generated Manim: **insufficient wait times after reveals.** If you're unsure, double the wait.
+
+### Production Workflow (Real)
+
+Grant's actual pipeline (documented in his repo layout):
+
+1. Each video is a **directory** under `active_projects/`
+2. Inside: one `.py` file per scene (not one file for all scenes)
+3. Render each scene individually: `manim scene1.py Scene1 -qh`
+4. Output MP4s are independent assets
+5. Assembly happens in **Final Cut Pro** (or any video editor) — voiceover, music, transitions between scenes
+6. Partial movie files are for Manim's internal stitching; Grant doesn't use them for final assembly
+
+**Implication for my skill:** The "one script.py with all scenes" pattern is fine for quick demos, but for anything approaching production quality, I should use separate files and stitch in post.
+
+### Visual Density: Less Is More
+
+Grant's frames are remarkably sparse. He shows:
+- 1–3 active elements at a time
+- At most 1 equation visible
+- Heavy use of color, not text, to distinguish elements
+- Generous margins and padding
+
+If a frame has 8 separate labeled things going on, it's wrong. Split it across 2–3 scenes.
+
+## Learning Resources (What the Docs Don't Teach)
+
+The official docs teach API — these teach *craft*.
+
+### Must-Study Resources
+
+| Resource | What It Teaches |
+|---|---|
+| **[3b1b/videos](https://github.com/3b1b/videos)** — Grant's actual scene source code | Scene structure, pacing, composition, real production patterns. This is the single most valuable resource. Each directory = one video, each `.py` file = one scene. |
+| **[r/manim](https://www.reddit.com/r/manim/)** — Community showcase and critique | What "beautiful" looks like across hundreds of creators. Sort by top posts. |
+| **[Manim School](https://manim.school/)** — Interactive tutorials | Structured learning paths with live coding examples. |
+| **[Academy of Manim](https://www.youtube.com/c/AcademyofManim)** — YouTube channel | 100+ dedicated Manim tutorial videos covering CE patterns, tips, and tricks. |
+| **[manim-kindergarten](https://github.com/manim-kindergarten/manim_sandbox)** — Chinese community repo | Massive collection of community examples and utilities. |
+| **[ManiBench](https://github.com/nabin2004/ManiBench)** — 417 human-reviewed code snippets | Structured training data with natural-language descriptions of visual effects. |
+
+### How to Improve My Output
+
+Before writing a frame, ask:
+1. **What's the one thing the viewer should see right now?** — If you can't answer in one sentence, the scene isn't focused enough
+2. **Where should their eyes go?** — Use color, motion, or opacity to direct attention
+3. **Am I showing too much at once?** — If so, split into multiple scenes
+4. **Does this need a camera move?** — A slow zoom or pan makes it feel guided rather than presented
+5. **Have I given enough time to absorb?** — The pause after the reveal is more important than the reveal itself
 
 ## Critical Implementation Notes
 
@@ -215,6 +567,156 @@ self.play(ReplacementTransform(note1, note2))  # not Write(note2) on top
 self.play(Create(circle))  # must add first
 self.play(circle.animate.set_color(RED))  # then animate
 ```
+
+## Common Pitfalls
+
+### 1. VGroup vs Group — Critical Distinction
+
+**`VGroup`** only accepts `VMobject` instances (vectorized mobjects: shapes, text, lines, etc.).
+**`Group`** accepts any `Mobject` (including non-vectorized types like `Dot`, `Axes`, `ParametricFunction`).
+
+```python
+# WRONG — crashes if any mobject isn't a VMobject:
+self.play(FadeOut(VGroup(*self.mobjects)), run_time=0.5)
+
+# RIGHT:
+self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
+```
+
+This is especially important when fading out everything in a scene, since `self.mobjects` may contain non-VMobject types.
+
+### 2. `obj.target` Collides with Manim Internals
+
+`Mobject.target` is used internally by Manim's interpolation machinery in `animate.become()` and `apply_function()`. **Never set `obj.target = ...`** in your code — it will cause cryptic errors about `RerunSceneException` or shape mismatches. Instead, animate directly:
+
+```python
+# WRONG:
+rect.target = Rectangle(...)  # overrides Manim's .target
+rect.animate.become(rect.target)
+
+# RIGHT:
+rect.animate.move_to(target_position)
+```
+
+### 3. List Concatenation vs Vector Arithmetic
+
+Python `+` on lists **concatenates** — it does not add elementwise:
+
+```python
+# WRONG: produces [target_x, 0, 0, 0, 0.8, 0] (6 elements!)
+target_center = [target_x, 0, 0]
+lbl.animate.move_to(target_center + [0, 0.8, 0])
+
+# RIGHT: use numpy arrays for vector math
+target_center = np.array([target_x, 0, 0])
+lbl.animate.move_to(target_center + np.array([0, 0.8, 0]))
+```
+
+### 4. `manim -s` Triggers Interactive Prompt
+
+The `-s` (skip rendering) flag with multiple scenes opens an interactive chooser. Use `-q` flags and explicit scene names for non-interactive batch rendering. Or use a shell loop (see Step 3).
+
+### 5. `aligned_edge=None` Crashes `next_to`
+
+In some Manim CE versions (including 0.20.1), passing `aligned_edge=None` to `next_to` causes a `TypeError: unsupported operand type(s) for +: 'NoneType' and 'float'`. Either omit the kwarg or pass an explicit edge:
+
+```python
+# WRONG:
+subj.next_to(ref, DOWN, aligned_edge=None)
+
+# RIGHT:
+subj.next_to(ref, DOWN)
+subj.next_to(ref, DOWN, aligned_edge=LEFT)
+```
+
+### 6. Text `letter_spacing` Not Supported
+
+`Text()` does not support `letter_spacing` or kerning. Use `MarkupText` instead for Pango attribute control:
+
+```python
+MarkupText('<span letter_spacing="6000">HERMES</span>', font_size=18, font="Menlo")
+MarkupText('This is <b>important</b>', font_size=24, font="Menlo")
+MarkupText('Red <span foreground="#FF6B6B">warning</span>', font_size=24, font="Menlo")
+```
+
+### 7. `interpolate_color` Needs `ManimColor` Objects
+
+`interpolate_color(color1, color2, alpha)` requires `ManimColor` instances, not hex strings. Passing `"#FF6B6B"` will raise `AttributeError: 'str' object has no attribute 'interpolate'`.
+
+Always convert hex strings to `ManimColor` before interpolation:
+
+```python
+from manim import *
+
+PRIMARY = ManimColor("#FF6B6B")
+ACCENT = ManimColor("#6BCB77")
+
+def temp_color(t):
+    if t <= 65:
+        return interpolate_color(ManimColor("#58C4DD"), ACCENT, (t - 55) / 10)
+    else:
+        return interpolate_color(ACCENT, PRIMARY, min((t - 65) / 15, 1.0))
+```
+
+Or define all palette colors as `ManimColor` objects at the top of the file (recommended).
+
+### 8. `Line` / `VMobject` Constructor Kwargs Are Limited
+
+`Line` and `VMobject` constructors do NOT accept `opacity` or `stroke_cap_style` in Manim v0.20.1. These must be set via `.set_stroke()` after creation:
+
+```python
+# WRONG — raises TypeError about unexpected keyword argument
+line = Line(start, end, color=RED, stroke_width=2, opacity=0.3)
+
+# RIGHT
+line = Line(start, end, color=RED, stroke_width=2)
+line.set_stroke(opacity=0.3)
+
+# Also RIGHT for VMobject
+curve = VMobject()
+curve.set_points_smoothly(points)
+curve.set_stroke(color=PRIMARY, width=4)
+```
+
+`set_stroke()` accepts: `color`, `width`, `opacity`. Setting these in the constructor only works for `color` and `width`.
+
+### 9. `CubicBezier` Requires All 4 Anchor Points
+
+`CubicBezier(start_anchor, start_handle, end_handle, end_anchor)` is for constructing a single cubic bezier segment with explicit control points. It cannot be used as a free-form curve.
+
+To draw a smooth curve through an arbitrary set of points:
+
+```python
+# WRONG — TypeError: missing 4 required positional arguments
+curve = CubicBezier()
+curve.set_points_smoothly(points)
+
+# RIGHT
+curve = VMobject()
+curve.set_points_smoothly(points)
+curve.set_stroke(color=PRIMARY, width=4)
+self.play(Create(curve))
+```
+
+### 10. `FadeOut(VGroup(*self.mobjects))` Fails on Non-VMobject Types
+
+`self.mobjects` may contain plain `Mobject` instances (e.g., from `add_subcaption`, or certain internal objects) that cannot be added to a `VGroup`. This produces `TypeError: Only values of type VMobject can be added as submobjects of VGroup`.
+
+Always use `Group` (not `VGroup`) for cleanup fades:
+
+```python
+# RIGHT
+self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
+
+# WRONG — crashes on some mobject types
+self.play(FadeOut(VGroup(*self.mobjects)), run_time=0.5)
+```
+
+### 11. `Axes` with `include_numbers=True` Requires LaTeX
+
+The `Axes` mobject uses LaTeX internally to render tick labels when `include_numbers=True`. On systems without LaTeX, this produces a `FileNotFoundError: [Errno 2] No such file or directory: 'latex'`.
+
+Workaround: set `include_numbers=False` and add manual labels with `Text`. See the **No-LaTeX Workaround** section above for a full pattern.
 
 ## Performance Targets
 
@@ -244,6 +746,20 @@ Always iterate at `-ql`. Only render `-qh` for final output.
 | `references/paper-explainer.md` | Turning research papers into animations — workflow, templates, domain patterns |
 | `references/decorations.md` | SurroundingRectangle, Brace, arrows, DashedLine, Angle, annotation lifecycle |
 | `references/production-quality.md` | Pre-code, pre-render, post-render checklists, spatial layout, color, tempo |
+| `references/meshcore-packet-animation.md` | Completed protocol visualization (MeshCore): 5 scenes, bit-level encoding, encrypted envelope, node chain |
+| `references/no-latex-workaround.md` | Replace MathTex/Tex with Text, manual axis labels, worked example for LaTeX-free Manim |
+
+## External Learning Resources (Not in This Repo)
+
+| Resource | What It Teaches |
+|---|---|
+| [3b1b/videos](https://github.com/3b1b/videos) | Grant Sanderson's actual scene source code — pacing, composition, real production patterns |
+| [r/manim](https://www.reddit.com/r/manim/) | Community showcase and critique — what "beautiful" looks like |
+| [Manim School](https://manim.school/) | Interactive tutorials with live coding examples |
+| [Academy of Manim](https://www.youtube.com/c/AcademyofManim) | 100+ tutorial videos covering Manim CE patterns and tips |
+| [manim-kindergarten](https://github.com/manim-kindergarten/manim_sandbox) | Chinese community repo with massive collection of examples |
+| [ManiBench](https://github.com/nabin2004/ManiBench) | 417 human-reviewed Manim code snippets with descriptions |
+| [manim-voiceover](https://github.com/ManimCommunity/manim-voiceover) | Sync narration timing with animations — production-critical |
 
 ---
 

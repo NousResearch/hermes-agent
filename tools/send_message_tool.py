@@ -1303,10 +1303,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             _sanitize_error_text(_cap_err),
                         )
                 continue
+            from gateway.platforms.base import BasePlatformAdapter
+            safe_media_path = BasePlatformAdapter.validate_media_delivery_path(media_path)
+            if safe_media_path is None:
+                warning = f"Skipping unsafe media path outside allowed roots: {media_path}"
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
 
-            ext = os.path.splitext(media_path)[1].lower()
+            ext = os.path.splitext(safe_media_path)[1].lower()
             try:
-                with open(media_path, "rb") as f:
+                with open(safe_media_path, "rb") as f:
                     media_kwargs = dict(thread_kwargs)
                     # Attach the MEDIA:<path> caption to the bubble itself for
                     # captionable kinds (photo/video/document). _tg_caption is
@@ -1409,7 +1416,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         else:
                             raise
             except Exception as e:
-                warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
+                warning = _sanitize_error_text(f"Failed to send media {safe_media_path}: {e}")
                 logger.error(warning)
                 warnings.append(warning)
 

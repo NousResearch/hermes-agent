@@ -252,9 +252,12 @@ class TestAdd:
         options = await _get_model_options(page)
         providers = options.get("providers", [])
         assert len(providers) > 0
-        p = providers[0]
-        if not p.get("models"):
-            pytest.skip(f"Provider '{p['slug']}' has no models")
+        # Select a provider that actually has models rather than skipping when
+        # the first row happens not to — only a total absence is environmental.
+        usable = [p for p in providers if p.get("models")]
+        if not usable:
+            pytest.skip("No provider with models available in the picker")
+        p = usable[0]
         model = p["models"][0]
         await _add_via_picker(page, p.get("name") or p["slug"], model)
         config = _parse_yaml(await _get_raw_yaml(page))
@@ -264,13 +267,124 @@ class TestAdd:
         assert fallbacks[0]["model"] == model
 
     @pytest.mark.asyncio
+    async def test_add_via_picker_appends_provider_and_model_only(self, page: Page):
+        """A picker-added entry is appended, carrying only `provider` + `model`.
+
+        The chain is priority-ordered, so a new entry goes on the end and leaves
+        the existing order untouched. It is also a reference, not a copy of the
+        provider's configuration: the picker only offers providers that are
+        already declared and authenticated, so their `base_url` and credentials
+        resolve from their own declaration — `resolve_entry_api_key` returns None
+        and resolution falls through. Persisting anything further would re-create
+        the duplication that let a reorder destroy credentials.
+        """
+        await _save_api(page, [{"provider": "seed-provider", "model": "seed-model"}])
+        await _goto(page)
+
+        options = await _get_model_options(page)
+        candidates = [p for p in options.get("providers", []) if p.get("models")]
+        if not candidates:
+            pytest.skip("No provider with models available in the picker")
+        picked = candidates[0]
+        await _add_via_picker(page, picked.get("name") or picked["slug"], picked["models"][0])
+
+        fallbacks = _parse_yaml(await _get_raw_yaml(page))["fallback_providers"]
+        assert len(fallbacks) == 2, f"expected the seeded entry plus one added, got: {fallbacks}"
+
+        # Appended at the end; the pre-existing entry keeps its position.
+        assert fallbacks[0]["provider"] == "seed-provider"
+        assert fallbacks[0]["model"] == "seed-model"
+
+        added = fallbacks[-1]
+        assert added["provider"] == picked["slug"]
+        assert added["model"] == picked["models"][0]
+        assert set(added) == {"provider", "model"}, (
+            f"entry should carry only provider and model, got {sorted(added)}; "
+            f"extra fields duplicate provider configuration into the chain"
+        )
+
+    @pytest.mark.asyncio
+    async def test_add_same_provider_twice_does_not_duplicate(self, page: Page):
+        """Adding the same route twice must not accumulate copies in config.
+
+        The read path dedupes, so a second add looked like a no-op in the UI
+        while `config.yaml` grew another identical entry — and the user had no
+        way to see or remove it, because the list they see is the deduped view.
+        """
+        await _save_api(page, [])
+        await _goto(page)
+
+        options = await _get_model_options(page)
+        candidates = [p for p in options.get("providers", []) if p.get("models")]
+        if not candidates:
+            pytest.skip("No provider with models available in the picker")
+        picked = candidates[0]
+        name = picked.get("name") or picked["slug"]
+        model = picked["models"][0]
+
+        await _add_via_picker(page, name, model)
+        await _goto(page)
+        await _add_via_picker(page, name, model)
+
+        chain = _parse_yaml(await _get_raw_yaml(page))["fallback_providers"]
+        assert len(chain) == 1, f"duplicate route persisted to config.yaml: {chain}"
+        assert chain[0]["provider"] == picked["slug"]
+        assert chain[0]["model"] == model
+
+        # And what the UI shows still matches what is stored.
+        assert len(await _ui_order(page)) == 1
+
+    @pytest.mark.asyncio
+    async def test_add_via_picker_preserves_existing_entry_fields(self, page: Page):
+        """Adding one entry must not damage the others.
+
+        `addFallback` appends to the chain and PUTs the *whole* list, so every
+        add re-submits every existing entry. Any field the write path fails to
+        round-trip is therefore silently dropped from entries the user never
+        touched — the same defect class as the reorder bug, but reached through
+        the real UI instead of the API.
+        """
+        await _save_api(page, [
+            {
+                "provider": "custom-local",
+                "model": "llama-4-70b",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "api_mode": "chat",
+                "key_env": "LOCAL_FALLBACK_KEY",
+            },
+        ])
+        await _goto(page)
+
+        options = await _get_model_options(page)
+        candidates = [p for p in options.get("providers", []) if p.get("models")]
+        if not candidates:
+            pytest.skip("No provider with models available in the picker")
+        added = candidates[0]
+        await _add_via_picker(page, added.get("name") or added["slug"], added["models"][0])
+
+        fallbacks = _parse_yaml(await _get_raw_yaml(page))["fallback_providers"]
+        assert len(fallbacks) == 2, f"expected the seeded entry plus one added, got: {fallbacks}"
+
+        seeded = next((f for f in fallbacks if f["provider"] == "custom-local"), None)
+        assert seeded is not None, f"seeded entry disappeared after add: {fallbacks}"
+        assert seeded["model"] == "llama-4-70b"
+        assert seeded["base_url"] == "http://127.0.0.1:8000/v1"
+        assert seeded["api_mode"] == "chat"
+        assert seeded["key_env"] == "LOCAL_FALLBACK_KEY"
+
+        appended = next((f for f in fallbacks if f["provider"] == added["slug"]), None)
+        assert appended is not None, f"added entry missing: {fallbacks}"
+        assert appended["model"] == added["models"][0]
+
+    @pytest.mark.asyncio
     async def test_add_via_picker_then_reorder(self, page: Page):
         await _save_api(page, [])
         await _goto(page)
         options = await _get_model_options(page)
         providers = options.get("providers", [])
-        if not providers:
-            pytest.skip("No providers available")
+        candidates = [p for p in providers if p.get("models") and (p.get("name") or p.get("slug"))]
+        if len(candidates) < 2:
+            pytest.skip("Need at least two providers with models to exercise reordering")
         items = page.locator("[data-testid^='fallback-item-']")
         for p in providers:
             if not p.get("models"):
@@ -290,8 +404,11 @@ class TestAdd:
                 continue
         items = page.locator("[data-testid^='fallback-item-']")
         count = await items.count()
-        if count < 2:
-            pytest.skip("Could not add enough providers via picker")
+        # There were >= 2 usable providers, so failing to add 2 means the add
+        # flow is broken. Skipping here would hide exactly that.
+        assert count >= 2, (
+            f"expected to add at least 2 of {len(candidates)} usable providers via the picker, got {count}"
+        )
         last_idx = count - 1
         await _click_and_wait_fallback_put(page, page.locator(f"[data-testid='fallback-move-up-{last_idx}']"))
         ui = await _ui_order(page)

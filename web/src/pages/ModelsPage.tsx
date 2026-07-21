@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import {
   Brain,
   ChevronDown,
@@ -23,7 +23,7 @@ import type {
   MoaConfigResponse,
   MoaModelSlot,
 } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import { cn, timeAgo } from "@/lib/utils";
 import { compactNumber } from "@hermes/shared";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -987,10 +987,20 @@ export default function ModelsPage() {
     task: string;
     provider: string;
     model: string;
+    confirmExpensiveModel?: boolean;
   }) => {
-    return api.setModelAssignment({
-      confirm_expensive_model: confirmExpensiveModel, scope, task, provider, model,
+    // /api/model/set answers `confirm_required` for expensive models instead
+    // of writing. Hand that back to the picker so it can prompt, and only
+    // refresh once the assignment actually persisted.
+    const result = await api.setModelAssignment({
+      confirm_expensive_model: confirmExpensiveModel,
+      scope,
+      task,
+      provider,
+      model,
     });
+    if (!result.confirm_required) onAssigned();
+    return result;
   };
 
   return (

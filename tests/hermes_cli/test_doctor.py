@@ -51,6 +51,30 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+class TestDoctorToolAvailabilitySummary:
+    def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
+        unavailable = [
+            {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
+            {"name": "web", "missing_vars": ["EXA_API_KEY"]},
+        ]
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
+
+        filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
+
+        assert [item["name"] for item in filtered] == ["web"]
+
+    def test_missing_api_key_summary_falls_back_when_config_unavailable(self, monkeypatch):
+        unavailable = [
+            {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
+            {"name": "web", "missing_vars": ["EXA_API_KEY"]},
+        ]
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: None)
+
+        filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
+
+        assert [item["name"] for item in filtered] == ["rl", "web"]
+
+
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
     Chinese locale (GBK) because `.env` was read with Path.read_text() which
@@ -473,7 +497,6 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
 
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
     except Exception:
         pass
@@ -835,10 +858,24 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 class TestGitHubTokenCheck:
     """Tests for GitHub token / gh auth detection in doctor."""
 
+    @staticmethod
+    def _isolate_home(monkeypatch, home):
+        """Point doctor at the temp HERMES_HOME.
+
+        ``run_doctor`` reads the module-level ``HERMES_HOME`` constant (cached
+        at import time), NOT the env var — so ``setenv("HERMES_HOME")`` alone
+        leaves doctor probing the REAL ~/.hermes. On a dev machine with a
+        large state.db that meant a multi-minute ``PRAGMA integrity_check``
+        that blew the 300s per-file budget and killed the whole file.
+        """
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
     def test_no_token_and_not_gh_authenticated_shows_warn(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._isolate_home(monkeypatch, home)
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
         from hermes_cli.doctor import run_doctor
@@ -855,7 +892,7 @@ class TestGitHubTokenCheck:
     def test_token_env_present_shows_ok(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._isolate_home(monkeypatch, home)
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
@@ -872,7 +909,7 @@ class TestGitHubTokenCheck:
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._isolate_home(monkeypatch, home)
         # No GITHUB_TOKEN or GH_TOKEN
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
@@ -915,7 +952,6 @@ def _run_doctor_with_healthy_oauth_fallback(
     env_key: str,
     bad_key: str,
     failing_host: str,
-    gemini_oauth_status: dict,
     minimax_oauth_status: dict,
     xai_oauth_status: dict | None = None,
 ) -> str:
@@ -952,7 +988,6 @@ def _run_doctor_with_healthy_oauth_fallback(
 
     monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
     monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-    monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: gemini_oauth_status)
     monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: minimax_oauth_status)
     _xai_status = xai_oauth_status if xai_oauth_status is not None else {}
     monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: _xai_status)
@@ -972,22 +1007,12 @@ def _run_doctor_with_healthy_oauth_fallback(
 
 
 @pytest.mark.parametrize(
-    ("env_key", "bad_key", "failing_host", "gemini_oauth_status", "minimax_oauth_status", "xai_oauth_status", "unexpected_issue"),
+    ("env_key", "bad_key", "failing_host", "minimax_oauth_status", "xai_oauth_status", "unexpected_issue"),
     [
-        (
-            "GOOGLE_API_KEY",
-            "bad-gemini-key",
-            "googleapis.com",
-            {"logged_in": True, "email": "user@example.com"},
-            {},
-            None,
-            "Check GOOGLE_API_KEY in .env",
-        ),
         (
             "MINIMAX_API_KEY",
             "bad-minimax-key",
             "minimax.io",
-            {},
             {"logged_in": True, "region": "global"},
             None,
             "Check MINIMAX_API_KEY in .env",
@@ -996,7 +1021,6 @@ def _run_doctor_with_healthy_oauth_fallback(
             "XAI_API_KEY",
             "bad-xai-key",
             "api.x.ai",
-            {},
             {},
             {"logged_in": True, "auth_mode": "oauth_pkce"},
             "Check XAI_API_KEY in .env",
@@ -1009,7 +1033,6 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
     env_key,
     bad_key,
     failing_host,
-    gemini_oauth_status,
     minimax_oauth_status,
     xai_oauth_status,
     unexpected_issue,
@@ -1020,7 +1043,6 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
         env_key=env_key,
         bad_key=bad_key,
         failing_host=failing_host,
-        gemini_oauth_status=gemini_oauth_status,
         minimax_oauth_status=minimax_oauth_status,
         xai_oauth_status=xai_oauth_status,
     )
@@ -1062,16 +1084,6 @@ class TestHasHealthyOauthFallbackForXai:
         from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
         assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is False
 
-    def test_xai_import_failure_does_not_affect_gemini(self, monkeypatch):
-        import sys
-        from hermes_cli import auth as _auth_mod
-        # xAI function missing, but Gemini is healthy
-        monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": True})
-        monkeypatch.delitem(sys.modules, "hermes_cli.doctor", raising=False)
-        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
-        assert _has_healthy_oauth_fallback_for_apikey_provider("gemini") is True
-
 
 # ---------------------------------------------------------------------------
 # ◆ Auth Providers — xAI OAuth display in run_doctor()
@@ -1107,7 +1119,6 @@ class TestDoctorXaiOAuthStatus:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", xai_auth_fn)
 
@@ -1182,7 +1193,6 @@ class TestDoctorXaiOAuthStatus:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
 
@@ -1214,7 +1224,6 @@ class TestDoctorXaiOAuthStatus:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
 
@@ -1275,7 +1284,6 @@ class TestDoctorCodexCliHintPlacement:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": codex_logged_in})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
 
@@ -1317,12 +1325,16 @@ class TestDoctorCodexCliHintPlacement:
 
     def test_hint_never_attaches_to_minimax_row(self, monkeypatch, tmp_path):
         out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=False)
-        # The MiniMax OAuth row and the hint must not be adjacent — the hint
-        # belongs to the Codex auth row directly above it.
+        # The hint belongs to the Codex auth row that precedes it, never to the
+        # MiniMax row that follows (#27975). The MiniMax row itself must not be
+        # the hint line, and the hint must sit strictly above MiniMax.
         lines = [l for l in out.splitlines() if l.strip()]
+        codex_idx = next(i for i, l in enumerate(lines) if "OpenAI Codex auth" in l)
+        hint_idx = next(i for i, l in enumerate(lines) if self._hint_line() in l)
         minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
-        assert self._hint_line() not in lines[minimax_idx - 1]
-        assert minimax_idx + 1 >= len(lines) or self._hint_line() not in lines[minimax_idx + 1]
+        # Hint sits under Codex and above MiniMax; the MiniMax row is not the hint.
+        assert codex_idx < hint_idx < minimax_idx
+        assert self._hint_line() not in lines[minimax_idx]
 
 
 class TestDoctorStaleMaxIterationsDrift:
@@ -1476,3 +1488,171 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+class TestDoctorDeprecatedConfigAndEnv:
+    """Doctor must surface deprecated/legacy config keys and env vars with
+    modern replacements as non-failing warnings — without auto-migrating.
+    """
+
+    def test_collect_deprecated_config_keys_flags_legacy(self):
+        raw = {
+            "display": {"tool_progress_overrides": {"telegram": "all"}},
+            "delegation": {"max_async_children": 5, "max_concurrent_children": 3},
+            "compression": {"summary_model": "gpt-4o-mini", "enabled": True},
+        }
+        findings = doctor_mod.collect_deprecated_config_keys(raw)
+        paths = {legacy for legacy, _ in findings}
+        assert "display.tool_progress_overrides" in paths
+        assert "delegation.max_async_children" in paths
+        assert "compression.summary_model" in paths
+        by_key = dict(findings)
+        assert by_key["display.tool_progress_overrides"] == "display.platforms"
+        assert by_key["delegation.max_async_children"] == (
+            "delegation.max_concurrent_children"
+        )
+        assert by_key["compression.summary_model"] == "auxiliary.compression"
+
+    def test_collect_deprecated_config_keys_clean(self):
+        raw = {
+            "display": {"platforms": {"telegram": {"tool_progress": "all"}}},
+            "delegation": {"max_concurrent_children": 3},
+            "compression": {"enabled": True},
+        }
+        assert doctor_mod.collect_deprecated_config_keys(raw) == []
+
+    def test_collect_deprecated_env_vars(self):
+        env = {
+            "HERMES_TOOL_PROGRESS": "true",
+            "TERMINAL_CWD": "/tmp/proj",
+            "QQ_HOME_CHANNEL": "12345",
+            "OPENAI_API_KEY": "sk-test",  # not deprecated
+        }
+        findings = doctor_mod.collect_deprecated_env_vars(env)
+        names = {n for n, _ in findings}
+        assert "HERMES_TOOL_PROGRESS" in names
+        assert "TERMINAL_CWD" in names
+        assert "QQ_HOME_CHANNEL" in names
+        assert "OPENAI_API_KEY" not in names
+        by_name = dict(findings)
+        assert "display.tool_progress" in by_name["HERMES_TOOL_PROGRESS"]
+        assert "terminal.cwd" in by_name["TERMINAL_CWD"]
+        assert by_name["QQ_HOME_CHANNEL"] == "QQBOT_HOME_CHANNEL"
+
+    def test_collect_deprecated_env_vars_ignores_empty(self):
+        assert doctor_mod.collect_deprecated_env_vars({"TERMINAL_CWD": "  "}) == []
+        assert doctor_mod.collect_deprecated_env_vars({}) == []
+        assert doctor_mod.collect_deprecated_env_vars(None) == []
+
+    def _run_doctor_with_config(self, monkeypatch, tmp_path, *, config_yaml: str, env_text: str = ""):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        env_body = env_text if env_text else "OPENAI_API_KEY=sk-test\n"
+        (hermes_home / ".env").write_text(env_body, encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor_mod, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Clear process-level legacy env so tests only see the on-disk .env.
+        for k in (
+            "HERMES_TOOL_PROGRESS",
+            "HERMES_TOOL_PROGRESS_MODE",
+            "TERMINAL_CWD",
+            "MESSAGING_CWD",
+            "QQ_HOME_CHANNEL",
+            "QQ_HOME_CHANNEL_NAME",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue(), hermes_home
+
+    def test_doctor_warns_on_tool_progress_overrides_and_max_async_children(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = """\
+display:
+  tool_progress_overrides:
+    telegram: all
+delegation:
+  max_async_children: 8
+  max_concurrent_children: 3
+"""
+        out, hermes_home = self._run_doctor_with_config(monkeypatch, tmp_path, config_yaml=cfg)
+        assert "Deprecated: display.tool_progress_overrides" in out
+        assert "display.platforms" in out
+        assert "Deprecated: delegation.max_async_children" in out
+        assert "max_concurrent_children" in out
+        # Warn-only: must not mutate config.
+        on_disk = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+        assert "tool_progress_overrides" in on_disk
+        assert "max_async_children" in on_disk
+
+    def test_doctor_warns_on_compression_summary_and_legacy_env(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = """\
+compression:
+  summary_model: gpt-4o-mini
+  summary_provider: openai
+"""
+        env = (
+            "OPENAI_API_KEY=sk-test\n"
+            "HERMES_TOOL_PROGRESS=true\n"
+            "TERMINAL_CWD=/old/path\n"
+            "QQ_HOME_CHANNEL=999\n"
+        )
+        out, _ = self._run_doctor_with_config(
+            monkeypatch, tmp_path, config_yaml=cfg, env_text=env
+        )
+        assert "Deprecated: compression.summary_model" in out
+        assert "auxiliary.compression" in out
+        assert "Deprecated: HERMES_TOOL_PROGRESS" in out
+        assert "display.tool_progress" in out
+        assert "Deprecated: TERMINAL_CWD" in out
+        assert "terminal.cwd" in out
+        assert "Deprecated: QQ_HOME_CHANNEL" in out
+        assert "QQBOT_HOME_CHANNEL" in out
+
+    def test_doctor_clean_config_has_no_deprecated_warning(self, monkeypatch, tmp_path):
+        cfg = """\
+display:
+  platforms:
+    telegram:
+      tool_progress: all
+delegation:
+  max_concurrent_children: 3
+compression:
+  enabled: true
+terminal:
+  cwd: /project
+"""
+        out, _ = self._run_doctor_with_config(monkeypatch, tmp_path, config_yaml=cfg)
+        assert "Deprecated: display.tool_progress_overrides" not in out
+        assert "Deprecated: delegation.max_async_children" not in out
+        assert "Deprecated: compression.summary_model" not in out
+        assert "Deprecated: HERMES_TOOL_PROGRESS" not in out
+        assert "Deprecated: TERMINAL_CWD" not in out
+        assert "Deprecated: QQ_HOME_CHANNEL" not in out
+        assert "No deprecated config keys or env vars" in out
+
+    def test_report_does_not_count_as_blocking_issue(self, monkeypatch, tmp_path, capsys):
+        """report_deprecated_config_and_env is warn-only — no issues list mutation."""
+        findings = doctor_mod.report_deprecated_config_and_env(
+            {"delegation": {"max_async_children": 2}},
+            {"HERMES_TOOL_PROGRESS_MODE": "verbose"},
+        )
+        out = capsys.readouterr().out
+        assert len(findings) == 2
+        assert "Deprecated: delegation.max_async_children" in out
+        assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
+        assert "⚠" in out or "Deprecated" in out

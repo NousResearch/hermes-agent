@@ -430,6 +430,16 @@ class TestElevenLabsTavilyExaKeys:
         result = redact_sensitive_text(text)
         assert "XYZ789abcdef" not in result
 
+    def test_snakecase_path_not_masked_as_elevenlabs_key(self):
+        # Filenames that merely start with sk_ are snake_case, not keys: each
+        # word segment is shorter than the {10,} tail, so nothing should match.
+        for text in (
+            "/home/roots/sk_hynix_chart.png",
+            "sk_telecom_revenue_2026.csv",
+            "saved to sk_innovation_report.pdf",
+        ):
+            assert redact_sensitive_text(text) == text
+
     def test_all_three_in_env_dump(self):
         env_dump = (
             "HOME=/home/user\n"

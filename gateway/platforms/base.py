@@ -1912,6 +1912,9 @@ class SendResult:
     # Server-requested retry delay in seconds (e.g. Telegram FloodWait retry_after).
     # When present, _send_with_retry() honors this instead of its default backoff.
     retry_after: Optional[float] = None
+    # True when part of a multi-message delivery succeeded before this failure.
+    # Retrying or falling back with the full payload would duplicate that prefix.
+    partial_delivery: bool = False
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
@@ -4275,6 +4278,13 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        if result.partial_delivery:
+            logger.warning(
+                "[%s] Send stopped after a partial delivery; skipping whole-message retry",
+                self.name,
+            )
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -4307,6 +4317,12 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                if result.partial_delivery:
+                    logger.warning(
+                        "[%s] Retry stopped after a partial delivery; skipping whole-message retry",
+                        self.name,
+                    )
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:

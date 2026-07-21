@@ -25,7 +25,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | SMS | — | — | — | — | — | — | — |
-| Email | — | ✅ | ✅ | ✅ | — | — | — |
+| Email | — | ✅ | ✅ | ✅ | — | — [^email-typing] | — |
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -44,6 +44,8 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | IRC | — | — | — | — | — | — | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+
+[^email-typing]: Email typing indicators are inherently unsupported by the IMAP/SMTP protocol. The `send_typing()` method is implemented as a no-op (see `gateway/platforms/email.py`). This is a fundamental protocol limitation, not a missing Hermes implementation — it cannot be added without a real-time protocol like WebSocket.
 
 ## Architecture
 

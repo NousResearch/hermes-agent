@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _is_model_incompatible_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
+    _get_task_timeout,
     _try_payment_fallback,
     _try_openrouter,
     _OPENROUTER_MODEL,
@@ -4609,6 +4610,49 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
+    def test_config_timeout_zero_normalizes_to_none(self):
+        config = {"auxiliary": {"compression": {"timeout": 0}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert _get_task_timeout("compression") is None
+
+    def test_config_negative_timeout_normalizes_to_none(self):
+        config = {"auxiliary": {"compression": {"timeout": -1}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert _get_task_timeout("compression") is None
+
+    def test_build_call_kwargs_omits_raw_timeout_zero(self):
+        kwargs = _build_call_kwargs(
+            provider="openai-codex",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=0,
+        )
+
+        assert "timeout" not in kwargs
+
+    def test_explicit_call_llm_timeout_zero_does_not_forward_zero(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="summary"))]
+        )
+        client = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.5"),
+        ):
+            result = call_llm(
+                provider="openai-codex",
+                model="gpt-5.5",
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0,
+            )
+
+        assert result is response
+        assert "timeout" not in client.chat.completions.create.call_args.kwargs
+
     def test_forwards_timeout_to_responses_create(self):
         message_item = SimpleNamespace(
             type="message",

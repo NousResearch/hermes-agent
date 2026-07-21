@@ -475,3 +475,118 @@ class TestEvaluateRuntimeDomNodeCrashRetry:
             assert calls == [True]
         finally:
             _stop_supervisor(sup)
+
+
+class TestEvaluateRuntimeScopeIsolationRetry:
+    """CDPSupervisor.evaluate_runtime retries with IIFE on 'already been declared'."""
+
+    def test_let_redeclaration_retries_with_iife(self):
+        """When Runtime.evaluate reports 'Identifier X has already been declared',
+        evaluate_runtime retries the expression wrapped in an IIFE to isolate scope."""
+        call_count = [0]
+        expressions = []
+
+        async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            call_count[0] += 1
+            expr = (params or {}).get("expression", "")
+            expressions.append(expr)
+            if call_count[0] == 1:
+                # First call: simulate "already been declared" error
+                return {
+                    "id": 1,
+                    "result": {
+                        "exceptionDetails": {
+                            "text": "SyntaxError",
+                            "exception": {
+                                "description": "SyntaxError: Identifier 'x' has already been declared"
+                            },
+                        }
+                    },
+                }
+            # Second call (IIFE retry): success
+            return {
+                "id": 2,
+                "result": {"result": {"type": "number", "value": 42}},
+            }
+
+        sup = _make_supervisor_with_cdp_fn(_fake_cdp)
+        try:
+            out = sup.evaluate_runtime("let x = 42; x")
+            assert out["ok"] is True
+            assert out["result"] == 42
+            assert out["result_type"] == "number"
+            # Two calls: original + IIFE retry
+            assert call_count[0] == 2
+            # Second call should have the IIFE-wrapped expression
+            assert expressions[1].startswith("(function(){")
+            assert "let x = 42; x" in expressions[1]
+        finally:
+            _stop_supervisor(sup)
+
+    def test_iife_retry_failure_returns_original_error(self):
+        """When the IIFE retry also fails, the original 'already declared' error is returned."""
+        call_count = [0]
+
+        async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {
+                    "id": 1,
+                    "result": {
+                        "exceptionDetails": {
+                            "text": "SyntaxError",
+                            "exception": {
+                                "description": "SyntaxError: Identifier 'x' has already been declared"
+                            },
+                        }
+                    },
+                }
+            # IIFE retry also fails
+            return {
+                "id": 2,
+                "result": {
+                    "exceptionDetails": {
+                        "text": "SyntaxError",
+                        "exception": {
+                            "description": "SyntaxError: Unexpected token"
+                        },
+                    }
+                },
+            }
+
+        sup = _make_supervisor_with_cdp_fn(_fake_cdp)
+        try:
+            out = sup.evaluate_runtime("let x = 42; x")
+            assert out["ok"] is False
+            assert "already been declared" in out["error"]
+            assert call_count[0] == 2
+        finally:
+            _stop_supervisor(sup)
+
+    def test_non_declaration_error_does_not_iife_retry(self):
+        """Other JS errors do not trigger the IIFE retry path."""
+        call_count = [0]
+
+        async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            call_count[0] += 1
+            return {
+                "id": 1,
+                "result": {
+                    "exceptionDetails": {
+                        "text": "ReferenceError",
+                        "exception": {
+                            "description": "ReferenceError: foo is not defined"
+                        },
+                    }
+                },
+            }
+
+        sup = _make_supervisor_with_cdp_fn(_fake_cdp)
+        try:
+            out = sup.evaluate_runtime("foo.bar()")
+            assert out["ok"] is False
+            assert "foo is not defined" in out["error"]
+            # Only one call — no IIFE retry for non-declaration errors
+            assert call_count[0] == 1
+        finally:
+            _stop_supervisor(sup)

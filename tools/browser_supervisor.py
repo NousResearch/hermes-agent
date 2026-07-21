@@ -588,6 +588,54 @@ class CDPSupervisor:
             description = exc_obj.get("description")
             if description:
                 exc_text = f"{exc_text}: {description}"
+
+            # When the supervisor reuses a persistent CDP WebSocket,
+            # ``let``/``const`` declarations from previous ``Runtime.evaluate``
+            # calls survive in the same execution context.  Re-declaring them
+            # produces a SyntaxError: "Identifier 'X' has already been
+            # declared".  Retry once with the expression wrapped in an IIFE so
+            # it gets its own scope.  See GitHub issue #36211.
+            if "has already been declared" in exc_text.lower():
+                iife_expression = f"(function(){{ {expression} }})()"
+
+                async def _do_eval_iife(by_value: bool) -> Dict[str, Any]:
+                    return await self._cdp(
+                        "Runtime.evaluate",
+                        {
+                            "expression": iife_expression,
+                            "returnByValue": by_value,
+                            "awaitPromise": await_promise,
+                            "userGesture": True,
+                        },
+                        session_id=session_id,
+                        timeout=timeout,
+                    )
+
+                def _run_eval_iife(by_value: bool) -> Dict[str, Any]:
+                    fut = safe_schedule_threadsafe(_do_eval_iife(by_value), loop)
+                    if fut is None:
+                        raise RuntimeError("Browser supervisor loop unavailable")
+                    return fut.result(timeout=timeout + 1)
+
+                try:
+                    iife_response = _run_eval_iife(return_by_value)
+                except Exception:
+                    return {"ok": False, "error": exc_text}
+                iife_payload = iife_response.get("result", {}) if isinstance(iife_response, dict) else {}
+                iife_exc = iife_payload.get("exceptionDetails")
+                if iife_exc:
+                    # IIFE retry also failed — surface the original error.
+                    return {"ok": False, "error": exc_text}
+                iife_obj = iife_payload.get("result", {})
+                iife_type = iife_obj.get("type", "undefined")
+                if "value" in iife_obj:
+                    iife_val = iife_obj["value"]
+                elif iife_type == "undefined":
+                    iife_val = None
+                else:
+                    iife_val = iife_obj.get("description") or iife_obj.get("unserializableValue")
+                return {"ok": True, "result": iife_val, "result_type": iife_type}
+
             return {"ok": False, "error": exc_text}
 
         result_obj = result_payload.get("result", {})

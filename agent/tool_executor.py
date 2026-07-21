@@ -1034,6 +1034,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
+        # ── Per-tool system-reminder injection ──────────────────────
+        # Cyclic reminder on a tool-call cadence.  Same position as
+        # /steer — appended to the most recently appended tool result.
+        from agent.system_reminder_engine import agent_inject_system_reminder
+        agent_inject_system_reminder(agent, messages, 1)
+
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
@@ -1046,6 +1052,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # so the steer marker is never truncated. See steer() for details.
     if finalize and num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
+
+    # ── Batch system-reminder injection ────────────────────────────────
+    # Catches cases where the per-tool injection didn't fire (counter
+    # wasn't exhausted on any individual tool call but inspection reveals
+    # this is the right time).
+    if num_tools > 0:
+        from agent.system_reminder_engine import agent_inject_system_reminder
+        agent_inject_system_reminder(agent, messages, num_tools)
 
 
 
@@ -1719,6 +1733,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
+        # ── Per-tool system-reminder injection ──────────────────────
+        # Cyclic reminder on a tool-call cadence.  Same position as
+        # /steer — appended to the most recently appended tool result.
+        from agent.system_reminder_engine import agent_inject_system_reminder
+        agent_inject_system_reminder(agent, messages, 1)
+
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -1759,6 +1779,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # applied to sequential execution as well.
     if finalize and num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+
+    # ── Batch system-reminder injection ────────────────────────────────
+    # Catches cases where the per-tool injection didn't fire.
+    if num_tools_seq > 0:
+        from agent.system_reminder_engine import agent_inject_system_reminder
+        agent_inject_system_reminder(agent, messages, num_tools_seq)
 
 
 

@@ -1,3 +1,5 @@
+import type { GatewayWsUrlResult } from '@hermes/shared'
+
 import type {
   PetOverlayBounds,
   PetOverlayControl,
@@ -24,15 +26,21 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
-      getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
-      // Open (or focus) a compact secondary window on the new-session draft.
-      openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Open a new full-chrome app window — a peer instance of the primary that
+      // renders the complete app against the shared backend, so the user can run
+      // multiple GUI windows at once.
+      openWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
+      // reply). Resolves true for the first window to claim a key, false for
+      // peers — so N open windows don't all fire the same cue.
+      claimAmbientCue: (key: string) => Promise<boolean>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -88,6 +96,7 @@ declare global {
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
+      setKeepAwake?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>

@@ -65,6 +65,81 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
+# ---------------------------------------------------------------------------
+# Code-skew detection for the desktop/serve backend (#68178).
+#
+# The agent core is imported once at startup.  If an auto-update (``git pull``
+# / ``hermes update``) rewrites the source tree underneath a running process,
+# any lazy import that resolves a newly-added symbol from a freshly-updated
+# file will load new code against a stale in-memory ``AIAgent`` class —
+# producing an ``AttributeError`` that the conversation loop would otherwise
+# retry indefinitely, burning provider API calls.
+#
+# We snapshot the checkout revision at module import time and expose a cheap
+# check that the outer loop can use to refuse new work with a clear message.
+# ---------------------------------------------------------------------------
+_agent_boot_fingerprint: str | None = None
+
+
+def _record_agent_boot_fingerprint() -> None:
+    """Snapshot the checkout revision when ``run_agent`` is first imported.
+
+    Idempotent — subsequent calls are no-ops.  Safe on non-git installs
+    (falls back to ``None`` and the skew check becomes a no-op).
+    """
+    global _agent_boot_fingerprint
+    if _agent_boot_fingerprint is not None:
+        return
+    try:
+        from hermes_cli.main import _read_git_revision_fingerprint
+
+        _agent_boot_fingerprint = _read_git_revision_fingerprint(
+            Path(__file__).resolve().parent
+        )
+    except Exception:
+        _agent_boot_fingerprint = None
+
+
+_record_agent_boot_fingerprint()
+
+# Cached result of the first confirmed skew detection.  Once skew is found
+# it is irreversible without external intervention (git reset/checkout), so
+# we avoid repeated disk I/O on every turn.
+_agent_code_skew_confirmed: bool = False
+_agent_code_skew_labels: tuple[str, str] | None = None
+
+
+def _detect_agent_code_skew() -> tuple[str, str] | None:
+    """Check whether the checkout revision has drifted since this process
+    started.  Returns ``(boot_rev, disk_rev)`` short labels if skew is
+    detected, else ``None``.  Once confirmed, the result is cached.
+
+    See #68178.
+    """
+    global _agent_code_skew_confirmed, _agent_code_skew_labels
+    if _agent_code_skew_confirmed:
+        return _agent_code_skew_labels
+    if _agent_boot_fingerprint is None:
+        return None
+    try:
+        from hermes_cli.main import _read_git_revision_fingerprint
+
+        current = _read_git_revision_fingerprint(Path(__file__).resolve().parent)
+    except Exception:
+        return None
+    if current is None or current == _agent_boot_fingerprint:
+        return None
+    # Skew confirmed — cache permanently for this process.
+    def _short(fp: str) -> str:
+        sha = fp.rsplit(":", 1)[-1]
+        if sha and sha != "unresolved" and len(sha) > 10:
+            return sha[:10]
+        return sha or fp
+    _agent_code_skew_confirmed = True
+    _agent_code_skew_labels = (_short(_agent_boot_fingerprint), _short(current))
+    return _agent_code_skew_labels
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -229,11 +304,12 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
-    # verify-on-stop and pre_verify nudges append a synthetic assistant
-    # "done" plus a synthetic user nudge to keep the agent going one more
-    # turn before it can claim completion. Those messages exist only to
-    # drive the verification loop; persisting them poisons the resumed
-    # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
+    # verify-on-stop and pre_verify nudges append a synthetic user nudge to
+    # keep the agent going one more turn before it can claim completion.
+    # The nudge exists only to drive the verification loop; persisting it
+    # poisons the resumed transcript and breaks prompt-prefix cache reuse
+    # on later turns. The assistant candidate is NOT synthetic — it is
+    # persisted and emitted as an interim message (#65919).
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
     # kanban worker stop-guard: narrated exit without kanban_complete/block
@@ -4914,7 +4990,16 @@ class AIAgent:
         streamed = self._normalize_interim_visible_text(
             self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
         )
-        return bool(streamed) and streamed == visible_content
+        # Prefix match (not exact equality): the final response may be the
+        # streamed text plus a trailing delta, or the stream may have been
+        # partial when the verify nudge fired.  In both cases the streamed
+        # content is a prefix of the final — that's enough to mark it
+        # previewed (fails safe to a benign duplicate, never loses text).
+        # The reverse direction (streamed longer than final) is NOT matched:
+        # that could suppress a needed resend in the gateway path where
+        # already_streamed=True calls on_segment_break() instead of
+        # on_commentary() (#65919 review).
+        return bool(streamed) and visible_content.startswith(streamed)
 
     def _extract_codex_interim_visible_parts(
         self,
@@ -5019,8 +5104,19 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer."""
+    def _emit_interim_assistant_message(
+        self, assistant_msg: Dict[str, Any]
+    ) -> None:
+        """Surface a real mid-turn assistant commentary message to the UI layer.
+
+        Does NOT set ``_response_was_previewed`` — that flag means "the final
+        response was already shown to the user," but this helper is called for
+        ordinary tool-call narration, intermediate acknowledgements, and
+        verification candidates alike. Setting it here would cause the CLI to
+        suppress a *different* final summary (e.g. from ``_handle_max_iterations``)
+        when the only streamed text was unrelated mid-turn commentary. (#65919
+        review: response-loss blocker)
+        """
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return
@@ -6396,6 +6492,30 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
+
+    def _check_code_skew_before_turn(self) -> str | None:
+        """Return a warning string if the source tree has been updated
+        underneath this process (code skew), else ``None``.
+
+        Long-lived desktop/serve backend processes can have their source
+        rewritten by an auto-update while still running.  If a lazy import
+        (e.g. ``agent/conversation_loop.py``) resolves newly-added symbols
+        against the stale in-memory ``AIAgent`` class, it produces an
+        ``AttributeError`` that would otherwise retry indefinitely.
+
+        When skew is detected, the caller should refuse new work with a
+        clear message.  See #68178.
+        """
+        skew = _detect_agent_code_skew()
+        if skew is None:
+            return None
+        boot_rev, disk_rev = skew
+        return (
+            f"Code skew detected: this process was loaded at revision {boot_rev} "
+            f"but the source tree is now at {disk_rev}. A lazy import could resolve "
+            f"new symbols against the stale in-memory class (AttributeError). "
+            f"Please restart the application to apply the update safely."
+        )
 
     def _run_codex_app_server_turn(
         self,

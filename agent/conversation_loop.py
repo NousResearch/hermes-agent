@@ -91,6 +91,11 @@ INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model r
 # itself, so every exception passes through them, which would make
 # _hit_local always True and misclassify transient API/network errors as
 # non-retryable local bugs. (#66267)
+#
+# AttributeError is handled separately in the outer except block — it is
+# ALWAYS a local programming bug when it targets agent attributes (especially
+# missing methods introduced by a commit splice after an auto-update rewrites
+# source underneath a live process). See the dedicated guard below. (#68178)
 _LOCAL_PROCESSING_MODULES = frozenset({
     "agent_runtime_helpers",
     "message_content",
@@ -690,6 +695,12 @@ def run_conversation(
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    # Tracks whether the pending verification candidate was already streamed
+    # to the user as interim content. The finalizer uses this to set
+    # ``_response_was_previewed`` ONLY when the pending candidate is actually
+    # reused as the final response — not merely because any interim was
+    # streamed. (#65919 review: response-loss blocker)
+    _pending_verification_response_previewed = False
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -713,6 +724,39 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        # ── Code skew guard (#68178) ───────────────────────────────
+        # Check whether the source tree has been updated underneath this
+        # long-lived process.  If so, a lazy import can resolve newly-added
+        # symbols against the stale in-memory AIAgent class, producing an
+        # AttributeError that would otherwise retry indefinitely.
+        # Perform the check on every iteration (it is cheap once confirmed).
+        _skew_warning = getattr(agent, "_check_code_skew_before_turn", lambda: None)()
+        if _skew_warning:
+            logger.warning("Code skew detected at API call #%d: %s", api_call_count + 1, _skew_warning)
+            _turn_exit_reason = "code_skew_detected"
+            final_response = (
+                f"I apologize, but the agent has detected that its source code "
+                f"has been updated while running. To avoid compatibility issues, "
+                f"please restart the application. ({_skew_warning})"
+            )
+            messages.append({"role": "assistant", "content": final_response})
+            return finalize_turn(
+                agent,
+                final_response=final_response,
+                api_call_count=api_call_count,
+                interrupted=False,
+                failed=True,
+                messages=messages,
+                conversation_history=conversation_history,
+                effective_task_id=effective_task_id,
+                turn_id=turn_id,
+                user_message=user_message,
+                original_user_message=original_user_message,
+                _should_review_memory=_should_review_memory,
+                _turn_exit_reason=_turn_exit_reason,
+                _pending_verification_response=_pending_verification_response,
+                _pending_verification_response_previewed=_pending_verification_response_previewed,
+            )
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -5522,17 +5566,17 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
-                    final_msg["_verification_stop_synthetic"] = True
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the verification loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
-                    # Keep the attempted final answer in model history so the
-                    # synthetic user nudge preserves role alternation, but do
-                    # not surface it to the user as an interim answer. The
-                    # whole point of this guard is to prevent premature
-                    # "done" claims before checks run. Both the attempted
-                    # answer and the nudge are flagged synthetic so neither
-                    # persists — otherwise the resumed transcript keeps a
-                    # premature "done" with the nudge stripped, producing an
-                    # assistant→assistant adjacency. (#55733)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("verify-on-stop interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge,
@@ -5548,7 +5592,13 @@ def run_conversation(
                     # continuation-budget exhaustion.  ``final_response`` itself
                     # must be cleared so the finalizer can distinguish this gate
                     # from unrelated error/recovery exits. (#61631)
+                    # Track whether this candidate was already streamed so the
+                    # finalizer can mark the turn previewed only if the
+                    # candidate is actually reused as the final response.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5587,12 +5637,17 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    final_msg["_pre_verify_synthetic"] = True
-                    # Same alternation contract as verify-on-stop: keep the
-                    # attempted answer in history, follow it with a synthetic
-                    # user nudge, and don't surface the premature answer. Both
-                    # are flagged synthetic so neither persists. (#55733)
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the pre_verify loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("pre_verify interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge2,
@@ -5602,6 +5657,9 @@ def run_conversation(
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5649,6 +5707,9 @@ def run_conversation(
                     # exhaustion path does not treat the narrated stop as
                     # a completed answer.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5683,7 +5744,21 @@ def run_conversation(
 
             _is_local_processing_error = _hit_local and not _hit_api
 
-            if _is_local_processing_error:
+            # AttributeError on the agent object is ALWAYS a local bug —
+            # it means the live process is running spliced commits (the
+            # method does not exist on the in-memory AIAgent class but
+            # conversation_loop.py references it).  Circuit-break
+            # immediately to avoid burning provider API calls. (#68178)
+            _is_agent_attribute_error = (
+                isinstance(e, AttributeError)
+                and ("run_agent" in tb_module_names or "agent" in tb_module_names)
+            )
+
+            if _is_agent_attribute_error:
+                error_msg = (
+                    f"Fatal local code error in API call #{api_call_count}: {str(e)}"
+                )
+            elif _is_local_processing_error:
                 error_msg = (
                     f"Error during local message processing after "
                     f"OpenAI-compatible API call #{api_call_count}: {str(e)}"
@@ -5737,13 +5812,22 @@ def run_conversation(
             # role-alternation invariants.
 
             # If we're near the limit, break to avoid infinite loops.
-            # Local processing errors are deterministic — stop immediately
-            # rather than retrying until the budget is exhausted.
+            # Local processing errors and agent AttributeError (commit-splice
+            # symptom) are deterministic — stop immediately rather than
+            # retrying until the budget is exhausted. (#68178)
             if (
-                _is_local_processing_error
+                _is_agent_attribute_error
+                or _is_local_processing_error
                 or api_call_count >= agent.max_iterations - 1
             ):
-                if _is_local_processing_error:
+                if _is_agent_attribute_error:
+                    _turn_exit_reason = f"code_skew_attribute_error({error_msg[:80]})"
+                    final_response = (
+                        f"I apologize, but the agent process has detected a code "
+                        f"mismatch (running stale code after an update). "
+                        f"Please restart the application. Error: {error_msg}"
+                    )
+                elif _is_local_processing_error:
                     _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
                 else:
@@ -5773,6 +5857,7 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 
 

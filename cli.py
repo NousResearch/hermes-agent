@@ -4625,7 +4625,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # changes mid-session, so the TUI would show a stale name after
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
-        model_name = (getattr(agent, "model", None) or self.model or "unknown")
+        _resolved_model = getattr(agent, "_resolved_model", None) if agent else None
+        model_name = (_resolved_model or getattr(agent, "model", None) or self.model or "unknown")
         # Friendly display: prefer reverse-alias from config.yaml ``model_aliases:``
         # before slash/length truncation. This turns long Palantir RIDs like
         # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
@@ -4724,7 +4725,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
             if context_tokens < 0:
                 context_tokens = 0
-            context_length = getattr(compressor, "context_length", 0) or 0
+            # Prefer _resolved_context_length from API response when valid
+            _resolved_cl = getattr(agent, "_resolved_context_length", None)
+            context_length = _resolved_cl if isinstance(_resolved_cl, int) and _resolved_cl > 0 else (getattr(compressor, "context_length", 0) or 0)
             if context_length < 0:
                 context_length = 0
             snapshot["context_tokens"] = context_tokens

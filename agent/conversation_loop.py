@@ -59,6 +59,7 @@ from agent.model_metadata import (
     is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
+    get_model_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -583,6 +584,54 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
             effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
         api_messages[0]["content"] = effective
     return sp
+
+def _update_resolved_model_metadata(agent, response):
+    """Track resolved model/provider/context_length from API response for status bar.
+
+    This function:
+    - Ignores responses without response.model
+    - Does NOT repeat resolution when model hasn't changed
+    - Invalidates _resolved_context_length BEFORE resolution attempt
+    - Keeps None when resolution fails
+    - Does NOT touch agent.model, last_prompt_tokens, compression_count
+    - Does NOT call ContextCompressor.update_model()
+    - Only forwards _config_context_length when response.model == agent.model
+      (presets/routers returning another model must not reuse preset's window)
+    """
+    if not (hasattr(response, 'model') and response.model):
+        return
+
+    _new_resolved = response.model
+    _prev_resolved = getattr(agent, '_resolved_model', None)
+
+    if _new_resolved != _prev_resolved:
+        agent._resolved_model = _new_resolved
+        # Always invalidate previous model's context window
+        agent._resolved_context_length = None
+
+        # Only forward configured context length when resolved matches configured
+        _configured_model = getattr(agent, 'model', None)
+        _config_context_length = getattr(agent, '_config_context_length', None)
+        _resolved_config_context = (
+            _config_context_length if _new_resolved == _configured_model else None
+        )
+
+        try:
+            _rcl = get_model_context_length(
+                _new_resolved,
+                base_url=getattr(agent, 'base_url', '') or '',
+                api_key=getattr(agent, 'api_key', '') or '',
+                config_context_length=_resolved_config_context,
+                provider=getattr(agent, 'provider', '') or '',
+                custom_providers=getattr(agent, '_custom_providers', None),
+            )
+            if _rcl and _rcl > 0:
+                agent._resolved_context_length = _rcl
+        except Exception:
+            pass
+
+    if not getattr(agent, '_resolved_provider', None):
+        agent._resolved_provider = getattr(agent, 'provider', None)
 
 
 def run_conversation(
@@ -2184,6 +2233,9 @@ def run_conversation(
                             "error": "First response truncated due to output length limit"
                         }
                 
+                # Track resolved model/context metadata from the API response.
+                _update_resolved_model_metadata(agent, response)
+
                 # Track actual token usage from response for context management
                 if hasattr(response, 'usage') and response.usage:
                     canonical_usage = normalize_usage(

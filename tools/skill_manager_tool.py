@@ -855,8 +855,11 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     # Publish autonomous lifecycle drafts atomically. Build under a hidden
     # sibling directory, stamp the fail-closed draft record *before* SKILL.md can
     # be observed, scan it, then rename into the final path in one operation.
-    # A parent-directory process lock prevents concurrent create races.
+    # A root-level process lock prevents concurrent create races and enforces
+    # the global name-uniqueness invariant across category directories.
     skill_dir = _resolve_skill_dir(name, category)
+    create_lock_dir = _skills_dir()
+    create_lock_dir.mkdir(parents=True, exist_ok=True)
     try:
         from tools.skill_provenance import is_background_review
 
@@ -872,7 +875,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         parent.mkdir(parents=True, exist_ok=True)
         draft_dir: Optional[Path] = None
         try:
-            with sidecar_lock(parent, ".skill-create.lock"):
+            with sidecar_lock(create_lock_dir, ".skill-create.lock"):
                 if skill_dir.exists() or _find_skill(name):
                     return {
                         "success": False,
@@ -927,7 +930,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
         if secure_sidecar_io_available():
             try:
-                with sidecar_lock(parent, ".skill-create.lock"):
+                with sidecar_lock(create_lock_dir, ".skill-create.lock"):
                     create_error = publish_foreground()
             except OSError as exc:
                 return {

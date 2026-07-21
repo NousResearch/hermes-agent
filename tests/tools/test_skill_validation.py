@@ -222,12 +222,16 @@ def test_foreground_create_is_serialized_with_background_draft_publish(
         def background_create():
             token = set_current_write_origin("background_review")
             try:
-                results["background"] = _create_skill("validated-skill", VALID_SKILL)
+                results["background"] = _create_skill(
+                    "validated-skill", VALID_SKILL, category="alpha"
+                )
             finally:
                 reset_current_write_origin(token)
 
         def foreground_create():
-            results["foreground"] = _create_skill("validated-skill", VALID_SKILL)
+            results["foreground"] = _create_skill(
+                "validated-skill", VALID_SKILL, category="beta"
+            )
 
         background = threading.Thread(target=background_create)
         foreground = threading.Thread(target=foreground_create)

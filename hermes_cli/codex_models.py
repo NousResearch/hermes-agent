@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import plistlib
+import sys
 from pathlib import Path
 from typing import List, Optional
-
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +94,31 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
+# Codex app version used for client_version in Codex API requests.
+# Read dynamically from the installed Codex desktop app on macOS so that
+# updates to the app are automatically reflected without a Hermes update.
+# Falls back to the current stable version so Linux / non-macOS hosts work too.
+def _get_codex_version() -> str:
+    # macOS: read from Codex.app Info.plist
+    info_plist = Path("/Applications/Codex.app/Contents/Info.plist")
+    if info_plist.is_file():
+        try:
+            with open(info_plist, "rb") as f:
+                version = plistlib.load(f).get("CFBundleShortVersionString")
+                if version:
+                    return version
+        except Exception:
+            pass
+    # Linux / fallback: hardcoded current stable version
+    return "26.519.22136"
+
+
 def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
         resp = httpx.get(
-            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            f"https://chatgpt.com/backend-api/codex/models?client_version={_get_codex_version()}",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,
         )

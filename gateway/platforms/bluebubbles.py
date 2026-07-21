@@ -68,7 +68,7 @@ _TAPBACK_REMOVED = {
 }
 
 # Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+_MESSAGE_EVENTS = {"new-message", "message"}
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -373,7 +373,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": ["new-message"],
         }
 
         try:

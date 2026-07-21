@@ -934,3 +934,40 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+    def test_register_excludes_updated_message_event(self, monkeypatch):
+        """Webhook must not subscribe to 'updated-message' to avoid duplicate processing."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        captured_payloads = []
+
+        async def mock_get(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self_inner):
+                    pass
+                def json(self_inner):
+                    return {"status": 200, "data": []}
+            return R()
+
+        async def mock_post(*args, **kwargs):
+            captured_payloads.append(kwargs.get("json") or (args[1] if len(args) > 1 else None))
+            class R:
+                status_code = 200
+                def raise_for_status(self_inner):
+                    pass
+                def json(self_inner):
+                    return {"status": 200, "data": {"id": 42}}
+            return R()
+
+        adapter.client = type("MC", (), {"get": mock_get, "post": mock_post})()
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+        assert len(captured_payloads) == 1
+        events = captured_payloads[0].get("events", [])
+        assert "new-message" in events
+        assert "updated-message" not in events
+

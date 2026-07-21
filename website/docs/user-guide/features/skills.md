@@ -464,8 +464,80 @@ below lets you require human review before those changes land.
 | `patch` | Targeted fixes (preferred) | `name`, `old_string`, `new_string` |
 | `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
 | `delete` | Remove a skill entirely | `name` |
-| `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
+| `write_file` | Add/update supporting files, including `tests/` | `name`, `file_path`, `file_content` |
 | `remove_file` | Remove a supporting file | `name`, `file_path` |
+| `remember` | Append a runtime lesson to the skill's `.memory.md` | `name`, `experience` |
+| `validate` | Record static validation or test evidence produced through terminal/sandbox | `name`, optional `validation` object |
+
+### Per-skill experience memory
+
+`remember` stores timestamped observations in `<skill>/.memory.md`. This is for
+skill-specific facts such as input quirks, known failure modes, and verified
+optimizations that should not consume the global memory budget. `skill_view`
+surfaces the newest 32 KiB alongside `SKILL.md`; older entries remain on disk
+but are omitted from context. Each entry is limited to 8 KiB. Cooperating
+sessions use a cross-process lock; successful writes fsync the entry and, where
+the OS/filesystem permits, the containing directory. Non-cooperating writers
+and filesystems that ignore locking or directory fsync are outside this
+guarantee. Known credential patterns and key-like assignments are
+force-redacted before persistence. Lifecycle sidecar I/O requires the platform's
+secure directory-descriptor primitives; unsupported platforms fail closed
+rather than falling back to race-prone path-based writes.
+
+### Validation and refinement evidence
+
+Code-backed skills can place Python tests under `tests/`. First call `validate`
+without evidence to obtain the current package digest. Run the tests with the
+normal `terminal` or sandbox tool, then record the result bound to that digest
+and single-use challenge token:
+
+```text
+skill_manage(action="validate", name="my-skill")
+# → validation_status: pending, content_digest: "abc123...",
+#   validation_token: "one-time-token..."
+
+skill_manage(
+  action="validate",
+  name="my-skill",
+  validation={
+    "content_digest": "abc123...",
+    "validation_token": "one-time-token...",
+    "command": "python -m pytest -q tests",
+    "exit_code": 0,
+    "output": "4 passed",
+  },
+)
+```
+
+The digest and one-time token prevent stale-result replay after package changes.
+Generated test-runner artifacts such as `__pycache__`, `.pytest_cache`, bytecode,
+and coverage data are excluded so executing the tests does not invalidate the
+pre-run digest. They do not cryptographically prove that the command ran: use
+a trusted terminal/sandbox result, and enable `skills.write_approval` when human
+attestation is required.
+
+Hermes stores `.validation.json` with the command, bounded output, package
+content digest, and status. Once a skill adds `tests/`, a pending, failed,
+stale, malformed, oversized, unsupported-schema, or unknown-status record
+withholds it from automatic skill discovery; explicit `skill_view` remains
+available so the package can be inspected and repaired. Captured test output
+is historical, untrusted data and must not be followed as instructions.
+A non-zero exit code returns `refinement_required: true`, providing a concrete
+signal to patch and retest. Editing `SKILL.md`, scripts, tests, or other package
+files invalidates the prior record. Automatic-discovery cache keys include the
+validation sidecar and opted-in package metadata, so changes made by another
+process force a fresh validation check instead of serving an earlier passed
+catalog or prompt entry.
+
+Existing installed skills that already contain tests but have no validation
+sidecar remain discoverable on platforms with secure sidecar I/O as a
+backward-compatible migration policy. Adding
+or changing tests through `skill_manage` creates the pending sidecar and opts
+the package into gating. Text-only skills without tests can use `validate` for
+static structural validation and remain discoverable after later edits. Hermes
+deliberately does not execute hidden test code inside `skill_manage`; execution
+stays in the existing terminal/sandbox path, where normal isolation and approval
+policies apply.
 
 :::tip
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
@@ -484,12 +556,16 @@ skills:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
-When `write_approval: true`, every `skill_manage` write (create / edit /
-patch / delete / write_file / remove_file) is **staged** instead of committed —
+When `write_approval: true`, every guidance or experience write (create / edit /
+patch / delete / write_file / remove_file / remember / validate) is **staged** instead of committed —
 a SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.
-Staged writes survive restarts under `~/.hermes/pending/skills/` and are
-reviewed with the same familiar approve/deny flow as dangerous commands:
+Staged writes survive restarts under `~/.hermes/pending/skills/`; the record
+and containing directory are synchronized before `staged: true` is returned.
+`remember` and `validate` replays carry the pending ID, so retrying after a
+cleanup failure does not append the same lesson twice or consume validation
+evidence twice. Pending writes are reviewed with the same familiar approve/deny
+flow as dangerous commands:
 
 ```
 /skills pending             # list staged skill writes + a one-line gist each

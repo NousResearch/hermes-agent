@@ -352,6 +352,24 @@ class TestParseSkillFile:
         assert "Failed to parse skill file" in caplog.text
         assert str(skill_file) in caplog.text
 
+    def test_validation_state_read_failure_is_fail_closed(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: gated\ndescription: Gated skill\n---\n",
+            encoding="utf-8",
+        )
+        from unittest.mock import patch
+
+        with patch(
+            "tools.skill_validation.validation_allows_discovery",
+            side_effect=OSError("I/O failure"),
+        ):
+            is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+
+        assert is_compat is False
+        assert frontmatter["name"] == "gated"
+        assert desc == ""
+
     def test_incompatible_platform_returns_false(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(

@@ -875,11 +875,14 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except OSError as exc:
+        return tool_error(str(exc), success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -922,11 +925,14 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return tool_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except OSError as exc:
+        return tool_error(str(exc), success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},

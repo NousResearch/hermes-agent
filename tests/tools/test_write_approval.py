@@ -9,8 +9,9 @@ subcommand dispatch.
 
 import json
 import os
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -209,6 +210,191 @@ def test_skill_gate_on_then_apply_writes_file(hermes_home):
     res = json.loads(smt.apply_skill_pending(rec["payload"]))
     assert res["success"] is True
     assert smt._find_skill("applied-skill") is not None
+
+
+def test_skill_validate_is_staged_and_replayed_when_gate_is_on(hermes_home):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "validated-skill", content=_SKILL))[
+        "success"
+    ]
+    _set_approval("skills", True)
+
+    staged = json.loads(smt.skill_manage("validate", "validated-skill"))
+    assert staged.get("staged") is True
+    record = wa.get_pending("skills", staged["pending_id"])
+    applied = json.loads(smt.apply_skill_pending(record["payload"]))
+
+    assert applied["success"] is True
+    assert applied["validation_status"] == "static"
+
+
+def test_failed_validation_approval_is_consumed_after_record_is_applied(
+    hermes_home, monkeypatch
+):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "failing-skill", content=_SKILL))[
+        "success"
+    ]
+    assert json.loads(
+        smt.skill_manage(
+            "write_file",
+            "failing-skill",
+            file_path="tests/test_behavior.py",
+            file_content="def test_failure():\n    assert False\n",
+        )
+    )["success"]
+    challenge = json.loads(smt.skill_manage("validate", "failing-skill"))
+    _set_approval("skills", True)
+    staged = json.loads(
+        smt.skill_manage(
+            "validate",
+            "failing-skill",
+            validation={
+                "content_digest": challenge["content_digest"],
+                "validation_token": challenge["validation_token"],
+                "command": "pytest",
+                "exit_code": 1,
+                "output": "1 failed",
+            },
+        )
+    )
+
+    real_discard = wa.discard_pending
+    monkeypatch.setattr(wa, "discard_pending", lambda *_: False)
+    first = handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+    monkeypatch.setattr(wa, "discard_pending", real_discard)
+    second = handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+    record = json.loads(
+        (Path(hermes_home) / "skills" / "failing-skill" / ".validation.json").read_text()
+    )
+
+    assert "Approved 0" in first and "cleanup" in first
+    assert "Approved 1" in second
+    assert wa.list_pending("skills") == []
+    assert record["status"] == "failed"
+    assert record["approval_id"] == staged["pending_id"]
+
+
+def test_skill_experience_is_redacted_before_approval_staging(hermes_home):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "memory-skill", content=_SKILL))["success"]
+    _set_approval("skills", True)
+    secret = "MY_API_TOKEN=abcdefghijklmnopqrstuv"
+
+    staged = json.loads(
+        smt.skill_manage("remember", "memory-skill", experience=f"failure {secret}")
+    )
+    record = wa.get_pending("skills", staged["pending_id"])
+
+    assert secret not in record["payload"]["experience"]
+    assert "REDACTED" in record["payload"]["experience"]
+
+    rejected = json.loads(
+        smt.skill_manage(
+            "validate",
+            "memory-skill",
+            validation={
+                "content_digest": "a" * 64,
+                "validation_token": "t" * 32,
+                "command": "pytest",
+                "exit_code": 0,
+                "output": "ok",
+                "private_key": "opaquePRIVATE123",
+            },
+        )
+    )
+    assert rejected["success"] is False
+    assert len(wa.list_pending("skills")) == 1
+    assert "opaquePRIVATE123" not in json.dumps(wa.list_pending("skills"))
+
+
+def test_oversized_experience_is_rejected_before_approval_staging(hermes_home):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "memory-skill", content=_SKILL))["success"]
+    _set_approval("skills", True)
+
+    result = json.loads(
+        smt.skill_manage("remember", "memory-skill", experience="x" * 9000)
+    )
+
+    assert result["success"] is False
+    assert wa.list_pending("skills") == []
+
+
+def test_skill_stage_failure_is_reported_and_not_claimed_staged(
+    hermes_home, monkeypatch
+):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "memory-skill", content=_SKILL))["success"]
+    _set_approval("skills", True)
+
+    def fail_stage(*args, **kwargs):
+        raise OSError("simulated durable staging failure")
+
+    monkeypatch.setattr(wa, "_durably_write_pending", fail_stage)
+    result = json.loads(
+        smt.skill_manage("remember", "memory-skill", experience="lesson")
+    )
+
+    assert result["success"] is False
+    assert result["staged"] is False
+    assert wa.list_pending("skills") == []
+
+
+def test_remember_approval_retry_after_cleanup_failure_is_idempotent(
+    hermes_home, monkeypatch
+):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "memory-skill", content=_SKILL))["success"]
+    _set_approval("skills", True)
+    staged = json.loads(
+        smt.skill_manage("remember", "memory-skill", experience="one lesson")
+    )
+    pending_id = staged["pending_id"]
+    real_discard = wa.discard_pending
+    monkeypatch.setattr(wa, "discard_pending", lambda *_: False)
+
+    first = handle_pending_subcommand(wa.SKILLS, ["approve", pending_id])
+    monkeypatch.setattr(wa, "discard_pending", real_discard)
+    second = handle_pending_subcommand(wa.SKILLS, ["approve", pending_id])
+    memory = (Path(hermes_home) / "skills" / "memory-skill" / ".memory.md").read_text()
+
+    assert "Approved 0" in first and "cleanup" in first
+    assert "Approved 1" in second
+    assert memory.count("one lesson") == 1
+    assert wa.list_pending("skills") == []
 
 
 def test_skill_create_diff_is_full_content(hermes_home):

@@ -4,7 +4,13 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    _SENSITIVE_QUERY_PARAMS,
+    RedactingFormatter,
+    redact_cdp_url,
+    redact_sensitive_for_persistence,
+    redact_sensitive_text,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +19,59 @@ def _ensure_redaction_enabled(monkeypatch):
     monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
     # Also patch the module-level snapshot so it reflects the cleared env var
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+
+class TestPersistenceRedaction:
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "MY_API_TOKEN=abcdefghijklmnopqrstuv",
+            "password: hunter2",
+            "https://example.test/?access_token=opaquevalue123456789",
+            '"api_key": "opaque-json-value"',
+            "private_key=opaquePRIVATE123",
+            "credential=opaqueCRED123",
+        ],
+    )
+    def test_removes_opaque_key_assignments_and_url_values(self, secret):
+        result = redact_sensitive_for_persistence(secret)
+        assert secret not in result
+        assert "REDACTED" in result or "***" in result
+
+    @pytest.mark.parametrize("query_key", sorted(_SENSITIVE_QUERY_PARAMS))
+    def test_removes_every_configured_sensitive_query_value(self, query_key):
+        secret = f"https://example.test/callback?{query_key}=opaqueVALUE123&state=ok"
+        result = redact_sensitive_for_persistence(secret)
+        assert "opaqueVALUE123" not in result
+        assert f"{query_key}=***" in result or f"{query_key}=[REDACTED]" in result
+
+    @pytest.mark.parametrize(
+        ("text", "forbidden"),
+        [
+            ("password: |\n  hunter2\n  secondline\nnext: safe", "hunter2"),
+            ("password: |\n  alphaSECRET123\n\n  betaSECRET456\nnext: safe", "betaSECRET456"),
+            ("pytest --token opaqueXYZ123 tests", "opaqueXYZ123"),
+            ("https://u:p455word@example.test/x", "p455word"),
+        ],
+    )
+    def test_removes_block_scalar_cli_and_url_userinfo_secrets(self, text, forbidden):
+        assert forbidden not in redact_sensitive_for_persistence(text)
+
+    def test_block_scalar_redaction_preserves_yaml_sibling_fields(self):
+        text = (
+            "auth:\n"
+            "  password: |\n"
+            "    hunter2\n"
+            "  status: healthy\n"
+            "  retries: 3\n"
+            "next: ok\n"
+        )
+        result = redact_sensitive_for_persistence(text)
+        assert "hunter2" not in result
+        assert '  password: "[REDACTED]"' in result
+        assert "  status: healthy" in result
+        assert "  retries: 3" in result
+        assert "next: ok" in result
 
 
 class TestKnownPrefixes:

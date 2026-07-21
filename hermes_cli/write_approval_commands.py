@@ -126,8 +126,13 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     for rec in targets:
         ok, msg = _apply_one(subsystem, rec, memory_store)
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
-            applied += 1
+            if wa.discard_pending(subsystem, rec["id"]):
+                applied += 1
+            else:
+                failed.append(
+                    f"{rec['id']}: write applied but pending cleanup was not durable; "
+                    "check the applied state before retrying"
+                )
         else:
             failed.append(f"{rec['id']}: {msg}")
 

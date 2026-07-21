@@ -1329,7 +1329,7 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 
 
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
+    """Build an mtime/size manifest of skill metadata and validation sidecars."""
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     base = os.path.join(skills_dir_str, "")
@@ -1342,7 +1342,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             if d not in EXCLUDED_SKILL_DIRS
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
-        for filename in ("SKILL.md", "DESCRIPTION.md"):
+        for filename in ("SKILL.md", "DESCRIPTION.md", ".validation.json"):
             if filename not in files:
                 continue
             path = os.path.join(root, filename)
@@ -1413,6 +1413,7 @@ def _build_snapshot_entry(
 
     return {
         "skill_name": skill_name,
+        "skill_dir": skill_file.parent.relative_to(skills_dir).as_posix(),
         "category": category,
         "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description,
@@ -1428,8 +1429,8 @@ def _build_snapshot_entry(
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
-    Returns (is_compatible, frontmatter, description). On any error, returns
-    (True, {}, "") to err on the side of showing the skill.
+    Returns (is_compatible, frontmatter, description). Parse/read errors preserve
+    the legacy fail-open behavior; validation-lifecycle errors fail closed.
     """
     try:
         raw = skill_file.read_text(encoding="utf-8")
@@ -1444,11 +1445,20 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         # loads (skill_view / --skills) bypass this — see skill_matches_environment.
         if not skill_matches_environment(frontmatter):
             return False, frontmatter, ""
-
-        return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
+
+    try:
+        from tools.skill_validation import validation_allows_discovery
+
+        if not validation_allows_discovery(skill_file.parent):
+            return False, frontmatter, ""
+    except Exception as e:
+        logger.warning("Failed to validate skill lifecycle state %s: %s", skill_file, e)
+        return False, frontmatter, ""
+
+    return True, frontmatter, extract_skill_description(frontmatter)
 
 
 def _skill_should_show(
@@ -1506,7 +1516,8 @@ def build_skills_system_prompt(
     """Build a compact skill index for the system prompt.
 
     Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
+      1. In-process LRU dict keyed by skills roots, tools, toolsets, hidden
+         skills, and cross-process validation/package metadata
       2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
          mtime/size manifest — survives process restarts
 
@@ -1534,6 +1545,9 @@ def build_skills_system_prompt(
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    from tools.skill_validation import validation_sidecar_signature
+
+    lifecycle_signature = validation_sidecar_signature([skills_dir, *external_dirs])
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
@@ -1542,6 +1556,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        lifecycle_signature,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1566,6 +1581,22 @@ def build_skills_system_prompt(
             platforms = entry.get("platforms") or []
             if not skill_matches_platform_list(platforms):
                 continue
+            relative_skill_dir = entry.get("skill_dir")
+            if relative_skill_dir:
+                try:
+                    candidate = (skills_dir / str(relative_skill_dir)).resolve()
+                    candidate.relative_to(skills_dir.resolve())
+                    from tools.skill_validation import validation_allows_discovery
+
+                    if not validation_allows_discovery(candidate):
+                        continue
+                except Exception as e:
+                    logger.warning(
+                        "Failed to validate cached skill lifecycle state %s: %s",
+                        relative_skill_dir,
+                        e,
+                    )
+                    continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(

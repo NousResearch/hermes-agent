@@ -42,6 +42,7 @@ web dashboard.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -111,6 +112,49 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _fsync_pending_dir(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            unsupported = {
+                errno.EINVAL,
+                getattr(errno, "ENOTSUP", errno.EINVAL),
+                getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+            }
+            if exc.errno not in unsupported:
+                raise
+    finally:
+        os.close(fd)
+
+
+def _durably_write_pending(path: Path, data: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short pending-record write")
+            view = view[written:]
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        temporary.unlink(missing_ok=True)
+        raise
+    else:
+        os.close(fd)
+    try:
+        os.replace(temporary, path)
+        _fsync_pending_dir(path.parent)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -125,29 +169,35 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
 
-    Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
-    logs and still returns a record (the write is simply lost, which is the
-    safe failure for an approval gate — nothing is silently committed).
+    Returns a dict with ``id`` and metadata only after the record and containing
+    directory have been durably synchronized. Persistence failures are raised so
+    callers cannot report a staged write that does not exist.
     """
     pid = uuid.uuid4().hex[:8]
+    replay_payload = dict(payload)
+    replay_payload["_pending_id"] = pid
     record = {
         "id": pid,
         "subsystem": subsystem,
-        "action": payload.get("action", ""),
+        "action": replay_payload.get("action", ""),
         "summary": (summary or "").strip(),
         "origin": origin or "foreground",
         "created_at": time.time(),
-        "payload": payload,
+        "payload": replay_payload,
     }
+    d = _pending_dir(subsystem)
+    pending_root = d.parent
+    pending_root.mkdir(parents=True, exist_ok=True)
+    _fsync_pending_dir(pending_root.parent)
+    d.mkdir(exist_ok=True)
+    _fsync_pending_dir(pending_root)
+    path = d / f"{pid}.json"
+    data = json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8")
     try:
-        d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as e:  # pragma: no cover - disk failure path
-        logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        _durably_write_pending(path, data)
+    except Exception as exc:
+        logger.error("Failed to stage pending %s write: %s", subsystem, exc, exc_info=True)
+        raise OSError(f"failed to durably stage pending {subsystem} write") from exc
     return record
 
 
@@ -183,6 +233,7 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     try:
         if path.exists():
             path.unlink()
+            _fsync_pending_dir(path.parent)
             return True
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)

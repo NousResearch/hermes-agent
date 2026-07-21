@@ -427,7 +427,7 @@ def _background_review_read_before_write_guard(
 
 
 def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
-    if action not in {"edit", "patch", "delete", "write_file", "remove_file"}:
+    if action not in {"edit", "patch", "delete", "write_file", "remove_file", "remember", "validate"}:
         return None
     existing = _find_skill(name)
     if not existing:
@@ -492,7 +492,7 @@ MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 # Subdirectories allowed for write_file/remove_file
-ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets", "tests"}
 
 
 # =============================================================================
@@ -806,6 +806,20 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         raise
 
 
+def _invalidate_validation(skill_dir: Path) -> None:
+    """Best-effort invalidation after any package-content mutation."""
+    try:
+        from tools.skill_validation import invalidate_skill_validation
+
+        invalidate_skill_validation(skill_dir)
+    except (OSError, ValueError):
+        logger.debug(
+            "Could not invalidate validation record for %s",
+            skill_dir,
+            exc_info=True,
+        )
+
+
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -912,6 +926,8 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         if original_content is not None:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
+
+    _invalidate_validation(existing["path"])
 
     # Extract description from new content for verbose notifications
     _desc = ""
@@ -1032,6 +1048,8 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
+    _invalidate_validation(skill_dir)
+
     result = {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
@@ -1042,6 +1060,63 @@ def _patch_skill(
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
     return result
+
+
+def _remember_skill(name: str, experience: str) -> Dict[str, Any]:
+    """Append one runtime lesson to a skill's bounded, on-demand memory."""
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": _skill_not_found_error(name)}
+
+    skill_dir = existing["path"]
+    guard = _background_review_write_guard(name, skill_dir, "remember")
+    if guard:
+        return guard
+
+    read_guard = _background_review_read_before_write_guard(
+        name, skill_dir / "SKILL.md", "remember", "SKILL.md"
+    )
+    if read_guard:
+        return read_guard
+
+    try:
+        from tools.skill_experience import append_skill_experience
+
+        path = append_skill_experience(
+            skill_dir,
+            experience,
+            idempotency_key=_skill_pending_replay_id.get() or None,
+        )
+    except (OSError, ValueError) as exc:
+        return {"success": False, "error": str(exc)}
+
+    return {
+        "success": True,
+        "message": f"Experience appended to skill '{name}'.",
+        "memory_file": str(path),
+    }
+
+
+def _validate_skill(name: str, validation: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Record static checks or externally executed test evidence for a skill."""
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": _skill_not_found_error(name)}
+    try:
+        skill_content = (existing["path"] / "SKILL.md").read_text(encoding="utf-8")
+        frontmatter_error = _validate_frontmatter(skill_content)
+        if frontmatter_error:
+            return {"success": False, "error": frontmatter_error}
+
+        from tools.skill_validation import record_skill_validation
+
+        return record_skill_validation(
+            existing["path"],
+            validation,
+            approval_id=_skill_pending_replay_id.get() or None,
+        )
+    except (OSError, ValueError) as exc:
+        return {"success": False, "error": str(exc)}
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -1204,6 +1279,21 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
+    _invalidate_validation(existing["path"])
+    if file_path.startswith("tests/") and not (
+        existing["path"] / ".validation.json"
+    ).is_file():
+        # Newly tested packages must never be published if their pending gate
+        # could not be persisted (for example on a no-dirfd platform).
+        if original_content is not None:
+            _atomic_write_text(target, original_content)
+        else:
+            target.unlink(missing_ok=True)
+        return {
+            "success": False,
+            "error": "test file write rolled back because validation gating is unavailable",
+        }
+
     return {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
@@ -1252,6 +1342,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return read_guard
 
     target.unlink()
+    _invalidate_validation(skill_dir)
 
     # Clean up empty subdirectories
     parent = target.parent
@@ -1274,6 +1365,9 @@ import contextvars as _ctxvars
 _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False
 )
+_skill_pending_replay_id: "_ctxvars.ContextVar[str]" = _ctxvars.ContextVar(
+    "skill_pending_replay_id", default=""
+)
 
 
 def _apply_skill_write_gate(action, name, **payload_kwargs):
@@ -1281,7 +1375,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     write should NOT proceed (blocked or staged), or None to perform the real
     write. Bypassed during approved-pending replay.
     """
-    if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
+    if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file", "remember", "validate"}:
         return None
     if _skill_gate_bypass.get():
         return None
@@ -1302,12 +1396,20 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     payload.update({k: v for k, v in payload_kwargs.items() if v is not None})
     gist = wa.skill_gist(
         action, name,
-        content=payload_kwargs.get("content") or "",
+        content=payload_kwargs.get("content") or payload_kwargs.get("experience") or "",
         file_path=payload_kwargs.get("file_path") or "",
         old_string=payload_kwargs.get("old_string") or "",
         new_string=payload_kwargs.get("new_string") or "",
     )
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    try:
+        record = wa.stage_write(
+            wa.SKILLS, payload, summary=gist, origin=wa.current_origin()
+        )
+    except OSError as exc:
+        return json.dumps(
+            {"success": False, "error": str(exc), "staged": False},
+            ensure_ascii=False,
+        )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "gist": gist, "message": decision.message},
@@ -1320,8 +1422,9 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
     JSON string. Called by the /skills approve handler.
     """
     token = _skill_gate_bypass.set(True)
+    replay_token = _skill_pending_replay_id.set(str(payload.get("_pending_id", "")))
     try:
-        return skill_manage(
+        raw = skill_manage(
             action=payload.get("action", ""),
             name=payload.get("name", ""),
             content=payload.get("content"),
@@ -1332,8 +1435,31 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             new_string=payload.get("new_string"),
             replace_all=payload.get("replace_all", False),
             absorbed_into=payload.get("absorbed_into"),
+            experience=payload.get("experience"),
+            validation=payload.get("validation"),
         )
+        result = json.loads(raw)
+        if payload.get("action") == "validate" and (
+            (
+                result.get("validation_status") == "failed"
+                and result.get("refinement_required") is True
+            )
+            or (
+                result.get("validation_status") == "pending"
+                and isinstance(result.get("validation_token"), str)
+            )
+        ):
+            # The write itself succeeded: failed tests or a newly issued
+            # challenge are persisted outcomes, not approval-application failures.
+            result["success"] = True
+            result["applied"] = True
+            result["validation_failed"] = result.get("validation_status") == "failed"
+            result["validation_pending"] = result.get("validation_status") == "pending"
+            result["warning"] = result.pop("error", "Validation state recorded")
+            raw = json.dumps(result, ensure_ascii=False)
+        return raw
     finally:
+        _skill_pending_replay_id.reset(replay_token)
         _skill_gate_bypass.reset(token)
 
 
@@ -1348,6 +1474,8 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    experience: str = None,
+    validation: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1358,6 +1486,53 @@ def skill_manage(
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
 
+    # Lifecycle sidecars and approval records are durable. Validate bounds and
+    # force-redact before either staging or writing so pending-review JSON cannot
+    # become a credential leak or an unbounded persistence channel.
+    from tools.skill_experience import MAX_EXPERIENCE_ENTRY_BYTES
+    from tools.skill_validation import MAX_VALIDATION_OUTPUT_CHARS
+
+    if isinstance(experience, str):
+        experience_bytes = len(experience.strip().encode("utf-8"))
+        if experience_bytes > MAX_EXPERIENCE_ENTRY_BYTES:
+            return tool_error(
+                f"experience is {experience_bytes:,} bytes "
+                f"(limit: {MAX_EXPERIENCE_ENTRY_BYTES:,} bytes)",
+                success=False,
+            )
+
+    from agent.redact import redact_sensitive_for_persistence
+
+    if isinstance(experience, str):
+        experience = redact_sensitive_for_persistence(experience)
+    if isinstance(validation, dict):
+        validation = dict(validation)
+        allowed_validation_fields = {
+            "content_digest",
+            "validation_token",
+            "command",
+            "exit_code",
+            "output",
+        }
+        unknown_validation_fields = set(validation) - allowed_validation_fields
+        if unknown_validation_fields:
+            return tool_error(
+                "validation contains unsupported fields: "
+                + ", ".join(sorted(unknown_validation_fields)),
+                success=False,
+            )
+        for key in ("content_digest", "validation_token"):
+            if isinstance(validation.get(key), str) and len(validation[key]) > 128:
+                return tool_error(f"validation.{key} is too long", success=False)
+        for key in ("command", "output"):
+            if isinstance(validation.get(key), str):
+                redacted = redact_sensitive_for_persistence(validation[key])
+                validation[key] = (
+                    redacted[-MAX_VALIDATION_OUTPUT_CHARS:]
+                    if key == "output"
+                    else redacted[:4096]
+                )
+
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off
     # (default) passes straight through. The gate is bypassed when this call is
@@ -1367,6 +1542,7 @@ def skill_manage(
         file_path=file_path, file_content=file_content,
         old_string=old_string, new_string=new_string,
         replace_all=replace_all, absorbed_into=absorbed_into,
+        experience=experience, validation=validation,
     )
     if gate_result is not None:
         return gate_result
@@ -1403,15 +1579,31 @@ def skill_manage(
             return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
-    else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+    elif action == "remember":
+        if not isinstance(experience, str) or not experience.strip():
+            return tool_error(
+                "experience is required for 'remember' and must be a non-empty string.",
+                success=False,
+            )
+        result = _remember_skill(name, experience)
 
-    if result.get("success"):
+    elif action == "validate":
+        result = _validate_skill(name, validation)
+
+    else:
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, remember, validate"}
+
+    if result.get("success") or action == "validate":
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
+            from tools.skills_tool import clear_skills_discovery_cache
+
             clear_skills_system_prompt_cache(clear_snapshot=True)
+            clear_skills_discovery_cache()
         except Exception:
             pass
+
+    if result.get("success"):
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
         # Only mark a skill as agent-created when the background self-improvement
@@ -1451,6 +1643,8 @@ SKILL_MANAGE_SCHEMA = {
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
+        "remember (append a concise runtime lesson to per-skill memory), "
+        "validate (record static checks or test evidence already produced through terminal/sandbox), "
         "delete, write_file, remove_file.\n\n"
         "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
         "skill's content into another one, or `absorbed_into=\"\"` when you're "
@@ -1469,6 +1663,12 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "For code-backed skills, add tests under tests/, call validate once to "
+        "obtain the current content digest and one-time validation token, run the tests "
+        "through terminal or a sandbox, then call validate again with both, the command, "
+        "exit code, and bounded output. Failed validation returns refinement_required; patch "
+        "and retest. Use remember for concise skill-specific runtime lessons instead "
+        "of global memory or stable SKILL.md instructions.\n\n"
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
@@ -1479,7 +1679,7 @@ SKILL_MANAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
+                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file", "remember", "validate"],
                 "description": "The action to perform."
             },
             "name": {
@@ -1529,13 +1729,40 @@ SKILL_MANAGE_SCHEMA = {
                 "description": (
                     "Path to a supporting file within the skill directory. "
                     "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
+                    "templates/, scripts/, tests/, or assets/. "
                     "For 'patch': optional, defaults to SKILL.md if omitted."
                 )
             },
             "file_content": {
                 "type": "string",
                 "description": "Content for the file. Required for 'write_file'."
+            },
+            "experience": {
+                "type": "string",
+                "maxLength": 8192,
+                "description": (
+                    "For 'remember' only — a concise runtime lesson, failure mode, "
+                    "input quirk, or verified optimization to append to this skill's "
+                    "on-demand experience memory."
+                )
+            },
+            "validation": {
+                "type": "object",
+                "description": (
+                    "For 'validate' when tests/ exists — evidence from a test command "
+                    "you already ran through terminal or a sandbox, bound to the "
+                    "content_digest and validation_token returned by an evidence-free "
+                    "validate call. Omit only for the first call or a text-only skill "
+                    "with no tests."
+                ),
+                "properties": {
+                    "content_digest": {"type": "string", "maxLength": 128},
+                    "validation_token": {"type": "string", "maxLength": 128},
+                    "command": {"type": "string", "maxLength": 4096},
+                    "exit_code": {"type": "integer"},
+                    "output": {"type": "string", "maxLength": 16384}
+                },
+                "required": ["content_digest", "validation_token", "command", "exit_code", "output"]
             },
             "absorbed_into": {
                 "type": "string",
@@ -1574,6 +1801,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        experience=args.get("experience"),
+        validation=args.get("validation")),
     emoji="📝",
 )

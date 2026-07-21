@@ -743,6 +743,77 @@ def redact_sensitive_text(
     return text
 
 
+_PERSISTENCE_KEY = (
+    r"[A-Za-z0-9_]*(?:api[_-]?key|token|secret|password|passwd|"
+    r"private[_-]?key|credential|authorization)[A-Za-z0-9_]*"
+)
+_PERSISTENCE_QUOTED_RE = re.compile(
+    rf"(?i)(\b{_PERSISTENCE_KEY}\b\s*[:=]\s*)([\"'])(.*?)(\2)"
+)
+_PERSISTENCE_UNQUOTED_RE = re.compile(
+    rf"(?i)(\b{_PERSISTENCE_KEY}\b\s*[:=]\s*)((?![\"'])[^\s,;&#]+)"
+)
+_PERSISTENCE_CLI_FLAG_RE = re.compile(
+    rf"(?i)(--(?:{_PERSISTENCE_KEY})\s+)([^\s]+)"
+)
+_PERSISTENCE_BLOCK_START_RE = re.compile(
+    rf"(?i)^(\s*{_PERSISTENCE_KEY}\s*:\s*[|>][-+]?\s*)(\r?\n)?$"
+)
+
+
+def _redact_persistence_block_scalars(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = _PERSISTENCE_BLOCK_START_RE.match(line.rstrip("\r\n"))
+        if not match:
+            output.append(line)
+            index += 1
+            continue
+
+        newline = "\n" if line.endswith("\n") else ""
+        colon = line.index(":")
+        output.append(f'{line[: colon + 1]} "***"{newline}')
+        base_indent = len(line) - len(line.lstrip(" \t"))
+        index += 1
+        while index < len(lines):
+            following = lines[index]
+            if not following.strip():
+                output.append(following)
+                index += 1
+                continue
+            following_indent = len(following) - len(following.lstrip(" \t"))
+            if following_indent <= base_indent:
+                break
+            index += 1
+    return "".join(output)
+
+
+def redact_sensitive_for_persistence(text: str) -> str:
+    """Force non-reusable redaction before durable agent-managed persistence.
+
+    This is intentionally stricter than source/file display redaction: key-like
+    assignments, JSON/YAML values, and URL query parameters are always removed.
+    """
+    text = _redact_persistence_block_scalars(text)
+    text = redact_sensitive_text(text, force=True, file_read=True)
+    text = redact_sensitive_text(text, force=True)
+    text = _redact_url_query_params(text)
+    text = _redact_url_userinfo(text)
+    text = _PERSISTENCE_QUOTED_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(4)}",
+        text,
+    )
+    text = _PERSISTENCE_UNQUOTED_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]", text
+    )
+    return _PERSISTENCE_CLI_FLAG_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]", text
+    )
+
+
 # Commands whose stdout is an environment-variable dump (KEY=value lines),
 # NOT source code. For these, terminal-output redaction must run the
 # ENV-assignment pass (code_file=False) so opaque tokens with no recognized

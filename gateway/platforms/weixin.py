@@ -1777,7 +1777,7 @@ class WeixinAdapter(BasePlatformAdapter):
                             or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
                         )
                         # Session expired — strip token and retry once
-                        if is_session_expired and not retried_without_token and context_token:
+                        if is_session_expired and not retried_without_token:
                             retried_without_token = True
                             context_token = None
                             self._token_store._cache.pop(

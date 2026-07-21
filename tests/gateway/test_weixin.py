@@ -706,6 +706,70 @@ class TestWeixinBlankMessagePrevention:
             )
 
 
+class TestWeixinTokenlessRetryWithoutCachedToken:
+    """Regression: tokenless retry must fire even when context_token is None.
+
+    Issue #35062: cron-initiated pushes to long-inactive chats fail because
+    the ``and context_token`` guard prevents the retry branch from executing
+    when no cached token exists.  iLink accepts tokenless sends as a degraded
+    fallback, so the guard should only check ``not retried_without_token``.
+    """
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_tokenless_retry_fires_when_context_token_is_none(self, send_mock):
+        """Session-expired + no cached token → retry fires, then succeeds."""
+        adapter = _make_adapter()
+        adapter._send_session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        # No cached context_token for this chat
+        adapter._token_store._cache = {}
+
+        # First call: stale session (ret=-3, errmsg=unknown error)
+        # Second call: success
+        send_mock.side_effect = [
+            {"ret": -3, "errmsg": "unknown error"},
+            {"ret": 0},
+        ]
+
+        # Should NOT raise — retry fires and second call succeeds
+        asyncio.run(adapter._send_text_chunk(
+            chat_id="wxid_test",
+            chunk="hello",
+            context_token=None,
+            client_id="cid",
+        ))
+
+        # Two calls: initial attempt + tokenless retry
+        assert send_mock.await_count == 2
+        # Second call should have context_token=None (already was, but confirm)
+        second_call_kwargs = send_mock.await_args_list[1].kwargs
+        assert second_call_kwargs.get("context_token") is None
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_tokenless_retry_fires_for_errcode_minus_14(self, send_mock):
+        """errcode=-14 (classic session expired) + no cached token → retry fires."""
+        adapter = _make_adapter()
+        adapter._send_session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store._cache = {}
+
+        send_mock.side_effect = [
+            {"errcode": -14},
+            {"ret": 0},
+        ]
+
+        asyncio.run(adapter._send_text_chunk(
+            chat_id="wxid_test",
+            chunk="hello",
+            context_token=None,
+            client_id="cid",
+        ))
+
+        assert send_mock.await_count == 2
+
+
 class TestWeixinStreamingCursorSuppression:
     """WeChat doesn't support message editing — cursor must be suppressed."""
 

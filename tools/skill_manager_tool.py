@@ -135,11 +135,21 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
             # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Surface as an error so the agent can
-            # retry with the flagged content removed.
-            report = format_scan_report(result)
-            logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
+            # findings were detected.  Surface specific findings so the agent
+            # knows exactly what to fix and can retry.
+            findings_detail = "\n".join(
+                f"  - {f.file}:{f.line}: {f.description} (matched: {f.match!r})"
+                for f in result.findings
+            )
+            logger.warning(
+                "Agent-created skill flagged for review (dangerous findings): %s",
+                reason,
+            )
+            return (
+                f"Security scan flagged this skill — please fix the following issues and retry:\n"
+                f"{findings_detail}\n"
+                f"Remove or rewrite the flagged content, then try creating the skill again."
+            )
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None

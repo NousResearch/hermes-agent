@@ -112,6 +112,16 @@ class FallbackProviderEntry(BaseModel):
     model: str
     base_url: Optional[str] = None
     api_mode: Optional[str] = None
+    # Credential *references* — the documented shape for a fallback entry is
+    # `key_env` (the name of an env var), never the secret itself. These are
+    # safe to round-trip through the browser, and declaring them is what keeps
+    # a reorder from silently stripping credentials off the stored chain.
+    #
+    # An inline `api_key` is deliberately absent: it is a secret, so it is
+    # neither returned by GET nor accepted from the client. `_carry_forward_
+    # fallback_secrets` preserves any configured value server-side instead.
+    key_env: Optional[str] = None
+    api_key_env: Optional[str] = None
 
     @field_validator("provider", "model", mode="before")
     @classmethod
@@ -125,7 +135,7 @@ class FallbackProviderEntry(BaseModel):
             raise ValueError(f"fallback {info.field_name} is required")
         return trimmed
 
-    @field_validator("base_url", "api_mode", mode="before")
+    @field_validator("base_url", "api_mode", "key_env", "api_key_env", mode="before")
     @classmethod
     def _trim_optional(cls, value: Any) -> Optional[str]:
         if value is None:

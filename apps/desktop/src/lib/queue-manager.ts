@@ -13,6 +13,7 @@ export interface QueuedPromptEntry {
 
 type QueueState = Record<string, QueuedPromptEntry[]>
 
+const EMPTY_QUEUE: QueuedPromptEntry[] = []
 const STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
 const MAX_DRAIN_RETRIES = 3
 const DRAIN_RETRY_MS = 2_000
@@ -72,7 +73,7 @@ class QueueManager {
     this.unsubWorking = $workingSessionIds.subscribe(ids => {
       for (const [sid, entries] of this.queues) {
         if (entries.length === 0) continue
-        if (!(ids as Set<string>).has(sid)) {
+        if (!ids.includes(sid)) {
           void this.tryDrain(sid, 0)
         }
       }
@@ -161,7 +162,7 @@ class QueueManager {
 
   getAll(storedSessionId: string): QueuedPromptEntry[] {
     const sid = storedSessionId.trim()
-    return sid ? (this.queues.get(sid) ?? []) : []
+    return sid ? (this.queues.get(sid) ?? EMPTY_QUEUE) : EMPTY_QUEUE
   }
 
   migrate(fromSid: string, toSid: string): boolean {
@@ -189,8 +190,9 @@ class QueueManager {
     const index = queue.findIndex(e => e.id === entryId)
     if (index <= 0) return false
 
-    const [item] = queue.splice(index, 1)
-    queue.unshift(item)
+    // New array reference so React useSyncExternalStore detects the change.
+    const next = [queue[index], ...queue.slice(0, index), ...queue.slice(index + 1)]
+    this.queues.set(sid, next)
     this.save()
     return true
   }
@@ -261,11 +263,11 @@ class QueueManager {
   }
 
   private pollSessions(): void {
-    const working = $workingSessionIds.get() as Set<string>
+    const working = $workingSessionIds.get()
 
     for (const [sid, entries] of this.queues) {
       if (entries.length === 0) continue
-      if (!working.has(sid)) {
+      if (!working.includes(sid)) {
         void this.tryDrain(sid, 0)
       }
     }

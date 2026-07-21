@@ -279,6 +279,18 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "123"
 
+    def test_zero_name_kept_as_string(self, tmp_path):
+        """``name: 0`` is falsy but real — it must become "0", not the dir name."""
+        skill_dir = tmp_path / "zero-name"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 0\ndescription: zero name\n---\n\nBody.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "0"
+
     def test_skips_git_directories(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "real-skill")

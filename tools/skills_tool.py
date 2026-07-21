@@ -643,7 +643,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_environment(frontmatter):
                     continue
 
-                name = str(frontmatter.get("name") or skill_dir.name)[:MAX_NAME_LENGTH]
+                # Fall back to the directory name only for a missing/null/blank
+                # name; falsy-but-real values like ``name: 0`` keep "0".
+                raw_name = frontmatter.get("name")
+                name = (str(raw_name) if raw_name is not None else "").strip()
+                name = (name or skill_dir.name)[:MAX_NAME_LENGTH]
                 if name in seen_names:
                     continue
                 if name in disabled:

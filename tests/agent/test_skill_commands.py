@@ -58,6 +58,42 @@ class TestScanSkillCommands:
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
 
+    def test_null_name_falls_back_to_dir_name(self, tmp_path):
+        """A bare ``name:`` key (YAML null) must not drop the slash command."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "null-name"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname:\ndescription: has a null name\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/null-name" in result
+        assert result["/null-name"]["name"] == "null-name"
+
+    def test_numeric_name_coerced(self, tmp_path):
+        """A numeric ``name: 123`` must not drop the slash command."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "numeric-name"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 123\ndescription: numeric name\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/123" in result
+        assert result["/123"]["name"] == "123"
+
+    def test_zero_name_kept_as_string(self, tmp_path):
+        """``name: 0`` is falsy but real — it must become "0", not the dir name."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "zero-name"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 0\ndescription: zero name\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/0" in result
+        assert result["/0"]["name"] == "0"
+
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             result = scan_skill_commands()

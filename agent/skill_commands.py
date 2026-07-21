@@ -380,7 +380,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # (kanban/docker/s6). Offer-time only; explicit load bypasses.
                     if not skill_matches_environment(frontmatter):
                         continue
-                    name = frontmatter.get('name', skill_md.parent.name)
+                    # A bare "name:" (YAML null) or numeric name must not
+                    # raise later (.lower() on a non-string is swallowed by
+                    # the per-skill handler below and the skill vanishes).
+                    raw_name = frontmatter.get('name')
+                    name = (str(raw_name) if raw_name is not None else '').strip()
+                    if not name:
+                        name = skill_md.parent.name
                     if name in seen_names:
                         continue
                     # Respect user's disabled skills config

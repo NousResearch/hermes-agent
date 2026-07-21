@@ -627,3 +627,39 @@ class TestExtendedCoverage:
         assert len(lines) == 20
         claimed = {line["records"][0]["request_id"] for line in lines}
         assert len(claimed) == 20
+
+
+# ---------------------------------------------------------------------------
+# Zero-install session dashboard
+# ---------------------------------------------------------------------------
+
+class TestDashboard:
+    def test_dashboard_ships_and_is_self_contained(self):
+        dash = PLUGIN_DIR / "dashboard.html"
+        assert dash.is_file(), "dashboard.html missing from plugin directory"
+        html = dash.read_text(encoding="utf-8")
+        assert len(html) > 4000
+        # Zero-install contract: nothing loaded from anywhere else, ever.
+        assert "<script src" not in html
+        assert 'src="http' not in html and "src='http" not in html
+        assert 'href="http' not in html and "href='http" not in html
+        assert "fetch(" not in html and "XMLHttpRequest" not in html
+        # Reads the plugin's own output schema and supports live follow.
+        assert "records" in html and "top_features" in html
+        assert "match_confidence" in html
+        assert "showOpenFilePicker" in html
+
+    def test_dashboard_subcommand_points_at_page_and_latest_trace(self, env):
+        plugin, sidecar, out_dir = env
+        out = plugin._handle_slash("dashboard")
+        assert "dashboard.html" in out
+        assert str(out_dir) in out
+        assert "no session traces written yet" in out
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "sess-9.jsonl").write_text("{}\n", encoding="utf-8")
+        out = plugin._handle_slash("dashboard")
+        assert "sess-9.jsonl" in out
+
+    def test_dashboard_listed_in_help(self, env):
+        plugin, _, _ = env
+        assert "dashboard" in plugin._handle_slash("help")

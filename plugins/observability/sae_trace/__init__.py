@@ -617,8 +617,9 @@ _HELP_TEXT = """\
 /sae — SAE feature-trace status
 
 Subcommands:
-  status    Sidecar path, records seen/matched this session, last match
-  last      Most recent turn's correlated feature summary
+  status     Sidecar path, records seen/matched this session, last match
+  last       Most recent turn's correlated feature summary
+  dashboard  Where to find the zero-install session dashboard (dashboard.html)
 
 Configure via HERMES_SAE_TRACE_FILE (sidecar JSONL) and
 HERMES_SAE_TRACE_OUT_DIR (default: $HERMES_HOME/sae_trace).
@@ -681,6 +682,27 @@ def _handle_slash(raw_args: str) -> Optional[str]:
                 f"confidence={last.get('match_confidence')}"
             )
             lines.extend(_format_last_features(last))
+        return "\n".join(lines)
+
+    if sub == "dashboard":
+        dash = Path(__file__).resolve().parent / "dashboard.html"
+        lines = [
+            "[sae] Zero-install session dashboard",
+            f"  page   : file://{dash}",
+            f"  traces : {config.out_dir}",
+        ]
+        try:
+            newest = max(
+                config.out_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime
+            )
+            lines.append(f"  latest : {newest}")
+        except (ValueError, OSError):
+            lines.append("  latest : (no session traces written yet)")
+        lines.append(
+            "  Open the page in any browser and load the trace (file picker or"
+            " drag & drop). 'Follow live' re-reads it every 2s on"
+            " Chromium-based browsers. No server, no install, no network."
+        )
         return "\n".join(lines)
 
     if sub == "last":

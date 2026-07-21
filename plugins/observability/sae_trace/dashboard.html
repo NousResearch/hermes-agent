@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>sae_trace · session dashboard</title>
+<!--
+  Zero-install viewer for sae_trace per-session traces
+  ($HERMES_SAE_TRACE_OUT_DIR/<session_id>.jsonl).
+
+  Open this file in a browser. No server, no build step, no network:
+  everything is inline and file access happens only through your own
+  file picker / drag-and-drop. "Follow live" uses the File System Access
+  API (Chromium) to re-read the file you picked every 2 s; other
+  browsers can re-load the file manually or drop it again.
+-->
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--ink:#e6edf3;--mut:#8b949e;--acc:#58a6ff;
+        --good:#3fb950;--warn:#d29922;--bad:#f85149;--line:#21262d}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  header{padding:12px 18px;border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;white-space:nowrap}
+  button,label.btn{background:#0d1117;color:var(--ink);border:1px solid #30363d;
+         border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer}
+  button:hover,label.btn:hover{border-color:var(--acc)}
+  input[type=file]{display:none}
+  .muted{color:var(--mut)} .small{font-size:12px}
+  .row{display:flex;gap:16px;padding:16px;flex-wrap:wrap;align-items:flex-start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:12px 14px;min-width:280px}
+  h3{margin:2px 0 8px;font-size:13px;color:var(--mut);font-weight:600}
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  th,td{padding:3px 8px;text-align:left;border-bottom:1px solid var(--line);
+        white-space:nowrap}
+  th{color:var(--mut);position:sticky;top:0;background:var(--panel)}
+  tr.sel{background:#1c2534}
+  tbody tr{cursor:pointer}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;
+       background:var(--line);color:var(--mut)}
+  .tag.request_id{background:#1a3a24;color:var(--good)}
+  .tag.session_id{background:#1a2f3a;color:var(--acc)}
+  .tag.time_window{background:#3a2a1a;color:var(--warn)}
+  .bar{height:8px;background:var(--acc);border-radius:3px;display:inline-block;
+       vertical-align:middle;margin-right:6px}
+  .scroll{max-height:480px;overflow:auto}
+  #drop{border:1px dashed #30363d;border-radius:10px;margin:16px;padding:26px;
+        text-align:center;color:var(--mut)}
+  #drop.on{border-color:var(--acc);color:var(--acc)}
+  code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+       background:var(--mut);margin-right:5px}
+  .dot.live{background:var(--good)}
+  .preview{white-space:pre-wrap;font-size:12px;color:var(--mut);
+           border-left:2px solid var(--line);padding-left:8px;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>sae_trace · session dashboard</h1>
+  <label class="btn">Load session file<input id="file" type="file" accept=".jsonl,.json"/></label>
+  <button id="liveBtn" title="Pick the session file once; the page re-reads it every 2 s (Chromium)">
+    <span class="dot" id="liveDot"></span>Follow live
+  </button>
+  <span id="meta" class="muted small">no file loaded</span>
+</header>
+
+<div id="drop">drop a <code>&lt;session_id&gt;.jsonl</code> trace here
+  (written by the sae_trace plugin to <code>$HERMES_HOME/sae_trace/</code>)</div>
+
+<div class="row" id="main" style="display:none">
+  <div class="card" style="flex:2 1 460px">
+    <h3>Agent turns (newest first)</h3>
+    <div class="scroll">
+      <table id="turns"><thead><tr>
+        <th>time</th><th>turn</th><th>model</th><th>match</th>
+        <th>recs</th><th>top feature</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+  <div class="card" style="flex:2 1 420px">
+    <h3 id="detHead">Turn detail</h3>
+    <div id="detail" class="scroll muted">select a turn</div>
+  </div>
+  <div class="card" style="flex:1 1 320px">
+    <h3>Session top features (by peak activation)</h3>
+    <div class="scroll">
+      <table id="agg"><thead><tr>
+        <th>layer</th><th>feat</th><th>peak</th><th>turns</th><th></th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+let TURNS=[], SEL=-1, HANDLE=null, TIMER=null, LASTSIG="";
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function parse(text){
+  const turns=[];
+  for(const line of text.split(/\n/)){
+    const s=line.trim(); if(!s) continue;
+    try{ const o=JSON.parse(s); if(o&&typeof o==="object"&&Array.isArray(o.records)) turns.push(o); }
+    catch(e){ /* partial trailing line while the agent is mid-turn: skip */ }
+  }
+  return turns;
+}
+
+function topOfTurn(t){
+  let best=null;
+  for(const r of t.records||[]) for(const [layer,feats] of Object.entries(r.top_features||{}))
+    for(const f of feats) if(!best||f[1]>best.act) best={layer,fid:f[0],act:f[1]};
+  return best;
+}
+
+function render(){
+  $("drop").style.display=TURNS.length?"none":"";
+  $("main").style.display=TURNS.length?"":"none";
+  if(!TURNS.length){ $("meta").textContent="no turns in file"; return; }
+  const t0=TURNS[0];
+  $("meta").textContent=`session ${t0.session_id||"?"} · ${TURNS.length} turn(s) · model ${t0.model||"?"}`;
+  const tb=$("turns").tBodies[0]; tb.innerHTML="";
+  TURNS.slice().reverse().forEach((t,revIdx)=>{
+    const i=TURNS.length-1-revIdx, best=topOfTurn(t);
+    const tr=document.createElement("tr");
+    if(i===SEL) tr.className="sel";
+    tr.innerHTML=`<td>${esc((t.ts||"").replace("T"," ").slice(5,19))}</td>
+      <td>${esc(t.turn_id||i)}</td><td>${esc(t.model||"")}</td>
+      <td><span class="tag ${esc(t.match_confidence||"")}">${esc(t.match_confidence||"?")}</span></td>
+      <td>${(t.records||[]).length}</td>
+      <td>${best?`L${esc(best.layer)} #${best.fid} (${best.act})`:"<span class=muted>raw only</span>"}</td>`;
+    tr.onclick=()=>{SEL=i;render();};
+    tb.appendChild(tr);
+  });
+  renderDetail(); renderAgg();
+}
+
+function renderDetail(){
+  const i=SEL>=0?SEL:TURNS.length-1, t=TURNS[i]; if(!t) return;
+  $("detHead").textContent=`Turn detail — ${t.turn_id||i} (${t.match_confidence||"?"})`;
+  let h="";
+  (t.records||[]).forEach((r,ri)=>{
+    h+=`<div class="small muted">record ${ri+1}${r.request_id?` · ${esc(r.request_id)}`:""}${
+        r.same_inference?` · <span class="tag request_id">same_inference</span>`:""}</div>`;
+    const tf=r.top_features||{};
+    const layers=Object.keys(tf).sort((a,b)=>+a-+b);
+    if(layers.length){
+      for(const layer of layers){
+        const feats=tf[layer], mx=Math.max(...feats.map(f=>f[1]))||1;
+        h+=`<div class="small" style="margin-top:6px">layer ${esc(layer)}</div><table>`;
+        for(const [fid,act,ntok] of feats)
+          h+=`<tr><td>#${fid}</td><td><span class="bar" style="width:${Math.max(3,120*act/mx)}px"></span>${act}</td><td class="muted">${ntok} tok</td></tr>`;
+        h+="</table>";
+      }
+    } else if(r.npz_path){
+      h+=`<div class="small">raw activations: <code>${esc(r.npz_path)}</code></div>`;
+    }
+    if(r.gen_text_preview) h+=`<div class="preview">${esc(r.gen_text_preview)}</div>`;
+  });
+  $("detail").innerHTML=h||"<span class=muted>no records</span>";
+  $("detail").classList.remove("muted");
+}
+
+function renderAgg(){
+  const agg=new Map();
+  for(const t of TURNS) for(const r of t.records||[])
+    for(const [layer,feats] of Object.entries(r.top_features||{}))
+      for(const [fid,act] of feats){
+        const k=layer+"#"+fid, e=agg.get(k)||{layer,fid,peak:0,turns:0};
+        e.peak=Math.max(e.peak,act); e.turns++; agg.set(k,e);
+      }
+  const rows=[...agg.values()].sort((a,b)=>b.peak-a.peak).slice(0,40);
+  const mx=rows.length?rows[0].peak:1;
+  $("agg").tBodies[0].innerHTML=rows.map(e=>
+    `<tr><td>L${esc(e.layer)}</td><td>#${e.fid}</td><td>${e.peak}</td><td>${e.turns}</td>
+     <td><span class="bar" style="width:${Math.max(3,90*e.peak/mx)}px"></span></td></tr>`).join("");
+}
+
+function load(text){
+  const sig=text.length+":"+text.slice(-80);
+  if(sig===LASTSIG) return; LASTSIG=sig;
+  TURNS=parse(text);
+  if(SEL>=TURNS.length) SEL=-1;
+  render();
+}
+
+$("file").addEventListener("change",e=>{
+  const f=e.target.files[0]; if(!f) return;
+  stopLive(); f.text().then(load);
+});
+
+const drop=$("drop");
+document.addEventListener("dragover",e=>{e.preventDefault();drop.classList.add("on");});
+document.addEventListener("dragleave",()=>drop.classList.remove("on"));
+document.addEventListener("drop",e=>{
+  e.preventDefault();drop.classList.remove("on");
+  const f=e.dataTransfer.files[0]; if(f){stopLive(); f.text().then(load);}
+});
+
+function stopLive(){ if(TIMER){clearInterval(TIMER);TIMER=null;} HANDLE=null;
+  $("liveDot").classList.remove("live"); }
+
+$("liveBtn").addEventListener("click",async()=>{
+  if(TIMER){ stopLive(); return; }
+  if(!window.showOpenFilePicker){
+    alert("Live follow needs a Chromium-based browser (File System Access API). Use Load / drag-and-drop instead, and re-load to refresh."); return;
+  }
+  try{
+    [HANDLE]=await showOpenFilePicker({types:[{description:"sae_trace session",
+      accept:{"application/jsonl":[".jsonl"],"application/json":[".json"]}}]});
+  }catch(e){ return; }
+  $("liveDot").classList.add("live");
+  const tick=async()=>{ try{ const f=await HANDLE.getFile(); load(await f.text()); }
+    catch(e){ stopLive(); } };
+  await tick(); TIMER=setInterval(tick,2000);
+});
+</script>
+</body>
+</html>

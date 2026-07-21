@@ -96,19 +96,23 @@ def test_rolling_start_cap_allows_remaining_capacity_then_holds_rest(isolated_ka
         assert [h[0] for h in res.skipped_rolling_start_capped] == task_ids[1:]
 
 
-def _write_state_db(home: Path, rows):
+def _write_state_db(home: Path, rows, *, include_billing_columns: bool = True):
     db = home / "state.db"
     conn = sqlite3.connect(db)
     try:
-        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL)")
         conn.execute(
-            """CREATE TABLE session_model_usage (
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL)"
+        )
+        billing_columns = "billing_mode TEXT DEFAULT ''," if include_billing_columns else ""
+        cost_status_column = "cost_status TEXT," if include_billing_columns else ""
+        conn.execute(
+            f"""CREATE TABLE session_model_usage (
                    session_id TEXT, model TEXT, billing_provider TEXT DEFAULT '', billing_base_url TEXT DEFAULT '',
-                   billing_mode TEXT DEFAULT '', task TEXT DEFAULT '', api_call_count INTEGER DEFAULT 0,
+                   {billing_columns} task TEXT DEFAULT '', api_call_count INTEGER DEFAULT 0,
                    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
                    cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
                    reasoning_tokens INTEGER DEFAULT 0, estimated_cost_usd REAL DEFAULT 0,
-                   actual_cost_usd REAL DEFAULT 0, cost_status TEXT, cost_source TEXT,
+                   actual_cost_usd REAL DEFAULT 0, {cost_status_column} cost_source TEXT,
                    first_seen REAL, last_seen REAL
                )"""
         )
@@ -118,11 +122,27 @@ def _write_state_db(home: Path, rows):
                 "INSERT INTO sessions (id, source, started_at, ended_at) VALUES (?, 'cli', ?, ?)",
                 (sid, row["seen"], row["seen"]),
             )
+            columns = [
+                "session_id",
+                "model",
+                "estimated_cost_usd",
+                "actual_cost_usd",
+                "last_seen",
+            ]
+            values = [
+                sid,
+                "m",
+                row.get("estimated", 0),
+                row.get("actual", 0),
+                row["seen"],
+            ]
+            if include_billing_columns:
+                columns.extend(["billing_mode", "cost_status"])
+                values.extend([row.get("billing_mode", ""), row.get("cost_status")])
+            placeholders = ", ".join("?" for _ in values)
             conn.execute(
-                """INSERT INTO session_model_usage
-                   (session_id, model, estimated_cost_usd, actual_cost_usd, last_seen)
-                   VALUES (?, 'm', ?, ?, ?)""",
-                (sid, row.get("estimated", 0), row.get("actual", 0), row["seen"]),
+                f"INSERT INTO session_model_usage ({', '.join(columns)}) VALUES ({placeholders})",
+                values,
             )
         conn.commit()
     finally:
@@ -141,6 +161,200 @@ def test_daily_spend_actual_wins_over_estimated_and_multi_profile(isolated_kanba
     assert summary.known_metered_cost_usd == pytest.approx(5.0)
     assert summary.actual_cost_usd == pytest.approx(2.0)
     assert summary.estimated_cost_usd == pytest.approx(3.0)
+
+
+def test_subscription_included_zero_cost_rows_do_not_trigger_unknown_hold(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [{
+            "seen": now,
+            "actual": 0,
+            "estimated": 0,
+            "billing_mode": "subscription_included",
+            "cost_status": "included",
+        }],
+    )
+    cfg = kb.SpendAdmissionConfig(
+        cap_usd=1,
+        timezone_name="UTC",
+        unknown_cost_policy="hold",
+    )
+
+    summary = kb.read_daily_spend_ledger(cfg, now=now, profile_homes=[home])
+
+    assert summary.ledger_readable is True
+    assert summary.included_cost_rows == 1
+    assert summary.unknown_cost_rows == 0
+    assert summary.known_metered_cost_usd == pytest.approx(0.0)
+
+
+def test_subscription_included_zero_cost_rows_allow_dispatch_under_hold(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [{
+            "seen": now,
+            "actual": 0,
+            "estimated": 0,
+            "billing_mode": "subscription_included",
+            "cost_status": "included",
+        }],
+    )
+    with kb.connect_closing() as conn:
+        task_ids = _make_ready_tasks(kb, conn, 1)
+        monkeypatch_time = pytest.MonkeyPatch()
+        monkeypatch_time.setattr(kb.time, "time", lambda: now)
+        try:
+            res = kb.dispatch_once(
+                conn,
+                spawn_fn=_fake_spawn,
+                dry_run=True,
+                spend_config=kb.SpendAdmissionConfig(
+                    cap_usd=1,
+                    timezone_name="UTC",
+                    unknown_cost_policy="hold",
+                ),
+            )
+        finally:
+            monkeypatch_time.undo()
+
+    assert [row[0] for row in res.spawned] == task_ids
+    assert not res.skipped_unknown_cost_policy
+    assert res.spend_telemetry["included_cost_rows"] == 1
+
+
+def test_subscription_included_rows_do_not_increase_known_metered_spend(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [{
+            "seen": now,
+            "actual": 4,
+            "estimated": 7,
+            "billing_mode": "subscription_included",
+            "cost_status": "included",
+        }],
+    )
+    cfg = kb.SpendAdmissionConfig(cap_usd=10, timezone_name="UTC")
+
+    summary = kb.read_daily_spend_ledger(cfg, now=now, profile_homes=[home])
+
+    assert summary.included_cost_rows == 1
+    assert summary.known_cost_rows == 0
+    assert summary.known_metered_cost_usd == pytest.approx(0.0)
+    assert summary.actual_cost_usd == pytest.approx(0.0)
+    assert summary.estimated_cost_usd == pytest.approx(0.0)
+
+
+def test_known_metered_actual_and_estimated_rows_still_count(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [
+            {
+                "seen": now,
+                "actual": 1.25,
+                "estimated": 8,
+                "billing_mode": "metered",
+                "cost_status": "actual",
+            },
+            {
+                "seen": now,
+                "actual": 0,
+                "estimated": 2.5,
+                "billing_mode": "metered",
+                "cost_status": "estimated",
+            },
+        ],
+    )
+    cfg = kb.SpendAdmissionConfig(cap_usd=10, timezone_name="UTC")
+
+    summary = kb.read_daily_spend_ledger(cfg, now=now, profile_homes=[home])
+
+    assert summary.known_cost_rows == 2
+    assert summary.known_metered_cost_usd == pytest.approx(3.75)
+    assert summary.actual_cost_usd == pytest.approx(1.25)
+    assert summary.estimated_cost_usd == pytest.approx(2.5)
+
+
+def test_unknown_metered_rows_still_obey_hold_policy(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [{
+            "seen": now,
+            "actual": 0,
+            "estimated": 0,
+            "billing_mode": "metered",
+            "cost_status": None,
+        }],
+    )
+
+    summary = kb.read_daily_spend_ledger(
+        kb.SpendAdmissionConfig(
+            cap_usd=1,
+            timezone_name="UTC",
+            unknown_cost_policy="hold",
+        ),
+        now=now,
+        profile_homes=[home],
+    )
+
+    assert summary.unknown_cost_rows == 1
+    assert summary.known_metered_cost_usd == pytest.approx(0.0)
+
+
+def test_malformed_metered_cost_rows_are_unknown_not_crashes(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [{
+            "seen": now,
+            "actual": "not-a-number",
+            "estimated": 0,
+            "billing_mode": "metered",
+            "cost_status": "actual",
+        }],
+    )
+
+    summary = kb.read_daily_spend_ledger(
+        kb.SpendAdmissionConfig(cap_usd=1, timezone_name="UTC"),
+        now=now,
+        profile_homes=[home],
+    )
+
+    assert summary.ledger_readable is True
+    assert summary.unknown_cost_rows == 1
+    assert summary.known_metered_cost_usd == pytest.approx(0.0)
+
+
+def test_older_ledger_without_billing_columns_is_backward_compatible_fail_closed(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(
+        home,
+        [{"seen": now, "actual": 0, "estimated": 0}],
+        include_billing_columns=False,
+    )
+    cfg = kb.SpendAdmissionConfig(
+        cap_usd=1,
+        timezone_name="UTC",
+        unknown_cost_policy="hold",
+    )
+
+    summary = kb.read_daily_spend_ledger(cfg, now=now, profile_homes=[home])
+
+    assert summary.ledger_readable is True
+    assert summary.unknown_cost_rows == 1
+    assert summary.known_metered_cost_usd == pytest.approx(0.0)
+    assert summary.errors == ()
 
 
 def test_daily_spend_cap_holds_without_state_mutation(isolated_kanban_home):

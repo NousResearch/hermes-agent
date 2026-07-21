@@ -6114,6 +6114,7 @@ class SpendLedgerSummary:
     estimated_cost_usd: float = 0.0
     unknown_cost_rows: int = 0
     known_cost_rows: int = 0
+    included_cost_rows: int = 0
     profiles_read: int = 0
     ledgers_read: int = 0
     ledgers_unavailable: int = 0
@@ -6130,6 +6131,7 @@ class SpendLedgerSummary:
             "estimated_cost_usd": round(self.estimated_cost_usd, 8),
             "unknown_cost_rows": self.unknown_cost_rows,
             "known_cost_rows": self.known_cost_rows,
+            "included_cost_rows": self.included_cost_rows,
             "profiles_read": self.profiles_read,
             "ledgers_read": self.ledgers_read,
             "ledgers_unavailable": self.ledgers_unavailable,
@@ -7561,6 +7563,11 @@ def _installed_profile_homes_for_spend() -> list[Path]:
     return unique
 
 
+def _sqlite_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
 def read_daily_spend_ledger(
     config: SpendAdmissionConfig,
     *,
@@ -7576,7 +7583,7 @@ def read_daily_spend_ledger(
     start_ts, end_ts, tz_name = _day_bounds_for_timezone(config.timezone_name, now=now)
     homes = profile_homes if profile_homes is not None else _installed_profile_homes_for_spend()
     known = actual = estimated = 0.0
-    unknown_rows = known_rows = ledgers_read = unavailable = 0
+    unknown_rows = known_rows = included_rows = ledgers_read = unavailable = 0
     errors: list[str] = []
     for home in homes:
         db_path = Path(home) / "state.db"
@@ -7592,18 +7599,70 @@ def read_daily_spend_ledger(
                 unavailable += 1
                 errors.append(f"{db_path}:missing session_model_usage")
                 continue
+            usage_columns = _sqlite_table_columns(conn, "session_model_usage")
+            has_sessions = bool(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+                ).fetchone()
+            )
+            session_columns = _sqlite_table_columns(conn, "sessions") if has_sessions else set()
+
+            seen_terms: list[str] = []
+            if "last_seen" in usage_columns:
+                seen_terms.append("u.last_seen")
+            if has_sessions:
+                if "ended_at" in session_columns:
+                    seen_terms.append("s.ended_at")
+                if "started_at" in session_columns:
+                    seen_terms.append("s.started_at")
+            if not seen_terms:
+                unavailable += 1
+                errors.append(f"{db_path}:missing timestamp columns")
+                continue
+
+            seen_expr = (
+                seen_terms[0]
+                if len(seen_terms) == 1
+                else "COALESCE(" + ", ".join(seen_terms) + ")"
+            )
+            actual_expr = (
+                "u.actual_cost_usd" if "actual_cost_usd" in usage_columns else "NULL"
+            )
+            estimated_expr = (
+                "u.estimated_cost_usd"
+                if "estimated_cost_usd" in usage_columns
+                else "NULL"
+            )
+            billing_mode_expr = (
+                "u.billing_mode" if "billing_mode" in usage_columns else "NULL"
+            )
+            cost_status_expr = (
+                "u.cost_status" if "cost_status" in usage_columns else "NULL"
+            )
+            join_clause = "LEFT JOIN sessions s ON s.id = u.session_id" if has_sessions else ""
+            source_filter = ""
+            if has_sessions and "source" in session_columns:
+                source_filter = "AND COALESCE(s.source, '') NOT IN ('_health_probe')"
             ledgers_read += 1
             rows = conn.execute(
-                """SELECT u.actual_cost_usd, u.estimated_cost_usd,
-                          COALESCE(u.last_seen, s.ended_at, s.started_at) AS seen_at
+                f"""SELECT {actual_expr} AS actual_cost_usd,
+                          {estimated_expr} AS estimated_cost_usd,
+                          {billing_mode_expr} AS billing_mode,
+                          {cost_status_expr} AS cost_status,
+                          {seen_expr} AS seen_at
                    FROM session_model_usage u
-                   LEFT JOIN sessions s ON s.id = u.session_id
-                   WHERE COALESCE(u.last_seen, s.ended_at, s.started_at) >= ?
-                     AND COALESCE(u.last_seen, s.ended_at, s.started_at) < ?
-                     AND COALESCE(s.source, '') NOT IN ('_health_probe')""",
+                   {join_clause}
+                   WHERE {seen_expr} >= ?
+                     AND {seen_expr} < ?
+                     {source_filter}""",
                 (start_ts, end_ts),
             ).fetchall()
             for row in rows:
+                billing_mode = str(row["billing_mode"] or "").strip().lower()
+                cost_status = str(row["cost_status"] or "").strip().lower()
+                if billing_mode == "subscription_included" or cost_status == "included":
+                    included_rows += 1
+                    continue
                 try:
                     act = float(row["actual_cost_usd"] or 0.0)
                     est = float(row["estimated_cost_usd"] or 0.0)
@@ -7633,6 +7692,7 @@ def read_daily_spend_ledger(
         estimated_cost_usd=estimated,
         unknown_cost_rows=unknown_rows,
         known_cost_rows=known_rows,
+        included_cost_rows=included_rows,
         profiles_read=len(homes),
         ledgers_read=ledgers_read,
         ledgers_unavailable=unavailable,

@@ -233,6 +233,26 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
   return ["token", token];
 }
 
+type CommandAllowlistEntry = {
+  pattern: string;
+  kind: "manual" | "danger_category";
+};
+
+type CommandAllowlistResponse = {
+  patterns: string[];
+  entries: CommandAllowlistEntry[];
+  manual_count: number;
+  danger_category_count: number;
+};
+
+type CommandAllowlistTestResponse = {
+  command: string;
+  matched: boolean;
+  matched_pattern: string | null;
+  matched_kind: "manual" | "danger_category" | null;
+  blocked_by_shell_operator: boolean;
+};
+
 /**
  * Authenticated ``fetch`` for dashboard ``/api/...`` requests that aren't
  * plain JSON — file uploads (``FormData``), binary downloads (blobs), etc.
@@ -477,6 +497,55 @@ export const api = {
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getCommandAllowlist: (profile = getManagementProfile()) =>
+    fetchJSON<CommandAllowlistResponse>(
+      appendProfileParam("/api/config/command-allowlist", profile),
+    ),
+  testCommandAllowlist: (command: string, profile = getManagementProfile()) =>
+    fetchJSON<CommandAllowlistTestResponse>(
+      appendProfileParam(
+        `/api/config/command-allowlist/test?command=${encodeURIComponent(command)}`,
+        profile,
+      ),
+    ),
+  addCommandAllowlistEntry: (pattern: string, profile = getManagementProfile()) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; pattern: string; created: boolean }>(
+      appendProfileParam("/api/config/command-allowlist", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern, profile: profile || undefined }),
+      },
+    ),
+  updateCommandAllowlistEntry: (
+    old_pattern: string,
+    new_pattern: string,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; old_pattern: string; new_pattern: string }>(
+      appendProfileParam("/api/config/command-allowlist", profile),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_pattern, new_pattern, profile: profile || undefined }),
+      },
+    ),
+  deleteCommandAllowlistEntry: (pattern: string, profile = getManagementProfile()) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; pattern: string; removed_count: number }>(
+      appendProfileParam("/api/config/command-allowlist", profile),
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern, profile: profile || undefined }),
+      },
+    ),
+  clearCommandAllowlist: (profile = getManagementProfile()) =>
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; cleared_count: number }>(
+      appendProfileParam("/api/config/command-allowlist/clear", profile),
+      {
+        method: "POST",
+      },
+    ),
   getModelInfo: (profile = getManagementProfile()) =>
     fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
   getModelOptions: (

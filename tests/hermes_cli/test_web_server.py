@@ -4857,6 +4857,70 @@ class TestConfigRoundTrip:
             "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
             "was wiped when the frontend sent a partial agent dict."
 
+    def test_command_allowlist_write_is_scoped_to_requested_profile(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.config import save_config
+        from hermes_constants import get_hermes_home
+
+        save_config({"command_allowlist": ["default-only"]})
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True, exist_ok=True)
+        worker_config_path = worker_home / "config.yaml"
+        worker_config_path.write_text(
+            yaml.safe_dump({"command_allowlist": ["worker-only"]}, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        resp = self.client.post(
+            "/api/config/command-allowlist?profile=worker",
+            json={"pattern": "worker-added"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["created"] is True
+
+        default_cfg = yaml.safe_load((get_hermes_home() / "config.yaml").read_text(encoding="utf-8"))
+        worker_cfg = yaml.safe_load(worker_config_path.read_text(encoding="utf-8"))
+
+        assert default_cfg.get("command_allowlist") == ["default-only"]
+        assert worker_cfg.get("command_allowlist") == ["worker-only", "worker-added"]
+
+        get_resp = self.client.get("/api/config/command-allowlist?profile=worker")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["patterns"] == ["worker-only", "worker-added"]
+
+    def test_command_allowlist_tester_matches_runtime_contract(self):
+        from hermes_cli.config import save_config
+        import tools.approval as approval
+
+        save_config({"command_allowlist": ["docker ps *", "recursive delete"]})
+        approval._permanent_approved.clear()
+        approval.load_permanent_allowlist()
+
+        glob_resp = self.client.get(
+            "/api/config/command-allowlist/test?command=docker%20ps%20--format%20%7B%7B.Names%7D%7D"
+        )
+        assert glob_resp.status_code == 200
+        assert glob_resp.json()["matched"] is True
+        assert glob_resp.json()["matched_pattern"] == "docker ps *"
+        assert glob_resp.json()["matched_kind"] == "manual"
+        assert glob_resp.json()["blocked_by_shell_operator"] is False
+
+        danger_resp = self.client.get(
+            "/api/config/command-allowlist/test?command=rm%20-rf%20demo"
+        )
+        assert danger_resp.status_code == 200
+        assert danger_resp.json()["matched"] is True
+        assert danger_resp.json()["matched_pattern"] == "recursive delete"
+        assert danger_resp.json()["matched_kind"] == "danger_category"
+
+        shell_resp = self.client.get(
+            "/api/config/command-allowlist/test?command=docker%20ps%20%26%26%20whoami"
+        )
+        assert shell_resp.status_code == 200
+        assert shell_resp.json()["matched"] is False
+        assert shell_resp.json()["blocked_by_shell_operator"] is True
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()

@@ -94,6 +94,13 @@ from gateway.status import (
     read_runtime_status,
 )
 from utils import env_var_enabled
+from tools.approval import (
+    DANGEROUS_PATTERNS,
+    _command_matches_permanent_allowlist,
+    _has_allowlist_shell_operator,
+    detect_dangerous_command,
+    is_approved,
+)
 
 try:
     from fastapi import (
@@ -1287,6 +1294,22 @@ _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
 def _audio_extension_for_mime(mime_type: str) -> str:
     normalized = (mime_type or "").split(";", 1)[0].strip().lower()
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+
+class CommandAllowlistUpsert(BaseModel):
+    pattern: str
+    profile: Optional[str] = None
+
+
+class CommandAllowlistDelete(BaseModel):
+    pattern: str
+    profile: Optional[str] = None
+
+
+class CommandAllowlistReplace(BaseModel):
+    old_pattern: str
+    new_pattern: str
+    profile: Optional[str] = None
 
 
 class ModelAssignment(BaseModel):
@@ -6193,6 +6216,205 @@ async def get_schema(profile: Optional[str] = None):
     with _config_profile_scope(profile):
         fields = _schema_with_voice_provider_options()
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
+
+
+_DANGEROUS_APPROVAL_KEYS: set[str] = {
+    str(description).strip()
+    for _pattern, description in DANGEROUS_PATTERNS
+    if str(description).strip()
+}
+
+
+def _serialize_command_allowlist(raw_patterns: list[Any]) -> dict[str, Any]:
+    patterns = [str(p) for p in raw_patterns if str(p).strip()]
+    entries = [
+        {
+            "pattern": pattern,
+            "kind": "danger_category" if pattern in _DANGEROUS_APPROVAL_KEYS else "manual",
+        }
+        for pattern in patterns
+    ]
+    return {
+        "patterns": patterns,
+        "entries": entries,
+        "manual_count": sum(1 for entry in entries if entry["kind"] == "manual"),
+        "danger_category_count": sum(1 for entry in entries if entry["kind"] == "danger_category"),
+    }
+
+
+def _test_command_allowlist_match(command: str) -> dict[str, Any]:
+    candidate = (command or "").strip()
+    matched_pattern: Optional[str] = None
+    matched_kind: Optional[str] = None
+    blocked_by_shell_operator = _has_allowlist_shell_operator(candidate)
+
+    if candidate and not blocked_by_shell_operator:
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        patterns = [str(p) for p in raw_patterns if str(p).strip()]
+        if _command_matches_permanent_allowlist(candidate):
+            for pattern in patterns:
+                if candidate == pattern:
+                    matched_pattern = pattern
+                    matched_kind = "manual"
+                    break
+                if pattern not in _DANGEROUS_APPROVAL_KEYS and any(ch in pattern for ch in "*?["):
+                    import fnmatch
+                    if fnmatch.fnmatchcase(candidate, pattern):
+                        matched_pattern = pattern
+                        matched_kind = "manual"
+                        break
+        if matched_pattern is None:
+            is_dangerous, pattern_key, _description = detect_dangerous_command(candidate)
+            if is_dangerous and pattern_key and is_approved("", pattern_key):
+                matched_pattern = pattern_key
+                matched_kind = "danger_category"
+
+    return {
+        "command": candidate,
+        "matched": matched_pattern is not None,
+        "matched_pattern": matched_pattern,
+        "matched_kind": matched_kind,
+        "blocked_by_shell_operator": blocked_by_shell_operator,
+    }
+
+
+@app.get("/api/config/command-allowlist")
+async def get_command_allowlist(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        cfg = load_config() or {}
+        raw_patterns = cfg.get("command_allowlist", []) or []
+        if not isinstance(raw_patterns, list):
+            raw_patterns = []
+        return _serialize_command_allowlist(raw_patterns)
+
+
+@app.get("/api/config/command-allowlist/test")
+async def test_command_allowlist(command: str, profile: Optional[str] = None):
+    with _profile_scope(profile):
+        return _test_command_allowlist_match(command)
+
+
+@app.post("/api/config/command-allowlist")
+async def add_command_allowlist_entry(body: CommandAllowlistUpsert, profile: Optional[str] = None):
+    try:
+        pattern = body.pattern.strip()
+        if not pattern:
+            raise HTTPException(status_code=400, detail="Pattern cannot be empty")
+        with _profile_scope(body.profile or profile):
+            cfg = load_config() or {}
+            raw_patterns = cfg.get("command_allowlist", []) or []
+            if not isinstance(raw_patterns, list):
+                raw_patterns = []
+            patterns = [str(p) for p in raw_patterns if str(p).strip()]
+            if pattern in patterns:
+                return {
+                    "ok": True,
+                    "pattern": pattern,
+                    "created": False,
+                    **_serialize_command_allowlist(patterns),
+                }
+            patterns.append(pattern)
+            cfg["command_allowlist"] = patterns
+            save_config(cfg)
+            return {
+                "ok": True,
+                "pattern": pattern,
+                "created": True,
+                **_serialize_command_allowlist(patterns),
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/config/command-allowlist")
+async def delete_command_allowlist_entry(body: CommandAllowlistDelete, profile: Optional[str] = None):
+    try:
+        with _profile_scope(body.profile or profile):
+            cfg = load_config() or {}
+            raw_patterns = cfg.get("command_allowlist", []) or []
+            if not isinstance(raw_patterns, list):
+                raw_patterns = []
+            patterns = [str(p) for p in raw_patterns]
+            next_patterns = [p for p in patterns if p != body.pattern]
+            removed_count = len(patterns) - len(next_patterns)
+            if removed_count <= 0:
+                raise HTTPException(status_code=404, detail="Pattern not found in command_allowlist")
+            cfg["command_allowlist"] = next_patterns
+            save_config(cfg)
+            return {
+                "ok": True,
+                "pattern": body.pattern,
+                "removed_count": removed_count,
+                **_serialize_command_allowlist(next_patterns),
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("DELETE /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/config/command-allowlist")
+async def replace_command_allowlist_entry(body: CommandAllowlistReplace, profile: Optional[str] = None):
+    try:
+        old_pattern = body.old_pattern.strip()
+        new_pattern = body.new_pattern.strip()
+        if not old_pattern:
+            raise HTTPException(status_code=400, detail="Existing pattern cannot be empty")
+        if not new_pattern:
+            raise HTTPException(status_code=400, detail="Replacement pattern cannot be empty")
+
+        with _profile_scope(body.profile or profile):
+            cfg = load_config() or {}
+            raw_patterns = cfg.get("command_allowlist", []) or []
+            if not isinstance(raw_patterns, list):
+                raw_patterns = []
+            patterns = [str(p) for p in raw_patterns if str(p).strip()]
+
+            if old_pattern not in patterns:
+                raise HTTPException(status_code=404, detail="Pattern not found in command_allowlist")
+            if new_pattern != old_pattern and new_pattern in patterns:
+                raise HTTPException(status_code=409, detail="Replacement pattern already exists")
+
+            first_index = patterns.index(old_pattern)
+            next_patterns = [p for p in patterns if p != old_pattern]
+            next_patterns.insert(first_index, new_pattern)
+            cfg["command_allowlist"] = next_patterns
+            save_config(cfg)
+            return {
+                "ok": True,
+                "old_pattern": old_pattern,
+                "new_pattern": new_pattern,
+                **_serialize_command_allowlist(next_patterns),
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/config/command-allowlist failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/config/command-allowlist/clear")
+async def clear_command_allowlist(profile: Optional[str] = None):
+    try:
+        with _profile_scope(profile):
+            cfg = load_config() or {}
+            raw_patterns = cfg.get("command_allowlist", []) or []
+            if not isinstance(raw_patterns, list):
+                raw_patterns = []
+            cleared_count = len(raw_patterns)
+            cfg["command_allowlist"] = []
+            save_config(cfg)
+            return {"ok": True, "cleared_count": cleared_count, **_serialize_command_allowlist([])}
+    except Exception:
+        _log.exception("POST /api/config/command-allowlist/clear failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _EMPTY_MODEL_INFO: dict = {

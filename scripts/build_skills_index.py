@@ -251,6 +251,22 @@ def main():
               "Set GITHUB_TOKEN for better results.", file=sys.stderr)
 
     skills_sh_source = SkillsShSource(auth=auth)
+    # Known Well-Known skill endpoints to crawl explicitly.
+    # The WellKnownSkillSource.search("") returns nothing because
+    # it requires a URL-based query.  These are crawled separately.
+    WELL_KNOWN_ENDPOINTS = [
+        "https://hangzhouxiaozhu.github.io/hermes-sentinel",
+    ]
+    well_known_source = WellKnownSkillSource()
+    for endpoint in WELL_KNOWN_ENDPOINTS:
+        try:
+            results = well_known_source.search(endpoint, limit=5_000)
+            skills = [_meta_to_dict(m) for m in results]
+            all_skills.extend(skills)
+            print(f"  well-known ({endpoint}): {len(skills)} skills", flush=True)
+        except Exception as e:
+            print(f"  well-known ({endpoint}): error - {e}", file=sys.stderr)
+
     sources = {
         "official": OptionalSkillSource(),
         "well-known": WellKnownSkillSource(),

@@ -79,6 +79,7 @@ def _install_malformed_stream(agent, events, final_exc):
     client = MagicMock()
     client.messages.stream.return_value = _FakeAnthropicStream(events, final_exc)
     agent._anthropic_client = client
+    agent._create_request_anthropic_client = MagicMock(return_value=client)
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────
@@ -154,6 +155,25 @@ class TestAnthropicPartialStreamStubShape:
         assert response.stop_reason == "end_turn"
         transport = AnthropicTransport()
         assert transport.validate_response(response) is True
+
+    def test_content_filter_stub_preserves_shared_postprocessing(self, monkeypatch):
+        """Anthropic recovery must keep content-filter tagging and reset the
+        stale-stream circuit breaker just like the OpenAI-shaped stub."""
+        agent = _make_anthropic_agent()
+        agent._current_streamed_assistant_text = "partial answer"
+        agent._consecutive_stale_streams = 3
+        _install_malformed_stream(
+            agent,
+            [_text_delta_event("partial answer")],
+            RuntimeError("output new_sensitive (1027)"),
+        )
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response._content_filter_terminated is True
+        assert agent._consecutive_stale_streams == 0
 
     def test_old_openai_shaped_stub_would_fail_validation(self):
         """Guard documenting the bug: an OpenAI-shaped stub fails the

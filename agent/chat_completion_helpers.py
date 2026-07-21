@@ -3802,7 +3802,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     # turn cleanly instead of looping on an empty stub.
                     _anthropic_content = []
                     _anthropic_stop_reason = "end_turn"
-                return SimpleNamespace(
+                _stub = SimpleNamespace(
                     id=PARTIAL_STREAM_STUB_ID,
                     model=getattr(agent, "model", "unknown"),
                     content=_anthropic_content,
@@ -3810,10 +3810,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     usage=None,
                     _dropped_tool_names=_partial_names or None,
                 )
-            _stub_msg = SimpleNamespace(
-                role="assistant", content=_partial_text, tool_calls=None,
-                reasoning_content=None,
-            )
+            else:
+                _stub_msg = SimpleNamespace(
+                    role="assistant", content=_partial_text, tool_calls=None,
+                    reasoning_content=None,
+                )
+                _stub = SimpleNamespace(
+                    id=PARTIAL_STREAM_STUB_ID,
+                    model=getattr(agent, "model", "unknown"),
+                    choices=[SimpleNamespace(
+                        index=0, message=_stub_msg, finish_reason=_stub_finish_reason,
+                    )],
+                    usage=None,
+                    _dropped_tool_names=_partial_names or None,
+                )
             # Detect provider output-layer content filtering (e.g. MiniMax
             # "output new_sensitive (1027)", Azure/OpenAI content_filter,
             # Anthropic safety refusal).  The raw error is about to be
@@ -3837,15 +3847,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 )
             except Exception:
                 _content_filter_terminated = False
-            _stub = SimpleNamespace(
-                id=PARTIAL_STREAM_STUB_ID,
-                model=getattr(agent, "model", "unknown"),
-                choices=[SimpleNamespace(
-                    index=0, message=_stub_msg, finish_reason=_stub_finish_reason,
-                )],
-                usage=None,
-                _dropped_tool_names=_partial_names or None,
-            )
             if _content_filter_terminated:
                 _stub._content_filter_terminated = True
             # Partial-stream stub: chunks WERE received (deltas fired), so

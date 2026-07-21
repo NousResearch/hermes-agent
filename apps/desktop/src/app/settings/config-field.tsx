@@ -13,6 +13,7 @@ import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FRE
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow } from './primitives'
+import { SearchableSelect } from './searchable-select'
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -92,6 +93,22 @@ export function ConfigField({
   }
 
   const selectOptions = enumOptions ?? (schema.type === 'select' ? (schema.options ?? []).map(String) : undefined)
+
+  // Large closed-world lists (e.g. ~590 IANA timezones) get a searchable
+  // Popover + cmdk combobox instead of a closed Select dropdown.  The schema
+  // opt-in via `searchable: true` keeps this deterministic — no field
+  // accidentally triggers based on dynamic option count.
+  if (selectOptions && schema.searchable) {
+    return row(
+      <SearchableSelect
+        emptyMessage={c.noResults}
+        onChange={next => onChange(next)}
+        options={selectOptions.filter(o => o !== '')}
+        placeholder={c.searchPlaceholder}
+        value={String(value ?? '')}
+      />
+    )
+  }
 
   // Voice/model name fields are open-world (custom voice IDs, cloned voices,
   // brand-new model names) — render a free-input combobox where the known

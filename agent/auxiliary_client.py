@@ -2359,6 +2359,9 @@ def _relay_auxiliary_call(callback):
         })
         try:
             return callback(*args, **kwargs)
+        except BaseException:
+            _fail_relay_auxiliary_call()
+            raise
         finally:
             _RELAY_AUX_CALL_CONTEXT.reset(token)
 
@@ -2381,6 +2384,9 @@ def _relay_auxiliary_call_async(callback):
         })
         try:
             return await callback(*args, **kwargs)
+        except BaseException:
+            _fail_relay_auxiliary_call()
+            raise
         finally:
             _RELAY_AUX_CALL_CONTEXT.reset(token)
 
@@ -7033,8 +7039,8 @@ def _validate_llm_response(
     return response
 
 
-def _complete_relay_auxiliary_call() -> None:
-    """Close one auxiliary logical call only after Hermes accepts its response."""
+def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
+    """Close one auxiliary logical call after acceptance or terminal failure."""
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
@@ -7042,8 +7048,19 @@ def _complete_relay_auxiliary_call() -> None:
 
     relay_llm.complete_logical_call(
         str(context.get("request_id") or ""),
-        outcome="success",
+        outcome=outcome,
     )
+
+
+def _fail_relay_auxiliary_call() -> None:
+    """Close a terminally failed call without replacing its original error."""
+    try:
+        _complete_relay_auxiliary_call(outcome="failed")
+    except Exception:
+        logger.warning(
+            "Relay auxiliary failure finalization failed",
+            exc_info=True,
+        )
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:

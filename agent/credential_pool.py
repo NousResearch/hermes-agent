@@ -325,26 +325,33 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     return None
 
 
+# Hard ceiling on how long a credential can be frozen due to a provider-
+# reported retry delay, regardless of which code path derives reset_at.
+# Shared by _extract_retry_delay_seconds() and _normalize_error_context().
+_MAX_DELAY = 3600.0
+
+
 def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if not message:
         return None
     delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
     if delay_match:
         value = float(delay_match.group(1))
-        return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+        raw = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+        return min(raw, _MAX_DELAY)
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
-        return float(sec_match.group(1))
+        return min(float(sec_match.group(1)), _MAX_DELAY)
     # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
     hr_min_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", message, re.IGNORECASE)
     if hr_min_match:
-        return int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60
+        return min(int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60, _MAX_DELAY)
     hr_only_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\b", message, re.IGNORECASE)
     if hr_only_match:
-        return int(hr_only_match.group(1)) * 3600
+        return min(int(hr_only_match.group(1)) * 3600, _MAX_DELAY)
     min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
     if min_only_match:
-        return int(min_only_match.group(1)) * 60
+        return min(int(min_only_match.group(1)) * 60, _MAX_DELAY)
     return None
 
 
@@ -369,7 +376,13 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
         if retry_delay_seconds is not None:
             parsed_reset_at = time.time() + retry_delay_seconds
     if parsed_reset_at is not None:
-        normalized["reset_at"] = parsed_reset_at
+        # Cap regardless of source: a provider-supplied reset_at/resets_at/
+        # retry_until (e.g. from agent_runtime_helpers.extract_api_error_context,
+        # which parses retry_after/Retry-After/quotaResetDelay/"resets in"
+        # without any bound) can be arbitrarily far in the future. This is
+        # the single chokepoint that becomes last_error_reset_at, so capping
+        # here covers every upstream source uniformly.
+        normalized["reset_at"] = min(parsed_reset_at, time.time() + _MAX_DELAY)
     return normalized
 
 

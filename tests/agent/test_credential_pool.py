@@ -24,6 +24,66 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_extract_retry_delay_seconds_caps_huge_retry_after():
+    from agent.credential_pool import _extract_retry_delay_seconds, _MAX_DELAY
+
+    assert _extract_retry_delay_seconds("retry after 999999999 seconds") == _MAX_DELAY
+
+
+def test_extract_retry_delay_seconds_caps_huge_quota_reset_delay():
+    from agent.credential_pool import _extract_retry_delay_seconds, _MAX_DELAY
+
+    assert _extract_retry_delay_seconds("quotaResetDelay: 99999999s") == _MAX_DELAY
+
+
+def test_extract_retry_delay_seconds_passes_through_small_values():
+    from agent.credential_pool import _extract_retry_delay_seconds
+
+    assert _extract_retry_delay_seconds("retry after 30 seconds") == 30.0
+
+
+def test_normalize_error_context_caps_huge_provider_reset_at(monkeypatch):
+    """A provider-supplied absolute reset_at (as agent_runtime_helpers.extract_api_error_context
+    would set from an uncapped retry_after/Retry-After/quotaResetDelay/"resets in" value) must
+    still be capped at _MAX_DELAY -- this is the bypass path flagged in review: reset_at is
+    already present so _extract_retry_delay_seconds() is never called."""
+    from agent.credential_pool import _normalize_error_context, _MAX_DELAY
+
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: 1_000.0)
+    huge_reset_at = 1_000.0 + 999_999_999  # e.g. from extract_api_error_context's retry_after path
+    normalized = _normalize_error_context({"reset_at": huge_reset_at, "message": "rate limited"})
+    assert normalized["reset_at"] == 1_000.0 + _MAX_DELAY
+
+
+def test_normalize_error_context_caps_huge_resets_in_message(monkeypatch):
+    """A message-derived reset_at (e.g. "Resets in 6hr 29min" -> 23340s) is capped here too."""
+    from agent.credential_pool import _normalize_error_context, _MAX_DELAY
+
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: 1_000.0)
+    normalized = _normalize_error_context(
+        {"message": "Weekly usage limit reached. Resets in 6hr 29min."}
+    )
+    assert normalized["reset_at"] == 1_000.0 + _MAX_DELAY
+
+
+def test_normalize_error_context_preserves_reset_at_within_cap(monkeypatch):
+    from agent.credential_pool import _normalize_error_context, _MAX_DELAY
+
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: 1_000.0)
+    normalized = _normalize_error_context({"reset_at": 1_000.0 + 1_800})
+    assert normalized["reset_at"] == 1_000.0 + 1_800
+
+
+def test_normalize_error_context_caps_huge_epoch_ms_reset_at(monkeypatch):
+    """x-ratelimit-reset style header value: huge epoch-milliseconds string far in the future."""
+    from agent.credential_pool import _normalize_error_context, _MAX_DELAY
+
+    monkeypatch.setattr("agent.credential_pool.time.time", lambda: 1_000.0)
+    huge_epoch_ms = str(int((1_000.0 + 999_999_999) * 1000))
+    normalized = _normalize_error_context({"reset_at": huge_epoch_ms})
+    assert normalized["reset_at"] == 1_000.0 + _MAX_DELAY
+
+
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

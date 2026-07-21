@@ -1402,9 +1402,15 @@ KANBAN_LIST_SCHEMA = {
             },
             "status": {
                 "type": "string",
+                # Must stay in sync with kb.VALID_STATUSES — the CLI's
+                # --status accepts the full set, so a strict
+                # function-calling provider must be able to emit every
+                # lane here too (e.g. 'review', 'scheduled'). The
+                # invariant is pinned by a test in
+                # tests/tools/test_kanban_tools.py.
                 "enum": [
-                    "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "triage", "todo", "scheduled", "ready", "running",
+                    "blocked", "review", "done", "archived",
                 ],
                 "description": "Optional task status filter.",
             },

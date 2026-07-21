@@ -236,6 +236,49 @@ def test_list_rejects_invalid_status(monkeypatch, worker_env):
     assert "status must be one of" in json.loads(out).get("error", "")
 
 
+def test_list_status_enum_matches_valid_statuses():
+    """The kanban_list status enum surfaced to the LLM must cover the full
+    set of statuses the kernel (and the CLI's --status) accepts. A strict
+    function-calling provider can only emit enum values, so any lane
+    missing here (previously 'review' and 'scheduled') is unreachable via
+    the tool even though list_tasks would accept it. This invariant fails
+    CI if a new lane is added to kb.VALID_STATUSES without updating the
+    schema.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools.kanban_tools import KANBAN_LIST_SCHEMA
+
+    enum = KANBAN_LIST_SCHEMA["parameters"]["properties"]["status"]["enum"]
+    assert set(enum) == kb.VALID_STATUSES, (
+        f"status enum {sorted(enum)} drifted from "
+        f"VALID_STATUSES {sorted(kb.VALID_STATUSES)}"
+    )
+    # No duplicates slipped in.
+    assert len(enum) == len(set(enum)), f"duplicate status in enum: {enum}"
+
+
+def test_list_filters_review_status(monkeypatch, worker_env):
+    """A task in the 'review' lane is discoverable via the tool's status
+    filter. Regression: 'review' was missing from the schema enum, so
+    strict providers could never query this lane."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="awaiting review", assignee="factory")
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_list({"status": "review"})
+    d = json.loads(out)
+    ids = [t["id"] for t in d["tasks"]]
+    assert tid in ids
+    assert all(t["status"] == "review" for t in d["tasks"])
+
+
 def test_list_rejects_bad_limit(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt

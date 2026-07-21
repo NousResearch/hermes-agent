@@ -114,7 +114,7 @@ function AreasDemo({ cols, state, t }: { cols: number; state: GridTestState; t: 
 
   const rowSpanFirst = state.rows >= 2 ? 2 : 1
   const colSpanSecond = state.cols >= 2 ? 2 : 1
-  const extraSlots = (rowSpanFirst - 1) + (colSpanSecond - 1)
+  const extraSlots = rowSpanFirst - 1 + (colSpanSecond - 1)
   const itemCount = Math.max(1, state.rows * state.cols - extraSlots)
 
   const cursorInside = (cell: GridAreaCell) =>
@@ -126,7 +126,9 @@ function AreasDemo({ cols, state, t }: { cols: number; state: GridTestState; t: 
   const widgets: GridAreaWidget[] = Array.from({ length: itemCount }, (_, idx) => ({
     colSpan: idx === 1 ? colSpanSecond : 1,
     id: `area-c${idx + 1}`,
-    render: (cell: GridAreaCell) => <AreaDemoCell active={cursorInside(cell)} cell={cell} label={`c${idx + 1}`} t={t} />,
+    render: (cell: GridAreaCell) => (
+      <AreaDemoCell active={cursorInside(cell)} cell={cell} label={`c${idx + 1}`} t={t} />
+    ),
     rowSpan: idx === 0 ? rowSpanFirst : 1
   }))
 

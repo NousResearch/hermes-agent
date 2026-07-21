@@ -46,8 +46,7 @@ export function parseColor(input: string): Rgb | null {
   return null
 }
 
-export const toHex = (rgb: Rgb): string =>
-  '#' + rgb.map(c => clampChannel(c).toString(16).padStart(2, '0')).join('')
+export const toHex = (rgb: Rgb): string => '#' + rgb.map(c => clampChannel(c).toString(16).padStart(2, '0')).join('')
 
 /** sRGB lerp `a → b` by `t` in [0,1]. Unparseable inputs return `a` unchanged. */
 export function mix(a: string, b: string, t: number): string {
@@ -71,7 +70,9 @@ function channelLuminance(value: number): number {
 export function relativeLuminance(color: string): null | number {
   const rgb = parseColor(color)
 
-  return rgb ? 0.2126 * channelLuminance(rgb[0]) + 0.7152 * channelLuminance(rgb[1]) + 0.0722 * channelLuminance(rgb[2]) : null
+  return rgb
+    ? 0.2126 * channelLuminance(rgb[0]) + 0.7152 * channelLuminance(rgb[1]) + 0.0722 * channelLuminance(rgb[2])
+    : null
 }
 
 /** WCAG contrast ratio between two colors (1–21). Null when unparseable. */

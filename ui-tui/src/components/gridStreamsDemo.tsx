@@ -90,12 +90,13 @@ const sparkRows = (history: number[], width: number, rows: number): string[] => 
 
 // ── stream panels ───────────────────────────────────────────────────────────
 
-const TOKEN_WORDS =
-  (`Hermes streams tokens into the promoted cell while the grid reshapes around it. ` +
-    `Cells are keyed by id, so promotion never resets a panel — history, cursors and ` +
-    `tickers all survive the relayout. Row and column tracks re-solve to integer ` +
-    `terminal cells on every change, spans bridge the gaps they cross, and dense ` +
-    `auto-placement backfills the holes the promoted panel leaves behind. `).split(' ')
+const TOKEN_WORDS = (
+  `Hermes streams tokens into the promoted cell while the grid reshapes around it. ` +
+  `Cells are keyed by id, so promotion never resets a panel — history, cursors and ` +
+  `tickers all survive the relayout. Row and column tracks re-solve to integer ` +
+  `terminal cells on every change, spans bridge the gaps they cross, and dense ` +
+  `auto-placement backfills the holes the promoted panel leaves behind. `
+).split(' ')
 
 function TokenStream({ height, t, width }: { height: number; t: Theme; width: number }) {
   const tick = useTick(90)

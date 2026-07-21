@@ -9,7 +9,11 @@ describe('ShimmerRows leniency (agent-authored calls)', () => {
     const { createElement } = await import('react')
 
     const { screen, height } = renderToScreen(
-      createElement(ShimmerRows, { rows: 3, width: 20, t: { color: { completionBg: '#1a1a2e', label: '#DAA520', muted: '#B8860B' } } }),
+      createElement(ShimmerRows, {
+        rows: 3,
+        width: 20,
+        t: { color: { completionBg: '#1a1a2e', label: '#DAA520', muted: '#B8860B' } }
+      }),
       30
     )
 

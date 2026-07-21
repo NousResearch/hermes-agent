@@ -580,8 +580,7 @@ export function deriveTones(seeds: {
     statusFg: grayOf(mix(text, bg, isLight ? 0.3 : 0.24)),
     surface,
     activeRow: mix(surface, accent, 0.25),
-    selection:
-      isLight && seeds.shellDollar ? mix(bg, seeds.shellDollar, 0.2) : mix(surface, accent, 0.28),
+    selection: isLight && seeds.shellDollar ? mix(bg, seeds.shellDollar, 0.2) : mix(surface, accent, 0.28),
     border: mix(accent, bg, 0.25)
   }
 }

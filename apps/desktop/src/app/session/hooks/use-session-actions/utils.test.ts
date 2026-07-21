@@ -327,6 +327,57 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  // Issue #67603: the gateway persists model-switch markers as role=user
+  // (tui_gateway/server.py), so the authoritative transcript carries one more
+  // user row than the live view. Naive role-ordinal pairing then misses the
+  // committed copy of the optimistic turn and appends it again at the end —
+  // the duplicated user bubble at the bottom of the chat.
+  it('does not duplicate the optimistic turn when a stored [System:] marker shifts user ordinals', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg(
+        '3-marker-stored',
+        'user',
+        '[System: The active model for this chat has changed to k3 via provider kimi. ' +
+          'From this point forward, use this runtime metadata when answering questions about what model/provider is active.]'
+      ),
+      msg('4-user-stored', 'user', 'new question'),
+      msg('5-assistant-stored', 'assistant', 'complete answer')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question')
+    ]
+
+    // Server projection lags: marker is persisted, the new turn is not.
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-marker-stored', 'user', '[System: The active model for this chat has changed to k3.]')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-marker-stored',
+      'user-optimistic'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

@@ -234,7 +234,17 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * Authoritative rows use different ids, so match by role ordinal. A matching
  * user row is considered committed only when its visible text also matches;
  * any authoritative assistant at the same ordinal supersedes the local stream.
+ *
+ * Gateway bookkeeping markers (e.g. the model-switch notice written by
+ * tui_gateway/server.py) are persisted as role=user but are not user turns.
+ * They must not take part in ordinal pairing on either side: a stored marker
+ * between two real user turns shifts every later user ordinal, the optimistic
+ * row then misses its committed copy and is appended a second time at the end
+ * of the transcript — the duplicated user bubble of #67603.
  */
+const isGatewaySystemMarker = (message: ChatMessage): boolean =>
+  message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -247,6 +257,10 @@ export function preserveLocalPendingTurnMessages(
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
   for (const message of nextMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
@@ -257,6 +271,10 @@ export function preserveLocalPendingTurnMessages(
   const preserved: ChatMessage[] = []
 
   for (const message of previousMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
 

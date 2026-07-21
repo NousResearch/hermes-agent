@@ -4203,6 +4203,14 @@ class SessionDB:
             json.dumps(codex_message_items)
             if codex_message_items else None
         )
+        # tool_calls may arrive as a Python list (from the live agent) or
+        # as a JSON string (from import/export). Parse first to avoid
+        # double-encoding.
+        if isinstance(tool_calls, str):
+            try:
+                tool_calls = json.loads(tool_calls)
+            except (json.JSONDecodeError, TypeError):
+                tool_calls = []
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -4311,6 +4319,15 @@ class SessionDB:
             codex_message_items_json = (
                 json.dumps(codex_message_items) if codex_message_items else None
             )
+            # tool_calls may arrive as a Python list (from the live agent)
+            # or as a JSON string (from import_sessions / export_session,
+            # which store it as TEXT). json.dumps on an already-serialized
+            # string double-encodes it, so parse first.
+            if isinstance(tool_calls, str):
+                try:
+                    tool_calls = json.loads(tool_calls)
+                except (json.JSONDecodeError, TypeError):
+                    tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).

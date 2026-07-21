@@ -39,6 +39,7 @@ import time
 import uuid
 import textwrap
 from collections import deque
+from dataclasses import dataclass, field
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,6 +47,18 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+
+
+@dataclass
+class _PasteExpansionResult:
+    text: str
+    expanded_count: int = 0
+    unresolved_refs: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    cycle_paths: list[str] = field(default_factory=list)
+    depth_exceeded: bool = False
 
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
@@ -5727,24 +5740,102 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
         return "\n".join(preview_lines)
 
+    def _expand_paste_references_result(self, text: str | None, max_depth: int = 10) -> _PasteExpansionResult:
+        """Recursively expand pasted-text placeholders and report unresolved refs."""
+        current = text or ""
+        if not isinstance(text, str) or "[Pasted text #" not in current:
+            return _PasteExpansionResult(text=current)
+
+        expanded_count = 0
+        errors: list[str] = []
+        cycle_paths: list[str] = []
+        depth_exceeded = False
+
+        def _expand_text(value: str, depth: int, active_paths: set[Path]) -> str:
+            nonlocal expanded_count, depth_exceeded
+            if "[Pasted text #" not in value:
+                return value
+            if depth >= max_depth:
+                if _PASTE_REF_RE.search(value):
+                    depth_exceeded = True
+                return value
+
+            def _expand_ref(match: re.Match[str]) -> str:
+                nonlocal expanded_count
+                raw_path = match.group(1)
+                try:
+                    path = Path(raw_path).expanduser().resolve()
+                except (OSError, RuntimeError) as exc:
+                    errors.append(f"{raw_path}: {exc}")
+                    return match.group(0)
+
+                if path in active_paths:
+                    cycle_paths.append(str(path))
+                    return match.group(0)
+
+                try:
+                    paste_text = path.read_text(encoding="utf-8")
+                except (OSError, IOError) as exc:
+                    logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
+                    errors.append(f"{path}: {exc}")
+                    return match.group(0)
+
+                active_paths.add(path)
+                expanded_count += 1
+                try:
+                    return _expand_text(paste_text, depth + 1, active_paths)
+                finally:
+                    active_paths.remove(path)
+
+            return _PASTE_REF_RE.sub(_expand_ref, value)
+
+        expanded = _expand_text(current, 0, set())
+        unresolved_refs = [match.group(0) for match in _PASTE_REF_RE.finditer(expanded)]
+        return _PasteExpansionResult(
+            text=expanded,
+            expanded_count=expanded_count,
+            unresolved_refs=unresolved_refs,
+            errors=errors,
+            cycle_paths=cycle_paths,
+            depth_exceeded=depth_exceeded,
+        )
+
     def _expand_paste_references(self, text: str | None) -> str:
         """Expand [Pasted text #N -> file] placeholders into file contents."""
-        if not isinstance(text, str) or "[Pasted text #" not in text:
-            return text or ""
-        paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+        return self._expand_paste_references_result(text).text
 
-        def _expand_ref(match):
-            path = Path(match.group(1))
-            # Use try/except instead of path.exists() to avoid TOCTOU race:
-            # the paste file may be deleted between check and read, causing
-            # the input to be silently dropped (#17666).
-            try:
-                return path.read_text(encoding="utf-8")
-            except (OSError, IOError):
-                logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
-                return match.group(0)
+    def _print_paste_expansion_error(self, result: _PasteExpansionResult) -> None:
+        """Tell the user paste expansion failed and the message was not submitted."""
+        _cprint(f"\033[31mPaste expansion failed; message was not submitted.{_RST}")
+        if result.unresolved_refs:
+            _cprint(f"{_DIM}Unresolved paste references: {len(result.unresolved_refs)}{_RST}")
+            for ref in result.unresolved_refs[:5]:
+                _cprint(f"{_DIM}- {ref}{_RST}")
+            if len(result.unresolved_refs) > 5:
+                _cprint(f"{_DIM}- ... {len(result.unresolved_refs) - 5} more{_RST}")
+        if result.cycle_paths:
+            _cprint(f"{_DIM}Paste reference cycle detected: {', '.join(result.cycle_paths[:5])}{_RST}")
+        if result.errors:
+            _cprint(f"{_DIM}Paste read errors: {len(result.errors)}{_RST}")
+            for error in result.errors[:5]:
+                _cprint(f"{_DIM}- {error}{_RST}")
+        if result.depth_exceeded:
+            _cprint(f"{_DIM}Maximum paste expansion depth exceeded.{_RST}")
 
-        return paste_ref_re.sub(_expand_ref, text)
+    def _expand_user_input_pastes_or_report(self, user_input: str) -> tuple[bool, str]:
+        """Expand paste refs for submission, blocking unresolved partial context."""
+        if not isinstance(user_input, str) or "[Pasted text #" not in user_input:
+            return True, user_input
+        expansion = self._expand_paste_references_result(user_input)
+        if (
+            expansion.unresolved_refs
+            or expansion.errors
+            or expansion.cycle_paths
+            or expansion.depth_exceeded
+        ):
+            self._print_paste_expansion_error(expansion)
+            return False, user_input
+        return True, expansion.text
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
@@ -15193,11 +15284,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         else:
                             continue
                     
-                    # Expand paste references back to full content
-                    _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-                    paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
-                    if paste_refs:
-                        user_input = self._expand_paste_references(user_input)
+                    # Expand paste references back to full content before the model sees them.
+                    # This is recursive and fail-loud: partial paste context must never be submitted.
+                    if isinstance(user_input, str) and "[Pasted text #" in user_input:
+                        ok, user_input = self._expand_user_input_pastes_or_report(user_input)
+                        if not ok:
+                            continue
                     print()
                     self._print_user_message_preview(user_input)
                     

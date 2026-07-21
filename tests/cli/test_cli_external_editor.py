@@ -80,6 +80,110 @@ def test_expand_paste_references_replaces_placeholder_with_file_contents(tmp_pat
     assert expanded == "before line one\nline two after"
 
 
+def test_expand_paste_references_recursively_expands_nested_placeholders(tmp_path):
+    cli_obj = _make_cli()
+    paste_1 = tmp_path / "paste_1.txt"
+    paste_2 = tmp_path / "paste_2.txt"
+    paste_3 = tmp_path / "paste_3.txt"
+
+    paste_1.write_text("alpha", encoding="utf-8")
+    paste_2.write_text(f"before [Pasted text #1: 1 lines → {paste_1}] after", encoding="utf-8")
+    paste_3.write_text(f"outer [Pasted text #2: 1 lines → {paste_2}] done", encoding="utf-8")
+
+    text = f"start [Pasted text #3: 1 lines → {paste_3}] end"
+
+    assert cli_obj._expand_paste_references(text) == "start outer before alpha after done end"
+
+
+def test_expand_paste_references_expands_multiple_placeholders(tmp_path):
+    cli_obj = _make_cli()
+    paste_1 = tmp_path / "paste_1.txt"
+    paste_2 = tmp_path / "paste_2.txt"
+    paste_1.write_text("alpha", encoding="utf-8")
+    paste_2.write_text("beta", encoding="utf-8")
+
+    text = f"A [Pasted text #1: 1 lines → {paste_1}] B [Pasted text #2: 1 lines → {paste_2}] C"
+
+    assert cli_obj._expand_paste_references(text) == "A alpha B beta C"
+
+
+def test_expand_paste_references_allows_duplicate_independent_placeholders(tmp_path):
+    cli_obj = _make_cli()
+    paste_file = tmp_path / "paste.txt"
+    paste_file.write_text("alpha", encoding="utf-8")
+
+    text = f"A [Pasted text #1: 1 lines → {paste_file}] B [Pasted text #2: 1 lines → {paste_file}] C"
+
+    assert cli_obj._expand_paste_references(text) == "A alpha B alpha C"
+
+
+def test_expand_paste_references_result_reports_missing_file(tmp_path):
+    cli_obj = _make_cli()
+    missing = tmp_path / "missing.txt"
+    text = f"before [Pasted text #1: 1 lines → {missing}] after"
+
+    result = cli_obj._expand_paste_references_result(text)
+
+    assert result.text == text
+    assert result.unresolved_refs == [f"[Pasted text #1: 1 lines → {missing}]"]
+    assert result.errors
+
+
+def test_expand_paste_references_result_reports_cycle(tmp_path):
+    cli_obj = _make_cli()
+    paste_file = tmp_path / "paste.txt"
+    paste_file.write_text(f"loop [Pasted text #1: 1 lines → {paste_file}]", encoding="utf-8")
+
+    result = cli_obj._expand_paste_references_result(f"start [Pasted text #1: 1 lines → {paste_file}]")
+
+    assert result.unresolved_refs
+    assert str(paste_file.resolve()) in result.cycle_paths
+
+
+def test_expand_paste_references_result_reports_depth_limit(tmp_path):
+    cli_obj = _make_cli()
+    paste_1 = tmp_path / "paste_1.txt"
+    paste_2 = tmp_path / "paste_2.txt"
+    paste_1.write_text(f"[Pasted text #2: 1 lines → {paste_2}]", encoding="utf-8")
+    paste_2.write_text("final", encoding="utf-8")
+
+    result = cli_obj._expand_paste_references_result(
+        f"[Pasted text #1: 1 lines → {paste_1}]",
+        max_depth=1,
+    )
+
+    assert result.unresolved_refs
+    assert result.depth_exceeded is True
+
+
+def test_expand_user_input_pastes_or_report_blocks_unresolved_refs(tmp_path):
+    cli_obj = _make_cli()
+    missing = tmp_path / "missing.txt"
+    text = f"[Pasted text #1: 1 lines → {missing}]"
+
+    with patch("cli._cprint") as mock_cprint:
+        ok, returned = cli_obj._expand_user_input_pastes_or_report(text)
+
+    assert ok is False
+    assert returned == text
+    rendered = "\n".join(str(call.args[0]) for call in mock_cprint.call_args_list if call.args)
+    assert "Paste expansion failed" in rendered
+    assert "message was not submitted" in rendered
+    assert "Unresolved paste references" in rendered
+
+
+def test_expand_user_input_pastes_or_report_returns_expanded_text(tmp_path):
+    cli_obj = _make_cli()
+    paste_file = tmp_path / "paste.txt"
+    paste_file.write_text("alpha", encoding="utf-8")
+    text = f"before [Pasted text #1: 1 lines → {paste_file}] after"
+
+    ok, returned = cli_obj._expand_user_input_pastes_or_report(text)
+
+    assert ok is True
+    assert returned == "before alpha after"
+
+
 def test_open_external_editor_expands_paste_placeholders_before_open(tmp_path):
     cli_obj = _make_cli()
     paste_file = tmp_path / "paste.txt"

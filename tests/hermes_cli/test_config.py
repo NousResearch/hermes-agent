@@ -119,6 +119,11 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_paste_collapse_defaults_allow_medium_pastes(self):
+        assert DEFAULT_CONFIG["paste_collapse_threshold"] == 10
+        assert DEFAULT_CONFIG["paste_collapse_threshold_fallback"] == 10
+        assert DEFAULT_CONFIG["paste_collapse_char_threshold"] == 6000
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

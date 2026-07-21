@@ -8298,14 +8298,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             dest_chat_type = "dm"
             dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
 
+        # Discord exposes each thread as its own channel. Its inbound adapter
+        # therefore uses the thread ID for both ``chat_id`` and ``thread_id``;
+        # retain the home channel only as the parent. Match that source shape
+        # here so the handoff binding is reused by later thread messages.
+        dest_chat_id = home_chat_id
+        dest_parent_chat_id = None
+        if platform == Platform.DISCORD and effective_thread_id:
+            dest_chat_id = effective_thread_id
+            dest_parent_chat_id = home_chat_id
+
         dest_source = SessionSource(
             platform=platform,
-            chat_id=home_chat_id,
+            chat_id=dest_chat_id,
             chat_name=home.name,
             chat_type=dest_chat_type,
             user_id=dest_user_id,
             user_name="Handoff",
             thread_id=effective_thread_id,
+            parent_chat_id=dest_parent_chat_id,
         )
 
         # Compute the gateway's session_key for that destination using the

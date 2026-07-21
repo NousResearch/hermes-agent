@@ -850,6 +850,51 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
 
 @pytest.mark.asyncio
+async def test_handoff_to_discord_thread_uses_discord_inbound_thread_lane():
+    """A Discord handoff must bind the same session key as a thread reply."""
+    runner = _make_runner()
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.config.platforms[Platform.DISCORD].home_channel = HomeChannel(
+        platform=Platform.DISCORD,
+        chat_id="parent-channel",
+        name="Discord home",
+    )
+    adapter = MagicMock()
+    adapter.create_handoff_thread = AsyncMock(return_value="thread-channel")
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+    runner.adapters = {Platform.DISCORD: adapter}
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["source"] = event.source
+        return "handoff ok"
+
+    runner._handle_message = AsyncMock(side_effect=fake_handle_message)
+
+    await runner._process_handoff({
+        "id": "cli-session",
+        "title": "CLI work",
+        "handoff_platform": "discord",
+    })
+
+    inbound_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-channel",
+        chat_type="thread",
+        user_id="a-real-user",
+        thread_id="thread-channel",
+        parent_chat_id="parent-channel",
+    )
+    expected_key = build_session_key(inbound_source)
+    runner.session_store.switch_session.assert_called_once_with(expected_key, "cli-session")
+    assert captured["source"].chat_id == "thread-channel"
+    assert captured["source"].thread_id == "thread-channel"
+    assert captured["source"].parent_chat_id == "parent-channel"
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 

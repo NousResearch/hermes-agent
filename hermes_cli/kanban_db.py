@@ -1286,6 +1286,15 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+# Max ``<db>.corrupt.<hash>.bak`` backups kept per DB basename (#68336). Content
+# addressing dedups repeated quarantines of the *same* corrupt bytes, but a live
+# external writer that keeps committing into an already-corrupt DB rotates the
+# sha256 on every poll, so each open makes a fresh full-size backup + sidecars —
+# unbounded (467 backups / ~1.9 GB in 8h reported). Cap the lineage: keep the
+# newest N, prune older ones at backup time. Backups of the same corrupt DB are
+# near-duplicates; retaining hundreds has no forensic value.
+_CORRUPT_BACKUP_RETENTION = 5
+
 # Bounded acquire for the cross-process init lock (#36644). The original bare
 # blocking flock had no timeout, so a wedged holder blocked the dispatcher's
 # next-tick connect forever. We retry a non-blocking acquire up to this
@@ -1618,7 +1627,58 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
             shutil.copy2(sidecar, sidecar_backup)
         except OSError:
             pass
+    _prune_corrupt_backups(parent, base_name, keep=candidate)
     return candidate
+
+
+def _prune_corrupt_backups(parent: Path, base_name: str, *, keep: Path) -> None:
+    """Bound ``<base_name>.corrupt.<hash>.bak`` accumulation under ``parent``.
+
+    Keeps the newest :data:`_CORRUPT_BACKUP_RETENTION` backups for this DB
+    basename (always retaining ``keep``, the backup just written/reused) and
+    deletes older ones plus their ``-wal``/``-shm`` sidecars. This is what
+    bounds the disk-amplification #68336 describes: when a live writer keeps
+    mutating an already-corrupt DB, its sha256 rotates every poll and each open
+    would otherwise add a fresh full-size backup with no ceiling.
+
+    Best-effort — any filesystem error is swallowed; a failed prune must never
+    stop the caller from raising :class:`KanbanDbCorruptError`. Matching is
+    confined to ``parent`` and to the exact ``.corrupt.<16 hex>.bak`` shape so
+    unrelated files (and the live sidecars ``<base_name>-wal``/``-shm``) are
+    never touched.
+    """
+    pattern = re.compile(
+        rf"^{re.escape(base_name)}\.corrupt\.[0-9a-f]{{16}}\.bak$"
+    )
+    try:
+        entries: list[tuple[float, Path]] = []
+        for child in parent.iterdir():
+            if child.parent != parent or not pattern.match(child.name):
+                continue
+            try:
+                entries.append((child.stat().st_mtime, child))
+            except OSError:
+                continue
+    except OSError:
+        return
+    # Newest first; always retain ``keep`` even if its mtime is old (a dedup
+    # hit re-returns an existing backup we must not delete out from under us).
+    entries.sort(key=lambda item: item[0], reverse=True)
+    retained = 0
+    for _mtime, backup in entries:
+        if backup == keep:
+            continue
+        retained += 1
+        if retained < _CORRUPT_BACKUP_RETENTION:
+            continue
+        for suffix in ("", "-wal", "-shm"):
+            victim = parent / (backup.name + suffix)
+            if victim.parent != parent or not victim.exists():
+                continue
+            try:
+                victim.unlink()
+            except OSError:
+                pass
 
 
 def _guard_existing_db_is_healthy(path: Path) -> None:

@@ -4370,6 +4370,48 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
     assert second_backup.exists()
 
 
+def test_rotating_corrupt_bytes_bounds_backup_count(tmp_path):
+    """A live writer that keeps mutating a corrupt DB must not flood the dir.
+
+    Regression for #68336: content addressing dedups repeated quarantines of the
+    *same* bytes, but an external process still committing into an already-corrupt
+    DB rotates the sha256 on every poll, so each open produced a fresh full-size
+    ``.corrupt.<hash>.bak`` (+ ``-wal``/``-shm`` sidecars) with no ceiling — 467
+    backups / ~1.9 GB in 8h in the report. The retention cap bounds the lineage.
+    """
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+
+    seen: set[Path] = set()
+    # Far more opens than the cap; each one changes the fingerprint first, the
+    # way a live external writer would between polls.
+    for i in range(20):
+        with db_path.open("r+b") as f:
+            f.seek(4096)
+            f.write(bytes([i & 0xFF]) * 64)
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb.connect(db_path=db_path)
+        backup = excinfo.value.backup_path
+        assert backup is not None
+        # The backup handed to the caller this open must survive the prune.
+        assert backup.exists()
+        seen.add(backup)
+
+    # Distinct fingerprints were produced (dedup did not mask the rotation)…
+    assert len(seen) > kb._CORRUPT_BACKUP_RETENTION
+    # …but on-disk backups stay bounded by the retention cap, not the open count.
+    remaining = list(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert len(remaining) <= kb._CORRUPT_BACKUP_RETENTION, (
+        f"expected <= {kb._CORRUPT_BACKUP_RETENTION} backups, got {len(remaining)}"
+    )
+    # Pruned backups take their -wal/-shm sidecars with them (no orphans).
+    stems = {p.name for p in remaining}
+    for sidecar in tmp_path.glob("kanban.db.corrupt.*.bak-*"):
+        base = sidecar.name.rsplit("-", 1)[0]
+        assert base in stems, f"orphaned sidecar {sidecar.name} for pruned backup"
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

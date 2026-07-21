@@ -382,6 +382,21 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+def _should_close_drained_stdout(os_name: str, drain_thread_alive: bool) -> bool:
+    """Decide whether ``proc.stdout.close()`` is safe after the drain join.
+
+    On native Windows, a still-alive drain thread is blocked in ``os.read`` on
+    the stdout fd (no ``select()`` on pipe fds there). ``close()`` would then
+    serialize on the same per-fd MSVCRT lock and block for the whole lifetime of
+    a backgrounded child that inherited the write end, even though bash already
+    exited and the output is fully captured (#67362). In that one case the close
+    must be skipped and the fd left to the daemon drain thread / GC. Everywhere
+    else — POSIX always, and Windows once the drain thread has exited — closing
+    is safe and desirable.
+    """
+    return not (os_name == "nt" and drain_thread_alive)
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -969,7 +984,7 @@ class BaseEnvironment(ABC):
         # to the daemon drain thread, which reaches EOF (or is torn down with the
         # interpreter) and is reclaimed by GC / ``Popen.__del__``.  On POSIX this
         # is a no-op — ``close()`` there is independent of a concurrent read.
-        if not (os.name == "nt" and drain_thread.is_alive()):
+        if _should_close_drained_stdout(os.name, drain_thread.is_alive()):
             try:
                 proc.stdout.close()
             except Exception:

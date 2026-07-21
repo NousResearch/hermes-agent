@@ -4998,7 +4998,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             traceback=_traceback.format_exc(),
         )
         print("\nGateway stopped.")
-        return
+        _hard_exit_after_gateway_teardown(0)
+        return  # unreachable in production (os._exit); guard for test stubs
     except SystemExit as e:
         _exit_diag(
             "asyncio.run.SystemExit",

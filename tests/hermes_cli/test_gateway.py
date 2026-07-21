@@ -63,6 +63,10 @@ def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
 
+    # KeyboardInterrupt now uses the same hard-exit backstop as all other
+    # exit paths (instead of a bare ``return``).  The test stub's
+    # _exit_after_graceful_shutdown is a no-op for code 0, so run_gateway()
+    # returns normally — but the real implementation would call os._exit(0).
     gateway.run_gateway()
 
     out = capsys.readouterr().out

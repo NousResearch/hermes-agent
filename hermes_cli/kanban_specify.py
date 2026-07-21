@@ -183,7 +183,6 @@ def specify_task(
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.3,
             max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
             timeout=timeout or 120,
         )

@@ -15508,18 +15508,6 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
-        _progress_adapter = self.adapters.get(source.platform)
-        _native_slack_task_cards = False
-        if (
-            tool_progress_enabled
-            and source.platform == Platform.SLACK
-            and _progress_adapter is not None
-            and hasattr(_progress_adapter, "native_task_cards_enabled")
-        ):
-            try:
-                _native_slack_task_cards = bool(_progress_adapter.native_task_cards_enabled())
-            except Exception:
-                _native_slack_task_cards = False
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
@@ -15575,17 +15563,10 @@ class GatewayRunner:
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
-            if _native_slack_task_cards and event_type == "tool.completed":
-                progress_queue.put(
-                    {
-                        "type": "tool.completed",
-                        "tool_name": tool_name or "tool",
-                        "is_error": bool(kwargs.get("is_error")),
-                    }
-                )
                 return
 
-            # Only act on tool.started events (ignore reasoning.available, etc.)
+
+            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return
 
@@ -15609,16 +15590,6 @@ class GatewayRunner:
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-
-            if _native_slack_task_cards:
-                progress_queue.put(
-                    {
-                        "type": "tool.started",
-                        "tool_name": tool_name or "tool",
-                        "preview": preview or "",
-                    }
-                )
-                return
             
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
@@ -15689,11 +15660,6 @@ class GatewayRunner:
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
-        if source.platform == Platform.SLACK and _progress_metadata is not None:
-            if source.guild_id:
-                _progress_metadata.setdefault("recipient_team_id", source.guild_id)
-            if source.user_id:
-                _progress_metadata.setdefault("recipient_user_id", source.user_id)
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
@@ -15707,198 +15673,6 @@ class GatewayRunner:
             adapter = self.adapters.get(source.platform)
             if not adapter:
                 return
-
-            if _native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
-                tasks: List[Dict[str, str]] = []
-                pending_by_tool: Dict[str, List[str]] = {}
-                task_seq = 0
-                native_failed = False
-
-                def _slug(value: str) -> str:
-                    slug = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower())
-                    slug = slug.strip("_")
-                    return slug or "task"
-
-                def _compact(value: str, limit: int = 96) -> str:
-                    text = re.sub(r"\s+", " ", str(value or "")).strip()
-                    if len(text) <= limit:
-                        return text
-                    keep_start = max(1, int((limit - 3) * 0.45))
-                    keep_end = max(1, limit - keep_start - 3)
-                    return f"{text[:keep_start].rstrip()}...{text[-keep_end:].lstrip()}"
-
-                def _fallback_text() -> str:
-                    status_label = {
-                        "in_progress": "running",
-                        "complete": "complete",
-                        "error": "error",
-                    }
-                    lines = [
-                        f"- {task['title']} - {status_label.get(task['status'], task['status'])}"
-                        for task in tasks[-8:]
-                    ]
-                    return "Hermes is working\n" + "\n".join(lines)
-
-                async def _send_native_update() -> bool:
-                    nonlocal native_failed
-                    if native_failed or not tasks:
-                        return False
-                    result = await adapter.send_native_task_card_progress(
-                        chat_id=source.chat_id,
-                        tasks=tasks[-8:],
-                        title="Hermes is working",
-                        reply_to=_progress_reply_to,
-                        metadata=_progress_metadata,
-                        fallback_text=_fallback_text(),
-                    )
-                    if not getattr(result, "success", False):
-                        native_failed = True
-                        logger.warning(
-                            "Slack native task-card progress failed; falling back to text progress: %s",
-                            getattr(result, "error", "unknown error"),
-                        )
-                        fallback = await adapter.send(
-                            chat_id=source.chat_id,
-                            content=_fallback_text(),
-                            reply_to=_progress_reply_to,
-                            metadata=_progress_metadata,
-                        )
-                        _track_native_fallback = (
-                            _cleanup_progress
-                            and getattr(fallback, "success", False)
-                            and getattr(fallback, "message_id", None)
-                        )
-                        if _track_native_fallback:
-                            _cleanup_msg_ids.append(str(fallback.message_id))
-                        return False
-                    return True
-
-                def _start_task(tool_name: str, preview: str) -> None:
-                    nonlocal task_seq
-                    task_seq += 1
-                    base = tool_name or "tool"
-                    task_id = f"{_slug(base)}_{task_seq}"
-                    title = base
-                    detail = _compact(preview or "", 64)
-                    if detail:
-                        title = f"{base} - {detail}"
-                    tasks.append(
-                        {
-                            "id": task_id,
-                            "title": _compact(title, 120),
-                            "status": "in_progress",
-                        }
-                    )
-                    pending_by_tool.setdefault(base, []).append(task_id)
-
-                def _complete_task(tool_name: str, *, is_error: bool = False) -> None:
-                    base = tool_name or "tool"
-                    pending = pending_by_tool.get(base) or []
-                    task_id = pending.pop(0) if pending else ""
-                    if pending:
-                        pending_by_tool[base] = pending
-                    else:
-                        pending_by_tool.pop(base, None)
-                    target = next(
-                        (
-                            task
-                            for task in tasks
-                            if task["id"] == task_id
-                        ),
-                        None,
-                    )
-                    if target is None:
-                        target = next(
-                            (
-                                task
-                                for task in reversed(tasks)
-                                if task["status"] == "in_progress"
-                                and task["id"].startswith(f"{_slug(base)}_")
-                            ),
-                            None,
-                        )
-                    if target is not None:
-                        target["status"] = "error" if is_error else "complete"
-
-                async def _finalize_native_progress() -> None:
-                    if tasks and not native_failed:
-                        for task in tasks:
-                            if task["status"] == "in_progress":
-                                task["status"] = "complete"
-                        await _send_native_update()
-                    if hasattr(adapter, "stop_native_task_card_progress"):
-                        await adapter.stop_native_task_card_progress(
-                            source.chat_id,
-                            reply_to=_progress_reply_to,
-                            metadata=_progress_metadata,
-                        )
-
-                def _drain_native_progress_queue() -> None:
-                    while not progress_queue.empty():
-                        try:
-                            raw = progress_queue.get_nowait()
-                        except Exception:
-                            break
-                        if not isinstance(raw, dict):
-                            continue
-                        if raw.get("type") == "tool.started":
-                            _start_task(
-                                str(raw.get("tool_name") or "tool"),
-                                str(raw.get("preview") or ""),
-                            )
-                        elif raw.get("type") == "tool.completed":
-                            _complete_task(
-                                str(raw.get("tool_name") or "tool"),
-                                is_error=bool(raw.get("is_error")),
-                            )
-
-                while True:
-                    try:
-                        if not _run_still_current():
-                            _drain_native_progress_queue()
-                            await _finalize_native_progress()
-                            return
-
-                        raw = progress_queue.get_nowait()
-
-                        try:
-                            _agent_for_interrupt = agent_holder[0] if agent_holder else None
-                            if _agent_for_interrupt is not None and getattr(
-                                _agent_for_interrupt, "is_interrupted", False
-                            ):
-                                await asyncio.sleep(0)
-                                continue
-                        except Exception:
-                            pass
-
-                        if not isinstance(raw, dict):
-                            continue
-                        if raw.get("type") == "tool.started":
-                            _start_task(str(raw.get("tool_name") or "tool"), str(raw.get("preview") or ""))
-                            await _send_native_update()
-                        elif raw.get("type") == "tool.completed":
-                            _complete_task(
-                                str(raw.get("tool_name") or "tool"),
-                                is_error=bool(raw.get("is_error")),
-                            )
-                            await _send_native_update()
-
-                        await asyncio.sleep(0.1)
-                    except queue.Empty:
-                        try:
-                            await asyncio.sleep(0.2)
-                        except asyncio.CancelledError:
-                            _drain_native_progress_queue()
-                            await _finalize_native_progress()
-                            return
-                    except asyncio.CancelledError:
-                        _drain_native_progress_queue()
-                        await _finalize_native_progress()
-                        return
-                    except Exception as e:
-                        logger.error("Slack native task-card progress error: %s", e)
-                        native_failed = True
-                        await asyncio.sleep(1)
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update

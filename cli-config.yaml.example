@@ -915,8 +915,6 @@ display:
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   # Toggle at runtime with /verbose in the CLI
-  # Slack can render progress as native plan/task cards when enabled with:
-  # platforms.slack.extra.native_task_cards: true
   tool_progress: all
 
   # Auto-cleanup of temporary progress bubbles after the final response lands.

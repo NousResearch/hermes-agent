@@ -1148,21 +1148,15 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in _iter_home_target_platforms():
-            chat_id = _get_home_target_chat_id(platform_name)
-            if chat_id:
-                logger.info(
-                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
-                    job.get("name", job.get("id", "?")),
-                    platform_name,
-                )
-                return {
-                    "platform": platform_name,
-                    "chat_id": chat_id,
-                    "thread_id": _get_home_target_thread_id(platform_name),
-                }
+        # Origin missing (e.g. job created via API/script/CLI without a gateway
+        # session) means there is no evidence-backed destination. Keep it
+        # local-only instead of guessing a home channel; explicit platform
+        # targets such as ``telegram`` or ``telegram:<chat>`` still use the
+        # configured home/target path below.
+        logger.info(
+            "Job '%s' has deliver=origin but no origin; keeping result local-only",
+            job.get("name", job.get("id", "?")),
+        )
         return None
 
     if ":" in deliver_value:

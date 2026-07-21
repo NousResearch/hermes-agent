@@ -418,8 +418,9 @@ gateway:
     help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
   yolo:
-    disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
-    enabled:                    "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
+    status_off:                 "⚠️ YOLO mode is **OFF**."
+    status_on:                  "⚡ YOLO mode is **ON**. Hardline blocks and approvals.deny rules still apply."
+    usage:                      "Usage: /yolo [status]"
 
   shared:
     session_db_unavailable:      "Session database not available."

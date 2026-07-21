@@ -406,8 +406,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Canali vocali dal vivo (Discord)**\n• Entra prima in un canale vocale, poi `/voice channel` — mi unisco, ascolto e parlo le mie risposte\n• `/voice leave` — disconnetti dal canale vocale"
 
   yolo:
-    disabled:                   "⚠️ Modalità YOLO **OFF** per questa sessione — i comandi pericolosi richiederanno approvazione."
-    enabled:                    "⚡ Modalità YOLO **ON** per questa sessione — tutti i comandi auto-approvati. Usa con cautela."
+    status_off:                 "⚠️ La modalità YOLO è **OFF**."
+    status_on:                  "⚡ La modalità YOLO è **ON**. I blocchi hardline e le regole approvals.deny restano applicati."
+    usage:                      "Uso: /yolo [status]"
 
   shared:
     session_db_unavailable:      "Database delle sessioni non disponibile."

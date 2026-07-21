@@ -3922,6 +3922,109 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_get_yolo_reports_effective_status_without_mutating_session(monkeypatch):
+    from tools import approval
+    from tools.approval import clear_session, enable_session_yolo
+
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"approvals": {"mode": "manual"}})
+    server._sessions["sid"] = _session()
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.get",
+                "params": {"key": "yolo", "session_id": "sid"},
+            }
+        )
+        assert response["result"]["value"] == "off"
+        assert approval.is_session_yolo_enabled("session-key") is False
+
+        enable_session_yolo("session-key")
+        response = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.get",
+                "params": {"key": "yolo", "session_id": "sid"},
+            }
+        )
+        assert response["result"]["value"] == "on"
+        assert set(server._sessions) == {"sid"}
+    finally:
+        clear_session("session-key")
+        server._sessions.clear()
+
+
+def test_config_get_yolo_without_a_session_does_not_create_one(monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"approvals": {"mode": "manual"}})
+    server._sessions.clear()
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "yolo"}}
+    )
+
+    assert response["result"]["value"] == "off"
+    assert server._sessions == {}
+
+
+def test_config_get_yolo_uses_the_target_sessions_profile(tmp_path, monkeypatch):
+    import yaml
+    from tools import approval
+
+    profile_on = tmp_path / "profiles" / "on"
+    profile_off = tmp_path / "profiles" / "off"
+    profile_on.mkdir(parents=True)
+    profile_off.mkdir(parents=True)
+    (profile_on / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"mode": "off"}}), encoding="utf-8"
+    )
+    (profile_off / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    server._sessions.update(
+        {
+            "sid-on": {
+                **_session(),
+                "session_key": "profile-on-session",
+                "profile_home": str(profile_on),
+            },
+            "sid-off": {
+                **_session(),
+                "session_key": "profile-off-session",
+                "profile_home": str(profile_off),
+            },
+        }
+    )
+    try:
+        response_on = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.get",
+                "params": {"key": "yolo", "session_id": "sid-on"},
+            }
+        )
+        response_off = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.get",
+                "params": {"key": "yolo", "session_id": "sid-off"},
+            }
+        )
+
+        assert response_on["result"]["value"] == "on"
+        assert response_off["result"]["value"] == "off"
+    finally:
+        approval.clear_session("profile-on-session")
+        approval.clear_session("profile-off-session")
+        server._sessions.clear()
+
+
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
     import yaml

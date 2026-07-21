@@ -2469,7 +2469,7 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(mode)
 
 
-def is_approval_bypass_active() -> bool:
+def is_approval_bypass_active(session_key: str | None = None) -> bool:
     """Return True when the user has opted out of Hermes approval prompts.
 
     Collapses the canonical three-source bypass check used across the codebase
@@ -2483,9 +2483,14 @@ def is_approval_bypass_active() -> bool:
     This is the pure-bypass sub-expression only. Callers that also honor a
     hardline blocklist / permanent allowlist must check those separately.
     """
+    session_yolo = (
+        is_session_yolo_enabled(session_key)
+        if session_key is not None
+        else is_current_session_yolo_enabled()
+    )
     return (
         _YOLO_MODE_FROZEN
-        or is_current_session_yolo_enabled()
+        or session_yolo
         or _get_approval_mode() == "off"
     )
 

@@ -406,8 +406,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
 
   yolo:
-    disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
-    enabled:                    "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
+    status_off:                 "⚠️ YOLO 모드가 **꺼짐**입니다."
+    status_on:                  "⚡ YOLO 모드가 **켜짐**입니다. 하드라인 차단과 approvals.deny 규칙은 계속 적용됩니다."
+    usage:                      "사용법: /yolo [status]"
 
   shared:
     session_db_unavailable:      "세션 데이터베이스를 사용할 수 없습니다."

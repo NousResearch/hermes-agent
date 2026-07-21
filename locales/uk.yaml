@@ -406,8 +406,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Живі голосові канали (Discord)**\n• Спершу зайдіть у голосовий канал, потім `/voice channel` — я підключуся, слухатиму й відповідатиму голосом\n• `/voice leave` — від'єднатися від голосового каналу"
 
   yolo:
-    disabled:                   "⚠️ Режим YOLO для цього сеансу **ВИМКНЕНО** — небезпечні команди потребуватимуть схвалення."
-    enabled:                    "⚡ Режим YOLO для цього сеансу **УВІМКНЕНО** — усі команди схвалюються автоматично. Використовуйте з обережністю."
+    status_off:                 "⚠️ Режим YOLO **ВИМКНЕНО**."
+    status_on:                  "⚡ Режим YOLO **УВІМКНЕНО**. Жорсткі блокування та правила approvals.deny і далі застосовуються."
+    usage:                      "Використання: /yolo [status]"
 
   shared:
     session_db_unavailable:      "База даних сеансів недоступна."

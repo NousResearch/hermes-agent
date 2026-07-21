@@ -40,6 +40,8 @@ SESSION_KEY = "test-cli-yolo-session"
 def _clear_approval_state(monkeypatch):
     """Clear the YOLO bypass + env var around every test so cases are independent."""
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
     approval_module.clear_session(SESSION_KEY)
     approval_module.clear_session("default")
     yield
@@ -122,6 +124,18 @@ class TestToggleYoloIsSessionScoped:
         finally:
             approval_module.clear_session("session-yolo-a")
             approval_module.clear_session("session-yolo-b")
+
+
+class TestYoloStatusCommand:
+    def test_status_reports_without_toggling(self):
+        stand_in = _make_stand_in()
+
+        with patch("cli._cprint") as output:
+            HermesCLI._toggle_yolo(stand_in, "/yolo status")
+
+        assert approval_module.is_session_yolo_enabled(SESSION_KEY) is False
+        assert "yolo mode" in output.call_args.args[0].lower()
+        assert "OFF" in output.call_args.args[0]
 
 
 class TestIsSessionYoloActiveHelper:

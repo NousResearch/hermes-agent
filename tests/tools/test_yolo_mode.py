@@ -12,6 +12,7 @@ from tools.approval import (
     detect_dangerous_command,
     disable_session_yolo,
     enable_session_yolo,
+    is_approval_bypass_active,
     is_session_yolo_enabled,
     reset_current_session_key,
     set_current_session_key,
@@ -216,3 +217,32 @@ class TestYoloMode:
         approval_module.clear_session("session-a")
 
         assert is_session_yolo_enabled("session-a") is False
+
+
+class TestApprovalBypassStatus:
+    def test_reports_effective_state_without_cross_session_leakage(self, monkeypatch, tmp_path):
+        """Status uses the same three bypass sources without changing session state."""
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8"
+        )
+
+        assert is_approval_bypass_active("session-a") is False
+        enable_session_yolo("session-a")
+        assert is_approval_bypass_active("session-a") is True
+        assert is_approval_bypass_active("session-b") is False
+        assert is_session_yolo_enabled("session-a") is True
+        assert is_session_yolo_enabled("session-b") is False
+
+        disable_session_yolo("session-a")
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+        assert is_approval_bypass_active("session-b") is True
+
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"approvals": {"mode": "off"}}), encoding="utf-8"
+        )
+        assert is_approval_bypass_active("session-b") is True

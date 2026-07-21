@@ -8985,7 +8985,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "footer":
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
-            self._toggle_yolo()
+            self._toggle_yolo(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -9711,7 +9711,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         session_key = getattr(self, "session_id", None) or "default"
         return is_session_yolo_enabled(session_key)
 
-    def _toggle_yolo(self):
+    def _toggle_yolo(self, command: str = "/yolo"):
         """Toggle YOLO mode — skip all dangerous command approval prompts.
 
         Per-session toggle that mirrors the gateway and TUI ``/yolo`` handlers
@@ -9731,25 +9731,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         from tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
+            is_approval_bypass_active,
             is_session_yolo_enabled,
         )
 
         session_key = self.session_id or "default"
-        if is_session_yolo_enabled(session_key):
-            disable_session_yolo(session_key)
-            _cprint(
-                f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
-                " — dangerous commands will require approval."
-            )
-        else:
-            enable_session_yolo(session_key)
+        args = command.strip().split(maxsplit=1)
+        action = args[1].strip().lower() if len(args) > 1 else ""
+        if action not in {"", "status"}:
+            _cprint("  Usage: /yolo [status]")
+            return
+
+        if not action:
+            if is_session_yolo_enabled(session_key):
+                disable_session_yolo(session_key)
+            else:
+                enable_session_yolo(session_key)
+
+        if is_approval_bypass_active(session_key):
             _cprint(
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
-                " — all commands auto-approved. Use with caution."
+                " - hardline blocks and approvals.deny rules still apply."
             )
-
-
-
+        else:
+            _cprint(
+                f"  YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}."
+            )
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""

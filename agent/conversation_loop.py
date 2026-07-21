@@ -956,8 +956,18 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
+
+        # Inject current wall-clock time on every API turn so the model
+        # never drifts across day boundaries, even in long-running sessions.
+        # Ephemeral — NOT persisted to session DB and does NOT invalidate
+        # the prompt prefix cache.
+        from hermes_time import now as _hermes_now
+        _now = _hermes_now()
+        _wall_clock = _now.strftime("Current wall-clock time: %A, %B %d, %Y %H:%M %z")
+        _ephemeral_parts = [_wall_clock]
         if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+            _ephemeral_parts.append(agent.ephemeral_system_prompt)
+        effective_system = (effective_system + "\n\n" + "\n\n".join(_ephemeral_parts)).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

@@ -365,6 +365,22 @@ class TestMaybeAutoTitle:
             time.sleep(0.1)
             mock_auto.assert_not_called()
 
+    def test_skips_on_second_exchange(self):
+        """Should not fire for conversations with exactly 2 user messages (second exchange)."""
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "response 1"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "response 2"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "second", "response 2", history)
+            import time
+            time.sleep(0.1)
+            mock_auto.assert_not_called()
+
     def test_fires_on_first_exchange(self):
         """Should fire a background thread for the first exchange."""
         db = MagicMock()

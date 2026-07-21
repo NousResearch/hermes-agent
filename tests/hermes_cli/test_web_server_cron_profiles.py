@@ -1,4 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
+import pytest
+pytest.importorskip("fastapi")
+
 
 from concurrent.futures import ThreadPoolExecutor
 import json

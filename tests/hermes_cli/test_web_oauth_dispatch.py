@@ -19,6 +19,9 @@ The fix:
 
 These tests pin the corrected behavior.
 """
+import pytest
+pytest.importorskip("fastapi")
+
 import asyncio
 import time
 from datetime import datetime, timezone

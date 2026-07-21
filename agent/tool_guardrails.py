@@ -121,6 +121,8 @@ class ToolCallGuardrailConfig:
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
             ),
+            idempotent_tools=defaults.idempotent_tools | _string_set(data.get("idempotent_tools")),
+            mutating_tools=defaults.mutating_tools | _string_set(data.get("mutating_tools")),
         )
 
 
@@ -469,6 +471,24 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= 1 else default
+
+
+def _string_set(value: Any) -> frozenset[str]:
+    """Parse a config value into non-empty tool-name strings.
+
+    Accepts either a list/tuple/set of strings or a comma-separated string so
+    config.yaml can classify custom/plugin/MCP tools without a core code change.
+    Invalid entries are ignored rather than weakening the default guardrails.
+    """
+    if value is None:
+        return frozenset()
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        items = value
+    else:
+        return frozenset()
+    return frozenset(item.strip() for item in items if isinstance(item, str) and item.strip())
 
 
 def _sha256(value: str) -> str:

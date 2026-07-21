@@ -74,6 +74,59 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_block_after == 8
 
 
+def test_config_can_classify_custom_tools_without_replacing_defaults():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "idempotent_tools": ["custom_read", "", 123, " web_search "],
+            "mutating_tools": "custom_write, patch ,",
+        }
+    )
+
+    assert "read_file" in cfg.idempotent_tools
+    assert "web_search" in cfg.idempotent_tools
+    assert "custom_read" in cfg.idempotent_tools
+    assert "write_file" in cfg.mutating_tools
+    assert "patch" in cfg.mutating_tools
+    assert "custom_write" in cfg.mutating_tools
+    assert "" not in cfg.idempotent_tools
+    assert 123 not in cfg.idempotent_tools
+
+
+def test_custom_idempotent_tool_gets_no_progress_guardrail():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "hard_stop_enabled": True,
+            "idempotent_tools": ["custom_read"],
+            "hard_stop_after": {"idempotent_no_progress": 2},
+        }
+    )
+    controller = ToolCallGuardrailController(cfg)
+
+    args = {"query": "same"}
+    assert controller.before_call("custom_read", args).action == "allow"
+    assert controller.after_call("custom_read", args, "same", failed=False).action == "allow"
+    assert controller.before_call("custom_read", args).action == "allow"
+    assert controller.after_call("custom_read", args, "same", failed=False).action == "warn"
+    assert controller.before_call("custom_read", args).action == "block"
+
+
+def test_custom_mutating_tool_overrides_custom_idempotent_classification():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "hard_stop_enabled": True,
+            "idempotent_tools": ["custom_sync"],
+            "mutating_tools": ["custom_sync"],
+            "hard_stop_after": {"idempotent_no_progress": 2},
+        }
+    )
+    controller = ToolCallGuardrailController(cfg)
+
+    args = {"target": "same"}
+    for _ in range(3):
+        assert controller.before_call("custom_sync", args).action == "allow"
+        assert controller.after_call("custom_sync", args, "same", failed=False).action == "allow"
+
+
 def test_default_repeated_identical_failed_call_warns_without_blocking():
     controller = ToolCallGuardrailController()
     args = {"query": "same"}

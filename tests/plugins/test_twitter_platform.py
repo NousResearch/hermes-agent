@@ -109,6 +109,7 @@ def test_interactive_setup_confidential_saves_masked_profile_secret(
         authorized.update(client_id=client_id, redirect_uri=redirect_uri, **kwargs)
 
     monkeypatch.setattr(cli_output, "prompt", fake_prompt)
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr(adapter, "authorize", fake_authorize)
 
     adapter.interactive_setup()
@@ -151,6 +152,7 @@ def test_interactive_setup_public_does_not_prompt_or_store_secret(
         authorized.update(client_id=client_id, redirect_uri=redirect_uri, **kwargs)
 
     monkeypatch.setattr(cli_output, "prompt", fake_prompt)
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr(adapter, "authorize", fake_authorize)
 
     adapter.interactive_setup()
@@ -159,6 +161,48 @@ def test_interactive_setup_public_does_not_prompt_or_store_secret(
     assert authorized["client_secret"] == ""
     assert not (tmp_path / ".env").exists()
     assert "TWITTER_CLIENT_SECRET" not in (tmp_path / "config.yaml").read_text()
+
+
+def test_interactive_setup_records_open_access_and_policy_confirmations(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import cli_output
+    from plugins.platforms.twitter import adapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    answers = {
+        "OAuth 2.0 client ID": "public-client",
+        "OAuth client type (public or confidential)": "public",
+        "Loopback redirect URI": "http://127.0.0.1:8765/callback",
+        "Allowed numeric X user IDs (comma-separated)": "42",
+    }
+    prompted = []
+    confirmations = iter([True, True, False, True])
+
+    def fake_prompt(question, default=None, password=False):
+        prompted.append(question)
+        return answers[question]
+
+    async def fake_authorize(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(cli_output, "prompt", fake_prompt)
+    monkeypatch.setattr(
+        cli_output, "prompt_yes_no", lambda *args, **kwargs: next(confirmations)
+    )
+    monkeypatch.setattr(adapter, "authorize", fake_authorize)
+
+    adapter.interactive_setup()
+
+    twitter = yaml.safe_load((tmp_path / "config.yaml").read_text())["twitter"]
+    assert twitter["allow_all_users"] is True
+    assert twitter["allowed_users"] == []
+    assert "Allowed numeric X user IDs (comma-separated)" not in prompted
+    assert twitter["policy"] == {
+        "ai_reply_approval_confirmed": True,
+        "automated_label_confirmed": False,
+        "human_operator_account_confirmed": True,
+    }
 
 
 def test_weighted_parser_requires_parse_tweet_api(monkeypatch):

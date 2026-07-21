@@ -1392,7 +1392,14 @@ def apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict:
 
 
 def interactive_setup() -> None:
-    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+    )
     from hermes_cli.config import save_config, save_env_value
 
     print_header("Twitter / X")
@@ -1426,15 +1433,38 @@ def interactive_setup() -> None:
             client_secret=settings.client_secret,
         )
     )
-    allowed = prompt("Allowed numeric X user IDs (comma-separated)")
+    print_info("Access control: open access lets any X user invoke your agent.")
+    allow_all_users = prompt_yes_no(
+        "Allow all X users to interact with this bot?", False
+    )
+    allowed = (
+        ""
+        if allow_all_users
+        else prompt("Allowed numeric X user IDs (comma-separated)")
+    )
+    print_info(
+        "Automated replies remain disabled unless you confirm all applicable X requirements."
+    )
+    policy = {
+        "ai_reply_approval_confirmed": prompt_yes_no(
+            "Have you obtained X approval required for automated AI replies?", False
+        ),
+        "automated_label_confirmed": prompt_yes_no(
+            "Is the Automated account label enabled on X?", False
+        ),
+        "human_operator_account_confirmed": prompt_yes_no(
+            "Have you identified the linked human-managed operator account?", False
+        ),
+    }
     config = {
         "twitter": {
             "client_id": settings.client_id,
             "oauth_client_type": settings.oauth_client_type,
             "redirect_uri": settings.redirect_uri,
             "allowed_users": [item.strip() for item in allowed.split(",") if item.strip()],
-            "allow_all_users": False,
+            "allow_all_users": allow_all_users,
             "home_channel": "timeline",
+            "policy": policy,
         }
     }
     save_config(config, merge_existing=True)

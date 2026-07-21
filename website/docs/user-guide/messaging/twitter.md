@@ -37,7 +37,7 @@ hermes gateway setup
 
 Choose **Twitter / X**, select the client type, enter the client ID and registered callback URI, and complete authorization in the browser. The masked client-secret prompt appears only after you select **confidential**; setup writes that secret only to the active profile and uses it for the authorization in the same run. Public-client setup neither prompts for nor writes a secret. Setup saves access and refresh tokens in an owner-only file under the active Hermes profile. Do not hand-edit that file.
 
-Setup also asks for numeric X user IDs. Access is fail-closed by default: an empty `allowed_users` list with `allow_all_users: false` authorizes nobody. Set `allow_all_users: true` only when every X user should be able to invoke the agent.
+Setup asks whether every X user may invoke the agent. If not, it asks for numeric X user IDs; an empty allowlist then authorizes nobody. Setup also records the three automation-policy confirmations below, which default to `false`.
 
 ## Configuration
 

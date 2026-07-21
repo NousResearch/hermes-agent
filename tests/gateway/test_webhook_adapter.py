@@ -1381,6 +1381,112 @@ class TestDeliveryCleanup:
 
 
 # ===================================================================
+# deliver: origin resolution
+# ===================================================================
+
+
+class TestDeliverOrigin:
+    """Tests for the ``deliver: origin`` placeholder resolution.
+
+    The webhook has no inbound user chat, so ``origin`` is mapped to a
+    concrete platform via per-route override, adapter-wide config, or the
+    first connected platform with a home channel. Falls back to log when
+    nothing is configured so the response is never silently dropped.
+    """
+
+    def test_resolve_origin_uses_per_route_override(self):
+        adapter = _make_adapter()
+        delivery = {"deliver": "origin", "origin_deliver": "discord"}
+        assert adapter._resolve_origin_target(delivery) == "discord"
+
+    def test_resolve_origin_uses_adapter_global(self):
+        config = _make_config()
+        config.extra["origin_deliver"] = "telegram"
+        adapter = WebhookAdapter(config)
+        assert adapter._resolve_origin_target({"deliver": "origin"}) == "telegram"
+
+    def test_resolve_origin_per_route_beats_global(self):
+        config = _make_config()
+        config.extra["origin_deliver"] = "telegram"
+        adapter = WebhookAdapter(config)
+        delivery = {"deliver": "origin", "origin_deliver": "slack"}
+        assert adapter._resolve_origin_target(delivery) == "slack"
+
+    def test_resolve_origin_returns_empty_when_unconfigured(self):
+        adapter = _make_adapter()
+        assert adapter._resolve_origin_target({"deliver": "origin"}) == ""
+
+    def test_resolve_origin_falls_back_to_first_home_channel(self):
+        adapter = _make_adapter()
+        home = MagicMock()
+        home.chat_id = "12345"
+        runner = MagicMock()
+        runner.adapters = {
+            Platform.WEBHOOK: MagicMock(),
+            Platform.TELEGRAM: MagicMock(),
+        }
+        runner.config.get_home_channel = MagicMock(
+            side_effect=lambda p: home if p == Platform.TELEGRAM else None
+        )
+        adapter.gateway_runner = runner
+        assert adapter._resolve_origin_target({"deliver": "origin"}) == "telegram"
+
+    def test_resolve_origin_skips_webhook_platform(self):
+        adapter = _make_adapter()
+        home = MagicMock()
+        home.chat_id = "should-not-pick"
+        runner = MagicMock()
+        runner.adapters = {Platform.WEBHOOK: MagicMock()}
+        runner.config.get_home_channel = MagicMock(return_value=home)
+        adapter.gateway_runner = runner
+        assert adapter._resolve_origin_target({"deliver": "origin"}) == ""
+
+    @pytest.mark.asyncio
+    async def test_send_with_origin_falls_back_to_log_when_unresolved(self):
+        """Unresolvable origin must log rather than fail or 404."""
+        adapter = _make_adapter()
+        chat_id = "webhook:test:abc"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "origin",
+            "deliver_extra": {},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+        result = await adapter.send(chat_id, "hello")
+        assert result.success is True  # logged, not failed
+
+    @pytest.mark.asyncio
+    async def test_send_with_origin_routes_to_resolved_platform(self):
+        """When origin resolves to a real platform, cross-platform delivery runs."""
+        config = _make_config()
+        config.extra["origin_deliver"] = "telegram"
+        adapter = WebhookAdapter(config)
+
+        # Stub gateway_runner so _deliver_cross_platform finds the adapter.
+        target_adapter = MagicMock()
+        target_adapter.send = AsyncMock(return_value=SendResult(success=True))
+        home = MagicMock()
+        home.chat_id = "tg-home"
+        runner = MagicMock()
+        runner.adapters = {Platform.TELEGRAM: target_adapter}
+        runner.config.get_home_channel = MagicMock(return_value=home)
+        adapter.gateway_runner = runner
+
+        chat_id = "webhook:test:def"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "origin",
+            "deliver_extra": {},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+
+        result = await adapter.send(chat_id, "agent response")
+        assert result.success is True
+        target_adapter.send.assert_awaited_once()
+        args, _ = target_adapter.send.call_args
+        assert args[0] == "tg-home"
+        assert args[1] == "agent response"
+
+
+# ===================================================================
 # check_webhook_requirements
 # ===================================================================
 

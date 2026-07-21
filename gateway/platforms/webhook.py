@@ -162,6 +162,12 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: Optional[str] = _cfg_host or None
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
+        # Fallback target for `deliver: origin` routes. When a route's deliver
+        # is the literal string "origin" the webhook has no inbound user-chat
+        # to reflect to, so we redirect to a configured platform (e.g.
+        # "telegram") or — if unset — to the first connected platform with a
+        # home channel. Per-route `origin_deliver` overrides this global.
+        self._origin_deliver: str = config.extra.get("origin_deliver", "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
@@ -339,6 +345,23 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
+        # ``origin`` is a placeholder meaning "send back where the request
+        # came from".  Webhooks have no inbound user chat, so we map it to a
+        # concrete platform: per-route override → adapter-level config →
+        # first connected platform with a home channel.  If no candidate is
+        # found we fall back to log delivery so the response is not lost.
+        if deliver_type == "origin":
+            resolved = self._resolve_origin_target(delivery)
+            if resolved:
+                deliver_type = resolved
+            else:
+                logger.warning(
+                    "[webhook] deliver=origin for %s could not be resolved; "
+                    "logging response instead",
+                    chat_id,
+                )
+                deliver_type = "log"
+
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
@@ -364,6 +387,40 @@ class WebhookAdapter(BasePlatformAdapter):
         return SendResult(
             success=False, error=f"Unknown deliver type: {deliver_type}"
         )
+
+    def _resolve_origin_target(self, delivery: dict) -> str:
+        """Map a ``deliver: origin`` directive to a concrete platform name.
+
+        Resolution order:
+
+        1. ``origin_deliver`` on the delivery info (i.e. the route config).
+        2. ``self._origin_deliver`` — webhook-adapter-wide fallback set in
+           ``platforms.webhook.extra.origin_deliver``.
+        3. The first connected adapter (excluding webhook itself) whose
+           config exposes a home channel.
+
+        Returns the resolved platform name (a key understood by ``send()``)
+        or an empty string when no candidate exists.
+        """
+        route_override = delivery.get("origin_deliver")
+        if route_override:
+            return str(route_override).strip()
+        if self._origin_deliver:
+            return self._origin_deliver.strip()
+        runner = self.gateway_runner
+        if runner is None:
+            return ""
+        try:
+            adapters = getattr(runner, "adapters", {}) or {}
+            for platform, adapter in adapters.items():
+                if platform == Platform.WEBHOOK:
+                    continue
+                home = runner.config.get_home_channel(platform)
+                if home and getattr(home, "chat_id", ""):
+                    return platform.value
+        except Exception as exc:
+            logger.debug("[webhook] origin auto-resolve failed: %s", exc)
+        return ""
 
     def _prune_delivery_info(self, now: float) -> None:
         """Drop delivery_info entries older than the idempotency TTL.

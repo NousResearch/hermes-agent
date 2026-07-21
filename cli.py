@@ -1249,6 +1249,12 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                 _active_agent_ref.shutdown_memory_provider()
     except Exception as e:
         logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
+    # close() clears _session_messages, so it must follow memory shutdown above.
+    try:
+        if _active_agent_ref and hasattr(_active_agent_ref, "close"):
+            _active_agent_ref.close()
+    except Exception as e:
+        logger.warning("CLI cleanup agent close failed: %s", e, exc_info=True)
 
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:

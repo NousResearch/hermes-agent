@@ -11,6 +11,107 @@ def reset_single_query_finalize_state(monkeypatch):
     monkeypatch.setattr(cli, "_cleanup_done", False)
 
 
+def _isolate_cleanup(monkeypatch):
+    monkeypatch.setattr(cli, "_arm_exit_watchdog", lambda: None)
+    monkeypatch.setattr(cli, "_reset_terminal_input_modes_on_exit", lambda: None)
+    monkeypatch.setattr(cli, "_cleanup_all_terminals", lambda: None)
+    monkeypatch.setattr(cli, "_cleanup_all_browsers", lambda: None)
+    monkeypatch.setattr("tools.async_delegation.interrupt_all", lambda **_kwargs: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("agent.auxiliary_client.shutdown_cached_clients", lambda: None)
+
+
+def test_cleanup_closes_active_agent_once_after_memory_shutdown(monkeypatch):
+    calls = []
+
+    class FakeAgent:
+        session_id = "agent-session"
+        _memory_manager = None
+        _session_messages = []
+
+        def shutdown_memory_provider(self, messages):
+            calls.append(("memory", messages))
+
+        def close(self):
+            calls.append(("close", None))
+
+    _isolate_cleanup(monkeypatch)
+    monkeypatch.setattr(cli, "_active_agent_ref", FakeAgent())
+
+    cli._run_cleanup(notify_session_finalize=False)
+    cli._run_cleanup(notify_session_finalize=False)
+
+    assert calls == [("memory", []), ("close", None)]
+
+
+@pytest.mark.live_system_guard_bypass
+def test_finalize_single_query_stops_codex_child_and_reader_threads(monkeypatch):
+    import subprocess
+    import sys
+
+    from agent.transports import codex_app_server
+    from agent.transports.codex_app_server_session import CodexAppServerSession
+    from run_agent import AIAgent
+
+    real_popen = subprocess.Popen
+
+    def spawn_probe(_cmd, **kwargs):
+        return real_popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            **kwargs,
+        )
+
+    _isolate_cleanup(monkeypatch)
+    monkeypatch.setattr(codex_app_server.subprocess, "Popen", spawn_probe)
+    monkeypatch.setattr("run_agent.cleanup_vm", lambda _task_id: None)
+    monkeypatch.setattr("run_agent.cleanup_browser", lambda _task_id: None)
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.kill_all", lambda **_kwargs: None
+    )
+
+    client = codex_app_server.CodexAppServerClient(codex_bin="probe")
+    session = CodexAppServerSession.__new__(CodexAppServerSession)
+    session._closed = False
+    session._client = client
+    session._thread_id = "cleanup-probe"
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.session_id = "cleanup-probe"
+    agent._memory_manager = None
+    agent.context_compressor = None
+    agent._session_messages = []
+    agent._codex_session = session
+    agent._codex_session_runtime_key = ("gpt-5.6-sol", "max")
+
+    releases = []
+    fake_cli = SimpleNamespace(
+        agent=agent,
+        session_id=agent.session_id,
+        _release_active_session=lambda: releases.append("release"),
+    )
+    monkeypatch.setattr(cli, "_active_agent_ref", agent)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: None)
+
+    try:
+        assert client._proc.poll() is None
+        assert client._reader.is_alive()
+        assert client._stderr_reader.is_alive()
+
+        cli._finalize_single_query(fake_cli)
+        client._reader.join(timeout=2)
+        client._stderr_reader.join(timeout=2)
+
+        assert releases == ["release"]
+        assert client._proc.poll() is not None
+        assert not client._reader.is_alive()
+        assert not client._stderr_reader.is_alive()
+        assert agent._codex_session is None
+    finally:
+        client.close(timeout=0.1)
+        client._reader.join(timeout=2)
+        client._stderr_reader.join(timeout=2)
+
+
 def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_release(monkeypatch):
     calls = []
     fake_cli = SimpleNamespace(_release_active_session=lambda: calls.append(("release", {})))

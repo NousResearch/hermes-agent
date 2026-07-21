@@ -779,6 +779,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
+        # iMessage detects and linkifies plain-text URLs natively, so the
+        # platform should not strip them. The shared strip_markdown drops
+        # `[text](url)` entirely (correct for SMS, wrong for iMessage), so
+        # first rewrite Markdown links to "text url" before stripping the
+        # rest of the markup.
+        content = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 \2", content)
         return strip_markdown(content)
 
     # ------------------------------------------------------------------

@@ -1021,3 +1021,129 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# Trace export regression: the plugin must not call set_trace_io().
+#
+# langfuse 3.x span objects (LangfuseChain / LangfuseSpan / the observation
+# wrapper) expose update_trace() but have NO set_trace_io() method — calling it
+# raises AttributeError.  The plugin used to call root_span.set_trace_io():
+#
+#   * in _start_root_trace  — swallowed by a bare ``except`` (trace input dropped)
+#   * in _finish_trace      — caught by the fail-open handler, but the exception
+#                             fired *before* root_span.end(), so the root span was
+#                             never ended and NO "Hermes turn" trace was ever
+#                             exported on any path (streaming or not).
+#
+# The fake span below deliberately mirrors the real SDK surface: it has
+# update_trace/update/end/start_observation but NOT set_trace_io.  Against the
+# pre-fix code, _finish_trace hits AttributeError and never ends the span, so
+# ``ended`` stays False.  Note the older TestTurnTraceIsolation fake DOES define
+# set_trace_io, which is exactly why it never caught this.
+# ---------------------------------------------------------------------------
+
+
+class TestTraceExportedWithoutSetTraceIo:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @staticmethod
+    def _fake_client(events):
+        """Langfuse stand-in whose span mirrors langfuse 3.x: update_trace()
+        exists, set_trace_io() does NOT (so calling it raises AttributeError)."""
+
+        class _Span:
+            # Intentionally NO set_trace_io — see class docstring above.
+            def update(self, **kw):
+                events["updates"].append(kw)
+
+            def update_trace(self, **kw):
+                events["trace_updates"].append(kw)
+
+            def end(self, **kw):
+                events["ended"] = True
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+            def flush(self):
+                events["flushed"] = True
+
+        return _Client()
+
+    def test_finalizing_turn_ends_and_exports_root_span(self, monkeypatch):
+        mod = self._fresh_plugin()
+        events = {"updates": [], "trace_updates": [], "ended": False, "flushed": False}
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(events))
+        # propagate_attributes() is context-dependent and, when the SDK is
+        # installed, would run the real context manager against our fake client.
+        # Force the direct-creation path so the test is deterministic whether or
+        # not the langfuse SDK is present.
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+        # Child-observation finalisation is covered elsewhere; stub it so this
+        # test isolates the ROOT span lifecycle.
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        session = "sess-export"
+        turn_id = f"{session}:turn1"
+        api_request_id = f"{turn_id}:api:1"
+
+        mod.on_pre_llm_request(
+            task_id=session,
+            session_id=session,
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+        # Finalising turn: content present, no tool calls -> _finish_trace runs.
+        mod.on_post_llm_call(
+            task_id=session,
+            session_id=session,
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            assistant_content_chars=4,
+            assistant_tool_call_count=0,
+            usage={"input_tokens": 10, "output_tokens": 5},
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+
+        # The root span was ended -> the trace is exported.  Pre-fix, the
+        # set_trace_io AttributeError blocked end() and this stayed False.
+        assert events["ended"] is True, (
+            "root span was never ended — a set_trace_io() call raised "
+            "AttributeError before root_span.end(), so no trace is exported"
+        )
+        assert events["flushed"] is True
+        # Trace-level session/name/tags were applied via update_trace() (not the
+        # non-existent set_trace_io), so the trace groups under its session.
+        session_updates = [u for u in events["trace_updates"] if u.get("session_id")]
+        assert session_updates, "update_trace() was never called with a session_id"
+        assert session_updates[0]["session_id"] == session
+        assert session_updates[0].get("name") == "Hermes turn"
+        assert "hermes" in (session_updates[0].get("tags") or [])
+        # A finalised turn is popped from the state map.
+        assert mod._TRACE_STATE == {}

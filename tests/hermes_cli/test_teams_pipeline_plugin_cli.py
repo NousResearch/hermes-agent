@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.teams_pipeline.cli import register_cli, teams_pipeline_command
+from plugins.teams_pipeline.cli import PipelineCommand, register_cli, teams_pipeline_command
 from plugins.teams_pipeline.store import TeamsPipelineStore
 
 
@@ -49,7 +49,18 @@ def test_register_cli_builds_tree():
     parser = ArgumentParser()
     register_cli(parser)
     args = parser.parse_args(["list"])
-    assert args.teams_pipeline_action == "list"
+    assert args.teams_pipeline_action is PipelineCommand.LIST
+
+
+def test_register_cli_normalizes_aliases_to_pipeline_commands():
+    parser = ArgumentParser()
+    register_cli(parser)
+
+    assert parser.parse_args(["ls"]).teams_pipeline_action is PipelineCommand.LIST
+    assert parser.parse_args(["replay", "job-1"]).teams_pipeline_action is PipelineCommand.RUN
+    assert parser.parse_args(["test", "--meeting-id", "meeting-1"]).teams_pipeline_action is PipelineCommand.FETCH
+    assert parser.parse_args(["subs"]).teams_pipeline_action is PipelineCommand.SUBSCRIPTIONS
+    assert parser.parse_args(["token"]).teams_pipeline_action is PipelineCommand.TOKEN_HEALTH
 
 
 def test_list_prints_recent_jobs(capsys, tmp_path):

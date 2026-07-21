@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -28,32 +29,100 @@ from plugins.teams_pipeline.subscriptions import (
 from tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraphTokenProvider
 
 
+class PipelineCommand(StrEnum):
+    """Teams pipeline CLI subcommands.
+
+    Members are canonical parser action values. Aliases are normalized to these
+    enum members by ``register_cli`` and ``from_action``.
+    """
+
+    LIST = "list"
+    SHOW = "show"
+    RUN = "run"
+    FETCH = "fetch"
+    SUBSCRIPTIONS = "subscriptions"
+    SUBSCRIBE = "subscribe"
+    RENEW_SUBSCRIPTION = "renew-subscription"
+    DELETE_SUBSCRIPTION = "delete-subscription"
+    MAINTAIN_SUBSCRIPTIONS = "maintain-subscriptions"
+    TOKEN_HEALTH = "token-health"
+    VALIDATE = "validate"
+
+    @classmethod
+    def aliases(cls) -> dict[str, PipelineCommand]:
+        return {
+            "ls": cls.LIST,
+            "replay": cls.RUN,
+            "test": cls.FETCH,
+            "subs": cls.SUBSCRIPTIONS,
+            "token": cls.TOKEN_HEALTH,
+        }
+
+    @classmethod
+    def aliases_for(cls, command: PipelineCommand) -> list[str]:
+        return [alias for alias, target in cls.aliases().items() if target is command]
+
+    @classmethod
+    def from_action(cls, action: str | PipelineCommand | None) -> PipelineCommand | None:
+        if action is None:
+            return None
+        if isinstance(action, cls):
+            return action
+        return cls.aliases().get(str(action), cls(str(action)))
+
+    @classmethod
+    def usage_choices(cls) -> str:
+        return "{" + "|".join(command.value for command in cls) + "}"
+
+
 def register_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="teams_pipeline_action")
 
-    list_p = subs.add_parser("list", aliases=["ls"], help="List recent Teams pipeline jobs")
+    list_p = subs.add_parser(
+        PipelineCommand.LIST.value,
+        aliases=PipelineCommand.aliases_for(PipelineCommand.LIST),
+        help="List recent Teams pipeline jobs",
+    )
+    list_p.set_defaults(teams_pipeline_action=PipelineCommand.LIST)
     list_p.add_argument("--limit", type=int, default=20)
     list_p.add_argument("--status", default="")
     list_p.add_argument("--store-path", default="")
 
-    show_p = subs.add_parser("show", help="Show a stored Teams pipeline job")
+    show_p = subs.add_parser(PipelineCommand.SHOW.value, help="Show a stored Teams pipeline job")
+    show_p.set_defaults(teams_pipeline_action=PipelineCommand.SHOW)
     show_p.add_argument("job_id")
     show_p.add_argument("--store-path", default="")
 
-    run_p = subs.add_parser("run", aliases=["replay"], help="Replay a stored Teams pipeline job")
+    run_p = subs.add_parser(
+        PipelineCommand.RUN.value,
+        aliases=PipelineCommand.aliases_for(PipelineCommand.RUN),
+        help="Replay a stored Teams pipeline job",
+    )
+    run_p.set_defaults(teams_pipeline_action=PipelineCommand.RUN)
     run_p.add_argument("job_id")
     run_p.add_argument("--store-path", default="")
 
-    fetch_p = subs.add_parser("fetch", aliases=["test"], help="Dry-run meeting artifact resolution")
+    fetch_p = subs.add_parser(
+        PipelineCommand.FETCH.value,
+        aliases=PipelineCommand.aliases_for(PipelineCommand.FETCH),
+        help="Dry-run meeting artifact resolution",
+    )
+    fetch_p.set_defaults(teams_pipeline_action=PipelineCommand.FETCH)
     fetch_p.add_argument("--meeting-id", default="")
     fetch_p.add_argument("--join-web-url", default="")
     fetch_p.add_argument("--tenant-id", default="")
     fetch_p.add_argument("--call-record-id", default="")
 
-    subs_p = subs.add_parser("subscriptions", aliases=["subs"], help="List Graph subscriptions")
+    subs_p = subs.add_parser(
+        PipelineCommand.SUBSCRIPTIONS.value,
+        aliases=PipelineCommand.aliases_for(PipelineCommand.SUBSCRIPTIONS),
+        help="List Graph subscriptions",
+    )
+    subs_p.set_defaults(teams_pipeline_action=PipelineCommand.SUBSCRIPTIONS)
     subs_p.add_argument("--store-path", default="")
 
-    sub_p = subs.add_parser("subscribe", help="Create a Microsoft Graph subscription")
+    sub_p = subs.add_parser(PipelineCommand.SUBSCRIBE.value, help="Create a Microsoft Graph subscription")
+    sub_p.set_defaults(teams_pipeline_action=PipelineCommand.SUBSCRIBE)
     sub_p.add_argument("--resource", required=True)
     sub_p.add_argument("--notification-url", required=True)
     sub_p.add_argument("--change-type", default="")
@@ -63,62 +132,73 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     sub_p.add_argument("--latest-supported-tls-version", default="v1_2")
     sub_p.add_argument("--store-path", default="")
 
-    renew_p = subs.add_parser("renew-subscription", help="Renew a Microsoft Graph subscription")
+    renew_p = subs.add_parser(PipelineCommand.RENEW_SUBSCRIPTION.value, help="Renew a Microsoft Graph subscription")
+    renew_p.set_defaults(teams_pipeline_action=PipelineCommand.RENEW_SUBSCRIPTION)
     renew_p.add_argument("subscription_id")
     renew_p.add_argument("--expiration", required=True)
     renew_p.add_argument("--store-path", default="")
 
-    delete_p = subs.add_parser("delete-subscription", help="Delete a Microsoft Graph subscription")
+    delete_p = subs.add_parser(PipelineCommand.DELETE_SUBSCRIPTION.value, help="Delete a Microsoft Graph subscription")
+    delete_p.set_defaults(teams_pipeline_action=PipelineCommand.DELETE_SUBSCRIPTION)
     delete_p.add_argument("subscription_id")
     delete_p.add_argument("--store-path", default="")
 
-    maintain_p = subs.add_parser("maintain-subscriptions", help="Renew near-expiry managed subscriptions")
+    maintain_p = subs.add_parser(PipelineCommand.MAINTAIN_SUBSCRIPTIONS.value, help="Renew near-expiry managed subscriptions")
+    maintain_p.set_defaults(teams_pipeline_action=PipelineCommand.MAINTAIN_SUBSCRIPTIONS)
     maintain_p.add_argument("--renew-within-hours", type=int, default=24)
     maintain_p.add_argument("--extend-hours", type=int, default=24)
     maintain_p.add_argument("--dry-run", action="store_true")
     maintain_p.add_argument("--store-path", default="")
     maintain_p.add_argument("--client-state", default="")
 
-    token_p = subs.add_parser("token-health", aliases=["token"], help="Inspect Graph token health")
+    token_p = subs.add_parser(
+        PipelineCommand.TOKEN_HEALTH.value,
+        aliases=PipelineCommand.aliases_for(PipelineCommand.TOKEN_HEALTH),
+        help="Inspect Graph token health",
+    )
+    token_p.set_defaults(teams_pipeline_action=PipelineCommand.TOKEN_HEALTH)
     token_p.add_argument("--force-refresh", action="store_true")
 
-    validate_p = subs.add_parser("validate", help="Validate Teams pipeline configuration snapshot")
+    validate_p = subs.add_parser(PipelineCommand.VALIDATE.value, help="Validate Teams pipeline configuration snapshot")
+    validate_p.set_defaults(teams_pipeline_action=PipelineCommand.VALIDATE)
     validate_p.add_argument("--store-path", default="")
 
     subparser.set_defaults(func=teams_pipeline_command)
 
 
 def teams_pipeline_command(args: argparse.Namespace) -> int:
-    action = getattr(args, "teams_pipeline_action", None)
+    try:
+        action = PipelineCommand.from_action(getattr(args, "teams_pipeline_action", None))
+    except ValueError:
+        raw_action = getattr(args, "teams_pipeline_action", None)
+        print(f"Unknown teams-pipeline action: {raw_action}")
+        return 2
     if not action:
-        print(
-            "Usage: hermes teams-pipeline "
-            "{list|show|run|fetch|subscriptions|subscribe|renew-subscription|delete-subscription|maintain-subscriptions|token-health|validate}"
-        )
+        print(f"Usage: hermes teams-pipeline {PipelineCommand.usage_choices()}")
         return 2
 
     try:
-        if action in {"list", "ls"}:
+        if action is PipelineCommand.LIST:
             _cmd_list(args)
-        elif action == "show":
+        elif action is PipelineCommand.SHOW:
             _cmd_show(args)
-        elif action in {"run", "replay"}:
+        elif action is PipelineCommand.RUN:
             _cmd_run(args)
-        elif action in {"fetch", "test"}:
+        elif action is PipelineCommand.FETCH:
             _cmd_fetch(args)
-        elif action in {"subscriptions", "subs"}:
+        elif action is PipelineCommand.SUBSCRIPTIONS:
             _cmd_subscriptions(args)
-        elif action == "subscribe":
+        elif action is PipelineCommand.SUBSCRIBE:
             _cmd_subscribe(args)
-        elif action == "renew-subscription":
+        elif action is PipelineCommand.RENEW_SUBSCRIPTION:
             _cmd_renew_subscription(args)
-        elif action == "delete-subscription":
+        elif action is PipelineCommand.DELETE_SUBSCRIPTION:
             _cmd_delete_subscription(args)
-        elif action == "maintain-subscriptions":
+        elif action is PipelineCommand.MAINTAIN_SUBSCRIPTIONS:
             _cmd_maintain_subscriptions(args)
-        elif action in {"token-health", "token"}:
+        elif action is PipelineCommand.TOKEN_HEALTH:
             _cmd_token_health(args)
-        elif action == "validate":
+        elif action is PipelineCommand.VALIDATE:
             _cmd_validate(args)
         else:
             print(f"Unknown teams-pipeline action: {action}")

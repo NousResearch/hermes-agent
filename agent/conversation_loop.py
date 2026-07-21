@@ -5718,12 +5718,10 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    # The assistant response is real content — persist it and
-                    # emit to the UI as an interim message so the user sees the
-                    # attempted final answer before the pre_verify loop runs.
-                    # Only the nudge is flagged synthetic so it gets stripped
-                    # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
+                    # A pre_verify-rejected candidate is not user-visible output.
+                    # Persist it as loop context for the next model iteration, but
+                    # never stream/preview it: recovery gates must not leak the
+                    # very canned or unsupported sentence they are steering away.
                     messages.append(final_msg)
                     try:
                         agent._flush_messages_to_session_db(messages, conversation_history)

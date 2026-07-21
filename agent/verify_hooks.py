@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from utils import is_truthy_value
 
-DEFAULT_MAX_VERIFY_NUDGES = 3
+DEFAULT_MAX_VERIFY_NUDGES = 8
 
 # Shipped guidance appended to the verification-stop nudge when code lacks fresh
 # verification evidence. Wording mirrors the user-facing "clean your work"

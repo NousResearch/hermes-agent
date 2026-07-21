@@ -106,8 +106,32 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(
         result = agent.run_conversation("edit changed.py")
 
     _assert_pending_response_survives(agent, result)
-    # The assistant response persists (it is real, unflagged content).
+    # The rejected candidate persists as loop context but is never previewed.
     assert not result["messages"][1].get("_pre_verify_synthetic")
+    assert result["response_previewed"] is False
+
+
+def test_pre_verify_rejected_candidate_is_not_emitted_as_interim(agent, monkeypatch):
+    agent.max_iterations = 2
+    agent.iteration_budget.max_total = 2
+    answers = iter([_response("최신 상태를 확인하지 못했습니다."), _response("Verified result")])
+    agent._interruptible_api_call = lambda _kwargs: next(answers)
+    agent._emit_interim_assistant_message = MagicMock()
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
+
+    with (
+        patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "pre_verify"),
+        patch(
+            "hermes_cli.plugins.get_pre_verify_continue_message",
+            side_effect=["recover inside the same turn", None],
+        ),
+        patch("agent.verify_hooks.max_verify_nudges", return_value=8),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("check the latest deployment status")
+
+    assert result["final_response"] == "Verified result"
+    agent._emit_interim_assistant_message.assert_not_called()
 
 
 def test_pre_verify_receives_empty_changed_paths_for_non_edit_turn(agent, monkeypatch):

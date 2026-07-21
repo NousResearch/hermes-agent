@@ -227,3 +227,48 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+# ---------------------------------------------------------------------------
+# Multi-line YAML folding -- double-quoted scalars that span multiple raw
+# lines in the YAML source get their newlines folded into spaces per the
+# YAML spec.  Keys that intend real newlines must use \n escapes on a
+# single line, not raw line breaks inside the quotes.
+# ---------------------------------------------------------------------------
+
+_RESUME_MULTILINE_KEYS = [
+    "gateway.resume.parse_error",
+    "gateway.resume.matrix_no_named_sessions",
+    "gateway.resume.matrix_cross_room_success",
+]
+
+
+@pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
+@pytest.mark.parametrize("key", _RESUME_MULTILINE_KEYS)
+def test_resume_keys_have_real_newlines(lang: str, key: str):
+    """resume.* multi-line messages must contain actual newlines.
+
+    Regression: several locales wrote these values as multi-line
+    double-quoted YAML scalars, which the YAML parser folds into spaces.
+    The English catalog uses \\n escapes on a single line correctly.
+    """
+    flat = _flatten(_load_raw(lang))
+    value = flat.get(key, "")
+    assert value, f"{lang}.yaml missing key {key}"
+    assert "\n" in value, (
+        f"{lang}.yaml key={key!r}: no real newline found (YAML folding bug). "
+        f"Value starts with: {value[:80]!r}"
+    )
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+@pytest.mark.parametrize("key", _RESUME_MULTILINE_KEYS)
+def test_resume_newline_count_matches_english(lang: str, key: str):
+    """Newline count in resume.* keys must match the English catalog."""
+    en_flat = _flatten(_load_raw("en"))
+    lang_flat = _flatten(_load_raw(lang))
+    en_count = en_flat[key].count("\n")
+    lang_count = lang_flat.get(key, "").count("\n")
+    assert lang_count == en_count, (
+        f"{lang}.yaml key={key!r}: {lang_count} newlines vs English {en_count}"
+    )

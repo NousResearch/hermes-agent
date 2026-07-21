@@ -2924,6 +2924,16 @@ def run_job(
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            # Pass the job's model as target_model so resolve_runtime_provider
+            # derives api_mode and base_url from the model the job will actually
+            # use, not from config.yaml's model.default. Without this, a
+            # /model switch to an anthropic_messages-routed model (e.g. qwen
+            # on opencode-go) persists to config.yaml, and cron jobs that use
+            # a chat_completions model (e.g. glm-5.2) inherit the stripped
+            # anthropic base_url — sending requests to the marketing site
+            # instead of the API endpoint (404 → 401).
+            if model:
+                runtime_kwargs["target_model"] = model
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

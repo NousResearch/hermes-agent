@@ -133,7 +133,19 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+    # Bound socket usage. Default aiohttp connector keeps up to 100 connections
+    # alive (keepalive_timeout=15s) which, combined with the poll + send sessions
+    # and bursty CDN fetches for images/voice, easily blows past macOS launchd's
+    # 256 soft-fd cap and surfaces as `[Errno 24] Too many open files` across the
+    # whole gateway (sqlite, telegram httpx, channel directory writes, etc.).
+    # enable_cleanup_closed reaps SSL sockets that the peer half-closes — without
+    # it those linger as TIME_WAIT-style fd leaks on macOS.
+    return aiohttp.TCPConnector(
+        ssl=ssl_ctx,
+        limit=20,
+        limit_per_host=8,
+        enable_cleanup_closed=True,
+    )
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2

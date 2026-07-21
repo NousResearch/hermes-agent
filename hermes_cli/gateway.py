@@ -4975,6 +4975,17 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     except Exception as _be:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
+    def _hard_exit_after_gateway_teardown(code: int) -> None:
+        # ``hermes gateway run`` enters through this CLI wrapper, not through
+        # ``gateway.run.main()``.  Mirror that module's wedge-proof exit path:
+        # once start_gateway() has completed graceful teardown, bypass Python
+        # finalization so non-daemon worker threads (notably in-flight cron
+        # ThreadPoolExecutor jobs) cannot keep the old gateway alive and delay a
+        # service-managed /restart by minutes.
+        from gateway.run import _exit_after_graceful_shutdown
+
+        _exit_after_graceful_shutdown(code)
+
     success = False
     try:
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
@@ -4994,7 +5005,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             code=getattr(e, "code", None),
             traceback=_traceback.format_exc(),
         )
-        raise
+        if e.code is None:
+            _code = 0
+        elif isinstance(e.code, int):
+            _code = e.code
+        else:
+            _code = 1
+        _hard_exit_after_gateway_teardown(_code)
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,
         # even exotic BaseException subclasses. We want the cause logged.
@@ -5007,8 +5024,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         raise
     if not success:
         _exit_diag("gateway.exit_nonzero")
-        sys.exit(1)
+        _hard_exit_after_gateway_teardown(1)
     _exit_diag("gateway.exit_clean")
+    _hard_exit_after_gateway_teardown(0)
 
 
 # =============================================================================

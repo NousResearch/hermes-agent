@@ -39,7 +39,21 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
+    "js-yaml@4.2.0": "4.3.0",
     "lodash": "4.18.1",
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.16"
+    },
+    "minimatch@5.1.9": {
+      "brace-expansion": "2.1.2"
+    },
+    "minimatch@9.0.9": {
+      "brace-expansion": "2.1.2"
+    },
+    "minimatch@10.2.5": {
+      "brace-expansion": "5.0.7"
+    },
+    "tar@7.5.17": "7.5.19",
     "yauzl": "^3.3.1"
   },
   "engines": {

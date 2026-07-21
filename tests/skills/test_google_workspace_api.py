@@ -484,3 +484,36 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+# --- _decode_shell_escapes tests ---
+
+
+class TestDecodeShellEscapes:
+    """Tests for literal shell-escape normalisation in gmail send/reply."""
+
+    def test_literal_newlines_decoded(self, api_module):
+        """Literal \\n from shell double-quotes becomes real newlines."""
+        result = api_module._decode_shell_escapes("Line one\\n\\nLine two")
+        assert result == "Line one\n\nLine two"
+
+    def test_literal_tabs_decoded(self, api_module):
+        result = api_module._decode_shell_escapes("col1\\tcol2")
+        assert result == "col1\tcol2"
+
+    def test_already_decoded_passthrough(self, api_module):
+        """Strings with real newlines are returned unchanged."""
+        text = "Line one\n\nLine two"
+        assert api_module._decode_shell_escapes(text) is text
+
+    def test_plain_text_passthrough(self, api_module):
+        assert api_module._decode_shell_escapes("Hello world") is "Hello world"
+
+    def test_empty_string(self, api_module):
+        assert api_module._decode_shell_escapes("") == ""
+
+    def test_mixed_real_and_literal(self, api_module):
+        """Real newlines stay; literal \\n are decoded."""
+        text = "Real\nhere\\nthere"
+        result = api_module._decode_shell_escapes(text)
+        assert result == "Real\nhere\nthere"

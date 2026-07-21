@@ -970,6 +970,17 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
+        # direct_model_requests: opt-in passthrough for the request body's
+        # ``model`` field. When enabled, a value that matches neither the
+        # advertised model name nor a configured model_routes alias is run
+        # as-is on the default provider (via an ephemeral route, so session
+        # ``/model`` overrides keep precedence). Off by default: generic
+        # OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
+        # existing deployments rely on those falling back to the gateway
+        # default rather than erroring on an unknown upstream model.
+        self._direct_model_requests: bool = _coerce_request_bool(
+            extra.get("direct_model_requests"), default=False
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1730,6 +1741,33 @@ class APIServerAdapter(BasePlatformAdapter):
         if not self._model_routes or not isinstance(model_alias, str):
             return None
         return self._model_routes.get(model_alias)
+
+    def _resolve_request_route(self, model_value: Any) -> Optional[Dict[str, Any]]:
+        """Resolve the request body's ``model`` field to a route.
+
+        Configured ``model_routes`` aliases always win. When
+        ``direct_model_requests`` is enabled, an unconfigured value that
+        differs from the advertised model name synthesizes an ephemeral
+        ``{"model": <value>}`` route so API consumers can select a model
+        per request. Reusing the route-application path in
+        ``_create_agent`` keeps the architecture intact: an explicit
+        session ``/model`` override still beats the request value, and
+        provider/credential resolution stays with the configured
+        ``model_routes`` entries (a synthetic route never carries
+        provider/api_key/base_url — the requested model runs on the
+        default provider's runtime).
+        """
+        route = self._resolve_route(model_value)
+        if route is not None:
+            return route
+        if not self._direct_model_requests:
+            return None
+        if not isinstance(model_value, str):
+            return None
+        requested = model_value.strip()
+        if not requested or requested == self._model_name:
+            return None
+        return {"model": requested}
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """Return the gateway's session ``/model`` override for *session_key*, if any.
@@ -2790,10 +2828,11 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
-        # Per-client model routing: if the requested model matches a
-        # configured model_routes alias, this request's agent is created
-        # with that route's model/provider instead of the global default.
-        route = self._resolve_route(model_name)
+        # Per-client model routing: a configured model_routes alias — or,
+        # with direct_model_requests enabled, any unconfigured model value —
+        # creates this request's agent with that model instead of the
+        # global default.
+        route = self._resolve_request_route(model_name)
 
         if stream:
             import queue as _q
@@ -3905,8 +3944,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
-        # Per-client model routing for /v1/responses (see model_routes).
-        route = self._resolve_route(body.get("model"))
+        # Per-client model routing for /v1/responses (see model_routes /
+        # direct_model_requests).
+        route = self._resolve_request_route(body.get("model"))
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
@@ -4906,8 +4946,9 @@ class APIServerAdapter(BasePlatformAdapter):
             model=body.get("model", self._model_name),
         )
 
-        # Per-client model routing for /v1/runs (see model_routes).
-        route = self._resolve_route(body.get("model"))
+        # Per-client model routing for /v1/runs (see model_routes /
+        # direct_model_requests).
+        route = self._resolve_request_route(body.get("model"))
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()

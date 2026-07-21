@@ -4431,3 +4431,172 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+
+class TestDirectModelRequests:
+    """Opt-in passthrough of the request body's ``model`` field.
+
+    With ``direct_model_requests: true``, an unconfigured model value is
+    salvaged through the existing route flow as an ephemeral
+    ``{"model": <value>}`` route — session ``/model`` overrides keep
+    precedence and provider runtime resolution is untouched. Default-off
+    behavior (unknown model → gateway default) is asserted too.
+    """
+
+    @staticmethod
+    def _make_adapter(direct: bool, routes=None) -> APIServerAdapter:
+        extra = {"model_routes": routes or {}}
+        if direct:
+            extra["direct_model_requests"] = True
+        return APIServerAdapter(PlatformConfig(enabled=True, extra=extra))
+
+    def test_resolver_disabled_by_default(self):
+        adapter = self._make_adapter(direct=False)
+        assert adapter._resolve_request_route("openai/gpt-5") is None
+
+    def test_resolver_synthesizes_route_when_enabled(self):
+        adapter = self._make_adapter(direct=True)
+        assert adapter._resolve_request_route("openai/gpt-5") == {"model": "openai/gpt-5"}
+
+    def test_resolver_ignores_advertised_model_name(self):
+        adapter = self._make_adapter(direct=True)
+        assert adapter._resolve_request_route(adapter._model_name) is None
+
+    def test_resolver_ignores_blank_and_non_string(self):
+        adapter = self._make_adapter(direct=True)
+        assert adapter._resolve_request_route("   ") is None
+        assert adapter._resolve_request_route(None) is None
+        assert adapter._resolve_request_route(123) is None
+
+    def test_configured_route_wins_over_direct_passthrough(self):
+        adapter = self._make_adapter(
+            direct=True,
+            routes={"alias": {"model": "minimax/minimax-m1", "provider": "openrouter"}},
+        )
+        assert adapter._resolve_request_route("alias") == {
+            "model": "minimax/minimax-m1", "provider": "openrouter",
+        }
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_direct_model_reaches_run_agent(self):
+        adapter = self._make_adapter(direct=True)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "openai/gpt-5",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs.get("route") == {"model": "openai/gpt-5"}
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_unknown_model_ignored_when_disabled(self):
+        adapter = self._make_adapter(direct=False)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "openai/gpt-5",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs.get("route") is None
+
+    @pytest.mark.asyncio
+    async def test_responses_api_direct_model_reaches_run_agent(self):
+        adapter = self._make_adapter(direct=True)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/responses", json={
+                    "model": "anthropic/claude-sonnet-4",
+                    "input": "hello",
+                })
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs.get("route") == {
+                    "model": "anthropic/claude-sonnet-4",
+                }
+
+    @pytest.mark.asyncio
+    async def test_runs_direct_model_reaches_create_agent(self):
+        # /v1/runs passes route into _create_agent (not _run_agent).
+        adapter = self._make_adapter(direct=True)
+        app = _create_app(adapter)
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+        created = {}
+
+        class FakeAgent:
+            async def run_conversation(self, *a, **k):
+                return {"final_response": "hi", "messages": [], "api_calls": 1}
+
+            def get_token_usage(self):
+                return {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10}
+
+        def _fake_create_agent(**kwargs):
+            created.update(kwargs)
+            return FakeAgent()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_fake_create_agent), \
+                 patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+                resp = await cli.post("/v1/runs", json={
+                    "model": "openai/gpt-5",
+                    "input": "hello",
+                })
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                # The run executes in a background task; poll until the
+                # route-carrying _create_agent call has happened.
+                for _ in range(100):
+                    if "route" in created:
+                        break
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = (await status_resp.json()).get("status")
+                    if status in ("completed", "failed", "cancelled"):
+                        break
+                    await asyncio.sleep(0.05)
+                assert created.get("route") == {"model": "openai/gpt-5"}
+
+    def test_session_model_override_beats_direct_request(self, monkeypatch):
+        """An explicit session /model must beat the request body's model."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = self._make_adapter(direct=True)
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(
+            adapter,
+            "_session_model_override_for",
+            lambda key: {"model": "session/override-model"},
+        )
+
+        adapter._create_agent(
+            session_id="s1",
+            route=adapter._resolve_request_route("openai/gpt-5"),
+        )
+
+        # Route must NOT be applied — session override wins (the gateway
+        # applies the actual /model override separately).
+        assert captured["model"] == "global/model"

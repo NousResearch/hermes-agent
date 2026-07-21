@@ -398,6 +398,9 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
+    # Live-apply skins Hermes activates mid-conversation.
+    server._ensure_skin_watcher()
+
     while True:
         raw = sys.stdin.readline()
         if not raw:

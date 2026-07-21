@@ -624,11 +624,24 @@ class ToolRegistry:
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
+            # Filter kwargs to only those the handler signature accepts.
+            # Plugin handlers written to the legacy contract ``def
+            # handle_xxx(args: dict)`` do not declare ``task_id`` or
+            # ``session_id`` parameters.  Passing unknown keyword args
+            # raises TypeError, breaking every pre-v0.19 plugin.
+            # See: NousResearch/hermes-agent#68318
+            import inspect
+            try:
+                sig = inspect.signature(entry.handler)
+                accepted = set(sig.parameters)
+                filtered = {k: v for k, v in kwargs.items() if k in accepted}
+            except (ValueError, TypeError):
+                filtered = {}
             if entry.is_async:
                 from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
+                result = _run_async(entry.handler(args, **filtered))
             else:
-                result = entry.handler(args, **kwargs)
+                result = entry.handler(args, **filtered)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)

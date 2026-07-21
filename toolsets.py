@@ -107,6 +107,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "code_search": {
+        "description": "Code search and indexing: build code index, search symbols, find usages across indexed files",
+        "tools": ["code_index", "symbol_search"],
+        "includes": []
+    },
+
     "x_search": {
         "description": (
             "Search X (Twitter) posts and threads via xAI's built-in "

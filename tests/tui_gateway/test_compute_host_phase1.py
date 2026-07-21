@@ -447,6 +447,103 @@ def test_compute_host_real_turn_waits_for_chained_successor_before_settling(
         host.close()
 
 
+def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
+    monkeypatch,
+):
+    """No new child turn may claim the snapshot→turn.end serialization gap."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=2, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "barrier-key",
+        "_run_thread": None,
+    }
+    emit_entered = threading.Event()
+    release_emit = threading.Event()
+    original_emit = host.emit
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            target["history"] = [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": "done"},
+            ]
+            target["history_version"] += 1
+            target["running"] = False
+
+    def blocking_emit(frame):
+        if frame.get("type") == "turn.end" and frame.get("request_id") == "barrier-turn":
+            assert session.get("_compute_host_terminal_pending") == "barrier-turn"
+            emit_entered.set()
+            assert release_emit.wait(5)
+        original_emit(frame)
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(host, "emit", blocking_emit)
+
+    first = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "barrier-sid",
+                "request_id": "barrier-turn",
+                "session_key": "barrier-key",
+                "text": "hello",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        first.start()
+        assert emit_entered.wait(5)
+        assert session["running"] is False
+        assert session["_compute_host_terminal_pending"] == "barrier-turn"
+
+        # A second parent request arriving before turn.end is written must see
+        # the terminal barrier as busy rather than starting from the stale idle
+        # snapshot.
+        host._run_real_turn(
+            {
+                "sid": "barrier-sid",
+                "request_id": "overlap-turn",
+                "session_key": "barrier-key",
+                "text": "overlap",
+            }
+        )
+        overlap = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "overlap-turn",
+        )
+        assert overlap["message"] == "session busy"
+        assert session["history_version"] == 1
+
+        release_emit.set()
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "barrier-turn",
+        )
+        assert end["history_version"] == 1
+        first.join(5)
+        assert not first.is_alive()
+        assert "_compute_host_terminal_pending" not in session
+    finally:
+        release_emit.set()
+        first.join(5)
+        host.close()
+
+
 def test_compute_host_interrupt_control_is_not_queued_behind_turn():
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)

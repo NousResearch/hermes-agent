@@ -3648,6 +3648,73 @@ class _StopAfterOneNotificationPoll:
         return self._checks > 1
 
 
+def test_notification_poller_requeues_while_compute_host_terminal_frame_pending(
+    monkeypatch,
+):
+    """The poller cannot start a successor before the child writes turn.end."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = []
+    emitted = []
+    session = _session(
+        session_key="compute-terminal-barrier",
+        _compute_host_terminal_pending="turn-owner",
+    )
+    event = {
+        "type": "completion",
+        "session_id": "proc-terminal-barrier",
+        "session_key": "compute-terminal-barrier",
+        "command": "echo barrier",
+        "exit_code": 0,
+        "output": "done",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+
+    def deliver(_rid, _sid, target, text):
+        delivered.append(text)
+        target["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", deliver)
+    server._sessions["compute-barrier-sid"] = session
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(),  # pyright: ignore[reportArgumentType]
+            "compute-barrier-sid",
+            session,
+        )
+
+        assert delivered == []
+        assert session["running"] is False
+        assert isolated_queue.qsize() == 1
+        assert isolated_queue.queue[0] is event
+
+        with session["history_lock"]:
+            session.pop("_compute_host_terminal_pending", None)
+
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(),  # pyright: ignore[reportArgumentType]
+            "compute-barrier-sid",
+            session,
+        )
+
+        assert len(delivered) == 1
+        assert "proc-terminal-barrier completed normally" in delivered[0]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("compute-barrier-sid", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     monkeypatch,
 ):

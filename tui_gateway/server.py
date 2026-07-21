@@ -11175,7 +11175,11 @@ def _notification_poller_loop(
 
         _requeued = False
         with session["history_lock"]:
-            if session.get("running"):
+            # A compute-host child raises a terminal barrier after its final
+            # quiescent snapshot and clears it only after turn.end is on the
+            # wire. Treat that window as busy so this autonomous poller cannot
+            # install a successor behind the parent's terminal state.
+            if session.get("running") or session.get("_compute_host_terminal_pending"):
                 process_registry.completion_queue.put(evt)
                 _requeued = True
             else:
@@ -11250,7 +11254,7 @@ def _notification_poller_loop(
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
-            if session.get("running"):
+            if session.get("running") or session.get("_compute_host_terminal_pending"):
                 process_registry.completion_queue.put(evt)
                 break
             session["running"] = True

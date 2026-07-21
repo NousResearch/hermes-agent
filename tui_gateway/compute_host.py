@@ -427,7 +427,7 @@ class ComputeHost:
 
             session = self._ensure_server_session(server, frame)
             with session["history_lock"]:
-                if session.get("running"):
+                if session.get("running") or session.get("_compute_host_terminal_pending"):
                     self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
                     return
                 base_history_version = int(session.get("history_version", 0))
@@ -462,34 +462,43 @@ class ComputeHost:
             # with partial history and mark the source idle while a newer turn
             # is still writing. Wait for the whole chain to reach stable
             # quiescence, snapshotting under the lock that proves it.
-            snapshot = self._await_turn_quiescence(session)
-            history_version = snapshot["history_version"]
-            history = snapshot["history"]
-            message_count = snapshot["message_count"]
-            interrupted = snapshot["interrupted"]
-            session_key = snapshot["session_key"]
-            session_info = server._session_info(session.get("agent"), session)
-            self._bump_progress()
-            self.emit(
-                {
-                    "type": "turn.end",
-                    "sid": sid,
-                    "request_id": request_id,
-                    "history_version": history_version,
-                    "session_key": session_key,
-                    # Compare-and-swap against the version the child ACTUALLY
-                    # ran from. If the parent sent stale/newer metadata while a
-                    # persistent child already owned this session, echoing the
-                    # frame's version could authorize a later stale overwrite.
-                    "base_history_version": base_history_version,
-                    "message_count": message_count,
-                    "history": history,
-                    "interrupted": interrupted,
-                    "ended_ns": now_ns(),
-                    "session_info": session_info,
-                    "session_info_emitted": True,
-                }
-            )
+            snapshot = self._await_turn_quiescence(session, request_id)
+            try:
+                history_version = snapshot["history_version"]
+                history = snapshot["history"]
+                message_count = snapshot["message_count"]
+                interrupted = snapshot["interrupted"]
+                session_key = snapshot["session_key"]
+                session_info = server._session_info(session.get("agent"), session)
+                self._bump_progress()
+                self.emit(
+                    {
+                        "type": "turn.end",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "history_version": history_version,
+                        "session_key": session_key,
+                        # Compare-and-swap against the version the child ACTUALLY
+                        # ran from. If the parent sent stale/newer metadata while a
+                        # persistent child already owned this session, echoing the
+                        # frame's version could authorize a later stale overwrite.
+                        "base_history_version": base_history_version,
+                        "message_count": message_count,
+                        "history": history,
+                        "interrupted": interrupted,
+                        "ended_ns": now_ns(),
+                        "session_info": session_info,
+                        "session_info_emitted": True,
+                    }
+                )
+            finally:
+                # The terminal barrier stays raised until turn.end has been
+                # synchronously serialized. Notification pollers and a second
+                # parent request must not claim the idle-looking session between
+                # the stable snapshot and that terminal frame.
+                with session["history_lock"]:
+                    if session.get("_compute_host_terminal_pending") == request_id:
+                        session.pop("_compute_host_terminal_pending", None)
         except Exception as exc:
             try:
                 from tui_gateway import server
@@ -498,12 +507,16 @@ class ComputeHost:
                 if session is not None:
                     with session.get("history_lock", threading.Lock()):
                         session["running"] = False
+                        if session.get("_compute_host_terminal_pending") == request_id:
+                            session.pop("_compute_host_terminal_pending", None)
                         server._clear_inflight_turn(session)
             except Exception:
                 pass
             self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
 
-    def _await_turn_quiescence(self, session: dict) -> dict[str, Any]:
+    def _await_turn_quiescence(
+        self, session: dict, terminal_owner: str
+    ) -> dict[str, Any]:
         """Block until the session's turn-thread chain is *stably* settled,
         then snapshot history under the lock that proves it.
 
@@ -517,12 +530,17 @@ class ComputeHost:
         current thread, and never while holding ``history_lock`` so the turn
         thread can still take it), then re-verify under the lock that the turn
         is no longer running AND that no newer thread replaced the one we
-        joined. Only a state satisfying both is a real settle point. The loop
-        cannot busy-spin: every iteration either blocks in ``join()`` until a
-        thread finishes, advances to a newly installed successor thread, or
-        briefly yields during the assignment/start handoff. Shutdown does not
-        bypass this proof and emit an incomplete terminal frame; the host's
-        existing shutdown timeout bounds how long its supervisor waits.
+        joined. Only a state satisfying both is a real settle point. Before
+        releasing that proof lock, we raise a request-owned terminal barrier;
+        notification pollers and overlapping parent requests treat it as busy
+        until the caller has synchronously serialized ``turn.end``. This closes
+        the post-snapshot/pre-emission race without holding ``history_lock``
+        across session-info work or pipe I/O. The loop cannot busy-spin: every
+        iteration either blocks in ``join()`` until a thread finishes, advances
+        to a newly installed successor thread, or briefly yields during the
+        assignment/start handoff. Shutdown does not bypass this proof and emit
+        an incomplete terminal frame; the host's existing shutdown timeout
+        bounds how long its supervisor waits.
         """
         current = threading.current_thread()
         while True:
@@ -554,7 +572,11 @@ class ComputeHost:
                 if latest is run_thread and not alive and not running:
                     # Stable: the thread we observed is still the installed one,
                     # it has exited (or there was none), and the turn is no
-                    # longer running — no successor took over.
+                    # longer running — no successor took over. Raise a terminal
+                    # barrier under this same lock before exposing the snapshot:
+                    # otherwise the autonomous notification poller can claim the
+                    # idle session in the snapshot→turn.end window.
+                    session["_compute_host_terminal_pending"] = terminal_owner
                     return self._snapshot_turn_state(session)
 
             # A successor replaced the observed thread, or the dispatcher is in

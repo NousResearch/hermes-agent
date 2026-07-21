@@ -170,6 +170,37 @@ def test_ac1_bare_target_uses_board_default_repo_end_to_end(board):
     assert kb.check_merge_authority(conn, task_id).allowed is True
 
 
+def test_ac1_dashboard_alt_board_create_uses_alt_default_repo(board):
+    """Dashboard creation preserves board identity through atomic arbitration."""
+    kb.create_board("alt", default_repo="NousResearch/hermes-agent")
+    from plugins.kanban.dashboard import plugin_api
+
+    standard_response = plugin_api.create_task(
+        plugin_api.CreateTaskBody(
+            title="VERIFY+MERGE legacy verifier #257",
+            body="Merge gate: CI must be green.",
+        ),
+        board="alt",
+    )
+    hard_response = plugin_api.create_task(
+        plugin_api.CreateTaskBody(
+            title="Orphaned PR verifier #257",
+            body="HARD GATE: independent security re-review is required.",
+        ),
+        board="alt",
+    )
+
+    standard_id = standard_response["task"]["id"]
+    hard_id = hard_response["task"]["id"]
+    with kb.connect(board="alt") as alt_conn:
+        assert kb.get_task(alt_conn, standard_id).status == "archived"
+        assert kb.get_task(alt_conn, hard_id).status == "ready"
+        ledger = alt_conn.execute(
+            "SELECT task_id FROM merge_authority WHERE pr_ref = ?", (PR_REF,)
+        ).fetchone()
+        assert ledger["task_id"] == hard_id
+
+
 # AC-2: gate strength, seniority, then lexicographic task id is a total order.
 def test_ac2_arbitration_total_order():
     candidates = [

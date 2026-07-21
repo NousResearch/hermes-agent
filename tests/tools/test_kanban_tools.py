@@ -1836,6 +1836,46 @@ def test_board_param_routes_create_to_alt_board(multi_board_env):
         assert kb.get_task(conn, new_tid) is None
 
 
+def test_board_param_routes_bare_merge_target_authority_to_alt_board(
+    multi_board_env,
+):
+    """Alternate-board creates must use that board's legacy target metadata.
+
+    The connection alone is not enough: create_task needs the explicit board
+    slug so its in-transaction authority arbitration reads alt's default_repo
+    instead of the current (default) board's metadata.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.write_board_metadata(
+        "alt", default_repo="NousResearch/hermes-agent"
+    )
+    standard = json.loads(kt._handle_create({
+        "title": "VERIFY+MERGE legacy verifier #257",
+        "body": "Merge gate: CI must be green.",
+        "assignee": "reviewer",
+        "board": "alt",
+    }))
+    hard = json.loads(kt._handle_create({
+        "title": "Orphaned PR verifier #257",
+        "body": "HARD GATE: independent security re-review is required.",
+        "assignee": "security",
+        "board": "alt",
+    }))
+
+    assert standard["ok"] is True
+    assert hard["ok"] is True
+    with kb.connect(board="alt") as conn:
+        assert kb.get_task(conn, standard["task_id"]).status == "archived"
+        assert kb.get_task(conn, hard["task_id"]).status == "ready"
+        ledger = conn.execute(
+            "SELECT task_id FROM merge_authority WHERE pr_ref = ?",
+            ("nousresearch/hermes-agent#257",),
+        ).fetchone()
+        assert ledger["task_id"] == hard["task_id"]
+
+
 def test_board_param_routes_list_to_alt_board(multi_board_env):
     """kanban_list filters by the board parameter, not env-active."""
     from tools import kanban_tools as kt

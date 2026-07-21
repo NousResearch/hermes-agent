@@ -2033,6 +2033,52 @@ def test_task_terminal_counts_logical_calls_retries_and_unique_tools(direct_runt
     }
 
 
+def test_reused_tool_call_id_is_counted_for_each_provider_request(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+
+    for api_request_id in ("request-1", "request-2"):
+        call = {
+            **base,
+            "api_request_id": api_request_id,
+            "tool_call_id": "provider-reused-id",
+            "tool_name": "terminal",
+        }
+        lifecycle.invoke_hook("pre_tool_call", **call, args={"command": "private"})
+        lifecycle.invoke_hook(
+            "post_tool_call",
+            **call,
+            result={"output": "private"},
+            status="ok",
+        )
+
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 2
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "2"
+
+
 def test_pending_tool_is_closed_and_counted_when_task_is_interrupted(direct_runtime):
     base = {
         "session_id": "s1",

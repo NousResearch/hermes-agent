@@ -89,9 +89,9 @@ class _TaskRun:
     started_ns: int
     start_fields: dict[str, str]
     model_call_ids: set[str] = field(default_factory=set)
-    tool_call_ids: set[str] = field(default_factory=set)
+    tool_call_ids: set[tuple[str, str, str]] = field(default_factory=set)
     turn_ids: set[str] = field(default_factory=set)
-    completed_tool_call_ids: set[str] = field(default_factory=set)
+    completed_tool_call_ids: set[tuple[str, str, str]] = field(default_factory=set)
     unidentified_tool_calls: int = 0
     retry_count: int = 0
 
@@ -104,7 +104,9 @@ class _MetricsSession:
     closing: bool = False
     model_calls: dict[str, _ModelCall] = field(default_factory=dict)
     tasks: dict[str, _TaskRun] = field(default_factory=dict)
-    tool_calls: dict[tuple[str, str], _ToolCall] = field(default_factory=dict)
+    tool_calls: dict[tuple[str, str, str, str], _ToolCall] = field(
+        default_factory=dict
+    )
     finished_task_ids: set[str] = field(default_factory=set)
 
 
@@ -331,17 +333,15 @@ class _Runtime:
         tool_call_id = str(event.get("tool_call_id") or "")
         if not tool_call_id:
             return
+        identity = self._tool_call_identity(event)
         with session.lock:
             if session.closing:
                 return
             self._remember_turn(session, task, event)
-            key = (task_id, tool_call_id)
-            if (
-                tool_call_id in task.completed_tool_call_ids
-                or key in session.tool_calls
-            ):
+            key = (task_id, *identity)
+            if identity in task.completed_tool_call_ids or key in session.tool_calls:
                 return
-            task.tool_call_ids.add(tool_call_id)
+            task.tool_call_ids.add(identity)
             session.tool_calls[key] = self._open_tool_call(task, event)
 
     def record_approval(self, event: dict[str, Any]) -> None:
@@ -356,7 +356,15 @@ class _Runtime:
             if session.closing:
                 return
             if tool_call_id:
-                tool_call = session.tool_calls.get((task.task_id, tool_call_id))
+                identity = self._tool_call_identity(event)
+                tool_call = session.tool_calls.get((task.task_id, *identity))
+                if tool_call is None:
+                    matches = [
+                        candidate
+                        for key, candidate in session.tool_calls.items()
+                        if key[0] == task.task_id and key[-1] == tool_call_id
+                    ]
+                    tool_call = matches[0] if len(matches) == 1 else None
                 if tool_call is not None:
                     tool_call.approval_outcome = outcome
             self._run_in_task(
@@ -384,12 +392,13 @@ class _Runtime:
                 return
             self._remember_turn(session, task, event)
             if tool_call_id:
-                if tool_call_id in task.completed_tool_call_ids:
+                identity = self._tool_call_identity(event)
+                if identity in task.completed_tool_call_ids:
                     return
-                task.completed_tool_call_ids.add(tool_call_id)
-                task.tool_call_ids.add(tool_call_id)
+                task.completed_tool_call_ids.add(identity)
+                task.tool_call_ids.add(identity)
                 tool_call = session.tool_calls.pop(
-                    (task_id, tool_call_id),
+                    (task_id, *identity),
                     None,
                 )
             else:
@@ -600,6 +609,15 @@ class _Runtime:
         task.turn_ids.add(turn_id)
         with self._task_sessions_lock:
             self._turn_sessions[(session.session_id, turn_id)] = session
+
+    @staticmethod
+    def _tool_call_identity(event: dict[str, Any]) -> tuple[str, str, str]:
+        """Identify one provider-local tool call without exporting its IDs."""
+        return (
+            str(event.get("api_request_id") or ""),
+            str(event.get("turn_id") or ""),
+            str(event.get("tool_call_id") or ""),
+        )
 
     def _approval_task(
         self,

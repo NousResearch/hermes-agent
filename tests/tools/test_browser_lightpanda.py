@@ -542,6 +542,51 @@ class TestEngineOverride:
         assert len(captured_cmds) == 1
         assert "--engine" not in captured_cmds[0]
 
+    def test_lightpanda_commands_do_not_receive_chrome_args(self):
+        """Lightpanda rejects AGENT_BROWSER_ARGS, so Hermes must strip them for LP commands."""
+        import tools.browser_tool as bt
+
+        bt._cached_browser_engine = "lightpanda"
+        bt._browser_engine_resolved = True
+
+        captured_envs = []
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = None
+        mock_proc.returncode = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_envs.append(kwargs.get("env", {}))
+            return mock_proc
+
+        mock_stdout = json.dumps({
+            "success": True,
+            "data": {"title": "Example", "url": "https://example.com/"},
+        })
+        with patch("tools.browser_tool._get_session_info", return_value={"session_name": "lp-no-args"}), \
+             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool._is_local_mode", return_value=True), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._get_cloud_provider", return_value=None), \
+             patch("tools.browser_tool._get_cdp_override", return_value=""), \
+             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch.dict(os.environ, {"AGENT_BROWSER_ARGS": "--no-sandbox,--disable-dev-shm-usage"}), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("os.unlink"), \
+             patch("os.makedirs"), \
+             patch("builtins.open", MagicMock(return_value=MagicMock(
+                 __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=mock_stdout))),
+                 __exit__=MagicMock(return_value=False),
+             ))), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("tools.browser_tool._write_owner_pid"):
+            bt._run_browser_command("task1", "open", ["https://example.com/"])
+
+        assert len(captured_envs) == 1
+        assert "AGENT_BROWSER_ARGS" not in captured_envs[0]
+        assert "AGENT_BROWSER_CHROME_FLAGS" not in captured_envs[0]
+
     @patch("tools.browser_tool._get_session_info")
     @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
     @patch("tools.browser_tool._is_local_mode", return_value=True)

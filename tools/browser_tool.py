@@ -2447,7 +2447,14 @@ def _run_browser_command(
         # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
         # agent-browser itself, but documented in older notes) or the real
         # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
-        if (
+        #
+        # Lightpanda is not Chrome and agent-browser rejects custom Chrome args
+        # when --engine lightpanda is active.  Strip inherited Chrome-only env
+        # knobs in that mode; they are only useful for the Chrome fallback path.
+        if engine == "lightpanda" and not session_info.get("cdp_url"):
+            browser_env.pop("AGENT_BROWSER_ARGS", None)
+            browser_env.pop("AGENT_BROWSER_CHROME_FLAGS", None)
+        elif (
             "AGENT_BROWSER_ARGS" not in browser_env
             and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
         ):

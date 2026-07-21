@@ -39,6 +39,7 @@ class HermesOverlay:
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
+    env_vars_override: Tuple[str, ...] = ()  # replace models.dev env vars when provider identity differs
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
 
@@ -110,6 +111,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
+    ),
+    "kimi-coding-cn": HermesOverlay(
+        transport="openai_chat",
+        env_vars_override=("KIMI_CN_API_KEY",),
+        base_url_override="https://api.moonshot.cn/v1",
+        base_url_env_var="KIMI_CN_BASE_URL",
     ),
     "stepfun": HermesOverlay(
         transport="openai_chat",
@@ -276,7 +283,9 @@ ALIASES: Dict[str, str] = {
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
-    "kimi-coding-cn": "kimi-for-coding",
+    "kimi-coding-cn": "kimi-coding-cn",
+    "kimi-cn": "kimi-coding-cn",
+    "moonshot-cn": "kimi-coding-cn",
     "moonshot": "kimi-for-coding",
 
     # stepfun
@@ -451,7 +460,7 @@ def get_provider(name: str) -> Optional[ProviderDef]:
         base_url_override = overlay.base_url_override if overlay else ""
 
         # Combine env vars: models.dev env + hermes extra
-        env_vars = list(mdev_info.env)
+        env_vars = list(overlay.env_vars_override) if overlay and overlay.env_vars_override else list(mdev_info.env)
         if overlay and overlay.extra_env_vars:
             for ev in overlay.extra_env_vars:
                 if ev not in env_vars:

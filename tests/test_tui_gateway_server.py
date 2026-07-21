@@ -3304,6 +3304,147 @@ def test_notification_poller_tui_kanban_preserves_busy_and_foreign_cursors(
         server._sessions.pop("live", None)
 
 
+def test_tui_kanban_busy_two_poller_claims_keep_full_range_retryable(
+    monkeypatch, tmp_path
+):
+    """Busy pollers cannot strand an older event behind a newer claim."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="range safe", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        assert kb.block_task(conn, task_id, reason="first", kind="needs_input")
+    finally:
+        conn.close()
+
+    sessions = {
+        "kanban-poller-a": _session(session_key="live-key", running=True),
+        "kanban-poller-b": _session(session_key="live-key", running=True),
+    }
+    server._sessions.update(sessions)
+    original_claim = kb.claim_unseen_events_for_sub
+    condition = threading.Condition()
+    states = {}
+    gates = {name: threading.Event() for name in sessions}
+    results = {}
+    errors = []
+
+    def _claim_then_pause(*args, **kwargs):
+        result = original_claim(*args, **kwargs)
+        name = threading.current_thread().name
+        if name in gates and result[2]:
+            with condition:
+                states[name] = (
+                    "claimed_in_txn" if args[0].in_transaction else "claimed"
+                )
+                condition.notify_all()
+            if not gates[name].wait(5):
+                raise TimeoutError(f"timed out releasing {name}")
+        return result
+
+    def _poll(name):
+        try:
+            results[name] = server._poll_tui_kanban_subscriptions(
+                name, sessions[name]
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            with condition:
+                states.setdefault(name, "unclaimed")
+                condition.notify_all()
+
+    def _wait_state(name):
+        with condition:
+            assert condition.wait_for(lambda: name in states, timeout=5)
+            return states[name]
+
+    monkeypatch.setattr(kb, "claim_unseen_events_for_sub", _claim_then_pause)
+    poller_a = threading.Thread(
+        target=_poll, args=("kanban-poller-a",), name="kanban-poller-a"
+    )
+    poller_b = threading.Thread(
+        target=_poll, args=("kanban-poller-b",), name="kanban-poller-b"
+    )
+
+    try:
+        poller_a.start()
+        state_a = _wait_state("kanban-poller-a")
+
+        if state_a == "claimed_in_txn":
+            gates["kanban-poller-a"].set()
+            poller_a.join(5)
+            assert not poller_a.is_alive()
+
+        conn = kb.connect()
+        try:
+            assert kb.unblock_task(conn, task_id)
+            assert kb.block_task(conn, task_id, reason="second", kind="capability")
+            blocked_events = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+                "ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert [row["id"] for row in blocked_events] == [2, 4]
+
+        poller_b.start()
+        state_b = _wait_state("kanban-poller-b")
+
+        if state_a != "claimed_in_txn":
+            gates["kanban-poller-a"].set()
+            poller_a.join(5)
+            assert not poller_a.is_alive()
+        if state_b != "unclaimed":
+            gates["kanban-poller-b"].set()
+        poller_b.join(5)
+        assert not poller_b.is_alive()
+        assert errors == []
+        assert results == {"kanban-poller-a": False, "kanban-poller-b": False}
+
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 0
+        finally:
+            conn.close()
+        assert state_a == state_b == "claimed_in_txn"
+
+        delivered = []
+        sessions["kanban-poller-a"]["running"] = False
+
+        def _deliver(_rid, _sid, active_session, text):
+            delivered.append(text)
+            active_session["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+        assert server._poll_tui_kanban_subscriptions(
+            "kanban-poller-a", sessions["kanban-poller-a"]
+        ) is True
+        assert server._poll_tui_kanban_subscriptions(
+            "kanban-poller-a", sessions["kanban-poller-a"]
+        ) is False
+        assert delivered == [
+            f"⏸ Kanban {task_id} blocked: first\n\n"
+            f"⏸ Kanban {task_id} blocked: second"
+        ]
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 4
+        finally:
+            conn.close()
+    finally:
+        for gate in gates.values():
+            gate.set()
+        poller_a.join(5)
+        poller_b.join(5)
+        for name in sessions:
+            server._sessions.pop(name, None)
+
+
 def test_notification_poller_tui_kanban_rewinds_failed_injection(monkeypatch, tmp_path):
     """A failed TUI injection leaves the claimed Kanban event retryable."""
     import queue as _queue_mod

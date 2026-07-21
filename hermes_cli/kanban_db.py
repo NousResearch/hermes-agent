@@ -9229,9 +9229,12 @@ def claim_unseen_events_for_sub(
 
     Callers should send the claimed events, then either leave the cursor at
     ``new_cursor`` on success or call :func:`rewind_notify_cursor` if delivery
-    failed before any terminal unsubscribe removed the row.
+    failed before any terminal unsubscribe removed the row. If the connection
+    is already in a transaction, the claim joins it so the caller can commit or
+    roll back the cursor with a larger delivery acceptance boundary.
     """
-    with write_txn(conn):
+    txn = contextlib.nullcontext(conn) if conn.in_transaction else write_txn(conn)
+    with txn:
         row = conn.execute(
             "SELECT last_event_id FROM kanban_notify_subs "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",

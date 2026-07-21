@@ -9731,67 +9731,50 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                 if not _session_owns_notification_event(sid, session, sub_event):
                     continue
 
-                old_cursor = cursor = 0
                 reserved = False
+                reservation_lost = False
+                events = []
                 try:
-                    old_cursor, cursor, events = kb.claim_unseen_events_for_sub(
-                        conn,
-                        task_id=sub["task_id"],
-                        platform=sub["platform"],
-                        chat_id=sub["chat_id"],
-                        thread_id=sub.get("thread_id") or "",
-                        kinds=("completed", "blocked", "gave_up", "crashed", "timed_out"),
-                    )
-                    if not events:
-                        continue
-
-                    with session["history_lock"]:
-                        if not session.get("running") and not session.get("_finalized"):
-                            session["running"] = True
-                            reserved = True
-                    if not reserved:
-                        kb.rewind_notify_cursor(
+                    # ponytail: board-wide writer lock spans only prompt acceptance;
+                    # use durable in-flight ranges if dispatch latency becomes material.
+                    with kb.write_txn(conn):
+                        _, _, events = kb.claim_unseen_events_for_sub(
                             conn,
                             task_id=sub["task_id"],
                             platform=sub["platform"],
                             chat_id=sub["chat_id"],
                             thread_id=sub.get("thread_id") or "",
-                            claimed_cursor=cursor,
-                            old_cursor=old_cursor,
+                            kinds=("completed", "blocked", "gave_up", "crashed", "timed_out"),
                         )
-                        return False
+                        if not events:
+                            continue
+                        with session["history_lock"]:
+                            if session.get("running") or session.get("_finalized"):
+                                reservation_lost = True
+                                raise RuntimeError("TUI Kanban session reservation lost")
+                            session["running"] = True
+                            reserved = True
 
-                    lines = []
-                    for event in events:
-                        if event.kind == "blocked" and event.payload and event.payload.get("reason"):
-                            lines.append(
-                                f"⏸ Kanban {event.task_id} blocked: {event.payload['reason']}"
-                            )
-                        else:
-                            lines.append(
-                                f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
-                            )
-                    _emit("message.start", sid)
-                    _run_prompt_submit(
-                        f"__kanban__{int(time.time() * 1000)}",
-                        sid,
-                        session,
-                        "\n\n".join(lines),
-                    )
+                        lines = []
+                        for event in events:
+                            if event.kind == "blocked" and event.payload and event.payload.get("reason"):
+                                lines.append(
+                                    f"⏸ Kanban {event.task_id} blocked: {event.payload['reason']}"
+                                )
+                            else:
+                                lines.append(
+                                    f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
+                                )
+                        _emit("message.start", sid)
+                        _run_prompt_submit(
+                            f"__kanban__{int(time.time() * 1000)}",
+                            sid,
+                            session,
+                            "\n\n".join(lines),
+                        )
                 except Exception as exc:
-                    if cursor != old_cursor:
-                        try:
-                            kb.rewind_notify_cursor(
-                                conn,
-                                task_id=sub["task_id"],
-                                platform=sub["platform"],
-                                chat_id=sub["chat_id"],
-                                thread_id=sub.get("thread_id") or "",
-                                claimed_cursor=cursor,
-                                old_cursor=old_cursor,
-                            )
-                        except Exception:
-                            logger.warning("TUI Kanban poll failed to rewind cursor", exc_info=True)
+                    if reservation_lost:
+                        return False
                     logger.warning("TUI Kanban notification dispatch failed: %s", exc)
                     if reserved:
                         with session["history_lock"]:

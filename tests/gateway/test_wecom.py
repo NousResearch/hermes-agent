@@ -5,7 +5,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -336,14 +336,90 @@ class TestPolicyHelpers:
         assert adapter._is_group_allowed("group-1", "user-2") is False
         assert adapter._is_group_allowed("group-2", "user-1") is False
 
-    def test_pairing_group_policy_blocks_without_explicit_group_allow_from(self):
+    def test_pairing_group_policy_defers_sender_auth_to_gateway(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(
             PlatformConfig(enabled=True, extra={"group_policy": "pairing"})
         )
 
+        assert adapter._is_group_allowed("group-1", "user-1") is True
+
+    def test_disabled_group_policy_still_blocks(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"group_policy": "disabled"})
+        )
+
         assert adapter._is_group_allowed("group-1", "user-1") is False
+
+    @pytest.mark.asyncio
+    async def test_pairing_group_dispatches_to_gateway_sender_authorization(
+        self, monkeypatch
+    ):
+        """Pairing-mode groups must reach the central per-sender auth gate.
+
+        An unapproved sender remains denied there, while the same sender is
+        accepted after operator pairing approval.  This exercises the real
+        WeCom callback path rather than only the policy helper.
+        """
+        from gateway.config import GatewayConfig, Platform
+        from gateway.run import GatewayRunner
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        for name in (
+            "WECOM_ALLOWED_USERS",
+            "WECOM_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        platform_config = PlatformConfig(
+            enabled=True,
+            extra={"group_policy": "pairing"},
+        )
+        adapter = WeComAdapter(platform_config)
+        adapter._text_batch_delay_seconds = 0
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform.WECOM: platform_config})
+        runner.adapters = {Platform.WECOM: adapter}
+        runner.pairing_stores = {}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.side_effect = [False, True]
+
+        authorization_results = []
+
+        async def authorize_at_gateway(event):
+            authorization_results.append(runner._is_user_authorized(event.source))
+
+        adapter.handle_message = authorize_at_gateway
+
+        def group_payload(message_id):
+            return {
+                "cmd": "aibot_msg_callback",
+                "headers": {"req_id": f"req-{message_id}"},
+                "body": {
+                    "msgid": message_id,
+                    "chatid": "group-1",
+                    "chattype": "group",
+                    "from": {"userid": "user-1"},
+                    "msgtype": "text",
+                    "text": {"content": "hello"},
+                },
+            }
+
+        await adapter._on_message(group_payload("unapproved"))
+        await adapter._on_message(group_payload("approved"))
+
+        assert authorization_results == [False, True]
+        assert runner.pairing_store.is_approved.call_args_list == [
+            call("wecom", "user-1"),
+            call("wecom", "user-1"),
+        ]
 
     def test_pairing_dm_policy_strict_auth_denies_unknown(self):
         from plugins.platforms.wecom.adapter import WeComAdapter

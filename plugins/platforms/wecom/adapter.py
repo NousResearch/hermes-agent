@@ -894,7 +894,10 @@ class WeComAdapter(BasePlatformAdapter):
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "pairing":
-            return False
+            # Pairing is a per-sender grant checked by the gateway after intake.
+            # Forward group events so approved senders can reach that shared gate;
+            # unapproved senders remain denied there.
+            return True
         if self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id):
             return False
 

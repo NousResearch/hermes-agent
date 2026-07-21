@@ -290,6 +290,34 @@ tts:
 
 Credentials come from your shell environment (`VOLCENGINE_APP_ID` / `VOLCENGINE_ACCESS_TOKEN`) or `~/.doubao-speech/config.yaml`. Pick a voice by adding `--voice zh-female-warm` (or any other alias from `doubao-speech list-voices`) to the command. `doubao-speech` also bundles streaming ASR — see the [STT section below](#example-doubao--volcengine-asr) for Hermes integration. Source and full docs: [github.com/Hypnus-Yuan/doubao-speech](https://github.com/Hypnus-Yuan/doubao-speech).
 
+#### Example: Kesha Voice Kit (local TTS)
+
+[Kesha Voice Kit](https://github.com/drakulavich/kesha-voice-kit) is a local-first
+voice toolkit with command-line TTS via Kokoro, Vosk-TTS, and macOS system voices.
+Install it once, then point a Hermes command provider at `kesha say`:
+
+```bash
+bun add -g @drakulavich/kesha-voice-kit
+kesha install --tts
+```
+
+```yaml
+tts:
+  provider: kesha
+  providers:
+    kesha:
+      type: command
+      command: "kesha say --format ogg-opus --out {output_path} < {input_path}"
+      output_format: ogg
+      timeout: 60
+      voice_compatible: true
+      max_text_length: 2000
+```
+
+Kesha also provides local speech-to-text for Hermes voice messages — see the
+[STT section below](#example-kesha-voice-kit-local-stt). Full setup:
+[Kesha Hermes guide](https://github.com/drakulavich/kesha-voice-kit/blob/main/docs/hermes.md).
+
 #### Placeholders
 
 Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces and other shell-sensitive characters are safe.
@@ -515,6 +543,34 @@ stt:
 ```
 
 This complements the legacy `HERMES_LOCAL_STT_COMMAND` escape hatch — that env var still works untouched via the built-in `local_command` path. Use `stt.providers.<name>` when you want **multiple** shell-driven STT engines, a name you can pick via `stt.provider`, or anything that needs per-provider `language` / `model` / `timeout`.
+
+#### Example: Kesha Voice Kit (local STT)
+
+Kesha can also serve as a local STT backend for Hermes. It writes bare transcripts
+to stdout by default, so a command provider can redirect that output to
+`{output_path}`:
+
+```bash
+bun add -g @drakulavich/kesha-voice-kit
+kesha install
+```
+
+```yaml
+stt:
+  provider: kesha
+  providers:
+    kesha:
+      type: command
+      command: "kesha {input_path} > {output_path}"
+      format: txt
+      timeout: 300
+```
+
+For older configs that use the single-command escape hatch, the equivalent is:
+
+```bash
+export HERMES_LOCAL_STT_COMMAND='sh -c '"'"'kesha "$1" > "$2/transcript.txt"'"'"' sh {input_path} {output_dir}'
+```
 
 #### STT placeholders
 

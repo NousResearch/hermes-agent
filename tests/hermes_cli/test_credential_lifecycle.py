@@ -302,6 +302,80 @@ def test_delete_scrubs_config_yaml_mirror(hermes_home):
 
 
 # ---------------------------------------------------------------------------
+# Keyed `providers` schema (v12+) — where the dashboard writes custom
+# endpoints. Its inline api_key is a real credential and higher-precedence
+# than the env var, so a stale copy left here shadows a rotation (#62269) and
+# survives a "remove from EVERY store" delete.
+# ---------------------------------------------------------------------------
+
+
+def test_update_rotates_keyed_providers_mirror(hermes_home):
+    old = "sk-kp-" + "n" * 24
+    new = "sk-kp-" + "o" * 24
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(
+        hermes_home,
+        "providers:\n"
+        "  myendpoint:\n"
+        "    base_url: https://llm.example.test/v1\n"
+        f"    api_key: {old}\n",
+    )
+
+    resp = client.put(
+        "/api/env", json={"key": "OPENAI_API_KEY", "value": new}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+    assert "providers.myendpoint.api_key" in resp.json().get("config_updates", [])
+
+    cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
+    assert old not in cfg_text, "stale key in providers.<id> shadows the rotation (#62269)"
+    assert new in cfg_text, "keyed providers mirror not rotated to the new key"
+
+
+def test_delete_scrubs_keyed_providers_mirror(hermes_home):
+    old = "sk-kp-" + "p" * 24
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(
+        hermes_home,
+        "providers:\n"
+        "  myendpoint:\n"
+        "    base_url: https://llm.example.test/v1\n"
+        f"    api_key: {old}\n",
+    )
+
+    resp = client.request(
+        "DELETE", "/api/env", json={"key": "OPENAI_API_KEY"}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+    assert "providers.myendpoint.api_key" in resp.json()["config_scrubbed"]
+    cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
+    assert old not in cfg_text, "delete must clear the credential from EVERY store"
+
+
+def test_scrub_never_touches_providers_base_url_alias(hermes_home):
+    """In the keyed ``providers`` schema ``api`` is the base_url alias, NOT a
+    credential. Even if the .env value coincided with a base_url, the scrub
+    must not rewrite a provider's endpoint URL."""
+    old = "https://llm.example.test/v1"  # a URL that also happens to be the key value
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(
+        hermes_home,
+        "providers:\n"
+        "  myendpoint:\n"
+        f"    api: {old}\n"          # base_url alias — must be preserved
+        "    model: my-model\n",
+    )
+
+    resp = client.request(
+        "DELETE", "/api/env", json={"key": "OPENAI_API_KEY"}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+    cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
+    assert old in cfg_text, "providers.<id>.api is a base_url and must survive"
+    assert "providers.myendpoint.api" not in resp.json().get("config_scrubbed", [])
+
+
+# ---------------------------------------------------------------------------
 # Suppression round-trip: delete sticks, re-add lifts it
 # ---------------------------------------------------------------------------
 

@@ -1200,10 +1200,22 @@ def compress_context(
             and getattr(agent, "_memory_manager", None) is None
             and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
         ):
+            # No build happens on this branch — cached_system_prompt is
+            # reused verbatim — so there's no TOCTOU window to guard: a
+            # single fingerprint read (not the pre/post pair
+            # build_prompt_with_fingerprint uses) is sufficient (#68563
+            # follow-up review finding #1).
+            from agent.conversation_loop import compute_current_context_fingerprint
+
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt
+            new_system_prompt_fingerprint = compute_current_context_fingerprint(agent)
         else:
-            new_system_prompt = agent._build_system_prompt(system_message)
+            from agent.conversation_loop import build_prompt_with_fingerprint
+
+            new_system_prompt, new_system_prompt_fingerprint = build_prompt_with_fingerprint(
+                agent, system_message
+            )
             agent._cached_system_prompt = new_system_prompt
 
         if agent._session_db:
@@ -1371,17 +1383,15 @@ def compress_context(
                 # in-place keeps and rotation has already reassigned to the new id):
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
-                # Persist the context fingerprint alongside the prompt: a
-                # NULL fingerprint reads as "legacy/stale inputs" to
+                # Persist the context fingerprint computed above alongside the
+                # prompt: a NULL fingerprint reads as "legacy/stale inputs" to
                 # _restore_or_build_system_prompt (#68563), which would force
                 # a rebuild — and a guaranteed prefix-cache miss — on the
                 # first turn after every compression boundary.
-                from agent.conversation_loop import _compute_current_context_fingerprint
-
                 agent._session_db.update_system_prompt(
                     agent.session_id,
                     new_system_prompt,
-                    _compute_current_context_fingerprint(agent),
+                    new_system_prompt_fingerprint,
                 )
                 if in_place:
                     agent._last_flushed_db_idx = 0

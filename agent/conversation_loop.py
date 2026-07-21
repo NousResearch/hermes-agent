@@ -302,17 +302,26 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
-def _compute_current_context_fingerprint(agent) -> Optional[str]:
+def compute_current_context_fingerprint(agent) -> Optional[str]:
     """SHA-256 fingerprint of the CURRENT managed context inputs (SOUL.md,
     AGENTS.md, CLAUDE.md, .hermes.md, .cursorrules) that feed the system
     prompt — see ``agent.prompt_builder.compute_context_fingerprint``.
 
-    Used by :func:`_restore_or_build_system_prompt` to detect when a
-    persisted ``system_prompt`` is stale relative to what these files look
-    like right now, even though the cheap Model/Provider check in
-    ``_stored_prompt_matches_runtime`` still passes (issue #68563) — e.g.
-    SOUL.md was edited after the durable gateway session's prompt was
-    cached, so the stale identity kept being served forever.
+    Public (not ``_``-prefixed): called from
+    :func:`_restore_or_build_system_prompt` and :func:`build_prompt_with_fingerprint`
+    in this module, and imported cross-module from
+    ``agent.conversation_compression`` and ``tui_gateway.server`` to keep
+    their own ``update_system_prompt`` persists in sync with this guard
+    (issue #68563 follow-up review finding #3 — no more reaching into a
+    private helper from other modules).
+
+    Threads the SAME gates ``agent.system_prompt.build_system_prompt_parts``
+    uses to decide whether SOUL.md / the project-context chain can reach
+    the rendered prompt at all (``agent.load_soul_identity``,
+    ``agent.skip_context_files``) through to
+    ``compute_context_fingerprint``'s ``include_soul`` /
+    ``include_project_context`` — a file that can never appear in this
+    agent's prompt must not be able to invalidate its cache (finding #2).
 
     Returns ``None`` on any failure (I/O error, unreadable HERMES_HOME,
     etc.). Per the issue's contract, a fingerprint bug must never break
@@ -329,10 +338,15 @@ def _compute_current_context_fingerprint(agent) -> Optional[str]:
         if isinstance(cc_len, int) and cc_len > 0:
             context_length = cc_len
 
+        skip_context_files = bool(getattr(agent, "skip_context_files", False))
+        load_soul_identity = bool(getattr(agent, "load_soul_identity", False))
+
         return compute_context_fingerprint(
             cwd=resolve_context_cwd(),
             context_length=context_length,
             allow_install_tree_fallback=getattr(agent, "platform", None) in ("cli", "tui"),
+            include_soul=load_soul_identity or not skip_context_files,
+            include_project_context=not skip_context_files,
         )
     except Exception as exc:
         logger.warning(
@@ -342,6 +356,43 @@ def _compute_current_context_fingerprint(agent) -> Optional[str]:
             getattr(agent, "session_id", None), exc,
         )
         return None
+
+
+def build_prompt_with_fingerprint(agent, system_message) -> tuple[str, Optional[str]]:
+    """Build a fresh system prompt and its input fingerprint as a single
+    persist-ready unit (issue #68563 follow-up review finding #1 — TOCTOU).
+
+    The prompt build and the fingerprint computation are two SEPARATE
+    filesystem reads. If an edit (e.g. to SOUL.md) lands between them, the
+    persisted pair would pair an OLD prompt with a NEW fingerprint — a
+    later restore would see that fingerprint "match" a freshly-recomputed
+    one and serve the now-stale prompt forever, silently reopening
+    #68563 through the very fix meant to close it.
+
+    Guards with a pre/post digest check bracketing the build:
+    ``compute_current_context_fingerprint`` runs once immediately before
+    ``agent._build_system_prompt`` and once immediately after. They agree
+    unless something changed mid-build, in which case the returned
+    fingerprint is ``None`` — a NULL fingerprint reads as legacy/stale to
+    the restore guard, triggering one safe rebuild next turn instead of
+    silently persisting a mismatched pair.
+
+    Used at all three ``update_system_prompt`` call sites that perform a
+    fresh build: :func:`_restore_or_build_system_prompt` here,
+    ``agent.conversation_compression`` (the fresh-build branch — the
+    cached-prompt branch there does its own single post-check fingerprint
+    since no build happens between reads), and
+    ``tui_gateway.server._persist_live_session_system_prompt``.
+    """
+    pre_fingerprint = compute_current_context_fingerprint(agent)
+    prompt = agent._build_system_prompt(system_message)
+    post_fingerprint = compute_current_context_fingerprint(agent)
+    fingerprint = (
+        pre_fingerprint
+        if pre_fingerprint is not None and pre_fingerprint == post_fingerprint
+        else None
+    )
+    return prompt, fingerprint
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -406,11 +457,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
-    # Computed unconditionally (even on a legitimate first build) so it can
-    # be persisted alongside the prompt snapshot below. Fail-open: a compute
+    # Informs the reuse-vs-rebuild DECISION below only. Fail-open: a compute
     # failure returns None, which _never_ blocks a restore on its own — see
-    # the fingerprint_ok check next.
-    current_fingerprint = _compute_current_context_fingerprint(agent)
+    # the fingerprint_ok check next. NOT what gets persisted on a rebuild —
+    # that comes from build_prompt_with_fingerprint's own pre/post pair,
+    # bracketing the actual build call (issue #68563 TOCTOU follow-up).
+    current_fingerprint = compute_current_context_fingerprint(agent)
 
     if stored_prompt:
         if _stored_prompt_matches_runtime(agent, stored_prompt):
@@ -456,7 +508,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    agent._cached_system_prompt, built_fingerprint = build_prompt_with_fingerprint(
+        agent, system_message
+    )
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
@@ -492,7 +546,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     if agent._session_db:
         try:
             agent._session_db.update_system_prompt(
-                agent.session_id, agent._cached_system_prompt, current_fingerprint
+                agent.session_id, agent._cached_system_prompt, built_fingerprint
             )
         except Exception as exc:
             logger.warning(

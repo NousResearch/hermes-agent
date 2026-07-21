@@ -33,28 +33,28 @@ import agent.conversation_loop as conversation_loop
 from agent.conversation_loop import _restore_or_build_system_prompt
 
 # Sentinel current-fingerprint value used across tests unless a test
-# overrides ``conversation_loop._compute_current_context_fingerprint``
+# overrides ``conversation_loop.compute_current_context_fingerprint``
 # itself (e.g. to simulate drift or a compute failure).
 _FP = "fingerprint-current"
 
 # Captured before the autouse fixture below ever patches the module
-# attribute, so the one test that exercises the REAL helper (failure →
-# fail-open) can restore it deliberately.
+# attribute, so tests that exercise the REAL helper (failure → fail-open;
+# the end-to-end SOUL.md drift test) can restore it deliberately.
 _real_compute_current_context_fingerprint = (
-    conversation_loop._compute_current_context_fingerprint
+    conversation_loop.compute_current_context_fingerprint
 )
 
 
 @pytest.fixture(autouse=True)
 def fixed_fingerprint(monkeypatch):
-    """Make ``_compute_current_context_fingerprint`` deterministic.
+    """Make ``compute_current_context_fingerprint`` deterministic.
 
     Without this, the helper would hit the real filesystem (SOUL.md,
     AGENTS.md, ...) via ``agent.prompt_builder.compute_context_fingerprint``,
     making these tests depend on this checkout's actual files.
     """
     monkeypatch.setattr(
-        conversation_loop, "_compute_current_context_fingerprint", lambda agent: _FP
+        conversation_loop, "compute_current_context_fingerprint", lambda agent: _FP
     )
 
 
@@ -68,6 +68,12 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.platform = "cli"
     agent._session_db = session_db
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
+    # Explicit (a bare MagicMock() attribute is truthy by default, which
+    # would silently disable SOUL.md/project-context inclusion in the REAL
+    # compute_current_context_fingerprint — only exercised directly by a
+    # couple of tests below, but worth pinning down for all of them).
+    agent.skip_context_files = False
+    agent.load_soul_identity = False
     return agent
 
 
@@ -315,7 +321,7 @@ class TestFingerprintGate:
         }
         agent = _make_agent(session_db=db)
         monkeypatch.setattr(
-            conversation_loop, "_compute_current_context_fingerprint", lambda a: "fingerprint-NEW"
+            conversation_loop, "compute_current_context_fingerprint", lambda a: "fingerprint-NEW"
         )
 
         with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
@@ -361,7 +367,7 @@ class TestFingerprintGate:
         }
         agent = _make_agent(session_db=db)
         monkeypatch.setattr(
-            conversation_loop, "_compute_current_context_fingerprint", lambda a: None
+            conversation_loop, "compute_current_context_fingerprint", lambda a: None
         )
 
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
@@ -379,7 +385,7 @@ class TestFingerprintGate:
 
         monkeypatch.setattr(
             conversation_loop,
-            "_compute_current_context_fingerprint",
+            "compute_current_context_fingerprint",
             _real_compute_current_context_fingerprint,
         )
 
@@ -402,11 +408,147 @@ class TestFingerprintGate:
         agent = _make_agent()
 
         with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            result = conversation_loop._compute_current_context_fingerprint(agent)
+            result = conversation_loop.compute_current_context_fingerprint(agent)
 
         assert result is None
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("Failed to compute" in m and "disk full" in m for m in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Prompt/fingerprint TOCTOU guard (issue #68563 follow-up review finding #1)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPromptWithFingerprint:
+    def test_returns_none_fingerprint_when_pre_post_digests_disagree(self, monkeypatch):
+        """An edit landing between the pre-build and post-build fingerprint
+        reads must not produce a fingerprint that gets attached to the (now
+        stale) prompt — persist NULL instead, which the restore guard
+        safely treats as legacy/stale and rebuilds once next turn."""
+        values = iter(["fingerprint-before", "fingerprint-after"])
+        monkeypatch.setattr(
+            conversation_loop,
+            "compute_current_context_fingerprint",
+            lambda a: next(values),
+        )
+        agent = _make_agent()
+
+        prompt, fingerprint = conversation_loop.build_prompt_with_fingerprint(agent, None)
+
+        assert prompt == "BUILT_PROMPT"
+        assert fingerprint is None
+
+    def test_returns_the_fingerprint_when_pre_post_digests_agree(self, monkeypatch):
+        """Nothing changed mid-build → the (single, stable) digest is
+        returned and safe to persist."""
+        monkeypatch.setattr(
+            conversation_loop,
+            "compute_current_context_fingerprint",
+            lambda a: "fingerprint-stable",
+        )
+        agent = _make_agent()
+
+        prompt, fingerprint = conversation_loop.build_prompt_with_fingerprint(agent, None)
+
+        assert prompt == "BUILT_PROMPT"
+        assert fingerprint == "fingerprint-stable"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: real SOUL.md drift through the real code path (issue #68563
+# follow-up review finding #4)
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndSoulMdDrift:
+    def test_soul_md_edit_forces_one_rebuild_then_reuses_until_next_edit(
+        self, tmp_path, monkeypatch
+    ):
+        """No fingerprint mocking here — real SOUL.md reads, real SessionDB.
+
+        1. First turn (no history): fresh build, persists prompt + fingerprint.
+        2. Restore with no edits: reused verbatim (byte-identical, no rebuild).
+        3. Edit SOUL.md on disk, restore again: MUST rebuild and persist a
+           new prompt + a DIFFERENT fingerprint.
+        4. Restore once more with no further edits: reused verbatim again.
+        """
+        monkeypatch.setattr(
+            conversation_loop,
+            "compute_current_context_fingerprint",
+            _real_compute_current_context_fingerprint,
+        )
+
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "SOUL.md").write_text("Be concise.", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)  # no AGENTS.md/etc here — only SOUL.md varies
+
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="e2e-session", source="cli")
+
+            build_count = {"n": 0}
+
+            def _fake_build(system_message):
+                build_count["n"] += 1
+                return f"PROMPT v{build_count['n']}"
+
+            agent = MagicMock()
+            agent._cached_system_prompt = None
+            agent.session_id = "e2e-session"
+            agent.model = "test-model"
+            agent.provider = "openrouter"
+            agent.platform = "cli"
+            agent.skip_context_files = False
+            agent.load_soul_identity = False
+            agent.context_compressor = None
+            agent._session_db = db
+            agent._build_system_prompt = _fake_build
+
+            # 1. First turn — legitimate first build.
+            _restore_or_build_system_prompt(agent, None, [])
+            assert agent._cached_system_prompt == "PROMPT v1"
+            assert build_count["n"] == 1
+            row = db.get_session("e2e-session")
+            assert row["system_prompt"] == "PROMPT v1"
+            fp1 = row["system_prompt_fingerprint"]
+            assert fp1 is not None
+
+            # 2. Fresh "AIAgent" (gateway pattern) restores with no edits.
+            agent._cached_system_prompt = None
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+            assert agent._cached_system_prompt == "PROMPT v1"
+            assert build_count["n"] == 1  # reused — no rebuild
+
+            # 3. Edit SOUL.md — the fingerprint drifts, forcing a rebuild.
+            (hermes_home / "SOUL.md").write_text("Be verbose.", encoding="utf-8")
+            agent._cached_system_prompt = None
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+            assert agent._cached_system_prompt == "PROMPT v2"
+            assert build_count["n"] == 2
+            row2 = db.get_session("e2e-session")
+            assert row2["system_prompt"] == "PROMPT v2"
+            fp2 = row2["system_prompt_fingerprint"]
+            assert fp2 is not None
+            assert fp2 != fp1
+
+            # 4. No further edits — reuses the NEW pair verbatim.
+            agent._cached_system_prompt = None
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+            assert agent._cached_system_prompt == "PROMPT v2"
+            assert build_count["n"] == 2  # still just the one rebuild
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":

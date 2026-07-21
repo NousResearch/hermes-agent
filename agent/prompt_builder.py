@@ -2082,6 +2082,8 @@ def compute_context_fingerprint(
     cwd: Optional[str] = None,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,
+    include_soul: bool = True,
+    include_project_context: bool = True,
 ) -> str:
     """SHA-256 fingerprint over every managed context input the builder can
     inject into the system prompt: SOUL.md, .hermes.md/HERMES.md,
@@ -2089,22 +2091,34 @@ def compute_context_fingerprint(
     .cursor/rules/*.mdc).
 
     Used by the gateway durable-session restore guard
-    (``agent.conversation_loop._stored_prompt_matches_runtime``) to detect
-    when a persisted ``system_prompt`` is stale relative to what these
-    files look like RIGHT NOW, even when the cheap Model/Provider check
-    still matches (issue #68563) — e.g. SOUL.md was edited after the
-    session's system prompt was cached, so the stale identity kept being
-    served forever.
+    (``agent.conversation_loop.build_prompt_with_fingerprint`` /
+    ``compute_current_context_fingerprint``) to detect when a persisted
+    ``system_prompt`` is stale relative to what these files look like RIGHT
+    NOW, even when the cheap Model/Provider check still matches (issue
+    #68563) — e.g. SOUL.md was edited after the session's system prompt was
+    cached, so the stale identity kept being served forever.
 
     Reuses the exact loader helpers ``build_context_files_prompt`` uses so
     the fingerprint always reflects what a real rebuild would inject.
-    Deliberately does NOT short-circuit on the project-context priority
-    chain the way ``build_context_files_prompt`` does: every candidate
-    source is probed independently and keyed by its own identifier, so a
-    file appearing/disappearing changes the fingerprint even when it is
-    shadowed by a higher-priority file in the rendered prompt. That is
-    intentionally more conservative than the rendered prompt — a spurious
-    one-time rebuild is harmless, a missed drift is not.
+
+    Project-context candidates (.hermes.md, AGENTS.md, CLAUDE.md,
+    .cursorrules) follow the SAME first-match-wins priority chain as
+    ``build_context_files_prompt``: only the WINNING candidate's content
+    feeds the digest. The other three still contribute an existence-only
+    flag ("0"/"1", never their content) so a lower-priority file appearing
+    or disappearing still changes the fingerprint — it could become the
+    winner later — while editing the CONTENT of a file that is currently
+    shadowed and can never reach this agent's rendered prompt does not
+    (issue #68563 follow-up review finding #2: hashing shadowed content
+    caused spurious rebuilds).
+
+    ``include_soul`` / ``include_project_context`` mirror the same
+    ``agent.load_soul_identity`` / ``agent.skip_context_files`` gates
+    ``agent.system_prompt.build_system_prompt_parts`` honors when deciding
+    whether SOUL.md or the project-context chain can reach the prompt at
+    all. When a tier is excluded there, its fingerprint slot is a constant
+    sentinel rather than file content — editing a file that this agent's
+    prompt can never render must not invalidate the cache.
 
     Must NOT be fed volatile per-turn data (timestamps, credit/token
     counts, session ids) — those belong in the volatile prompt tier, not
@@ -2115,33 +2129,51 @@ def compute_context_fingerprint(
     fingerprint bug must never break sessions") must catch and treat a
     failure as a mismatch-tolerant no-op, not swallow it here.
     """
-    if cwd is None:
-        cwd = os.getcwd()
-        cwd_is_fallback = True
+    entries: list = []
+
+    if include_soul:
+        entries.append(("SOUL.md", load_soul_md(context_length) or ""))
     else:
-        cwd_is_fallback = False
-    cwd_path = Path(cwd).resolve()
+        # SOUL.md can never reach this agent's rendered prompt (skip_
+        # context_files without load_soul_identity falls back to the
+        # hardcoded DEFAULT_AGENT_IDENTITY) — a constant slot so edits to
+        # the file never trigger a spurious rebuild.
+        entries.append(("SOUL.md:excluded", "1"))
 
-    from agent.runtime_cwd import _is_install_tree
-
-    project_context_disabled = (
-        cwd_is_fallback
-        and not allow_install_tree_fallback
-        and _is_install_tree(cwd_path)
-    )
-
-    # (source-identifier, content) pairs, in a stable order. The identifier
-    # is hashed alongside the content so an absent file (content == "") is
-    # still a distinct, addressable slot in the digest — that's what makes
-    # add/remove detectable even for a shadowed lower-priority candidate.
-    entries = [("SOUL.md", load_soul_md(context_length) or "")]
-    if project_context_disabled:
-        entries.append(("project_context:disabled", "1"))
+    if not include_project_context:
+        entries.append(("project_context:excluded", "1"))
     else:
-        entries.append((".hermes.md/HERMES.md", _load_hermes_md(cwd_path, context_length)))
-        entries.append(("AGENTS.md/agents.md", _load_agents_md(cwd_path, context_length)))
-        entries.append(("CLAUDE.md/claude.md", _load_claude_md(cwd_path, context_length)))
-        entries.append((".cursorrules", _load_cursorrules(cwd_path, context_length)))
+        if cwd is None:
+            cwd = os.getcwd()
+            cwd_is_fallback = True
+        else:
+            cwd_is_fallback = False
+        cwd_path = Path(cwd).resolve()
+
+        from agent.runtime_cwd import _is_install_tree
+
+        if (
+            cwd_is_fallback
+            and not allow_install_tree_fallback
+            and _is_install_tree(cwd_path)
+        ):
+            entries.append(("project_context:install_tree_fallback_disabled", "1"))
+        else:
+            candidates = [
+                (".hermes.md/HERMES.md", _load_hermes_md(cwd_path, context_length)),
+                ("AGENTS.md/agents.md", _load_agents_md(cwd_path, context_length)),
+                ("CLAUDE.md/claude.md", _load_claude_md(cwd_path, context_length)),
+                (".cursorrules", _load_cursorrules(cwd_path, context_length)),
+            ]
+            # First-match-wins, same as build_context_files_prompt's `or` chain.
+            selected_id = next((sid for sid, content in candidates if content), None)
+            for source_id, content in candidates:
+                if source_id == selected_id:
+                    entries.append((source_id, content))
+                else:
+                    # Shadowed (or simply absent) — only its existence flips
+                    # the fingerprint, never its content.
+                    entries.append((source_id, "1" if content else "0"))
 
     hasher = hashlib.sha256()
     for source_id, content in entries:

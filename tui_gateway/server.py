@@ -2836,17 +2836,20 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
         return
 
     try:
-        prompt = agent._build_system_prompt(None)
+        # Build + fingerprint as one persist-ready unit: a plain build-then-
+        # fingerprint sequence has a TOCTOU window (an edit landing between
+        # the two reads would tag a stale prompt with a fresh-looking
+        # fingerprint, reopening #68563 through its own fix) — see
+        # agent.conversation_loop.build_prompt_with_fingerprint.
+        from agent.conversation_loop import build_prompt_with_fingerprint
+
+        prompt, fingerprint = build_prompt_with_fingerprint(agent, None)
         agent._cached_system_prompt = prompt
-        # Include the context fingerprint so the next restore doesn't treat
-        # this freshly-persisted prompt as legacy/stale (#68563) and rebuild
-        # it — that would waste the prefix cache right after a model switch.
-        from agent.conversation_loop import _compute_current_context_fingerprint
 
         db.update_system_prompt(
             getattr(agent, "session_id", None) or session_key,
             prompt,
-            _compute_current_context_fingerprint(agent),
+            fingerprint,
         )
     except Exception:
         logger.debug("failed to persist live session system prompt", exc_info=True)

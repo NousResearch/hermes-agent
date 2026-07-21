@@ -44,11 +44,18 @@ def _base_job(**overrides):
     return job
 
 
-def _run_with_current_provider(job, current_provider, tmp_path):
+def _run_with_current_provider(job, current_provider, tmp_path, drift_policy=None):
     """Drive run_job with resolve_runtime_provider pinned to ``current_provider``.
+
+    Args:
+        drift_policy: If set, writes config.yaml with this cron.drift_policy.
 
     Returns (success, output, final_response, error, agent_constructed).
     """
+    if drift_policy is not None:
+        (tmp_path / "config.yaml").write_text(
+            f"cron:\n  drift_policy: {drift_policy}\n"
+        )
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -109,6 +116,18 @@ class TestProviderDriftGuard:
         assert "spend" in blob
         assert "cronjob action=update" in blob
         assert "44585" in blob
+
+    def test_b2_adapt_provider_drift_succeeds(self, tmp_path):
+        """(b2) Unpinned job with drift_policy=adapt → auto-adapts and runs."""
+        job = _base_job(provider_snapshot="openrouter")
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider(
+                job, "nous", tmp_path, drift_policy="adapt",
+            )
+
+        assert agent_constructed is True, "must run with adapt policy"
+        assert success is True
+        assert error is None
 
     def test_c_no_snapshot_runs_backcompat(self, tmp_path):
         """(c) Pre-existing job with NO provider_snapshot → runs (back-compat).
@@ -243,12 +262,17 @@ class TestCreateJobSnapshot:
         assert job["model_snapshot"] is None
 
 
-def _run_with_current_provider_and_model(job, current_provider, current_model, tmp_path):
+def _run_with_current_provider_and_model(job, current_provider, current_model, tmp_path, drift_policy=None):
     """Drive run_job with resolved provider pinned and config.yaml model.default
-    set to ``current_model`` (the unpinned-model fire-time source)."""
-    (tmp_path / "config.yaml").write_text(
-        f"model:\n  default: {current_model}\n"
-    )
+    set to ``current_model`` (the unpinned-model fire-time source).
+
+    Args:
+        drift_policy: If set, includes cron.drift_policy in the config.
+    """
+    config = f"model:\n  default: {current_model}\n"
+    if drift_policy is not None:
+        config += f"cron:\n  drift_policy: {drift_policy}\n"
+    (tmp_path / "config.yaml").write_text(config)
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
@@ -296,6 +320,21 @@ class TestModelDriftGuard:
         assert "claude-fable-5" in blob
         assert "llama-3.3-70b-instruct:free" in blob
         assert "44585" in blob
+
+    def test_model_drift_adapt_mode_succeeds(self, tmp_path):
+        """Model drift with drift_policy=adapt → auto-adapts and runs."""
+        job = _base_job(
+            provider_snapshot="openrouter",
+            model_snapshot="llama-3.3-70b-instruct:free",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job, "openrouter", "claude-fable-5",
+                tmp_path, drift_policy="adapt",
+            )
+        assert agent_constructed is True, "must run with adapt policy"
+        assert success is True
+        assert error is None
 
     def test_model_snapshot_matches_runs(self, tmp_path):
         # Default model unchanged → runs normally.

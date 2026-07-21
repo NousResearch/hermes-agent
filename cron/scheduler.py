@@ -277,7 +277,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim, update_job
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -3280,23 +3280,64 @@ def run_job(
                 )
         if _drift:
             _changes = "; ".join(_drift)
-            logger.warning(
-                "Job '%s': SKIPPED — global inference config drifted since "
-                "creation (%s) and this job is unpinned. Skipped to prevent "
-                "unintended spend. Pin explicitly to proceed: "
-                "`cronjob action=update job_id=%s provider=<p> model=<m>`.",
-                job_id,
-                _changes,
-                job_id,
-            )
-            raise RuntimeError(
-                f"Skipped to prevent unintended spend: global inference config "
-                f"drifted since this job was created ({_changes}), and this job "
-                f"is unpinned. No inference call was made. To run on the new "
-                f"config, pin it explicitly: `cronjob action=update "
-                f"job_id={job_id} provider=<provider> model=<model>` "
-                f"(or pin the original values to keep them). See #44585."
-            )
+            _drift_policy = str(
+                (_cfg.get("cron") or {}).get("drift_policy", "fail")
+            ).strip().lower()
+
+            if _drift_policy == "adapt":
+                # Auto-re-snapshot: update the job's provider/model snapshots
+                # to current values so the next tick doesn't re-detect drift.
+                # The job follows the new global config. Log the transition
+                # visibly so operators can audit config changes that affected
+                # cron jobs (#44585).
+                _snapshot_updates: dict = {}
+                if _provider_snapshot:
+                    _snapshot_updates["provider_snapshot"] = str(
+                        primary_provider_for_drift
+                        or runtime.get("provider")
+                        or ""
+                    ).strip().lower() or None
+                if _model_snapshot:
+                    _snapshot_updates["model_snapshot"] = str(
+                        primary_model_for_drift or ""
+                    ).strip().lower() or None
+                if _snapshot_updates:
+                    try:
+                        update_job(job_id, _snapshot_updates)
+                    except Exception as _snap_exc:
+                        logger.warning(
+                            "Job '%s': drift detected (%s) but failed to "
+                            "persist updated snapshots: %s — running with "
+                            "current config anyway.",
+                            job_id, _changes, _snap_exc,
+                        )
+                logger.warning(
+                    "Job '%s': global inference config drifted since "
+                    "creation (%s) — auto-adapted snapshots to current "
+                    "values (drift_policy=adapt).",
+                    job_id, _changes,
+                )
+                # Fall through — run normally with the current global config.
+            else:
+                # Fail-closed (default) — skip the job, no inference call.
+                logger.warning(
+                    "Job '%s': SKIPPED — global inference config drifted "
+                    "since creation (%s) and this job is unpinned. Skipped "
+                    "to prevent unintended spend. Pin explicitly or set "
+                    "cron.drift_policy=adapt to auto-follow config changes.",
+                    job_id,
+                    _changes,
+                )
+                raise RuntimeError(
+                    f"Skipped to prevent unintended spend: global inference "
+                    f"config drifted since this job was created ({_changes}), "
+                    f"and this job is unpinned. No inference call was made. "
+                    f"To run on the new config, pin it explicitly: "
+                    f"`cronjob action=update job_id={job_id} provider="
+                    f"<provider> model=<model>` (or pin the original values "
+                    f"to keep them). Or set cron.drift_policy=adapt to "
+                    f"auto-follow config changes. See #44585."
+                )
 
         fallback_model = get_fallback_chain(_cfg) or None
         credential_pool = None

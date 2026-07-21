@@ -2842,6 +2842,12 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Provider/model drift behavior for unpinned cron jobs (#44585).
+        # "fail" — skip the job when global config changed since creation
+        #           (prevents unintended spend; current behaviour).
+        # "adapt" — auto-update snapshots and continue running on the new
+        #            global config (cron jobs follow the user's default).
+        "drift_policy": "fail",
         # Timeout (seconds) for SessionDB() init inside cron jobs.
         # SessionDB opens/migrates state.db synchronously and has no timeout
         # of its own against a wedged sqlite3.connect. An unbounded hang here

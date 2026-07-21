@@ -26,31 +26,18 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def _win_path_to_wsl(path: str) -> str | None:
-    """Convert a Windows drive path to its WSL /mnt/<drive>/... equivalent."""
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
-    if not match:
-        return None
-    drive = match.group(1).lower()
-    tail = match.group(2).replace("\\", "/")
-    return f"/mnt/{drive}/{tail}"
-
-
 def _translate_acp_cwd(cwd: str) -> str:
     """Translate Windows ACP cwd values when Hermes itself is running in WSL.
 
     Windows ACP clients can launch ``hermes acp`` inside WSL while still sending
-    editor workspaces as Windows drive paths such as ``E:\\Projects``. Store
-    and execute against the WSL mount path so agents, tools, and persisted ACP
-    sessions all agree on the usable workspace. Native Linux/macOS keeps the
-    original cwd unchanged.
+    editor workspaces as Windows drive paths (``E:\\Projects``) or
+    ``\\\\wsl.localhost\\`` UNC paths. Store and execute against the POSIX form so
+    agents, tools, and persisted ACP sessions all agree on the usable workspace.
+    Native Linux/macOS keeps the original cwd unchanged.
     """
-    from hermes_constants import is_wsl
+    from hermes_constants import translate_cwd_for_wsl_backend
 
-    if not is_wsl():
-        return cwd
-    translated = _win_path_to_wsl(str(cwd))
-    return translated if translated is not None else cwd
+    return translate_cwd_for_wsl_backend(str(cwd))
 
 
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
@@ -61,7 +48,9 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
 
     # Normalize Windows drive paths into the equivalent WSL mount form so
     # ACP history filters match the same workspace across Windows and WSL.
-    translated = _win_path_to_wsl(expanded)
+    from hermes_constants import windows_path_to_wsl
+
+    translated = windows_path_to_wsl(expanded)
     if translated is not None:
         expanded = translated
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
@@ -545,9 +534,15 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # Load conversation history.
+        # Load conversation history. repair_alternation: this restore feeds
+        # LIVE REPLAY — the loaded list becomes the resumed agent's working
+        # conversation. A durable ``user;user`` violation left in state.db would
+        # otherwise re-fire the pre-request defensive repair on every request
+        # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

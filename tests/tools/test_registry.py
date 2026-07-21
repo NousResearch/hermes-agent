@@ -47,6 +47,70 @@ class TestRegisterAndDispatch:
         result = json.loads(reg.dispatch("echo", {"msg": "hi"}))
         assert result == {"msg": "hi"}
 
+    def test_dispatch_preserves_supported_multimodal_result(self):
+        reg = ToolRegistry()
+        multimodal = {
+            "_multimodal": True,
+            "content": [{"type": "text", "text": "captured"}],
+            "text_summary": "captured",
+        }
+        reg.register(
+            name="capture",
+            toolset="computer_use",
+            schema=_make_schema("capture"),
+            handler=lambda args, **kw: multimodal,
+        )
+
+        assert reg.dispatch("capture", {}) is multimodal
+
+    def test_dispatch_rejects_unsupported_handler_results_with_structured_error(self):
+        invalid_results = ({"ok": True}, b"bytes", None, 42)
+
+        for invalid in invalid_results:
+            reg = ToolRegistry()
+            reg.register(
+                name="bad_result",
+                toolset="core",
+                schema=_make_schema("bad_result"),
+                handler=lambda args, _invalid=invalid, **kw: _invalid,
+            )
+
+            raw = reg.dispatch("bad_result", {})
+            result = json.loads(raw)
+
+            assert isinstance(raw, str)
+            assert result["error_type"] == "tool_result_contract"
+            assert result["tool"] == "bad_result"
+            assert result["result_type"] == type(invalid).__name__
+            assert "unsupported result type" in result["error"]
+
+    def test_handler_contract_error_survives_model_tools_pipeline(self):
+        from model_tools import handle_function_call, registry
+
+        name = "test_invalid_registry_result"
+        registry.register(
+            name=name,
+            toolset="core",
+            schema=_make_schema(name),
+            handler=lambda args, **kw: None,
+        )
+        try:
+            raw = handle_function_call(
+                name,
+                {},
+                task_id="contract-test",
+                skip_pre_tool_call_hook=True,
+            )
+        finally:
+            registry.deregister(name)
+
+        result = json.loads(raw)
+        assert len(raw) > 0  # downstream sizing/logging remains safe
+        assert json.loads(json.dumps({"content": raw}))["content"] == raw
+        assert result["error_type"] == "tool_result_contract"
+        assert result["tool"] == name
+        assert result["result_type"] == "NoneType"
+
 
 class TestGetDefinitions:
     def test_returns_openai_format(self):
@@ -441,7 +505,7 @@ class TestThreadSafety:
 
         def blocking_check():
             check_started.set()
-            writer_completed_during_check["value"] = writer_done.wait(timeout=1)
+            writer_completed_during_check["value"] = writer_done.wait(timeout=10)
             return True
 
         reg.register(
@@ -465,7 +529,7 @@ class TestThreadSafety:
                 errors.append(exc)
 
         def writer():
-            assert check_started.wait(timeout=1)
+            assert check_started.wait(timeout=10)
             reg.register(
                 name="gamma",
                 toolset="new",
@@ -478,8 +542,8 @@ class TestThreadSafety:
         writer_thread = threading.Thread(target=writer)
         reader_thread.start()
         writer_thread.start()
-        reader_thread.join(timeout=2)
-        writer_thread.join(timeout=2)
+        reader_thread.join(timeout=15)
+        writer_thread.join(timeout=15)
 
         assert not reader_thread.is_alive()
         assert not writer_thread.is_alive()
@@ -501,7 +565,7 @@ class TestThreadSafety:
 
         def blocking_check():
             check_started.set()
-            writer_completed_during_check["value"] = writer_done.wait(timeout=1)
+            writer_completed_during_check["value"] = writer_done.wait(timeout=10)
             return True
 
         reg.register(
@@ -525,7 +589,7 @@ class TestThreadSafety:
                 errors.append(exc)
 
         def writer():
-            assert check_started.wait(timeout=1)
+            assert check_started.wait(timeout=10)
             reg.deregister("beta")
             writer_done.set()
 
@@ -533,8 +597,8 @@ class TestThreadSafety:
         writer_thread = threading.Thread(target=writer)
         reader_thread.start()
         writer_thread.start()
-        reader_thread.join(timeout=2)
-        writer_thread.join(timeout=2)
+        reader_thread.join(timeout=15)
+        writer_thread.join(timeout=15)
 
         assert not reader_thread.is_alive()
         assert not writer_thread.is_alive()

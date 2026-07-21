@@ -535,6 +535,26 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="add", target="invalid", content="x", store=store))
         assert result["success"] is False
 
+    def test_null_target_defaults_to_memory_store(self, store):
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target=None,
+                content="Project uses pytest with xdist.",
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert store.memory_entries == ["Project uses pytest with xdist."]
+        assert store.user_entries == []
+
+    def test_invalid_non_string_target_still_rejected(self, store):
+        result = json.loads(
+            memory_tool(action="add", target=42, content="via tool", store=store)
+        )
+        assert result["success"] is False
+        assert "Invalid target" in result["error"]
+
     def test_unknown_action(self, store):
         result = json.loads(memory_tool(action="unknown", store=store))
         assert result["success"] is False

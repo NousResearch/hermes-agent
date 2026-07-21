@@ -30,6 +30,7 @@ from agent.model_metadata import (
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    estimate_request_tokens_rough,
 )
 
 
@@ -120,11 +121,109 @@ class TestEstimateMessagesTokensRough:
         assert result < 5000
 
 
+class TestEstimateRequestTokensRough:
+    def test_caches_tools_estimate(self):
+        messages = [{"role": "user", "content": "hello"}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run a command",
+                    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                },
+            }
+        ]
+
+        # json.dumps is used for params sizing; ensure the tools estimate is cached
+        # so repeated calls don't keep re-serializing the same schema list.
+        with patch("agent.model_metadata.json.dumps", wraps=__import__("json").dumps) as dumps:
+            estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
+            estimate_request_tokens_rough(messages, system_prompt="x" * 8, tools=tools)
+            assert dumps.call_count == 1
+
+    def test_tools_cache_is_bounded(self):
+        # A long-lived process builds many transient tool lists; the cache must
+        # not grow without bound. Feed more distinct lists than the cap and
+        # confirm the cache never exceeds it.
+        import agent.model_metadata as mm
+
+        mm._TOOLS_TOKENS_CACHE.clear()
+        cap = mm._TOOLS_TOKENS_CACHE_MAX
+        # Keep references so ids are not recycled mid-loop, forcing distinct keys.
+        held = []
+        for i in range(cap + 50):
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"tool_{i}",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+            held.append(tools)
+            mm._estimate_tools_tokens_rough(tools)
+            assert len(mm._TOOLS_TOKENS_CACHE) <= cap
+        assert len(mm._TOOLS_TOKENS_CACHE) == cap
+
+
 # =========================================================================
 # Default context lengths
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
+        """The bare ``k3`` slug's 1 Mi context must not leak to unverified endpoints.
+
+        The named ``kimi-k3`` / ``kimi-k3-cot`` slugs resolve to 1 Mi
+        EVERYWHERE via DEFAULT_CONTEXT_LENGTHS — the window is a property of
+        the model, served at 1M on api.moonshot.ai and api.moonshot.cn alike
+        (verified against models.dev + OpenRouter live metadata). Only the
+        bare ``k3`` slug, which exists solely on the Kimi Coding Plan
+        endpoint, stays endpoint-scoped.
+        """
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            accepted_urls = (
+                "https://api.kimi.com/coding",
+                "https://API.KIMI.COM/coding/",
+                "https://api.kimi.com:443/coding",
+                "https://api.kimi.com/coding/v1",
+            )
+            rejected_urls = (
+                "http://api.kimi.com/coding",
+                "https://api.kimi.com:8443/coding",
+                "https://api.kimi.com/coding/../other",
+                "https://api.kimi.com/codingevil",
+                "https://example.invalid/coding",
+                "https://[api.kimi.com/coding",
+                "https://api.moonshot.ai/v1",
+                "https://api.moonshot.cn/v1",
+            )
+
+            for base_url in accepted_urls:
+                for model in ("k3", "kimi-k3", "kimi-k3-cot"):
+                    assert get_model_context_length(
+                        model, provider="kimi-coding", base_url=base_url
+                    ) == 1_048_576
+
+            for base_url in rejected_urls:
+                # Bare slug: endpoint-scoped, must NOT leak off-endpoint.
+                assert get_model_context_length(
+                    "k3", provider="kimi-coding", base_url=base_url
+                ) != 1_048_576
+                # Named slugs: global DEFAULT_CONTEXT_LENGTHS entry applies
+                # everywhere the model is actually named kimi-k3.
+                for model in ("kimi-k3", "kimi-k3-cot"):
+                    assert get_model_context_length(
+                        model, provider="kimi-coding", base_url=base_url
+                    ) == 1_048_576
+
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.
@@ -246,6 +345,32 @@ class TestDefaultContextLengths:
             # Older GLM variants still resolve to the generic 202K fallback
             assert get_model_context_length("glm-5") == 202752
             assert get_model_context_length("glm-5.1") == 202752
+
+    def test_kimi_k3_context_1m(self):
+        """Kimi K3 must resolve to 1M, not the generic Kimi fallback of 256K.
+
+        Context window verified against models.dev and OpenRouter live
+        metadata (1,048,576; 2026-07). Kimi K3 is the current flagship model
+        with a 1M-token context window — the value matches the
+        endpoint-scoped override in _endpoint_scoped_context_length.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        assert DEFAULT_CONTEXT_LENGTHS["kimi-k3"] == 1_048_576
+        assert DEFAULT_CONTEXT_LENGTHS["kimi"] == 262144
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            # Kimi K3 (1M) must NOT fall through to the generic 256K entry
+            assert get_model_context_length("kimi-k3") == 1_048_576
+            # Vendor-prefixed forms (kimi provider, openrouter)
+            assert get_model_context_length("kimi/kimi-k3") == 1_048_576
+            assert get_model_context_length("moonshotai/kimi-k3") == 1_048_576
+            # Older/unknown Kimi models still resolve to 256K fallback
+            assert get_model_context_length("kimi-k2.6") == 262144
+            assert get_model_context_length("kimi-k2") == 262144
 
     def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
         """OpenRouter-routed slugs resolve via the live OR catalog before the
@@ -1035,6 +1160,49 @@ class TestBedrockContextResolution:
         mock_fetch.assert_not_called()
 
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_bedrock_claude_4_6_resolves_to_1m_before_probe(self, mock_fetch):
+        """Claude 4.6 Bedrock IDs resolve to the 1M table entry."""
+        ctx = get_model_context_length(
+            "us.anthropic.claude-sonnet-4-6",
+            provider="bedrock",
+            base_url="https://bedrock-runtime.us-east-2.amazonaws.com",
+        )
+        assert ctx == 1_000_000
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_bedrock_claude_fable_resolves_to_1m_not_128k_default(self, mock_fetch):
+        """Fable on Bedrock must hit its own table entry, not the 128K default.
+
+        DEFAULT_CONTEXT_LENGTHS maps claude-fable-5 -> 1M, but the Bedrock
+        branch at step 1b returns get_bedrock_context_length() before that
+        catalog is ever consulted — so a missing BEDROCK_CONTEXT_LENGTHS
+        entry silently reported 128K for a 1M model.
+        """
+        ctx = get_model_context_length(
+            "global.anthropic.claude-fable-5",
+            provider="bedrock",
+            base_url="https://bedrock-runtime.us-east-2.amazonaws.com",
+        )
+        assert ctx == 1_000_000
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_bedrock_claude_4_6_ignores_stale_200k_cache(self, mock_fetch, tmp_path):
+        """Old 200K Bedrock cache entries must not mask the 1M table entry."""
+        cache_file = tmp_path / "context_length_cache.yaml"
+        base_url = "https://bedrock-runtime.us-east-2.amazonaws.com"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("us.anthropic.claude-sonnet-4-6", base_url, 200_000)
+            ctx = get_model_context_length(
+                "us.anthropic.claude-sonnet-4-6",
+                provider="bedrock",
+                base_url=base_url,
+            )
+        assert ctx == 1_000_000
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_bedrock_url_without_provider_hint(self, mock_fetch):
         """bedrock-runtime host infers Bedrock even when provider is omitted."""
         ctx = get_model_context_length(
@@ -1442,6 +1610,17 @@ class TestContextLengthCache:
         cache_file = tmp_path / "nonexistent.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             assert get_cached_context_length("test/model", "http://x") is None
+
+    def test_null_context_lengths_key_returns_empty(self, tmp_path):
+        """``context_lengths:`` with no value parses as None — must behave
+        like an empty cache instead of crashing every caller (#47135)."""
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text("context_lengths:\n")
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_cached_context_length("test/model", "http://x") is None
+            # save must also survive the null key and repair the file
+            save_context_length("test/model", "http://x", 32768)
+            assert get_cached_context_length("test/model", "http://x") == 32768
 
     def test_multiple_models_cached(self, tmp_path):
         cache_file = tmp_path / "cache.yaml"

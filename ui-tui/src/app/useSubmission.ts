@@ -16,7 +16,7 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
 
-const expandSnips = (snips: PasteSnippet[]) => {
+export const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
 
   for (const { label, text } of snips) {
@@ -31,18 +31,8 @@ const spliceMatches = (text: string, matches: RegExpMatchArray[], results: strin
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
 export function useSubmission(opts: UseSubmissionOptions) {
-  const {
-    appendMessage,
-    composerActions,
-    composerRefs,
-    composerState,
-    gw,
-    maybeGoodVibes,
-    setLastUserMsg,
-    slashRef,
-    submitRef,
-    sys
-  } = opts
+  const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
+    opts
 
   const lastEmptyAt = useRef(0)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -87,14 +77,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
           enqueue: composerActions.enqueue,
           expand,
           gw,
-          maybeGoodVibes,
           setLastUserMsg,
           sys
         },
         showUserMessage
       )
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, gw, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -228,9 +217,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
+      // History stores expanded paste content, not the `[[…]]` label: snips
+      // are cleared on submit, so recall must be self-contained. Idempotent on
+      // label-free text, so re-submitting a recalled entry stays stable.
+      const toHistory = expandSnips(composerState.pasteSnips)(full)
+
       if (looksLikeSlashCommand(full)) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
-        composerActions.pushHistory(full)
+        composerActions.pushHistory(toHistory)
         slashRef.current(full)
         composerActions.clearIn()
 
@@ -246,7 +240,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const live = getUiState()
 
       if (!live.sid) {
-        composerActions.pushHistory(full)
+        composerActions.pushHistory(toHistory)
         composerActions.enqueue(full)
         composerActions.clearIn()
 
@@ -282,7 +276,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return sendQueued(picked)
       }
 
-      composerActions.pushHistory(full)
+      composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
         return handleBusyInput(full)
@@ -296,7 +290,18 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
+    [
+      appendMessage,
+      composerActions,
+      composerRefs,
+      composerState.pasteSnips,
+      handleBusyInput,
+      interpolate,
+      send,
+      sendQueued,
+      shellExec,
+      slashRef
+    ]
   )
 
   const submit = useCallback(
@@ -362,7 +367,6 @@ export interface UseSubmissionOptions {
   composerRefs: ComposerRefs
   composerState: ComposerState
   gw: GatewayClient
-  maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
   submitRef: MutableRefObject<(value: string) => void>

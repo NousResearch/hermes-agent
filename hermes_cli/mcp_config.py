@@ -152,7 +152,8 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
 
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
-    return f"MCP_{name.upper().replace('-', '_')}_API_KEY"
+    suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
+    return f"MCP_{suffix}_API_KEY"
 
 
 def _strip_bearer_prefix(token: str) -> str:
@@ -168,6 +169,31 @@ def _strip_bearer_prefix(token: str) -> str:
     if stripped[:7].lower() == "bearer ":
         return stripped[7:].strip()
     return stripped
+
+
+def _bearer_auth_headers(name: str) -> Dict[str, str]:
+    """Build the persisted Authorization header for a named MCP server.
+
+    The secret itself lives in the active profile's ``.env`` file. Keeping
+    this template construction beside ``_env_key_for_server`` ensures the CLI
+    and Dashboard produce byte-equivalent MCP configuration.
+    """
+    env_key = _env_key_for_server(name)
+    return {"Authorization": f"Bearer ${{{env_key}}}"}
+
+
+def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
+    """Persist a Bearer token in the active profile and return safe headers.
+
+    ``token`` is a one-time provisioning value. It is normalized and written
+    only to ``.env``; callers persist the returned interpolation template in
+    ``config.yaml``.
+    """
+    normalized = _strip_bearer_prefix(token)
+    if not normalized or normalized.lower() == "bearer":
+        raise ValueError("Bearer token is required")
+    save_env_value(_env_key_for_server(name), normalized)
+    return _bearer_auth_headers(name)
 
 
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
@@ -238,11 +264,14 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     """
     from tools.mcp_tool import _interpolate_env_vars
 
-    try:
-        from hermes_cli.env_loader import load_hermes_dotenv
-        load_hermes_dotenv()
-    except Exception:  # pragma: no cover — defensive
-        pass
+    from agent.secret_scope import current_secret_scope
+
+    if current_secret_scope() is None:
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+            load_hermes_dotenv()
+        except Exception:  # pragma: no cover — defensive
+            pass
     return _interpolate_env_vars(config)
 
 
@@ -491,19 +520,17 @@ def cmd_mcp_add(args):
                 existing_key = get_env_value(env_key)
                 if existing_key:
                     _success(f"{env_key}: already configured")
-                    api_key = existing_key
                 else:
                     api_key = _prompt("API key / Bearer token", password=True)
                     if api_key:
-                        api_key = _strip_bearer_prefix(api_key)
-                        save_env_value(env_key, api_key)
+                        server_config["headers"] = _save_bearer_auth_token(
+                            name, api_key
+                        )
                         _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
 
                 # Set header with env var interpolation
-                if api_key or existing_key:
-                    server_config["headers"] = {
-                        "Authorization": f"Bearer ${{{env_key}}}"
-                    }
+                if existing_key:
+                    server_config["headers"] = _bearer_auth_headers(name)
 
     # ── Discovery: connect and list tools ─────────────────────────────
 

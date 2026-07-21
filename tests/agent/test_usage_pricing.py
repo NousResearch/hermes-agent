@@ -39,6 +39,44 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     assert normalized.output_tokens == 700
 
 
+def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
+    """DeepSeek's native API (api.deepseek.com) reports context-cache hits as
+    top-level prompt_cache_hit_tokens / prompt_cache_miss_tokens (with
+    prompt_tokens = hit + miss), not OpenAI's nested
+    prompt_tokens_details.cached_tokens. Before this fix, direct DeepSeek
+    sessions always normalized to cache_read_tokens=0 — cache hits were
+    invisible in accounting and billed at the full input rate (#61871)."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=400,
+        prompt_cache_hit_tokens=1500,
+        prompt_cache_miss_tokens=500,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1500
+    # prompt_tokens includes cached; input = 2000 - 1500 = the miss bucket
+    assert normalized.input_tokens == 500
+    assert normalized.output_tokens == 400
+
+
+def test_normalize_usage_nested_details_win_over_deepseek_top_level():
+    """When a proxy forwards both shapes, the OpenAI nested value wins and
+    the DeepSeek top-level field is not double-read."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=100,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=900),
+        prompt_cache_hit_tokens=1500,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 900
+    assert normalized.input_tokens == 1100
+
+
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when
@@ -223,7 +261,8 @@ def test_deepseek_v4_pro_pricing_entry_exists():
 
     Before this fix, deepseek-v4-pro sessions showed as unknown cost
     in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.
+    entry for that model.  See #24218.  Rates track the 2026-07 price cut
+    ($1.74/$3.48 → $0.435/$0.87).
     """
     entry = get_pricing_entry(
         "deepseek-v4-pro",
@@ -233,9 +272,9 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 1.74
-    assert float(entry.output_cost_per_million) == 3.48
-    assert float(entry.cache_read_cost_per_million) == 0.0145
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.003625
 
 
 def test_deepseek_v4_pro_estimate_usage_cost():
@@ -248,8 +287,39 @@ def test_deepseek_v4_pro_estimate_usage_cost():
 
     assert result.status == "estimated"
     assert result.amount_usd is not None
-    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
-    assert float(result.amount_usd) == 3.48
+    # 1M input × $0.435/M + 500K output × $0.87/M = $0.435 + $0.435 = $0.87
+    assert float(result.amount_usd) == 0.87
+
+
+def test_deepseek_deprecated_aliases_price_as_v4_flash():
+    """Invariant: deepseek-chat / deepseek-reasoner are deprecated aliases for
+    deepseek-v4-flash's non-thinking / thinking modes (deprecation 2026-07-24)
+    — they must bill at identical rates to the flash entry, or sessions on the
+    legacy names over/under-report cost."""
+    flash = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+    assert flash is not None
+    for alias in ("deepseek-chat", "deepseek-reasoner"):
+        entry = get_pricing_entry(alias, provider="deepseek")
+        assert entry is not None, alias
+        assert entry.input_cost_per_million == flash.input_cost_per_million, alias
+        assert entry.output_cost_per_million == flash.output_cost_per_million, alias
+        assert (
+            entry.cache_read_cost_per_million == flash.cache_read_cost_per_million
+        ), alias
+
+
+def test_deepseek_rows_all_carry_cache_read_pricing():
+    """Invariant: DeepSeek publishes a cache-hit rate for every current model;
+    every deepseek snapshot row must carry cache_read < input so cached
+    sessions estimate correctly instead of billing reads at full price."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    ds_rows = [k for k in _OFFICIAL_DOCS_PRICING if k[0] == "deepseek"]
+    assert ds_rows, "expected at least one deepseek pricing row"
+    for key in ds_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
 
 
 def test_bedrock_claude_rows_all_carry_cache_pricing():
@@ -278,17 +348,58 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
         assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
 
 
+def test_bedrock_current_gen_claude_rows_resolve():
+    """Current-gen Claude models (Opus 4.8/4.7, Sonnet 5) must have Bedrock
+    pricing rows so cached sessions report a dollar cost, not ``unknown``.
+    Assert each resolves via the bare id and a cross-region inference profile
+    (us./global. prefix), that every id for a given model resolves to the same
+    entry, and that the row carries the cache fields a Bedrock Claude session
+    needs.
+
+    (Version-suffixed IDs like ``...-v1:0`` are covered separately by the
+    normalizer test in the suffix-strip change; this test intentionally sticks
+    to id shapes that resolve on ``main`` so it is independent of that PR.)
+    """
+    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    for bare in (
+        "anthropic.claude-opus-4-8",
+        "anthropic.claude-opus-4-7",
+        "anthropic.claude-sonnet-5",
+    ):
+        ref = get_pricing_entry(bare, provider="bedrock", base_url=url)
+        assert ref is not None, bare
+        assert ref.input_cost_per_million is not None, bare
+        assert ref.output_cost_per_million is not None, bare
+        # Output costs more than input across the Claude line; sanity-check the
+        # row isn't malformed (input < output).
+        assert ref.output_cost_per_million > ref.input_cost_per_million, bare
+        # Cache fields present so cached sessions price correctly (the #50295
+        # symptom was unknown cost on cached Bedrock Claude sessions).
+        assert ref.cache_read_cost_per_million is not None, bare
+        assert ref.cache_write_cost_per_million is not None, bare
+        # Cross-region inference profiles resolve to the same entry.
+        for mid in (f"us.{bare}", f"global.{bare}"):
+            entry = get_pricing_entry(mid, provider="bedrock", base_url=url)
+            assert entry is not None, mid
+            assert entry.input_cost_per_million == ref.input_cost_per_million, mid
+            assert entry.output_cost_per_million == ref.output_cost_per_million, mid
+
+
 def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
-    """Cross-region inference profiles (us./global./eu. prefixes) must resolve
-    to the same pricing entry as the bare foundation-model id.  Without prefix
-    normalization, ``us.anthropic.claude-*`` sessions price as unknown.
+    """Cross-region inference profiles must resolve to the same pricing entry
+    as the bare foundation-model id.  Without prefix normalization a scoped
+    ``<region>.anthropic.claude-*`` session prices as unknown.
+
+    Asia-Pacific (``apac.``) and Australia (``au.``) are included because AWS
+    uses the full ``apac.`` prefix, not ``ap.`` — a bare ``ap.`` never matches
+    an ``apac.*`` id, so those geographies previously priced as unknown.
     """
     bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
     bare = get_pricing_entry(
         "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
     )
     assert bare is not None
-    for prefix in ("us.", "global.", "eu."):
+    for prefix in ("us.", "global.", "eu.", "apac.", "au."):
         scoped = get_pricing_entry(
             f"{prefix}anthropic.claude-sonnet-4-5",
             provider="bedrock",
@@ -297,6 +408,61 @@ def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
         assert scoped is not None, prefix
         assert scoped.input_cost_per_million == bare.input_cost_per_million
         assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
+
+
+def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():
+    """Bedrock profile IDs may include the provider's dated version suffix.
+
+    The pricing table intentionally uses shorter model-family IDs, so the
+    lookup needs a longest-prefix fallback after stripping the region scope.
+    """
+    bare = get_pricing_entry("anthropic.claude-sonnet-4-6", provider="bedrock")
+    assert bare is not None
+
+    for model in (
+        "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+        "global.anthropic.claude-sonnet-4-6-20250514-v1:0",
+    ):
+        scoped = get_pricing_entry(model, provider="bedrock")
+        assert scoped is not None, model
+        assert scoped.input_cost_per_million == bare.input_cost_per_million
+        assert scoped.output_cost_per_million == bare.output_cost_per_million
+        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
+        assert scoped.cache_write_cost_per_million == bare.cache_write_cost_per_million
+
+
+def test_bedrock_pricing_supports_less_common_inference_profile_prefixes():
+    """AWS also exposes profile scopes beyond us./global./eu.; those should
+    not silently fall through to unknown pricing.
+    """
+    bare = get_pricing_entry("anthropic.claude-haiku-4-5", provider="bedrock")
+    entry = get_pricing_entry(
+        "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+        provider="bedrock",
+    )
+
+    assert bare is not None
+    assert entry is not None
+    for field in (
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "cache_read_cost_per_million",
+        "cache_write_cost_per_million",
+    ):
+        assert getattr(entry, field) == getattr(bare, field)
+
+
+def test_bedrock_unknown_model_continuation_does_not_use_base_pricing():
+    """Unrecognized Bedrock SKUs must remain unknown rather than inheriting a
+    similarly named model family's price.
+    """
+    assert (
+        get_pricing_entry(
+            "anthropic.claude-sonnet-4-6-experimental",
+            provider="bedrock",
+        )
+        is None
+    )
 
 
 def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
@@ -322,3 +488,130 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+def test_fireworks_kimi_k2p6_resolves_with_full_model_path():
+    """Fireworks model ids look like accounts/fireworks/models/<name>;
+    the routing layer must strip the prefix so the dict lookup succeeds."""
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.95
+    assert float(entry.output_cost_per_million) == 4.00
+    assert float(entry.cache_read_cost_per_million) == 0.16
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_fireworks_base_url_host_match_alone_routes_to_pricing():
+    """Provider not explicitly passed; routing infers fireworks from the host."""
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/deepseek-v4-pro",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.74
+    assert float(entry.output_cost_per_million) == 3.48
+
+
+def test_fireworks_qwen3p7_plus_estimate_usage_cost():
+    """End-to-end: Fireworks Qwen3.7-Plus sessions report a dollar estimate."""
+    result = estimate_usage_cost(
+        "accounts/fireworks/models/qwen3p7-plus",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000),
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.40/M + 500K output × $1.60/M = $0.40 + $0.80 = $1.20
+    assert float(result.amount_usd) == 1.20
+
+
+def test_fireworks_router_fast_tier_prices_distinctly():
+    """Fast serving tiers live under accounts/fireworks/routers/<name>-fast and
+    bill at higher rates than the standard model — the routing layer's
+    rsplit("/", 1) must land on the distinct fast-tier entry."""
+    standard = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    fast = get_pricing_entry(
+        "accounts/fireworks/routers/kimi-k2p6-fast",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    assert standard is not None and fast is not None
+    assert fast.input_cost_per_million > standard.input_cost_per_million
+    assert fast.output_cost_per_million > standard.output_cost_per_million
+
+
+def test_fireworks_plugin_fallback_models_all_have_pricing():
+    """Invariant: every model in the Fireworks provider plugin's
+    fallback_models (the picker's curated safety net) must resolve to a
+    pricing entry — otherwise the default picker choices bill as unknown."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("fireworks")
+    assert profile is not None
+    for mid in profile.fallback_models:
+        entry = get_pricing_entry(
+            mid,
+            provider="fireworks",
+            base_url="https://api.fireworks.ai/inference/v1",
+        )
+        assert entry is not None, f"no pricing entry for fallback model {mid}"
+        assert entry.input_cost_per_million is not None, mid
+
+
+def test_fireworks_rows_all_carry_cache_read_pricing():
+    """Invariant: Fireworks publishes cached-input rates for every serverless
+    model, and Hermes prompt caching is active on Fireworks sessions — every
+    snapshot row must carry a cache_read rate cheaper than fresh input."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    fw_rows = [k for k in _OFFICIAL_DOCS_PRICING if k[0] == "fireworks"]
+    assert fw_rows, "expected at least one fireworks pricing row"
+    for key in fw_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
+
+
+def test_deepseek_v4_flash_pricing_entry_exists():
+    """Regression test: deepseek-v4-flash must have a pricing entry.
+
+    Before this fix, deepseek-v4-flash sessions showed $0.00 / cost_source
+    "none" because the _OFFICIAL_DOCS_PRICING table had an entry for
+    deepseek-v4-pro but not the (newer) flash model.  DeepSeek's /models
+    endpoint returns no pricing, so the official-docs snapshot is the only
+    source for direct-provider routes.
+    """
+    entry = get_pricing_entry(
+        "deepseek-v4-flash",
+        provider="deepseek",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
+
+
+def test_deepseek_v4_flash_estimate_usage_cost():
+    """Ensure deepseek-v4-flash sessions get a dollar estimate, not $0/none."""
+    result = estimate_usage_cost(
+        "deepseek-v4-flash",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
+    assert float(result.amount_usd) == 0.28

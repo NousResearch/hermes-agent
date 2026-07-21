@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Issues, Project-Management, Bug-Tracking, Triage]
-    related_skills: [github-auth, github-pr-workflow]
+    related_skills: [github-auth, github-pr-workflow, hermes-pr-provenance]
 ---
 
 # GitHub Issues Management
@@ -19,6 +19,8 @@ Create, search, triage, and manage GitHub issues. Each section shows `gh` first,
 
 - Authenticated with GitHub (see `github-auth` skill)
 - Inside a git repo with a GitHub remote, or specify the repo explicitly
+
+When issue work is part of a Hermes-authored branch or PR, use `hermes-pr-provenance` so issue comments/closures, commit trailers, PR body provenance, and optional Beads metadata agree on the provider-level writer.
 
 ### Setup
 
@@ -354,6 +356,21 @@ curl -s \
       -d '{"state": "closed", "state_reason": "not_planned"}'
     echo "Closed #$num"
   done
+```
+
+## Hermes Provenance for Issue-Led Work
+
+When Hermes comments on, closes, or links issues as part of repository work, keep provider-level attribution aligned with commits and PRs:
+
+- Commit trailers should include `Writer: codex` and `Refs: #42` (or the repo's provider/task ids).
+- PR bodies should include the standard `## Provenance` block from `hermes-pr-provenance`.
+- If the repo uses Beads, mirror the provider into supported metadata such as `implemented_by=codex`, `closed_by=codex`, or `pr_created_by=codex`.
+- Avoid noisy provenance on tiny comments unless the repository expects it.
+
+For substantial issue comments, a compact footer is acceptable:
+
+```markdown
+Provenance: Writer: codex
 ```
 
 ## Quick Reference Table

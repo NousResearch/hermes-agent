@@ -291,6 +291,35 @@ platforms:
           deliver: "log"
 ```
 
+### Pinning the authentication format (`auth_format`)
+
+By default (`auth_format: auto`) the gateway selects the authentication
+scheme from the request headers: a GitHub-style HMAC signature
+(`X-Hub-Signature-256`), a GitLab plain token (`X-Gitlab-Token`), Svix, or
+the generic HMAC signatures. This means the *sender* picks the scheme — a
+caller who knows the shared secret can authenticate an HMAC route with a
+plain `X-Gitlab-Token` header instead, which verifies the caller but does
+**not** bind the request body.
+
+Set the optional `auth_format` field to pin a route to a single scheme:
+
+```yaml
+routes:
+  github-pr:
+    secret: "github-webhook-secret"
+    auth_format: "github"   # only body-bound HMAC (X-Hub-Signature-256)
+    # ...
+  gitlab-mr:
+    secret: "your-gitlab-secret-token"
+    auth_format: "gitlab"   # only the plain X-Gitlab-Token header
+    # ...
+```
+
+Valid values: `auto` (default, header-driven selection), `github`
+(body-bound HMAC only), `gitlab` (plain token only). On a pinned route,
+credentials for any other scheme are rejected. Pin `auth_format: github`
+on any route where the payload contents must be tamper-proof.
+
 ---
 
 ## Delivery Options {#delivery-options}

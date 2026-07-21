@@ -1124,6 +1124,11 @@ class SessionStore:
             return
 
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        # Some gateway recovery paths can install a live routing entry before
+        # the lazy durable load runs.  Durable DB/JSON generations decide only
+        # between those two persisted snapshots; they must not discard newer
+        # process-local routing state that is already serving messages.
+        preloaded_entries = dict(self._entries)
 
         def _decode_entries(raw_entries, *, label):
             decoded = {}
@@ -1205,6 +1210,8 @@ class SessionStore:
                         imported,
                         "y" if imported == 1 else "ies",
                     )
+
+        self._entries.update(preloaded_entries)
 
         durable_generation = max(db_generation, json_generation)
         self._routing_generation = max(

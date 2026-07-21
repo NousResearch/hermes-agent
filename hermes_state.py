@@ -45,6 +45,11 @@ _PROCESS_DB_WRITE_LOCKS: Dict[str, Any] = {}
 _PROCESS_DB_WRITER_COUNTS: Dict[str, int] = {}
 _PROCESS_DB_LOCKS_GUARD = threading.Lock()
 _SESSION_DB_INSTANCES = weakref.WeakSet()
+# Strong references kept for the lifetime of a fork child. A weak SessionDB
+# registry alone is insufficient: dropping the inherited instance could run
+# sqlite3.Connection.__del__ in the child while another parent thread was in
+# SQLite at fork time.
+_FORK_RETAINED_CONNECTIONS: List[sqlite3.Connection] = []
 
 
 class _ForkedSessionDBConnection:
@@ -125,11 +130,8 @@ def _reset_process_db_locks_after_fork() -> None:
                 # SQLite. Retain every inherited file descriptor until
                 # process exit, including across a nested fork, but make every
                 # attempted reuse fail fast.
-                retained = getattr(db, "_inherited_connections_after_fork", None)
-                if retained is None:
-                    retained = []
-                    db._inherited_connections_after_fork = retained
-                retained.append(inherited)
+                if isinstance(inherited, sqlite3.Connection):
+                    _FORK_RETAINED_CONNECTIONS.append(inherited)
                 db._conn = _ForkedSessionDBConnection(db._owner_pid, child_pid)
             # Invalidate the connection before any path resolution/allocation
             # involved in rebinding locks. A partial handler failure must

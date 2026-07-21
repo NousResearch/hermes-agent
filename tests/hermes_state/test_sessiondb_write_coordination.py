@@ -87,7 +87,7 @@ def test_inherited_sessiondb_fails_fast_and_child_can_reopen(tmp_path):
     holder.start()
     assert lock_held.wait(timeout=10)
 
-    child_pid = os.fork()
+    child_pid = os.fork()  # windows-footgun: ok - test is skipif-gated above
     if child_pid == 0:  # pragma: no cover - assertions run in child process
         try:
             try:
@@ -99,7 +99,7 @@ def test_inherited_sessiondb_fails_fast_and_child_can_reopen(tmp_path):
                 os._exit(3)
 
             child_db = SessionDB(db_path=db_path)
-            grandchild_pid = os.fork()
+            grandchild_pid = os.fork()  # windows-footgun: ok - inherited skipif gate
             if grandchild_pid == 0:
                 try:
                     for inherited_db in (db, child_db):
@@ -128,6 +128,22 @@ def test_inherited_sessiondb_fails_fast_and_child_can_reopen(tmp_path):
                 )
             )
             child_db.close()
+            import gc
+            import hermes_state as state_module
+            import weakref
+
+            retained_count = len(state_module._FORK_RETAINED_CONNECTIONS)
+            if retained_count < 1:
+                os._exit(10)
+            inherited_db_ref = weakref.ref(db)
+            del holder
+            del hold_writer_lock
+            del db
+            gc.collect()
+            if inherited_db_ref() is not None:
+                os._exit(8)
+            if len(state_module._FORK_RETAINED_CONNECTIONS) != retained_count:
+                os._exit(9)
             os._exit(0)
         except BaseException:
             os._exit(4)

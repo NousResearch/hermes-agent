@@ -51,6 +51,22 @@ class TestAnthropicDotToHyphen:
         result = normalize_model_for_provider("anthropic/claude-sonnet-4.6", "anthropic")
         assert result == "claude-sonnet-4-6"
 
+    @pytest.mark.parametrize("model", [
+        "gpt-5.5",
+        "gpt-5.4-mini",
+        "gemini-3.0-pro",
+        "minimax-m2.7",
+    ])
+    def test_anthropic_does_not_mangle_foreign_vendor_models(self, model):
+        """Foreign-vendor models that reach the anthropic provider (e.g. via
+        auto-resolution fallthrough when an aggregator is down) must NOT be
+        dot-hyphenated.  Mangling ``gpt-5.5`` -> ``gpt-5-5`` produced a
+        misleading HTTP 404 ``model: gpt-5-5``.  Only Anthropic-native
+        (claude) models use the hyphenated naming.
+        """
+        result = normalize_model_for_provider(model, "anthropic")
+        assert result == model, f"Expected {model!r} unchanged, got {result!r}"
+
 
 # ── OpenCode Zen regression ────────────────────────────────────────────
 

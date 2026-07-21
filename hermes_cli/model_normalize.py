@@ -410,11 +410,20 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return name
 
     # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
+    #     The hyphenated naming convention (claude-sonnet-4.6 ->
+    #     claude-sonnet-4-6) is Anthropic-specific.  Only apply it to
+    #     Anthropic-native (claude) models.  A foreign-vendor model that
+    #     reaches the anthropic provider — e.g. via auto-resolution
+    #     fallthrough when an aggregator is down — must pass through
+    #     unchanged: mangling "gpt-5.5" -> "gpt-5-5" yields a misleading
+    #     HTTP 404 "model: gpt-5-5" instead of the honest "model: gpt-5.5".
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
-        return _dots_to_hyphens(bare)
+        if detect_vendor(bare) == "anthropic":
+            return _dots_to_hyphens(bare)
+        return bare
 
     # --- Copilot / Copilot ACP: delegate to the Copilot-specific
     #     normalizer.  It knows about the alias table (vendor-prefix

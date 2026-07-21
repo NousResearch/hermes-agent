@@ -387,7 +387,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-v4-pro",
         "deepseek-v4-flash",
-        "deepseek-chat",
         "deepseek-reasoner",
     ],
     "xiaomi": [
@@ -4585,10 +4584,51 @@ def validate_requested_model(
                 "message": None,
             }
         else:
-            # API responded but model is not listed.  Accept anyway —
-            # the user may have access to models not shown in the public
-            # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
-            # endpoints even though it's not in /models).  Warn but allow.
+            # API responded but model is not listed. Check for deprecation first
+            try:
+                from hermes_cli.model_deprecation import (
+                    get_deprecation_message,
+                    should_redirect_model,
+                    record_model_failure,
+                )
+                
+                # Record this failure for deprecation tracking
+                record_model_failure(
+                    requested_for_lookup,
+                    normalized,
+                    f"Model not found in provider's model listing",
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+                
+                # Check if this is a known deprecated model
+                deprecation_message = get_deprecation_message(requested_for_lookup, normalized)
+                redirect_model = should_redirect_model(requested_for_lookup, normalized)
+                
+                if redirect_model:
+                    # Auto-redirect to the recommended model
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": redirect_model,
+                        "is_deprecated": True,
+                        "message": f"⚠️  Model `{requested}` has been deprecated. Auto-redirecting to `{redirect_model}`.\n{deprecation_message}",
+                    }
+                
+                if deprecation_message:
+                    # Model is deprecated but no auto-redirect available
+                    suggestion_text = f"\n\n{deprecation_message}"
+                else:
+                    suggestion_text = ""
+                    
+            except ImportError:
+                # Deprecation module not available, fall back to original behavior
+                suggestion_text = ""
+            
+            # Original behavior: accept anyway — the user may have access to models
+            # not shown in the public listing (e.g. Z.AI Pro/Max plans can use glm-5
+            # on coding endpoints even though it's not in /models). Warn but allow.
 
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
@@ -4598,13 +4638,12 @@ def validate_requested_model(
                     "persist": True,
                     "recognized": True,
                     "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`{suggestion_text}",
                 }
 
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
-            suggestion_text = ""
             if suggestions:
-                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+                suggestion_text += "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
             # Model not in live /v1/models — check the curated catalog
             # before rejecting.  Providers may omit models from their live

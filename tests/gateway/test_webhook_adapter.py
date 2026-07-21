@@ -1395,6 +1395,80 @@ class TestCheckRequirements:
 
 
 # ===================================================================
+# Content filtering ("filtered" suffix)
+# ===================================================================
+
+
+class TestContentFiltering:
+    """Tests for the 'filtered' suffix behavior in send()."""
+
+    @pytest.mark.asyncio
+    async def test_send_drops_message_ending_with_filtered(self):
+        """Messages ending with 'filtered' are silently dropped."""
+        adapter = _make_adapter()
+        adapter._delivery_info["webhook:test:123"] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "456"},
+        }
+        adapter._delivery_info_created["webhook:test:123"] = time.time()
+
+        result = await adapter.send("webhook:test:123", "filtered")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_message_ending_with_filtered_whitespace(self):
+        """Messages ending with 'filtered' with whitespace are dropped."""
+        adapter = _make_adapter()
+        adapter._delivery_info["webhook:test:123"] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "456"},
+        }
+        adapter._delivery_info_created["webhook:test:123"] = time.time()
+
+        result = await adapter.send("webhook:test:123", "  FILTERED  ")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_message_case_insensitive(self):
+        """Case-insensitive match: 'Filtered', 'FILTERED' all drop."""
+        adapter = _make_adapter()
+        adapter._delivery_info["webhook:test:123"] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "456"},
+        }
+        adapter._delivery_info_created["webhook:test:123"] = time.time()
+
+        result = await adapter.send("webhook:test:123", "Filtered")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_delivers_normal_messages(self):
+        """Normal messages (not ending with filtered) are delivered."""
+        adapter = _make_adapter()
+        adapter._delivery_info["webhook:test:123"] = {
+            "deliver": "log",
+            "deliver_extra": {},
+        }
+        adapter._delivery_info_created["webhook:test:123"] = time.time()
+
+        result = await adapter.send("webhook:test:123", "This is a real message")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_allows_message_containing_filtered(self):
+        """Messages containing 'filtered' but not ending with it are delivered."""
+        adapter = _make_adapter()
+        adapter._delivery_info["webhook:test:123"] = {
+            "deliver": "log",
+            "deliver_extra": {},
+        }
+        adapter._delivery_info_created["webhook:test:123"] = time.time()
+
+        result = await adapter.send("webhook:test:123", "This was filtered out earlier")
+        assert result.success is True
+
+
+# ===================================================================
 # __raw__ template token
 # ===================================================================
 

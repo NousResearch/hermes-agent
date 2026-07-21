@@ -6631,6 +6631,7 @@ def _build_call_kwargs(
     extra_body: Optional[dict] = None,
     reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
+    force_max_tokens: bool = False,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -6677,6 +6678,12 @@ def _build_call_kwargs(
         # 200 with an empty choices[] payload when max_tokens is omitted. The main
         # NVIDIA chat path already sends an output cap via the provider profile;
         # preserve it on the auxiliary path too.
+        # ``force_max_tokens=True`` is the third exception: a caller that has a
+        # deliberate, bounded cap it MUST honor on every route (the smart-approval
+        # guard asks for a 16-token single-word verdict). Without it, OpenAI-
+        # compatible routes silently drop the cap and reasoning models can spend
+        # the entire completion budget on hidden reasoning before emitting the
+        # verdict (#68263).
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
@@ -6686,7 +6693,8 @@ def _build_call_kwargs(
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
         if (
-            _is_anthropic_compat_endpoint(provider, _effective_base)
+            force_max_tokens
+            or _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
         ):
             kwargs["max_tokens"] = max_tokens
@@ -6924,6 +6932,7 @@ def call_llm(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    force_max_tokens: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -7058,7 +7067,8 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_base_info or resolved_base_url)
+        base_url=_base_info or resolved_base_url,
+        force_max_tokens=force_max_tokens)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")

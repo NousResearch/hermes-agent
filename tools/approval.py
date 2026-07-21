@@ -2619,6 +2619,16 @@ def _smart_approve(command: str, description: str) -> str:
             ],
             temperature=0,
             max_tokens=16,
+            # Honor the 16-token verdict cap on EVERY provider route. By
+            # default the auxiliary path drops an explicit max_tokens on
+            # OpenAI-compatible endpoints, which let reasoning models spend the
+            # whole completion budget on hidden reasoning before the one-word
+            # verdict (#68263).
+            force_max_tokens=True,
+            # Disable reasoning for the guard LLM: a reasoning model would burn
+            # tokens on hidden reasoning before emitting the verdict, defeating
+            # the cap above and slowing every approval.
+            reasoning_config={"enabled": False},
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()

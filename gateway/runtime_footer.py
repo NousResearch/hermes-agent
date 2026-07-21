@@ -88,6 +88,25 @@ def resolve_footer_config(
     return resolved
 
 
+def _format_tps(response_tokens: Optional[int], elapsed_ms: Optional[float]) -> str:
+    """Render a ``tokens-per-second`` value as ``"NNt/s"`` or return ``""``.
+
+    Skipped silently when either input is missing or the elapsed window is too
+    short to give a meaningful rate (denominator approaches zero → wild
+    numbers like "12345t/s" on a 1ms async loop tick).  ``min_elapsed_ms``
+    floors at 50ms which corresponds to ~20 sample points / second — fine
+    granularity for the user-facing rate without divide-by-tiny noise.
+    """
+    if not response_tokens or response_tokens <= 0:
+        return ""
+    if elapsed_ms is None or elapsed_ms < 50:
+        return ""
+    tps = response_tokens / (elapsed_ms / 1000.0)
+    if tps >= 100:
+        return f"{int(round(tps))}t/s"
+    return f"{tps:.1f}t/s"
+
+
 def format_runtime_footer(
     *,
     model: Optional[str],
@@ -95,11 +114,18 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    response_tokens: Optional[int] = None,
+    elapsed_ms: Optional[float] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
     Fields are skipped silently when their underlying data is missing — a
     partially-populated footer is better than a line with ``?%`` or empty slots.
+
+    The ``tps`` field shows the wall-clock tokens-per-second for the just-
+    finished turn (response_tokens / elapsed_ms).  Callers that don't have
+    timing/usage data can omit the optional kwargs; ``tps`` then renders
+    nothing (same skip-silently rule as the other fields).
     """
     parts: list[str] = []
     for field in fields:
@@ -115,6 +141,10 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "tps":
+            tps_text = _format_tps(response_tokens, elapsed_ms)
+            if tps_text:
+                parts.append(tps_text)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,12 +160,18 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    response_tokens: Optional[int] = None,
+    elapsed_ms: Optional[float] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
     Returns the footer text (empty string when disabled or no data).  Callers
     append this to the final response themselves, preserving a single blank
     line of separation.
+
+    ``response_tokens`` + ``elapsed_ms`` feed the optional ``tps`` field; the
+    gateway run loop already tracks both and just plumbs them through here.
+    Either being ``None`` makes ``tps`` render as empty (silent skip).
     """
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
@@ -146,4 +182,6 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        response_tokens=response_tokens,
+        elapsed_ms=elapsed_ms,
     )

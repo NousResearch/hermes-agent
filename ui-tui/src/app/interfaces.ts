@@ -198,8 +198,11 @@ export interface SubscriptionOverlayCtx {
    * the server doesn't say (older NAS): the confirm keeps its generic line.
    */
   fetchCard: () => Promise<BillingCardInfo | null>
-  /** Build {portal}/manage-subscription?org_id=… locally and open it. Resolves ok/false. */
-  openManageLink: () => Promise<boolean>
+  /**
+   * Build {portal}/manage-subscription?org_id=… locally and open it. Resolves
+   * ok/false. Pass `tierId` to deep-link a specific plan via `?plan=`.
+   */
+  openManageLink: (tierId?: string) => Promise<boolean>
   /** Open an arbitrary portal recovery URL (e.g. an upgrade's SCA handoff). */
   openPortal: (url: string) => void
   /** Re-fetch subscription.state. */

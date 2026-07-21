@@ -227,8 +227,8 @@ describe('deriveBillingView', () => {
 
     expect(subscription?.description).toBe('Paid models need a subscription — pick a plan to start it on the portal.')
     expect(subscription?.chips).toEqual([
-      { disabled: false, label: 'Plus · $20/mo · $1,000 credits/mo', url: subscription?.action?.url },
-      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: subscription?.action?.url }
+      { disabled: false, label: 'Plus · $20/mo · $1,000 credits/mo', url: `${subscription?.action?.url}&plan=plus` },
+      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: `${subscription?.action?.url}&plan=ultra` }
     ])
   })
 
@@ -265,7 +265,7 @@ describe('deriveBillingView', () => {
 
     expect(subscription?.chips).toEqual([
       { disabled: true, label: '✓ Plus · $20/mo · $1,000 credits/mo' },
-      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: subscription?.action?.url }
+      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: `${subscription?.action?.url}&plan=ultra` }
     ])
   })
 
@@ -397,5 +397,28 @@ describe('buildManageSubscriptionUrl', () => {
         portal_url: 'https://portal.nousresearch.com/billing'
       })
     ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123')
+  })
+
+  it('appends the tier as a plan query param when provided', () => {
+    expect(
+      buildManageSubscriptionUrl(
+        {
+          org_id: 'org_123',
+          portal_url: 'https://portal.nousresearch.com/billing'
+        },
+        undefined,
+        'ultra'
+      )
+    ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123&plan=ultra')
+  })
+
+  it('omits the plan param when no tierId is given', () => {
+    expect(
+      buildManageSubscriptionUrl(
+        { org_id: null, portal_url: 'https://portal.nousresearch.com/billing' },
+        undefined,
+        undefined
+      )
+    ).toBe('https://portal.nousresearch.com/manage-subscription')
   })
 })

@@ -1284,6 +1284,10 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
+_CORRUPT_MARKER_TTL_SECONDS = 5 * 60
+_INDEX_ONLY_INTEGRITY_RE = re.compile(
+    r"wrong # of entries in index (?P<index>[A-Za-z0-9_]+)", re.IGNORECASE
+)
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
 # Bounded acquire for the cross-process init lock (#36644). The original bare
@@ -1556,15 +1560,154 @@ class KanbanDbCorruptError(RuntimeError):
     original path and the timestamped backup we made before refusing.
     """
 
-    def __init__(self, db_path: Path, backup_path: Optional[Path], reason: str):
+    def __init__(
+        self,
+        db_path: Path,
+        backup_path: Optional[Path],
+        reason: str,
+        *,
+        marker_path: Optional[Path] = None,
+        next_steps: Optional[str] = None,
+        suppressed: bool = False,
+    ):
         self.db_path = db_path
         self.backup_path = backup_path
         self.reason = reason
+        self.marker_path = marker_path
+        self.next_steps = next_steps
+        self.suppressed = suppressed
         backup_str = str(backup_path) if backup_path is not None else "<backup failed>"
+        marker_suffix = f" Incident marker: {marker_path}." if marker_path is not None else ""
+        next_steps_suffix = f" Next steps: {next_steps}" if next_steps else ""
+        state_prefix = "Suppressed re-open of quarantined" if suppressed else "Refusing to open corrupt"
         super().__init__(
-            f"Refusing to open corrupt kanban DB at {db_path}: {reason}. "
-            f"Original preserved; backup at {backup_str}."
+            f"{state_prefix} kanban DB at {db_path}: {reason}. "
+            f"Original preserved; backup at {backup_str}.{marker_suffix}{next_steps_suffix}"
         )
+
+
+def _corrupt_marker_path(path: Path) -> Path:
+    return path.with_name(path.name + ".corrupt.marker.json")
+
+
+def _format_utc_epoch(epoch_seconds: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(max(0, int(epoch_seconds))))
+
+
+def _classify_corruption_reason(reason: str) -> dict[str, Optional[str]]:
+    match = _INDEX_ONLY_INTEGRITY_RE.search(reason or "")
+    if match:
+        return {
+            "failure_mode": "index_inconsistency",
+            "index_name": match.group("index"),
+        }
+    return {
+        "failure_mode": "sqlite_open_failure",
+        "index_name": None,
+    }
+
+
+def _load_corrupt_marker(path: Path) -> Optional[dict[str, Any]]:
+    marker_path = _corrupt_marker_path(path)
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_corrupt_marker(path: Path, payload: dict[str, Any]) -> Path:
+    marker_path = _corrupt_marker_path(path)
+    tmp_path = marker_path.with_name(
+        f"{marker_path.name}.tmp.{os.getpid()}.{time.time_ns()}"
+    )
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, marker_path)
+    return marker_path
+
+
+def _clear_corrupt_marker(path: Path) -> None:
+    try:
+        _corrupt_marker_path(path).unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _record_corrupt_marker(
+    path: Path,
+    *,
+    reason: str,
+    backup_path: Optional[Path],
+    failure_mode: str,
+    index_name: Optional[str],
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    ts = int(time.time() if now is None else now)
+    prior = _load_corrupt_marker(path) or {}
+    marker = {
+        "version": 1,
+        "db_path": str(path),
+        "failure_mode": failure_mode,
+        "index_name": index_name,
+        "reason": reason,
+        "backup_path": str(backup_path) if backup_path is not None else None,
+        "first_seen_at": int(prior.get("first_seen_at", ts)),
+        "last_seen_at": ts,
+        "suppress_until": ts + _CORRUPT_MARKER_TTL_SECONDS,
+        "suppressed_count": int(prior.get("suppressed_count", 0)),
+    }
+    _write_corrupt_marker(path, marker)
+    return marker
+
+
+def _bump_corrupt_marker_suppression(
+    path: Path,
+    marker: dict[str, Any],
+    *,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    ts = int(time.time() if now is None else now)
+    updated = dict(marker)
+    updated["last_seen_at"] = ts
+    updated["suppressed_count"] = int(marker.get("suppressed_count", 0)) + 1
+    _write_corrupt_marker(path, updated)
+    return updated
+
+
+def _build_corrupt_guidance(
+    *,
+    path: Path,
+    backup_path: Optional[Path],
+    marker_path: Path,
+    failure_mode: str,
+    index_name: Optional[str],
+    suppress_until: Optional[int],
+    suppressed: bool,
+) -> str:
+    backup_str = str(backup_path) if backup_path is not None else "<backup unavailable>"
+    cooldown = (
+        f" Fresh-open suppression stays active until {_format_utc_epoch(suppress_until)}."
+        if suppress_until is not None
+        else ""
+    )
+    if failure_mode == "index_inconsistency" and index_name:
+        action = (
+            f"Failure mode: index-only integrity anomaly on {index_name}. "
+            f"Inspect marker {marker_path} and backup {backup_str}. "
+            f"If the board is intentionally quiesced and reviewed, validate on a copied backup with `sqlite3 <copy> 'REINDEX {index_name}; PRAGMA integrity_check'`; otherwise keep the board quarantined and repair/restore first."
+        )
+    else:
+        action = (
+            f"Failure mode: SQLite open/integrity failure. Inspect marker {marker_path} and backup {backup_str}. "
+            f"Treat the board as quarantined; repair from a copied backup or restore before reopening."
+        )
+    if suppressed:
+        return action + cooldown + " This invocation failed fast against the existing incident marker instead of re-quarantining the DB."
+    return action + cooldown
 
 
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
@@ -1654,11 +1797,49 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         return
     try:
         if not resolved.exists() or resolved.stat().st_size == 0:
+            _clear_corrupt_marker(resolved)
             return
     except OSError:
         return
     if str(resolved) in _INITIALIZED_PATHS:
         return
+
+    now = int(time.time())
+    marker_path = _corrupt_marker_path(resolved)
+    marker = _load_corrupt_marker(resolved)
+    if marker is not None and int(marker.get("suppress_until", 0)) > now:
+        marker = _bump_corrupt_marker_suppression(resolved, marker, now=now)
+        backup = Path(marker["backup_path"]) if marker.get("backup_path") else None
+        guidance = _build_corrupt_guidance(
+            path=resolved,
+            backup_path=backup,
+            marker_path=marker_path,
+            failure_mode=str(marker.get("failure_mode") or "sqlite_open_failure"),
+            index_name=(
+                str(marker.get("index_name"))
+                if marker.get("index_name") is not None
+                else None
+            ),
+            suppress_until=int(marker.get("suppress_until", 0)) or None,
+            suppressed=True,
+        )
+        _log.error(
+            "Kanban DB corruption still quarantined: db_path=%s failure_mode=%s marker=%s backup=%s next_steps=%s",
+            resolved,
+            marker.get("failure_mode") or "sqlite_open_failure",
+            marker_path,
+            backup,
+            guidance,
+        )
+        raise KanbanDbCorruptError(
+            resolved,
+            backup,
+            str(marker.get("reason") or "existing corruption marker active"),
+            marker_path=marker_path,
+            next_steps=guidance,
+            suppressed=True,
+        )
+
     reason: Optional[str] = None
     try:
         probe = _sqlite_connect(resolved)
@@ -1674,9 +1855,43 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
+        _clear_corrupt_marker(resolved)
         return
+
+    diagnosis = _classify_corruption_reason(reason)
     backup = _backup_corrupt_db(resolved)
-    raise KanbanDbCorruptError(resolved, backup, reason)
+    marker = _record_corrupt_marker(
+        resolved,
+        reason=reason,
+        backup_path=backup,
+        failure_mode=str(diagnosis["failure_mode"]),
+        index_name=diagnosis["index_name"],
+        now=now,
+    )
+    guidance = _build_corrupt_guidance(
+        path=resolved,
+        backup_path=backup,
+        marker_path=marker_path,
+        failure_mode=str(diagnosis["failure_mode"]),
+        index_name=diagnosis["index_name"],
+        suppress_until=int(marker.get("suppress_until", 0)) or None,
+        suppressed=False,
+    )
+    _log.error(
+        "Kanban DB corruption detected: db_path=%s failure_mode=%s marker=%s backup=%s next_steps=%s",
+        resolved,
+        diagnosis["failure_mode"],
+        marker_path,
+        backup,
+        guidance,
+    )
+    raise KanbanDbCorruptError(
+        resolved,
+        backup,
+        reason,
+        marker_path=marker_path,
+        next_steps=guidance,
+    )
 
 
 def connect(

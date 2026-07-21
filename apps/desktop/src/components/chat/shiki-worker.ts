@@ -1,4 +1,4 @@
-import { type BundledLanguage, getSingletonHighlighter } from 'shiki'
+import { type BundledLanguage, getSingletonHighlighter, guessEmbeddedLanguages } from 'shiki'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 
 export interface ShikiWorkerRequest {
@@ -20,35 +20,49 @@ export interface ShikiWorkerResponse {
 
 const engine = createJavaScriptRegexEngine({ forgiving: true })
 
-self.onmessage = async (event: MessageEvent<ShikiWorkerRequest>) => {
-  const { code, id, language } = event.data
+export async function tokenizeShikiCode(code: string, language: string): Promise<ShikiWorkerToken[][]> {
+  const lang = (language || 'text') as BundledLanguage
 
-  try {
-    const lang = (language || 'text') as BundledLanguage
+  const highlighterOptions = {
+    engine,
+    langs: [lang],
+    themes: ['github-dark-dimmed', 'github-light-default']
+  }
 
-    const highlighterOptions = {
-      engine,
-      langs: [lang],
-      themes: ['github-dark-dimmed', 'github-light-default']
+  const highlighter = await getSingletonHighlighter(highlighterOptions)
+  const embeddedLanguages = guessEmbeddedLanguages(code, lang, highlighter) as BundledLanguage[]
+
+  if (embeddedLanguages.length > 0) {
+    await highlighter.loadLanguage(...embeddedLanguages)
+  }
+
+  const result = highlighter.codeToTokens(code, {
+    defaultColor: 'light-dark()',
+    lang,
+    themes: { dark: 'github-dark-dimmed', light: 'github-light-default' }
+  })
+
+  return result.tokens.map(line =>
+    line.map(token => ({
+      content: token.content,
+      ...(token.htmlStyle ? { htmlStyle: token.htmlStyle as Record<string, string> } : {})
+    }))
+  )
+}
+
+if (typeof self !== 'undefined') {
+  self.onmessage = async (event: MessageEvent<ShikiWorkerRequest>) => {
+    const { code, id, language } = event.data
+
+    try {
+      const tokens = await tokenizeShikiCode(code, language)
+
+      self.postMessage({ id, tokens } satisfies ShikiWorkerResponse)
+    } catch (error) {
+      self.postMessage({
+        id,
+        error: error instanceof Error ? error.message : String(error)
+      } satisfies ShikiWorkerResponse)
     }
-
-    const highlighter = await getSingletonHighlighter(highlighterOptions)
-
-    const result = highlighter.codeToTokens(code, {
-      defaultColor: 'light-dark()',
-      lang,
-      themes: { dark: 'github-dark-dimmed', light: 'github-light-default' }
-    })
-
-    const tokens = result.tokens.map(line =>
-      line.map(token => ({
-        content: token.content,
-        ...(token.htmlStyle ? { htmlStyle: token.htmlStyle as Record<string, string> } : {})
-      }))
-    )
-
-    self.postMessage({ id, tokens } satisfies ShikiWorkerResponse)
-  } catch (error) {
-    self.postMessage({ id, error: error instanceof Error ? error.message : String(error) } satisfies ShikiWorkerResponse)
   }
 }

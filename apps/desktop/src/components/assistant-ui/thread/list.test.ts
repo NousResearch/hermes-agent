@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildGroups,
+  earlierGroupIndex,
   firstVisibleGroupIndex,
   isVirtualizedGroup,
   LIVE_TAIL_GROUPS,
-  type MessageGroup,
-  nextHistoryBudget,
-  shouldAutoBackfill
+  MAX_INITIAL_GROUPS,
+  type MessageGroup
 } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
@@ -87,6 +87,12 @@ describe('firstVisibleGroupIndex', () => {
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
   })
+
+  it('applies a literal group cap in addition to the part budget', () => {
+    const groups = Array.from({ length: MAX_INITIAL_GROUPS + 10 }, (_, index) => group(String(index), 1))
+
+    expect(groups.length - firstVisibleGroupIndex(groups, 60)).toBe(MAX_INITIAL_GROUPS)
+  })
 })
 
 describe('isVirtualizedGroup', () => {
@@ -119,26 +125,14 @@ describe('isVirtualizedGroup', () => {
   })
 })
 
-describe('shouldAutoBackfill', () => {
-  const group = (weight: number): MessageGroup => ({ id: String(weight), index: 0, kind: 'standalone', weight })
-
-  it('backfills a bounded transcript after first paint', () => {
-    expect(shouldAutoBackfill([group(300)])).toBe(true)
-  })
-
-  it('keeps a long transcript on explicit history pages', () => {
-    expect(shouldAutoBackfill([group(301)])).toBe(false)
-  })
-})
-
-describe('nextHistoryBudget', () => {
+describe('earlierGroupIndex', () => {
   const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
 
   it('advances by a bounded page for ordinary history', () => {
-    expect(nextHistoryBudget([group('old', 60), group('new', 60)], 60)).toBe(120)
+    expect(earlierGroupIndex([group('old', 60), group('new', 60)], 1)).toBe(0)
   })
 
   it('always reveals an earlier group after a very heavy visible turn', () => {
-    expect(nextHistoryBudget([group('old', 5), group('huge', 500)], 60)).toBe(505)
+    expect(earlierGroupIndex([group('old', 5), group('huge', 500)], 1)).toBe(0)
   })
 })

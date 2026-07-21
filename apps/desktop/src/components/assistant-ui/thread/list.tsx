@@ -5,10 +5,10 @@ import {
   type FC,
   memo,
   type ReactNode,
-  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
@@ -16,6 +16,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { recordPreviewArtifact } from '@/store/preview-status'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -26,6 +27,16 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+import {
+  isPreviewableTarget,
+  type ToolPart,
+  toolPreviewTargetForPart
+} from '../tool/fallback-model'
+import {
+  toolPartPageKey,
+  ToolTurnPaginationProvider,
+  type TurnToolRef
+} from '../tool/turn-pagination'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -41,19 +52,20 @@ export type MessageGroup = { id: string; weight: number } & (
 // sticky human bubble never loses its turn. This is the long-session perf lever
 // WITHOUT a virtualizer — pure rendering, never touches scrollTop, so it can't
 // fight use-stick-to-bottom (the single scroll owner).
-const RENDER_BUDGET = 300
-// On session switch, paint a small budget first (enough for the bottom turn(s)
-// the user actually sees after scroll-to-bottom), then bump to the full budget
-// in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
-// past the initial commit, so the switch feels instant.
+// On session switch, paint only the bottom page the user can see. Earlier
+// history is mounted exclusively after an explicit request; this prevents a
+// post-paint transition from rebuilding the expensive transcript automatically.
 const FIRST_PAINT_BUDGET = 60
 const HISTORY_PAGE_BUDGET = FIRST_PAINT_BUDGET
+export const MAX_INITIAL_GROUPS = 20
 
 interface ThreadMessageListProps {
   clampToComposer: boolean
   components: ThreadMessageComponents
+  cwd?: string | null
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
+  sessionId?: string | null
   sessionKey?: string | null
 }
 
@@ -99,14 +111,19 @@ export function buildGroups(signature: string): MessageGroup[] {
 // Walk turns newest-first, summing their part weights until the budget is met;
 // everything before the first kept turn is hidden. Returns the index of that
 // first visible group.
-export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number): number {
+export function firstVisibleGroupIndex(
+  groups: readonly MessageGroup[],
+  budget: number,
+  maxGroups = MAX_INITIAL_GROUPS
+): number {
   let firstVisible = groups.length
 
-  for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
+  for (let i = groups.length - 1, weight = 0, count = 0; i >= 0; i--) {
     weight += groups[i].weight
     firstVisible = i
+    count += 1
 
-    if (weight >= budget) {
+    if (weight >= budget || count >= maxGroups) {
       break
     }
   }
@@ -135,29 +152,87 @@ export function isVirtualizedGroup(indexInVisible: number, visibleCount: number,
   return indexInVisible < visibleCount - liveTail
 }
 
-export function shouldAutoBackfill(groups: readonly MessageGroup[]): boolean {
-  return groups.reduce((weight, group) => weight + group.weight, 0) <= RENDER_BUDGET
-}
+export function earlierGroupIndex(groups: readonly MessageGroup[], firstVisible: number): number {
+  let nextFirst = firstVisible
+  let weight = 0
+  let count = 0
 
-export function nextHistoryBudget(groups: readonly MessageGroup[], budget: number): number {
-  const firstVisible = firstVisibleGroupIndex(groups, budget)
+  for (let i = firstVisible - 1; i >= 0; i--) {
+    weight += groups[i].weight
+    nextFirst = i
+    count += 1
 
-  if (firstVisible <= 0) {
-    return budget
+    if (weight >= HISTORY_PAGE_BUDGET || count >= MAX_INITIAL_GROUPS) {
+      break
+    }
   }
 
-  const requiredForEarlierGroup = groups
-    .slice(firstVisible - 1)
-    .reduce((weight, group) => weight + group.weight, 0)
+  return nextFirst
+}
 
-  return Math.max(budget + HISTORY_PAGE_BUDGET, requiredForEarlierGroup)
+const ToolPreviewRegistrar: FC<{ cwd: string | null; sessionId: string | null | undefined }> = ({ cwd, sessionId }) => {
+  const seenBySessionRef = useRef(new Map<string, Set<string>>())
+  const targetCacheRef = useRef(new WeakMap<object, { args: unknown; result: unknown; target: string }>())
+
+  const targetsSignature = useAuiState(s =>
+    JSON.stringify(
+      s.thread.messages.flatMap(message =>
+        message.content.flatMap(part => {
+          if (part.type !== 'tool-call' || part.result === undefined) {
+            return []
+          }
+
+          const cached = targetCacheRef.current.get(part)
+          let target = cached?.args === part.args && cached.result === part.result ? cached.target : undefined
+
+          if (target === undefined) {
+            target = toolPreviewTargetForPart({
+              args: part.args,
+              isError: part.isError,
+              result: part.result,
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              type: 'tool-call'
+            } satisfies ToolPart)
+            targetCacheRef.current.set(part, { args: part.args, result: part.result, target })
+          }
+
+          return target && isPreviewableTarget(target) ? [target] : []
+        })
+      )
+    )
+  )
+
+  useEffect(() => {
+    if (!sessionId) {
+      return
+    }
+
+    let seen = seenBySessionRef.current.get(sessionId)
+
+    if (!seen) {
+      seen = new Set()
+      seenBySessionRef.current.set(sessionId, seen)
+    }
+
+    for (const target of JSON.parse(targetsSignature) as string[]) {
+      if (!seen.has(target)) {
+        seen.add(target)
+        recordPreviewArtifact(sessionId, target, cwd || '')
+      }
+    }
+  }, [cwd, sessionId, targetsSignature])
+
+  return null
 }
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
   components,
+  cwd = '',
   emptyPlaceholder,
   loadingIndicator,
+  sessionId,
   sessionKey
 }) => {
   const messageSignature = useAuiState(s =>
@@ -166,8 +241,39 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       .join('\n')
   )
 
+  const toolInventorySignature = useAuiState(s =>
+    JSON.stringify(
+      s.thread.messages.map((message, messageIndex) => ({
+        messageIndex,
+        tools: message.content.flatMap((part, partIndex) =>
+          part.type === 'tool-call'
+            ? [
+                {
+                  key: toolPartPageKey(message.id, partIndex, part.toolCallId),
+                  messageId: message.id,
+                  partIndex
+                } satisfies TurnToolRef
+              ]
+            : []
+        )
+      }))
+    )
+  )
+
   const { t } = useI18n()
   const groups = buildGroups(messageSignature)
+
+  const toolsByMessageIndex = useMemo(
+    () =>
+      new Map(
+        (JSON.parse(toolInventorySignature) as Array<{ messageIndex: number; tools: TurnToolRef[] }>).map(item => [
+          item.messageIndex,
+          item.tools
+        ])
+      ),
+    [toolInventorySignature]
+  )
+
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
 
   // use-stick-to-bottom owns scrollTop (single writer): follow while locked,
@@ -180,57 +286,35 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     resize: 'instant'
   })
 
-  const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
-
-  // Cut the budget during RENDER, not in the post-commit layout effect. An
-  // effect-time cut is too late: React would first build the whole tree with
-  // the full budget (up to 300 parts of markdown + syntax highlighting),
-  // commit it, and only then re-render at the small budget. The render-phase
-  // state adjustment restarts this component immediately — before any child
-  // renders — so the heavy commit never happens.
-  //
-  // Two triggers, because the transcript swap arrives differently per path:
-  // a WARM switch publishes sessionKey + messages in one commit (the key
-  // branch), while a COLD switch changes sessionKey with an empty transcript
-  // and the prefetched messages land hundreds of ms later under the SAME key
-  // (the empty→non-empty branch).
+  // The boundary becomes identity-based only after explicit backfill. Before
+  // that, append-only streaming may keep a bounded newest suffix. Once the user
+  // asks for history, its oldest visible group is stable across later appends.
   const hasGroups = groups.length > 0
-  const [budgetSessionKey, setBudgetSessionKey] = useState(sessionKey)
+  const [historyState, setHistoryState] = useState({ expanded: false, oldestVisibleId: null as string | null, sessionKey })
   const [hadGroups, setHadGroups] = useState(hasGroups)
+  const focusAfterRevealRef = useRef<string | null>(null)
+  const focusFrameRef = useRef<number | null>(null)
 
-  if (budgetSessionKey !== sessionKey) {
-    setBudgetSessionKey(sessionKey)
+  if (historyState.sessionKey !== sessionKey) {
+    focusAfterRevealRef.current = null
+    setHistoryState({ expanded: false, oldestVisibleId: null, sessionKey })
     setHadGroups(hasGroups)
-    setRenderBudget(FIRST_PAINT_BUDGET)
   } else if (hadGroups !== hasGroups) {
     setHadGroups(hasGroups)
 
     if (hasGroups) {
-      setRenderBudget(FIRST_PAINT_BUDGET)
+      setHistoryState({ expanded: false, oldestVisibleId: null, sessionKey })
     }
   }
 
-  // After first paint, backfill bounded transcripts in a transition.
-  // Long histories stay at the first-paint budget and page on explicit demand,
-  // avoiding a second automatic markdown/tool render that can block typing.
-  const autoBackfill = shouldAutoBackfill(groups)
+  const normalizedHistoryState =
+    historyState.sessionKey === sessionKey ? historyState : { expanded: false, oldestVisibleId: null, sessionKey }
 
-  useEffect(() => {
-    if (renderBudget >= RENDER_BUDGET || !autoBackfill) {
-      return
-    }
+  const stableBoundaryIndex = normalizedHistoryState.expanded
+    ? groups.findIndex(group => group.id === normalizedHistoryState.oldestVisibleId)
+    : -1
 
-    const rafId = requestAnimationFrame(() => {
-      // Functional max, not a plain set: an urgent "Show earlier" click can
-      // land between scheduling and committing this transition, and a plain
-      // set would rebase over it and shrink the budget back down.
-      startTransition(() => setRenderBudget(budget => Math.max(budget, RENDER_BUDGET)))
-    })
-
-    return () => cancelAnimationFrame(rafId)
-  }, [autoBackfill, renderBudget])
-
-  const hiddenCount = firstVisibleGroupIndex(groups, renderBudget)
+  const hiddenCount = stableBoundaryIndex >= 0 ? stableBoundaryIndex : firstVisibleGroupIndex(groups, FIRST_PAINT_BUDGET)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
@@ -251,6 +335,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
+  useEffect(
+    () => () => {
+      if (focusFrameRef.current != null) {
+        cancelAnimationFrame(focusFrameRef.current)
+      }
+    },
+    []
+  )
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
@@ -334,10 +426,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // won't fight this manual restore.
   const showEarlier = useCallback(() => {
     const el = scrollRef.current
+    const nextFirst = earlierGroupIndex(groups, hiddenCount)
+    const nextOldestId = groups[nextFirst]?.id ?? null
 
     restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null
-    setRenderBudget(budget => nextHistoryBudget(groups, budget))
-  }, [groups, scrollRef])
+    focusAfterRevealRef.current = nextFirst === 0 ? nextOldestId : null
+    setHistoryState({ expanded: true, oldestVisibleId: nextOldestId, sessionKey })
+  }, [groups, hiddenCount, scrollRef, sessionKey])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -346,7 +441,34 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.scrollTop = el.scrollHeight - restoreFromBottomRef.current
       restoreFromBottomRef.current = null
     }
-  }, [scrollRef, renderBudget])
+
+    const focusId = focusAfterRevealRef.current
+
+    if (focusId && hiddenCount === 0) {
+      focusAfterRevealRef.current = null
+
+      const target = Array.from(el?.querySelectorAll<HTMLElement>('[data-history-group-id]') ?? []).find(
+        element => element.dataset.historyGroupId === focusId
+      )
+
+      if (focusFrameRef.current != null) {
+        cancelAnimationFrame(focusFrameRef.current)
+      }
+
+      focusFrameRef.current = requestAnimationFrame(() => {
+        focusFrameRef.current = null
+        target?.focus({ preventScroll: true })
+      })
+    }
+  }, [hiddenCount, scrollRef])
+
+  const toolRefsByGroup = new Map(
+    groups.map(group => {
+      const indices = group.kind === 'turn' ? group.indices : [group.index]
+
+      return [group.id, indices.flatMap(index => toolsByMessageIndex.get(index) ?? [])]
+    })
+  )
 
   return (
     <div
@@ -358,6 +480,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         } as CSSProperties
       }
     >
+      <ToolPreviewRegistrar cwd={cwd} sessionId={sessionId} />
       {secondaryWindow && (
         // Secondary windows hide the titlebar chrome, so the scroller runs to
         // the window's top edge and streamed text slides up under the OS
@@ -394,7 +517,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
                 onClick={showEarlier}
                 type="button"
               >
-                {t.assistant.thread.showEarlier}
+                {t.assistant.thread.showEarlierMessages}
               </button>
             )}
             {visibleGroups.map((group, indexInVisible) => (
@@ -419,22 +542,29 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
                   isVirtualizedGroup(indexInVisible, visibleGroups.length) &&
                     '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
                 )}
+                data-history-group-id={group.id}
                 key={group.id}
+                tabIndex={-1}
               >
-                <MessageRenderBoundary resetKey={messageSignature}>
-                  {group.kind === 'turn' ? (
-                    <div
-                      className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
-                      data-slot="aui_turn-pair"
-                    >
-                      {group.indices.map(index => (
-                        <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
-                      ))}
-                    </div>
-                  ) : (
-                    <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
-                  )}
-                </MessageRenderBoundary>
+                <ToolTurnPaginationProvider
+                  tools={toolRefsByGroup.get(group.id) ?? []}
+                  turnKey={`${sessionKey ?? ''}:${group.id}`}
+                >
+                  <MessageRenderBoundary resetKey={messageSignature}>
+                    {group.kind === 'turn' ? (
+                      <div
+                        className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
+                        data-slot="aui_turn-pair"
+                      >
+                        {group.indices.map(index => (
+                          <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+                        ))}
+                      </div>
+                    ) : (
+                      <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+                    )}
+                  </MessageRenderBoundary>
+                </ToolTurnPaginationProvider>
               </div>
             ))}
             {loadingIndicator}

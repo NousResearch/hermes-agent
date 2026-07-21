@@ -9,6 +9,7 @@ import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
 import { Thread } from '@/components/assistant-ui/thread'
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { $previewStatusBySession, clearPreviewArtifacts } from '@/store/preview-status'
 
 const TARGET_CONTENT_CHARS = 650_451
 const MESSAGE_COUNT = 266
@@ -131,6 +132,65 @@ function makeSingleHeavyTurnFixture(): ChatMessage[] {
   ]
 }
 
+function makeInterleavedHeavyTurnFixture(toolCount = 160): ChatMessage[] {
+  const messages: ChatMessage[] = [
+    { id: 'interleaved-user', role: 'user', parts: [{ type: 'text', text: 'Inspect every result.' }], timestamp: 0 }
+  ]
+
+  let toolIndex = 0
+
+  for (let assistantIndex = 0; assistantIndex < 4; assistantIndex += 1) {
+    const parts: ChatMessagePart[] = []
+
+    while (toolIndex < Math.ceil(((assistantIndex + 1) * toolCount) / 4)) {
+      const id = `interleaved-tool-${toolIndex}`
+      parts.push({
+        type: 'tool-call',
+        toolCallId: id,
+        toolName: toolIndex % 2 === 0 ? 'read_file' : 'search_files',
+        args: { path: `/workspace/synthetic/interleaved-${toolIndex}.ts` },
+        argsText: JSON.stringify({ path: `/workspace/synthetic/interleaved-${toolIndex}.ts` }),
+        result: { output: `${id} complete` },
+        isError: false
+      })
+      parts.push({ type: 'text', text: `Narration after tool ${toolIndex}.` })
+      toolIndex += 1
+    }
+
+    messages.push({
+      id: `interleaved-assistant-${assistantIndex}`,
+      role: 'assistant',
+      parts,
+      timestamp: assistantIndex + 1,
+      pending: false
+    })
+  }
+
+  return messages
+}
+
+function makeMinimalTurns(count: number, withLatestHeavyTools = 0): ChatMessage[] {
+  return Array.from({ length: count }, (_, turn) => {
+    const assistantParts: ChatMessagePart[] =
+      turn === count - 1 && withLatestHeavyTools > 0
+        ? Array.from({ length: withLatestHeavyTools }, (__, tool) => ({
+            type: 'tool-call' as const,
+            toolCallId: `minimal-tool-${tool}`,
+            toolName: 'read_file',
+            args: { path: `/workspace/minimal-${tool}.ts` },
+            argsText: JSON.stringify({ path: `/workspace/minimal-${tool}.ts` }),
+            result: { output: `tool ${tool}` },
+            isError: false
+          }))
+        : [{ type: 'text', text: `Answer ${turn}` }]
+
+    return [
+      { id: `minimal-user-${turn}`, role: 'user' as const, parts: [{ type: 'text' as const, text: `Question ${turn}` }] },
+      { id: `minimal-assistant-${turn}`, role: 'assistant' as const, parts: assistantParts, pending: false }
+    ]
+  }).flat()
+}
+
 function Harness({ messages, onSubmit }: { messages: ChatMessage[]; onSubmit: (text: string) => boolean }) {
   const repository = useRuntimeMessageRepository(messages)
 
@@ -193,12 +253,16 @@ describe('representative long tool-heavy session contract (#68467)', () => {
 
     const mountedToolRows = view.container.querySelectorAll('[data-tool-row]').length
     const mountedTurnGroups = view.container.querySelectorAll('[data-slot="aui_turn-pair"]').length
-    const showEarlier = screen.getByRole('button', { name: /earlier/i })
+    const showEarlier = screen.getByRole('button', { name: 'Show earlier messages' })
 
     expect(showEarlier).toBeTruthy()
     expect(showEarlier.getAttribute('type')).toBe('button')
-    expect(mountedToolRows).toBeLessThan(TOOL_CALL_COUNT)
-    expect(mountedTurnGroups).toBeLessThan(MESSAGE_COUNT / 2)
+    expect(mountedToolRows).toBeLessThanOrEqual(20)
+    expect(mountedTurnGroups).toBeLessThanOrEqual(20)
+
+    await act(async () => new Promise(resolve => window.setTimeout(resolve, 25)))
+    expect(view.container.querySelectorAll('[data-tool-row]')).toHaveLength(mountedToolRows)
+    expect(view.container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(mountedTurnGroups)
 
     fireEvent.click(showEarlier)
 
@@ -218,20 +282,157 @@ describe('representative long tool-heavy session contract (#68467)', () => {
 
     expect(screen.getByRole('textbox', { name: /message/i }).getAttribute('contenteditable')).toBe('true')
     const initialRows = view.container.querySelectorAll('[data-tool-row]').length
-    const showEarlier = screen.getByRole('button', { name: /earlier/i })
+    const showEarlier = screen.getByRole('button', { name: 'Show earlier tool calls' })
 
     expect(initialRows).toBeLessThan(TOOL_CALL_COUNT)
     expect(showEarlier.getAttribute('type')).toBe('button')
     fireEvent.click(showEarlier)
     expect(view.container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(initialRows)
 
-    while (screen.queryByRole('button', { name: /earlier/i })) {
-      fireEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    while (screen.queryByRole('button', { name: 'Show earlier tool calls' })) {
+      fireEvent.click(screen.getByRole('button', { name: 'Show earlier tool calls' }))
     }
 
     expect(view.container.querySelectorAll('[data-tool-row]')).toHaveLength(TOOL_CALL_COUNT - 1)
     expect(messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toHaveLength(
       TOOL_CALL_COUNT
     )
+  })
+
+  it('bounds an interleaved multi-message logical turn and progressively restores it in order', async () => {
+    const messages = makeInterleavedHeavyTurnFixture()
+    const view = render(<Harness messages={messages} onSubmit={() => true} />)
+
+    await act(async () => new Promise(resolve => window.setTimeout(resolve, 25)))
+
+    expect(view.container.querySelectorAll('[data-tool-page-key]')).toHaveLength(20)
+    expect(view.container.querySelectorAll('[data-tool-row]')).toHaveLength(20)
+
+    while (screen.queryByRole('button', { name: 'Show earlier tool calls' })) {
+      fireEvent.click(screen.getByRole('button', { name: 'Show earlier tool calls' }))
+    }
+
+    const keys = Array.from(view.container.querySelectorAll<HTMLElement>('[data-tool-page-key]')).map(
+      element => element.dataset.toolPageKey
+    )
+
+    expect(keys).toEqual(
+      Array.from(
+        { length: 160 },
+        (_, index) => `interleaved-assistant-${Math.floor(index / 40)}:interleaved-tool-${index}`
+      )
+    )
+    const firstTool = view.container.querySelector<HTMLElement>('[data-tool-page-key]')
+    const firstToolToggle = firstTool?.querySelector<HTMLButtonElement>('button[aria-expanded]')
+
+    if (!firstToolToggle) {
+      throw new Error('first restored tool is not expandable')
+    }
+
+    fireEvent.click(firstToolToggle)
+    expect(firstTool?.textContent).toContain('interleaved-tool-0 complete')
+    expect(view.container.textContent).toContain('Narration after tool 159.')
+    expect(messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toHaveLength(160)
+  })
+
+  it('keeps the oldest revealed tool stable when the same turn appends another call', async () => {
+    const initial = makeInterleavedHeavyTurnFixture(30)
+    const view = render(<Harness messages={initial} onSubmit={() => true} />)
+    const pager = screen.getByRole('button', { name: 'Show earlier tool calls' })
+
+    pager.focus()
+    fireEvent.click(pager)
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Show earlier tool calls' })).toBeNull())
+    const oldest = view.container.querySelector<HTMLElement>('[data-tool-page-key]')
+
+    expect(oldest?.dataset.toolPageKey).toBe('interleaved-assistant-0:interleaved-tool-0')
+    await waitFor(() => expect(globalThis.document.activeElement).toBe(oldest))
+
+    const appended = structuredClone(initial)
+    const lastAssistant = appended.at(-1)
+
+    if (!lastAssistant || lastAssistant.role !== 'assistant') {
+      throw new Error('missing assistant tail')
+    }
+
+    lastAssistant.parts.push({
+      type: 'tool-call',
+      toolCallId: 'interleaved-tool-30',
+      toolName: 'read_file',
+      args: { path: '/workspace/synthetic/interleaved-30.ts' },
+      argsText: JSON.stringify({ path: '/workspace/synthetic/interleaved-30.ts' }),
+      result: { output: 'interleaved-tool-30 complete' },
+      isError: false
+    })
+    view.rerender(<Harness messages={appended} onSubmit={() => true} />)
+
+    await waitFor(() => expect(view.container.querySelectorAll('[data-tool-page-key]')).toHaveLength(31))
+    expect(view.container.querySelector<HTMLElement>('[data-tool-page-key]')?.dataset.toolPageKey).toBe(
+      'interleaved-assistant-0:interleaved-tool-0'
+    )
+  })
+
+  it('keeps revealed history identity stable across append and transfers final pager focus', async () => {
+    const initial = makeMinimalTurns(25)
+    const view = render(<Harness messages={initial} onSubmit={() => true} />)
+    const pager = screen.getByRole('button', { name: 'Show earlier messages' })
+
+    pager.focus()
+    fireEvent.click(pager)
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Show earlier messages' })).toBeNull())
+    const oldest = view.container.querySelector<HTMLElement>('[data-history-group-id]')
+
+    expect(oldest?.dataset.historyGroupId).toBe('minimal-user-0')
+    await waitFor(() => expect(globalThis.document.activeElement).toBe(oldest))
+
+    const appended: ChatMessage[] = [
+      ...initial,
+      { id: 'minimal-user-25', role: 'user', parts: [{ type: 'text', text: 'Question 25' }] },
+      { id: 'minimal-assistant-25', role: 'assistant', parts: [{ type: 'text', text: 'Answer 25' }] }
+    ]
+
+    view.rerender(<Harness messages={appended} onSubmit={() => true} />)
+
+    await waitFor(() => expect(view.container.querySelectorAll('[data-history-group-id]')).toHaveLength(26))
+    expect(view.container.querySelector<HTMLElement>('[data-history-group-id]')?.dataset.historyGroupId).toBe(
+      'minimal-user-0'
+    )
+  })
+
+  it('keeps history and tool pagers uniquely named', () => {
+    render(<Harness messages={makeMinimalTurns(25, 25)} onSubmit={() => true} />)
+
+    expect(screen.getByRole('button', { name: 'Show earlier messages' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show earlier tool calls' })).toBeTruthy()
+  })
+
+  it('registers a hidden preview artifact without mounting its heavy tool row', async () => {
+    clearPreviewArtifacts('runtime-fixture')
+    const messages = makeMinimalTurns(25)
+    const hiddenAssistant = messages[1]
+
+    hiddenAssistant.parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'hidden-preview-tool',
+        toolName: 'write_file',
+        args: { path: '/workspace/hidden-preview.html' },
+        argsText: JSON.stringify({ path: '/workspace/hidden-preview.html' }),
+        result: { output: 'created' },
+        isError: false
+      }
+    ]
+
+    const view = render(<Harness messages={messages} onSubmit={() => true} />)
+
+    await waitFor(() =>
+      expect($previewStatusBySession.get()['runtime-fixture']?.map(item => item.target)).toContain(
+        '/workspace/hidden-preview.html'
+      )
+    )
+    expect(view.container.querySelector('[data-tool-page-key*="hidden-preview-tool"]')).toBeNull()
+    expect(view.container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(20)
   })
 })

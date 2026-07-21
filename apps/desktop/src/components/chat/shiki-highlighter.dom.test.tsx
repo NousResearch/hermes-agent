@@ -24,7 +24,11 @@ const { disposeHighlight, startShikiHighlight } = vi.hoisted(() => {
   }
 })
 
-vi.mock('@/components/chat/shiki-worker-client', () => ({ startShikiHighlight }))
+vi.mock('@/components/chat/shiki-worker-client', () => ({
+  isShikiWorkerRetryableError: (error: unknown) =>
+    error instanceof Error && 'retryable' in error && error.retryable === true,
+  startShikiHighlight
+}))
 
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 
@@ -140,6 +144,58 @@ describe('SyntaxHighlighter viewport and worker lifecycle', () => {
     const view = render(<SyntaxHighlighter code={CODE} components={components} language="ts" />)
 
     await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledTimes(1))
+    expect(view.container.querySelector('code')?.textContent).toBe(CODE)
+  })
+
+  it('retries all mounted blocks once after a shared worker failure', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const retryable = Object.assign(new Error('shared worker crashed'), { retryable: true })
+    const initialRejects: Array<(error: Error) => void> = []
+    const retryResolves: Array<(tokens: typeof TOKENS) => void> = []
+
+    startShikiHighlight.mockImplementation(() => {
+      const call = startShikiHighlight.mock.calls.length
+
+      return {
+        dispose: disposeHighlight,
+        promise:
+          call <= 2
+            ? new Promise((_resolve, reject) => initialRejects.push(reject))
+            : new Promise(resolve => retryResolves.push(resolve))
+      }
+    })
+
+    const view = render(
+      <>
+        <SyntaxHighlighter code="first block" components={components} language="ts" />
+        <SyntaxHighlighter code="second block" components={components} language="ts" />
+      </>
+    )
+
+    await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledTimes(2))
+    await act(async () => initialRejects.forEach(reject => reject(retryable)))
+    await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledTimes(4))
+    await act(async () => retryResolves.forEach(resolve => resolve(TOKENS)))
+
+    await waitFor(() => expect(view.container.querySelectorAll('span[style*="#57606a"]')).toHaveLength(2))
+    expect(startShikiHighlight).toHaveBeenCalledTimes(4)
+  })
+
+  it('falls back to complete plain code after the bounded retry also fails', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const retryable = Object.assign(new Error('persistent worker failure'), { retryable: true })
+
+    startShikiHighlight.mockImplementation(() => ({
+      dispose: disposeHighlight,
+      promise: Promise.reject(retryable)
+    }))
+
+    const view = render(<SyntaxHighlighter code={CODE} components={components} language="ts" />)
+
+    await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledTimes(2))
+    await act(async () => Promise.resolve())
+
+    expect(startShikiHighlight).toHaveBeenCalledTimes(2)
     expect(view.container.querySelector('code')?.textContent).toBe(CODE)
   })
 })

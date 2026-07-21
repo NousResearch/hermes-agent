@@ -5,51 +5,77 @@ export interface ShikiHighlightJob {
   promise: Promise<ShikiWorkerToken[][]>
 }
 
+interface WorkerGeneration {
+  id: number
+  leases: number
+  pendingIds: Set<number>
+  retired: boolean
+  worker: Worker
+}
+
+interface PendingRequest {
+  generation: WorkerGeneration
+  reject: (reason?: unknown) => void
+  resolve: (tokens: ShikiWorkerToken[][]) => void
+}
+
+export class ShikiWorkerRetryableError extends Error {
+  readonly retryable = true
+}
+
+let nextGenerationId = 0
 let nextRequestId = 0
-let worker: Worker | null = null
-let consumers = 0
+let currentGeneration: WorkerGeneration | null = null
+const pending = new Map<number, PendingRequest>()
 
-const pending = new Map<
-  number,
-  { reject: (reason?: unknown) => void; resolve: (tokens: ShikiWorkerToken[][]) => void }
->()
+function rejectGenerationPending(generation: WorkerGeneration, error: Error) {
+  for (const id of generation.pendingIds) {
+    const request = pending.get(id)
 
-function rejectPending(error: Error) {
-  for (const request of pending.values()) {
-    request.reject(error)
+    if (request?.generation === generation) {
+      pending.delete(id)
+      request.reject(error)
+    }
   }
 
-  pending.clear()
+  generation.pendingIds.clear()
 }
 
-function terminateWorker(error: Error) {
-  const activeWorker = worker
-  worker = null
-
-  if (activeWorker) {
-    activeWorker.onmessage = null
-    activeWorker.onerror = null
-    activeWorker.terminate()
+function retireGeneration(generation: WorkerGeneration, error: Error) {
+  if (generation.retired) {
+    return
   }
 
-  rejectPending(error)
+  generation.retired = true
+
+  if (currentGeneration === generation) {
+    currentGeneration = null
+  }
+
+  generation.worker.onmessage = null
+  generation.worker.onerror = null
+  generation.worker.terminate()
+  rejectGenerationPending(generation, error)
 }
 
-function getWorker(): Worker {
-  if (worker) {
-    return worker
+function createGeneration(): WorkerGeneration {
+  const generation: WorkerGeneration = {
+    id: ++nextGenerationId,
+    leases: 0,
+    pendingIds: new Set(),
+    retired: false,
+    worker: new Worker(new URL('./shiki-worker.ts', import.meta.url), { type: 'module' })
   }
 
-  worker = new Worker(new URL('./shiki-worker.ts', import.meta.url), { type: 'module' })
-
-  worker.onmessage = (event: MessageEvent<ShikiWorkerResponse>) => {
+  generation.worker.onmessage = (event: MessageEvent<ShikiWorkerResponse>) => {
     const request = pending.get(event.data.id)
 
-    if (!request) {
+    if (!request || request.generation !== generation) {
       return
     }
 
     pending.delete(event.data.id)
+    generation.pendingIds.delete(event.data.id)
 
     if (event.data.error || !event.data.tokens) {
       request.reject(new Error(event.data.error || 'Shiki worker returned no tokens'))
@@ -58,11 +84,31 @@ function getWorker(): Worker {
     }
   }
 
-  worker.onerror = event => {
-    terminateWorker(new Error(event.message || 'Shiki worker failed'))
+  generation.worker.onerror = event => {
+    retireGeneration(generation, new ShikiWorkerRetryableError(event.message || 'Shiki worker failed'))
   }
 
-  return worker
+  currentGeneration = generation
+
+  return generation
+}
+
+function getGeneration(): WorkerGeneration {
+  return currentGeneration ?? createGeneration()
+}
+
+export function isShikiWorkerRetryableError(error: unknown): error is ShikiWorkerRetryableError {
+  return error instanceof ShikiWorkerRetryableError ||
+    (error instanceof Error && 'retryable' in error && error.retryable === true)
+}
+
+/** Narrow behavior seam for lifecycle tests; never exposes worker instances. */
+export function getShikiWorkerClientSnapshotForTests() {
+  return {
+    activeGeneration: currentGeneration?.id ?? null,
+    activeLeases: currentGeneration?.leases ?? 0,
+    pending: pending.size
+  }
 }
 
 export function startShikiHighlight(code: string, language: string): ShikiHighlightJob {
@@ -73,18 +119,29 @@ export function startShikiHighlight(code: string, language: string): ShikiHighli
     }
   }
 
+  let generation: WorkerGeneration
+
+  try {
+    generation = getGeneration()
+  } catch (error) {
+    return { dispose: () => {}, promise: Promise.reject(error) }
+  }
+
   const id = ++nextRequestId
-  consumers += 1
+  generation.leases += 1
   let disposed = false
 
   const promise = new Promise<ShikiWorkerToken[][]>((resolve, reject) => {
-    pending.set(id, { reject, resolve })
+    pending.set(id, { generation, reject, resolve })
+    generation.pendingIds.add(id)
 
     try {
-      getWorker().postMessage({ code, id, language } satisfies ShikiWorkerRequest)
+      generation.worker.postMessage({ code, id, language } satisfies ShikiWorkerRequest)
     } catch (error) {
-      pending.delete(id)
-      reject(error)
+      retireGeneration(
+        generation,
+        new ShikiWorkerRetryableError(error instanceof Error ? error.message : String(error))
+      )
     }
   })
 
@@ -98,15 +155,16 @@ export function startShikiHighlight(code: string, language: string): ShikiHighli
       disposed = true
       const request = pending.get(id)
 
-      if (request) {
+      if (request?.generation === generation) {
         pending.delete(id)
+        generation.pendingIds.delete(id)
         request.reject(new Error('Shiki highlight cancelled'))
       }
 
-      consumers = Math.max(0, consumers - 1)
+      generation.leases = Math.max(0, generation.leases - 1)
 
-      if (consumers === 0) {
-        terminateWorker(new Error('Shiki worker has no active consumers'))
+      if (generation.leases === 0 && !generation.retired) {
+        retireGeneration(generation, new Error('Shiki worker has no active consumers'))
       }
     }
   }

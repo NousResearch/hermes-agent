@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -226,6 +227,13 @@ _LONG_HANDLERS = frozenset(
         "pet.thumb",
         "learning.frames",
         "plugins.manage",
+        # reload.mcp shuts down and rediscovers every MCP server — with a
+        # flapping server (retry loops, connect timeouts up to 120s) that can
+        # block for minutes. Inline it froze the reader thread: config.set,
+        # complete.slash, prompt.submit all sat unread and the TUI appeared
+        # dead after a few skin switches. The handler serializes concurrent
+        # reloads via _mcp_reload_lock.
+        "reload.mcp",
         "process.list",
         "projects.discover_repos",
         "projects.record_repos",
@@ -2400,6 +2408,10 @@ def resolve_skin() -> dict:
         return {
             "name": skin.name,
             "colors": skin.colors,
+            # Paired palettes: the TUI detects the terminal's polarity and
+            # prefers the matching hand-tuned block over adapting `colors`.
+            "light_colors": skin.light_colors,
+            "dark_colors": skin.dark_colors,
             "branding": skin.branding,
             "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero,
@@ -11804,6 +11816,15 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "theme":
+        # TUI light/dark mode pin: 'light'/'dark' beat background
+        # auto-detection (xterm.js hosts misreport OSC 11); 'auto' trusts it.
+        raw = str(value or "").strip().lower()
+        if raw not in {"auto", "light", "dark"}:
+            return _err(rid, 4002, f"unknown theme value: {value} (use auto|light|dark)")
+        _write_config_key("display.tui_theme", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "statusbar":
         raw = str(value or "").strip().lower()
         display = _load_cfg().get("display")
@@ -12645,6 +12666,10 @@ def _(rid, params: dict) -> dict:
     if key == "compact":
         on = bool((_load_cfg().get("display") or {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
+    if key == "theme":
+        display = _load_cfg().get("display")
+        raw = str(display.get("tui_theme", "auto") if isinstance(display, dict) else "auto").strip().lower()
+        return _ok(rid, {"value": raw if raw in {"auto", "light", "dark"} else "auto"})
     if key == "statusbar":
         display = _load_cfg().get("display")
         raw = (
@@ -12657,11 +12682,30 @@ def _(rid, params: dict) -> dict:
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
-            return _ok(
-                rid, {"mtime": cfg_path.stat().st_mtime if cfg_path.exists() else 0}
-            )
+            mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
         except Exception:
             return _ok(rid, {"mtime": 0})
+        # Revision hash of the MCP-relevant config sections. The TUI's
+        # config-change poller uses it to reload MCP servers only when their
+        # config actually changed — a /skin or /statusbar write bumps mtime
+        # but must not cost a multi-second MCP reconnect.
+        try:
+            cfg = _load_cfg()
+            # mcp_servers holds the server DEFINITIONS the classic CLI watches
+            # for auto-reload (cli.py::_check_config_mcp_changes) — omitting it
+            # meant editing a server bumped mtime but not mcp_rev, so the TUI
+            # skipped reload.mcp and new servers never connected until a manual
+            # /reload-mcp. `mcp` (settings) and `tools` (enable/disable) round
+            # out the MCP-relevant surface.
+            rev_src = json.dumps(
+                {"mcp": cfg.get("mcp"), "mcp_servers": cfg.get("mcp_servers"), "tools": cfg.get("tools")},
+                sort_keys=True,
+                default=str,
+            )
+            mcp_rev = hashlib.sha1(rev_src.encode()).hexdigest()[:12]
+        except Exception:
+            mcp_rev = ""
+        return _ok(rid, {"mtime": mtime, "mcp_rev": mcp_rev})
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
@@ -12835,6 +12879,37 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5010, str(e))
 
 
+# reload.mcp runs on the RPC pool (see _LONG_HANDLERS) so a slow/flapping MCP
+# server can't freeze the reader thread. Serialize reloads: overlapping
+# shutdown+discover pairs from stacked config-change polls would interleave
+# and leave the registry half-built. Piggyback rather than queue — a reload
+# that arrives while one is running would just redo identical work.
+_mcp_reload_lock = threading.Lock()
+# Bumped once per SUCCESSFUL shutdown+discover. A follower that waited on the
+# lock only skips the redundant reload if this advanced while it waited — i.e.
+# the leader actually completed. If the leader threw (flapping server), the
+# follower sees no advance and re-runs the full reload itself.
+_mcp_reload_gen = 0
+
+
+def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
+    """Shared tail for both reload paths: honor ``always`` (persist the
+    confirm opt-out) and return the ok payload."""
+    if bool(params.get("always", False)):
+        try:
+            from cli import save_config_value as _save_cfg
+
+            _save_cfg("approvals.mcp_reload_confirm", False)
+        except Exception as _exc:
+            logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+
+    payload = {"status": "reloaded"}
+    if coalesced:
+        payload["coalesced"] = True
+
+    return _ok(rid, payload)
+
+
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -12889,16 +12964,16 @@ def _(rid, params: dict) -> dict:
 
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
-        shutdown_mcp_servers()
-        discover_mcp_tools()
-        if session:
+        def _refresh_session_agent() -> None:
+            """Rebuild THIS session's cached tool snapshot from the live
+            registry and push session.info. The agent snapshots tools once at
+            build and never re-reads the registry, so an explicit rebuild is
+            required (mirrors gateway/run.py::_execute_mcp_reload). Runs under
+            _mcp_reload_lock so the registry it reads can't be torn down by a
+            concurrent reload mid-refresh."""
+            if not session:
+                return
             agent = session["agent"]
-            # Rebuild the cached agent's tool snapshot so the current session
-            # picks up added/removed MCP tools without `/new` (which discards
-            # history).  The agent snapshots tools once at build and never
-            # re-reads the registry, so an explicit rebuild is required here.
-            # The user already consented to the prompt-cache invalidation via
-            # the confirm gate above.  Mirrors gateway/run.py::_execute_mcp_reload.
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
 
@@ -12914,22 +12989,49 @@ def _(rid, params: dict) -> dict:
                     "Failed to refresh cached agent tools after /reload-mcp: %s",
                     _exc,
                 )
-            _emit(
-                "session.info",
-                params.get("session_id", ""),
-                _session_info(agent, session),
-            )
+            _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
 
-        # Honor `always=true` by persisting the opt-out to config.
-        if bool(params.get("always", False)):
+        global _mcp_reload_gen
+
+        def _do_full_reload() -> None:
+            """shutdown+discover+refresh under the lock, then mark a completed
+            generation. The lock spans the refresh too: releasing after
+            discover would let a second reload tear the registry down while
+            this one is still reading it to rebuild the session snapshot."""
+            global _mcp_reload_gen
+
+            shutdown_mcp_servers()
+            discover_mcp_tools()
+            _refresh_session_agent()
+            _mcp_reload_gen += 1
+
+        # Serialize reloads. The LEADER (won the non-blocking acquire) runs the
+        # full reload. A FOLLOWER (lock busy) snapshots the generation, waits,
+        # then — still holding the lock — checks whether a reload actually
+        # COMPLETED while it waited: if so it just refreshes its own agent
+        # against the fresh registry (coalesced); if the leader threw (flapping
+        # server, no generation advance) it re-runs the full reload itself, so
+        # a failed leader can never leave a follower reporting a bogus success
+        # over an empty/partial registry.
+        if _mcp_reload_lock.acquire(blocking=False):
             try:
-                from cli import save_config_value as _save_cfg
+                _do_full_reload()
+            finally:
+                _mcp_reload_lock.release()
 
-                _save_cfg("approvals.mcp_reload_confirm", False)
-            except Exception as _exc:
-                logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+            return _finish_reload(rid, params, coalesced=False)
 
-        return _ok(rid, {"status": "reloaded"})
+        gen_before = _mcp_reload_gen
+
+        with _mcp_reload_lock:
+            if _mcp_reload_gen > gen_before:
+                _refresh_session_agent()
+                coalesced = True
+            else:
+                _do_full_reload()
+                coalesced = False
+
+        return _finish_reload(rid, params, coalesced=coalesced)
     except Exception as e:
         return _err(rid, 5015, str(e))
 

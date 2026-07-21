@@ -16,6 +16,7 @@ import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
 import { windowOffset } from './overlayControls.js'
+import { clampOverlayWidth, listRowStyle } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const VISIBLE = 12
@@ -153,9 +154,12 @@ export const orchestratorHintSegmentColor = (t: Theme, role: OrchestratorHintRol
   return t.color.muted
 }
 
+// Delegates to the shared list-row primitive so the session switcher and the
+// completions popover cannot disagree about what "selected" looks like.
+// (`selectionBg` remains the TEXT-selection highlight — a different semantic.)
 export const selectedSessionRowStyle = (t: Theme) => ({
-  backgroundColor: t.color.selectionBg,
-  color: t.color.text
+  backgroundColor: listRowStyle(t, true).backgroundColor,
+  color: listRowStyle(t, true).color
 })
 
 export const newSessionMarkerColor = (t: Theme, selected: boolean) =>
@@ -283,6 +287,7 @@ function OrchestratorHintText({ segments, t }: OrchestratorHintTextProps) {
 export function ActiveSessionSwitcher({
   currentSessionId,
   gw,
+  maxWidth,
   onCancel,
   onClose,
   onNew,
@@ -318,7 +323,9 @@ export function ActiveSessionSwitcher({
   const itemsRef = useRef<SessionActiveItem[]>([])
   const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the switcher its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
   const promptColumns = Math.max(20, width - 11)
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
@@ -893,6 +900,7 @@ interface OrchestratorHintTextProps {
 interface ActiveSessionSwitcherProps {
   currentSessionId: null | string
   gw: GatewayClient
+  maxWidth?: number
   onCancel: () => void
   onClose: (id: string) => Promise<null | SessionCloseResponse>
   onNew: () => void

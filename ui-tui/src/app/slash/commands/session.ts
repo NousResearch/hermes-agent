@@ -15,6 +15,7 @@ import type {
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
+import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -408,6 +409,43 @@ export const sessionCommands: SlashCommand[] = [
           ctx.guarded<SlashExecResponse>(r => {
             const body = r.output || '/pet: no output'
             ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'pin light/dark mode or trust auto-detection (usage: /theme [auto|light|dark])',
+    name: 'theme',
+    usage: '/theme [auto|light|dark]',
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+
+      if (!value) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'theme' })
+          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`theme: ${r.value || 'auto'}`)))
+      }
+
+      if (!['auto', 'light', 'dark'].includes(value)) {
+        return ctx.transcript.sys('usage: /theme [auto|light|dark]')
+      }
+
+      // Apply only after the write is confirmed (mirrors /indicator): a
+      // failed config.set must not leave the session showing a theme that
+      // reverts on restart. A few ms later than an optimistic flip, but the
+      // env/theme state and config.yaml never disagree.
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'theme', value })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (r.value === undefined) {
+              return
+            }
+
+            applyConfiguredTuiTheme(value)
+            ctx.transcript.sys(`theme → ${value}`)
           })
         )
         .catch(ctx.guardedErr)

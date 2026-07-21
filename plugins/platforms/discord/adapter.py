@@ -5854,6 +5854,125 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
 
+    def _discord_thread_context_messages(self) -> int:
+        """Return number of prior Discord thread messages to inject.
+
+        Thread context is separate from channel history backfill: Discord does
+        not include the thread starter message in inbound thread events, so a
+        short follow-up like "can you do this?" can otherwise reach the agent
+        without the message the thread was created from.
+        """
+        configured = self.config.extra.get("thread_context_messages")
+        if configured is None:
+            configured = os.getenv("DISCORD_THREAD_CONTEXT_MESSAGES", "5")
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = 5
+        return max(0, min(value, 20))
+
+    def _discord_thread_context_max_chars(self) -> int:
+        """Return maximum character budget for injected thread context."""
+        configured = self.config.extra.get("thread_context_max_chars")
+        if configured is None:
+            configured = os.getenv("DISCORD_THREAD_CONTEXT_MAX_CHARS", "4000")
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = 4000
+        return max(500, min(value, 20000))
+
+    @staticmethod
+    def _discord_message_author_name(message: Any) -> str:
+        author = getattr(message, "author", None)
+        return str(
+            getattr(author, "display_name", None)
+            or getattr(author, "name", None)
+            or getattr(author, "id", None)
+            or "unknown"
+        )
+
+    @staticmethod
+    def _discord_message_text(message: Any) -> str:
+        text = (getattr(message, "clean_content", None) or getattr(message, "content", None) or "").strip()
+        if text:
+            return text
+        attachments = getattr(message, "attachments", None) or []
+        if attachments:
+            names = [getattr(att, "filename", None) for att in attachments]
+            names = [name for name in names if name]
+            return f"[attachments: {', '.join(names)}]" if names else "[attachments]"
+        return ""
+
+    async def _build_thread_context_injection(self, thread: Any, current_message: Any) -> Optional[str]:
+        """Fetch a bounded Discord thread starter/history block for context.
+
+        Discord thread events include the new message and thread metadata, but
+        not the starter message/body.  Fetch only the starter plus a small
+        thread-local history snapshot; never scan the parent channel here.
+        """
+        context_message_limit = self._discord_thread_context_messages()
+        if context_message_limit <= 0:
+            return None
+
+        max_chars = self._discord_thread_context_max_chars()
+        current_id = str(getattr(current_message, "id", "") or "")
+        seen_ids = {current_id} if current_id else set()
+        entries: list[tuple[str, str, str]] = []
+
+        def add(label: str, msg: Any) -> None:
+            msg_id = str(getattr(msg, "id", "") or "")
+            if msg_id and msg_id in seen_ids:
+                return
+            if msg_id:
+                seen_ids.add(msg_id)
+            text = self._discord_message_text(msg)
+            if not text:
+                return
+            entries.append((label, self._discord_message_author_name(msg), text))
+
+        starter = getattr(thread, "starter_message", None)
+        if starter:
+            add("starter", starter)
+        else:
+            parent = getattr(thread, "parent", None)
+            fetch_message: Any = getattr(parent, "fetch_message", None)
+            thread_id = getattr(thread, "id", None)
+            if callable(fetch_message) and thread_id is not None:
+                try:
+                    add("starter", await fetch_message(thread_id))
+                except Exception as e:
+                    logger.debug("[%s] Could not fetch Discord thread starter: %s", self.name, e)
+
+        history: Any = getattr(thread, "history", None)
+        if callable(history):
+            try:
+                message_entries = 0
+                history_iter: Any = history(limit=context_message_limit + 1, before=current_message, oldest_first=True)
+                async for msg in history_iter:
+                    before_count = len(entries)
+                    add("message", msg)
+                    if len(entries) > before_count and entries[-1][0] == "message":
+                        message_entries += 1
+                    if message_entries >= context_message_limit:
+                        break
+            except Exception as e:
+                logger.debug("[%s] Could not fetch Discord thread history: %s", self.name, e)
+
+        if not entries:
+            return None
+
+        title = getattr(thread, "name", None) or getattr(thread, "id", "thread")
+        lines = ["[Discord thread context]", f"Thread: {title}"]
+        for label, author, text in entries:
+            prefix = "starter" if label == "starter" else "message"
+            lines.append(f"[{prefix}] {author}: {text}")
+
+        block = "\n".join(lines)
+        if len(block) > max_chars:
+            block = block[: max_chars - 15].rstrip() + "\n[truncated]"
+        return block
+
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
 
@@ -7480,10 +7599,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 if _backfill_text:
                     _channel_context = _backfill_text
 
+        if is_thread and msg_type != MessageType.COMMAND and auto_threaded_channel is None:
+            thread_context = await self._build_thread_context_injection(effective_channel, message)
+            if thread_context:
+                event_text = f"{thread_context}\n\n{event_text}" if event_text else thread_context
+
         # Defense-in-depth: prevent empty user messages from entering session
-        # (can happen when user sends @mention-only with no other text).
-        # When channel_context is present, a bare mention means "catch me up"
-        # — the context IS the message, so skip the placeholder.
+        # (can happen when user sends @mention-only with no text).
+        # When channel_context or thread_context is present, a bare mention means
+        # "catch me up" — the context IS the message, so skip the placeholder.
         if (not event_text or not event_text.strip()) and not _channel_context:
             # Bare mention-only ping (e.g. "@Bot" with nothing else, including
             # raw <@!ID> forms) with no media, no injected text, and no backfill

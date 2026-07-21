@@ -106,6 +106,35 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
         cli_mod.main(skills="missing-skill", list_tools=True)
 
 
+def test_main_discovers_mcp_tools_before_cli_init(monkeypatch):
+    import cli as cli_mod
+    import hermes_cli.tools_config as tools_config_mod
+    import tools.mcp_tool as mcp_tool_mod
+
+    call_order = []
+
+    def fake_cli(**kwargs):
+        call_order.append("cli")
+        return _DummyCLI(**kwargs)
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(
+        mcp_tool_mod,
+        "discover_mcp_tools",
+        lambda: call_order.append("discover"),
+    )
+    monkeypatch.setattr(
+        tools_config_mod,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: [],
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(list_tools=True)
+
+    assert call_order[:2] == ["discover", "cli"]
+
+
 def test_show_banner_does_not_print_skills():
     """show_banner() no longer prints the activated skills line — it moved to run()."""
     cli_obj = _make_real_cli(compact=False)

@@ -300,12 +300,13 @@ def _build_responses_payload(
         }],
         "tools": [{
             "type": "image_generation",
+            "action": "generate",
             "model": API_MODEL,
             "size": size,
             "quality": quality,
             "output_format": "png",
             "background": "opaque",
-            "partial_images": 1,
+            "partial_images": 0,
         }],
         "tool_choice": {
             "type": "allowed_tools",

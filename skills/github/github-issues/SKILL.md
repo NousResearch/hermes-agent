@@ -1,7 +1,7 @@
 ---
 name: github-issues
 description: "Create, triage, label, assign GitHub issues via gh or REST."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -105,6 +105,21 @@ for i in json.load(sys.stdin)['items']:
 ```
 
 ## 2. Creating Issues
+
+### MANDATORY: search for duplicates first
+
+Before any `gh issue create`, search existing issues (open AND closed) for duplicates. No exceptions, even when the bug feels novel.
+
+```bash
+# Use 2-3 keyword variants — the noun, the component, the error fragment
+gh issue list --repo OWNER/REPO --state all --search "KEYWORDS" --limit 20
+gh issue list --repo OWNER/REPO --state all --search "ALT_KEYWORDS" --limit 20
+
+# Read anything that looks close
+gh issue view NUMBER --repo OWNER/REPO
+```
+
+If an existing issue covers the same root problem — even from a different angle (different OS, different config vector, different symptom) — comment on it instead of filing a new one. Filing duplicates wastes maintainer triage time.
 
 **With gh:**
 

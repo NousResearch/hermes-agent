@@ -3191,6 +3191,9 @@ _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+# Per-server override for _CIRCUIT_BREAKER_THRESHOLD, populated from
+# mcp_servers.<name>.breaker_threshold in config.yaml.
+_circuit_breaker_thresholds: Dict[str, int] = {}
 
 
 def _bump_server_error(server_name: str) -> None:
@@ -3202,7 +3205,8 @@ def _bump_server_error(server_name: str) -> None:
     """
     n = _server_error_counts.get(server_name, 0) + 1
     _server_error_counts[server_name] = n
-    if n >= _CIRCUIT_BREAKER_THRESHOLD:
+    threshold = _circuit_breaker_thresholds.get(server_name, _CIRCUIT_BREAKER_THRESHOLD)
+    if n >= threshold:
         _server_breaker_opened_at[server_name] = time.monotonic()
 
 
@@ -4114,7 +4118,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # failure the error paths below bump the count again, which
         # re-stamps the open-time via _bump_server_error (re-arming
         # the cooldown).
-        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+        threshold = _circuit_breaker_thresholds.get(server_name, _CIRCUIT_BREAKER_THRESHOLD)
+        if _server_error_counts.get(server_name, 0) >= threshold:
             opened_at = _server_breaker_opened_at.get(server_name, 0.0)
             age = time.monotonic() - opened_at
             if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
@@ -5171,6 +5176,13 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     Returns:
         List of all currently registered MCP tool names.
     """
+    # Populate per-server circuit breaker thresholds before any early
+    # returns so they are available even when MCP SDK is not loaded.
+    for srv_name, srv_cfg in servers.items():
+        bt = srv_cfg.get("breaker_threshold")
+        if isinstance(bt, int) and not isinstance(bt, bool) and bt > 0:
+            _circuit_breaker_thresholds[srv_name] = bt
+
     if not _MCP_AVAILABLE:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []

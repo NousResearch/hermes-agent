@@ -274,3 +274,105 @@ def test_identical_corrupt_bytes_still_reuse_one_backup(tmp_path):
         backups.add(excinfo.value.backup_path)
     assert len(backups) == 1
     assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 1
+
+
+# ---------------------------------------------------------------------------
+# Periodic WAL checkpoint on the dispatcher tick path
+# ---------------------------------------------------------------------------
+
+class _ConnProxy:
+    """Delegating wrapper so tests can observe/deny wal_checkpoint PRAGMAs.
+
+    ``sqlite3.Connection`` is an immutable C type — its methods cannot be
+    monkeypatched — so the spy wraps the connection object instead.
+    """
+
+    def __init__(self, conn, recorded, fail_checkpoint=False):
+        self._conn = conn
+        self._recorded = recorded
+        self._fail_checkpoint = fail_checkpoint
+
+    def execute(self, sql, *args, **kwargs):
+        if "wal_checkpoint" in str(sql).lower():
+            self._recorded.append(str(sql))
+            if self._fail_checkpoint:
+                raise sqlite3.OperationalError("database is locked")
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_dispatch_tick_runs_wal_checkpoint_at_interval(tmp_path, monkeypatch):
+    """First tick checkpoints; ticks inside the interval don't; after the
+    interval elapses the next tick checkpoints again."""
+    db_path = tmp_path / "kanban.db"
+    _build_board_db(db_path, tasks=1)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    # Fresh per-path clock so previous tests can't have claimed the slot.
+    monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
+
+    executed: list[str] = []
+    conn = kb.connect(db_path=db_path)
+    proxy = _ConnProxy(conn, executed)
+    try:
+        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        assert len(executed) == 1, "first tick should checkpoint"
+
+        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        assert len(executed) == 1, "ticks inside the interval must not checkpoint"
+
+        # Age the per-path timestamp past the interval → next tick fires.
+        key = str(db_path.resolve())
+        kb._LAST_WAL_CHECKPOINT[key] -= (
+            kb._WAL_CHECKPOINT_INTERVAL_SECONDS + 1.0
+        )
+        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        assert len(executed) == 2, "tick after the interval should checkpoint"
+        assert all("TRUNCATE" in sql.upper() for sql in executed)
+    finally:
+        conn.close()
+
+
+def test_wal_checkpoint_failure_never_fails_the_tick(tmp_path, monkeypatch):
+    """A busy/erroring checkpoint is best-effort: logged, never raised."""
+    db_path = tmp_path / "kanban.db"
+    _build_board_db(db_path, tasks=1)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
+
+    executed: list[str] = []
+    conn = kb.connect(db_path=db_path)
+    proxy = _ConnProxy(conn, executed, fail_checkpoint=True)
+    try:
+        result = kb.dispatch_once(
+            proxy, spawn_fn=lambda *a, **k: None, dry_run=True,
+        )
+        assert not result.skipped_locked
+        assert executed, "checkpoint was attempted (and failed) this tick"
+    finally:
+        conn.close()
+
+
+def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
+    """End-to-end: the checkpoint actually truncates the -wal sidecar."""
+    db_path = tmp_path / "kanban.db"
+    _build_board_db(db_path, tasks=1)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        # Generate WAL frames.
+        for i in range(30):
+            kb.create_task(conn, title=f"wal-{i}")
+        wal = tmp_path / "kanban.db-wal"
+        assert wal.exists() and wal.stat().st_size > 0
+
+        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: None, dry_run=True)
+        assert wal.stat().st_size == 0, (
+            "wal_checkpoint(TRUNCATE) should reset the -wal file to 0 bytes"
+        )
+    finally:
+        conn.close()

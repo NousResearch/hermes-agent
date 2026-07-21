@@ -678,3 +678,37 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+
+    def test_prompt_elapsed_uses_monotonic_clock_not_wall_clock(self):
+        """_format_prompt_elapsed must derive elapsed from time.monotonic(),
+        not time.time(), so the per-prompt timer is immune to system clock
+        adjustments (NTP sync, DST transitions, VM suspend/resume).
+        
+        Pin monotonic and wall clocks to different values and assert the
+        formatted output matches the monotonic delta — not the wall-clock
+        delta."""
+        cli_obj = _make_cli()
+
+        # Pin: monotonic clock at 500.0, wall clock at an unrelated epoch value.
+        with patch.object(cli_mod.time, "monotonic", return_value=500.0), \
+             patch.object(cli_mod.time, "time", return_value=1_700_000_000.0):
+            # Live turn: _prompt_start_time uses monotonic epoch.
+            cli_obj._prompt_start_time = 400.0
+            cli_obj._prompt_duration = 0.0
+            live = HermesCLI._format_prompt_elapsed(
+                cli_obj._prompt_start_time, cli_obj._prompt_duration, live=True
+            )
+            # Should show 100s (500.0 - 400.0), NOT the wall-clock delta.
+            assert live == "⏱ 1m 40s", f"expected ⏱ 1m 40s, got {live!r}"
+
+            # Frozen turn: uses pre-recorded _prompt_duration.
+            cli_obj._prompt_start_time = None
+            cli_obj._prompt_duration = 42.5
+            frozen = HermesCLI._format_prompt_elapsed(
+                cli_obj._prompt_start_time, cli_obj._prompt_duration, live=False
+            )
+            assert frozen == "⏲ 42s", f"expected ⏲ 42s, got {frozen!r}"
+
+    def test_prompt_elapsed_zero_on_fresh_start(self):
+        """Before any turn completes, the timer shows ⏲ 0s."""
+        assert HermesCLI._format_prompt_elapsed(None, 0.0, live=False) == "⏲ 0s"

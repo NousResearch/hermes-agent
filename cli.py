@@ -8723,6 +8723,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _dispatch_inline_steer(self, buffer, text: str) -> None:
+        """Dispatch a mid-run ``/steer`` and guarantee the input field is cleared.
+
+        The input field is reset **before** ``process_command()`` runs.  The
+        steer dispatch path can re-enter the prompt_toolkit event loop (a print
+        routed through ``run_in_terminal``, or a modal that snapshots+restores
+        the in-progress draft) or raise before control returns to the Enter
+        handler.  Clearing afterwards would be skipped in those cases, leaving
+        the submitted prompt in the buffer where the next Enter / turn-handoff
+        re-submits it (issue #34569).  Resetting first makes the TUI's
+        input-state contract — "what's in the box hasn't been sent" — hold
+        unconditionally, regardless of how ``process_command`` behaves.
+        """
+        if buffer is not None:
+            buffer.reset(append_to_history=True)
+        self.process_command(text)
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -13420,8 +13437,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # post-run next-turn message — defeating mid-run injection.
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
-                    self.process_command(text)
-                    event.app.current_buffer.reset(append_to_history=True)
+                    self._dispatch_inline_steer(event.app.current_buffer, text)
                     # Force a repaint after clearing the buffer.  /steer is
                     # dispatched mid-run while the agent streams output through
                     # patch_stdout; process_command() never invalidates the

@@ -123,11 +123,11 @@ def test_run_slash_create_with_parent_and_cascade(kanban_home):
     out2 = kc.run_slash(f"create 'child' --assignee bob --parent {p}")
     assert "todo" in out2  # child starts as todo
 
-    # Complete parent; list should promote child to ready
+    # Completion without an acceptance contract must not release the child.
     kc.run_slash(f"complete {p}")
-    # Explicit filter: child should now be ready (was todo before complete).
     ready_list = kc.run_slash("list --status ready")
-    assert "child" in ready_list
+    assert "child" not in ready_list
+    assert "child" in kc.run_slash("list --status todo")
 
 
 def test_run_slash_show_includes_comments(kanban_home):

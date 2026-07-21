@@ -3727,6 +3727,38 @@ _REQUIRED_EVIDENCE_TYPE_RE = re.compile(
 )
 
 
+def _acceptance_evidence_valid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    verifier_profile: str,
+    evidence_refs: object,
+) -> bool:
+    """Validate narrow, structured evidence against existing durable rows."""
+    if not isinstance(evidence_refs, list) or not evidence_refs:
+        return False
+    for ref in evidence_refs:
+        if not isinstance(ref, dict) or set(ref) != {"kind", "id"}:
+            return False
+        if not isinstance(ref["id"], int) or isinstance(ref["id"], bool):
+            return False
+        if ref["kind"] == "comment":
+            row = conn.execute(
+                "SELECT 1 FROM task_comments WHERE id = ? AND task_id = ? AND author = ?",
+                (ref["id"], task_id, verifier_profile),
+            ).fetchone()
+        elif ref["kind"] == "run":
+            row = conn.execute(
+                "SELECT 1 FROM task_runs "
+                "WHERE id = ? AND task_id = ? AND profile = ? AND ended_at IS NOT NULL",
+                (ref["id"], task_id, verifier_profile),
+            ).fetchone()
+        else:
+            return False
+        if row is None:
+            return False
+    return True
+
+
 def task_outcome_accepted(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether a completed task has an explicit accepted outcome.
 
@@ -3739,42 +3771,64 @@ def task_outcome_accepted(conn: sqlite3.Connection, task_id: str) -> bool:
     ).fetchone()
     if row is None:
         return False
-    if row["status"] == "archived":
-        return True
     if row["status"] != "done":
         return False
     required_match = _REQUIRED_CLASSIFICATION_RE.search(row["body"] or "")
     if required_match is None:
-        # Backward-compatible rollout: existing cards without an acceptance
-        # contract retain legacy completion semantics. Cards that declare a
-        # classification opt into the fail-closed gate.
-        return True
+        return False
     evidence_type_match = _REQUIRED_EVIDENCE_TYPE_RE.search(row["body"] or "")
     required_evidence_type = (
         evidence_type_match.group(1).lower() if evidence_type_match else "implementation"
     )
-    run = conn.execute(
-        "SELECT metadata FROM task_runs "
+    closing_run = conn.execute(
+        "SELECT id, profile, metadata FROM task_runs "
         "WHERE task_id = ? AND outcome = 'completed' "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if run is None or not run["metadata"]:
+    if closing_run is None or not closing_run["metadata"]:
         return False
     try:
-        metadata = json.loads(run["metadata"])
+        closing_metadata = json.loads(closing_run["metadata"])
     except (TypeError, json.JSONDecodeError):
         return False
-    evidence_refs = metadata.get("evidence_refs")
+    if not isinstance(closing_metadata, dict):
+        return False
+    verifier_run_id = closing_metadata.get("verifier_run_id")
+    if not isinstance(verifier_run_id, int) or isinstance(verifier_run_id, bool):
+        return False
+    verifier_run = conn.execute(
+        "SELECT id, profile, metadata FROM task_runs "
+        "WHERE id = ? AND task_id = ? AND outcome = 'completed' AND ended_at IS NOT NULL",
+        (verifier_run_id, task_id),
+    ).fetchone()
+    if (
+        verifier_run is None
+        or verifier_run["id"] == closing_run["id"]
+        or not verifier_run["profile"]
+        or verifier_run["profile"] == closing_run["profile"]
+        or not verifier_run["metadata"]
+    ):
+        return False
+    try:
+        verifier_metadata = json.loads(verifier_run["metadata"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(verifier_metadata, dict):
+        return False
+    verification = verifier_metadata.get("verification")
+    if not isinstance(verification, dict):
+        return False
     return (
-        str(metadata.get("outcome_classification", "")).upper()
+        verification.get("target_task_id") == task_id
+        and str(verification.get("classification", "")).upper()
         == required_match.group(1).upper()
-        and str(metadata.get("verifier_verdict", "")).upper() == "PASS"
-        and isinstance(evidence_refs, list)
-        and bool(evidence_refs)
-        and all(isinstance(ref, str) and ref.strip() for ref in evidence_refs)
-        and str(metadata.get("evidence_type", "")).lower()
+        and str(verification.get("verdict", "")).upper() == "PASS"
+        and str(verification.get("evidence_type", "")).lower()
         == required_evidence_type
+        and _acceptance_evidence_valid(
+            conn, task_id, verifier_run["profile"], verification.get("evidence_refs")
+        )
     )
 
 
@@ -4517,6 +4571,9 @@ def complete_task(
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
     """
+    # Reject malformed structured handoff data before any terminal mutation.
+    if metadata is not None and not isinstance(metadata, dict):
+        return False
     now = int(time.time())
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected

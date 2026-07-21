@@ -1415,11 +1415,10 @@ def test_worker_lifecycle_through_tools(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.metadata == {"child_task": child_out["task_id"]}
-        # Child is todo (parent just finished, but recompute_ready may
-        # have promoted it — complete_task runs recompute internally).
+        # Execution completion alone cannot satisfy dependency acceptance.
         child = kb.get_task(conn, child_out["task_id"])
-        assert child.status == "ready", (
-            f"child should be ready after parent done, got {child.status}"
+        assert child.status == "todo", (
+            f"child must stay gated without accepted parent outcome, got {child.status}"
         )
         # Comment is visible
         assert len(kb.list_comments(conn, worker_env)) == 1

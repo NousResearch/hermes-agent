@@ -2848,15 +2848,31 @@ def _refresh_spotify_oauth_state(
 
     client_id = _spotify_client_id(state=state)
     accounts_base_url = _spotify_accounts_base_url(state)
+    # If a client_secret is in env (e.g. tokens minted via Auth Code flow,
+    # often via Bitwarden Secrets Manager / external secret stores), refresh
+    # via HTTP Basic auth. PKCE-flow tokens still work without a secret —
+    # the client_id-in-body fallback below handles those.
+    from hermes_cli.config import get_env_value
+    client_secret = (
+        get_env_value("HERMES_SPOTIFY_CLIENT_SECRET")
+        or get_env_value("SPOTIFY_CLIENT_SECRET")
+        or ""
+    ).strip()
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    body: Dict[str, str] = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    if client_secret:
+        creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        headers["Authorization"] = f"Basic {creds}"
+    else:
+        body["client_id"] = client_id
     try:
         response = httpx.post(
             f"{accounts_base_url}/api/token",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-            },
+            headers=headers,
+            data=body,
             timeout=timeout_seconds,
         )
     except Exception as exc:

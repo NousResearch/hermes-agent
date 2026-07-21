@@ -1137,11 +1137,14 @@ def is_container() -> bool:
     Kubernetes/k3s) were previously missed. To cover those, also check:
       * ``KUBERNETES_SERVICE_HOST`` env var — set in every Kubernetes pod.
       * ``kubepods`` / ``containerd`` / ``crio`` markers in ``/proc/1/cgroup``.
-      * the same markers in ``/proc/self/mountinfo`` (cgroup-v2 fallback).
+      * the same markers on the **root** mount (``/``) in
+        ``/proc/self/mountinfo`` (cgroup-v2 fallback).  Only the root mount is
+        checked, so a host running its own containers isn't misread as one
+        (see #58135).
 
     Result is cached for the process lifetime.  Import-safe — no heavy deps.
 
-    See: NousResearch/hermes-agent#47111
+    See: NousResearch/hermes-agent#47111, #58135
     """
     global _container_detected
     if _container_detected is not None:
@@ -1165,15 +1168,21 @@ def is_container() -> bool:
                 return True
     except OSError:
         pass
-    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
+    # cgroup v2 collapses /proc/1/cgroup to "0::/", so fall back to mountinfo —
+    # but only the root mount ("/") reflects our own rootfs (a runtime overlay
+    # in a container, a plain block device on a host). Containers the *host*
+    # runs put containerd/crio in other mounts' lowerdir= options; scanning the
+    # whole table matched those and misclassified the host (#58135).
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                # 5th field (index 4) is the mount point; only "/" is our rootfs.
+                fields = line.split()
+                if len(fields) > 4 and fields[4] == "/" and any(
+                    marker in line for marker in ("kubepods", "containerd", "crio")
+                ):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False

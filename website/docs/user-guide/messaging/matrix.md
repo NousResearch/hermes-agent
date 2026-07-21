@@ -22,8 +22,10 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
-| **Thinking and tool activity** | Matrix `tool_progress` defaults to **off** to avoid permanent timeline noise. When you opt in (`display.platforms.matrix.tool_progress: all` or `new`), progress updates accumulate into an editable message (`m.replace`) rather than posting a new timeline line per tool. Thinking panes stay off by default. |
+| **Thinking and tool activity** | Matrix `tool_progress` defaults to **off** to avoid permanent timeline noise. When you opt in (`display.platforms.matrix.tool_progress: all` or `new`), progress updates accumulate into an editable message (`m.replace`) rather than posting a new visible timeline line per tool. Thinking panes stay off by default. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
+
+Matrix edits improve the normal client view, but every `m.replace` is still a room event. Clients, bridges, and notification pipelines that do not consistently aggregate replacement events can expose each update in history or notifications. This is why progress is quiet by default even though the opt-in path edits one visible message.
 
 :::tip
 The bot automatically joins rooms when invited. Just invite the bot's Matrix user to any room and it will join and start responding.

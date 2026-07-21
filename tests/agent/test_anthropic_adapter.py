@@ -180,6 +180,28 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
+    def test_opencode_go_anthropic_endpoint_strips_ambient_bearer_auth(self):
+        """OpenCode Go expects x-api-key only for Anthropic-compatible routes."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "opencode-go-secret",
+                base_url="https://opencode.ai/zen/go",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "opencode-go-secret"
+            assert kwargs["base_url"] == "https://opencode.ai/zen/go"
+            assert "default_headers" not in kwargs
+
+            hooks = kwargs["http_client"].event_hooks["request"]
+            request = MagicMock()
+            request.headers = {
+                "authorization": "Bearer stale-ambient-key",
+                "x-api-key": "wrong-key",
+            }
+            hooks[0](request)
+            assert "authorization" not in request.headers
+            assert request.headers["x-api-key"] == "opencode-go-secret"
+
     def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
         """Azure AI Foundry's /anthropic endpoint requires Authorization: Bearer.
 

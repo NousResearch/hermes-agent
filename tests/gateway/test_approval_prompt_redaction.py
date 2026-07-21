@@ -145,7 +145,11 @@ class TestApprovalCommandWiring:
             and node.func.attr == "send_exec_approval"
         )
         keywords = {kw.arg: kw.value for kw in call.keywords}
-        for name, default in (("allow_permanent", True), ("smart_denied", False)):
+        for name, default in (
+            ("allow_permanent", True),
+            ("allow_session", True),
+            ("smart_denied", False),
+        ):
             value = keywords[name]
             assert isinstance(value, ast.Call)
             assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
@@ -188,6 +192,17 @@ class TestApprovalTextFallbackContract:
             allow_permanent=False, smart_denied=False,
         )
         assert "`!approve session`" in text
+        assert "approve always" not in text
+
+    def test_no_session_scope_only_advertises_once_and_deny(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "curl https://example.test", "content warning", "!",
+            allow_permanent=True, allow_session=False, smart_denied=False,
+        )
+        assert "`!approve`" in text
+        assert "approve session" not in text
         assert "approve always" not in text
 
     def test_manual_prompt_preserves_all_choices(self):

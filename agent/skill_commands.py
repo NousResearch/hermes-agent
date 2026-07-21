@@ -281,14 +281,33 @@ def _build_skill_message(
         if isinstance(entries, list):
             supporting.extend(entries)
 
+    # Directories to skip during recursive scan — dependency caches and
+    # build artifacts can contain thousands of files that should never
+    # be injected into the skill context.  (hermes-agent #18675)
+    _SKIP_DIRS = frozenset({
+        ".git", ".hg", ".svn",
+        "node_modules", ".venv", "venv", ".tox",
+        "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    })
+    _MAX_SUPPORTING_FILES = 200
+
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             subdir_path = skill_dir / subdir
             if subdir_path.exists():
                 for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
+                    if any(part in _SKIP_DIRS for part in f.parts):
+                        continue
+                    if f.is_file() and not f.is_symlink() and f.stat().st_size > 0:
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
+                        if len(supporting) >= _MAX_SUPPORTING_FILES:
+                            supporting.append(
+                                f"... (truncated, {_MAX_SUPPORTING_FILES} file limit)"
+                            )
+                            break
+                if len(supporting) >= _MAX_SUPPORTING_FILES:
+                    break
 
     if supporting and skill_dir:
         try:

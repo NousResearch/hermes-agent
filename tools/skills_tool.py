@@ -1327,8 +1327,12 @@ def skill_view(
                     "other": [],
                 }
 
-                # Scan for all readable files
+                # Scan for all readable files — skip dependency caches
+                # and build artifacts to avoid context injection. (#18675)
+                _SKIP = frozenset({".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
                 for f in skill_dir.rglob("*"):
+                    if any(part in _SKIP for part in f.parts):
+                        continue
                     if f.is_file() and f.name != "SKILL.md":
                         rel = str(f.relative_to(skill_dir))
                         if rel.startswith("references/"):
@@ -1439,7 +1443,9 @@ def skill_view(
             assets_dir = skill_dir / "assets"
             if assets_dir.exists():
                 for f in assets_dir.rglob("*"):
-                    if f.is_file():
+                    if any(part in _SKIP for part in f.parts):
+                        continue
+                    if f.is_file() and f.stat().st_size > 0:
                         asset_files.append(str(f.relative_to(skill_dir)))
 
             scripts_dir = skill_dir / "scripts"

@@ -184,16 +184,33 @@ class DeliveryTarget:
         if target_lower == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
-        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs
+        # Check for platform:chat_id or platform:chat_id:thread_id format.
+        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs.
+        # Matrix room/user IDs themselves contain ":" (for example
+        # ``matrix:!roomid:server.org``), so keep the full remainder as chat_id
+        # to stay compatible with send_message target syntax.
         if ":" in target_stripped:
-            parts = target_stripped.split(":", 2)
-            platform_str = parts[0].lower()  # Platform names are case-insensitive
-            chat_id = parts[1] if len(parts) > 1 else None
-            thread_id = parts[2] if len(parts) > 2 else None
+            platform_part, remainder = target_stripped.split(":", 1)
+            platform_str = platform_part.lower()  # Platform names are case-insensitive
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
+                if platform == Platform.MATRIX and remainder.startswith(("!", "@")):
+                    return cls(
+                        platform=platform,
+                        chat_id=remainder,
+                        thread_id=None,
+                        is_explicit=True,
+                    )
+
+                parts = target_stripped.split(":", 2)
+                chat_id = parts[1] if len(parts) > 1 else None
+                thread_id = parts[2] if len(parts) > 2 else None
+                return cls(
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    is_explicit=True,
+                )
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)

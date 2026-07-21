@@ -110,10 +110,10 @@ class TestSetupLogging:
         assert len(agent_handlers) == 1
 
     def test_force_reinitializes(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        # Force still won't add duplicate handlers because _add_rotating_handler
-        # checks by resolved path.
-        hermes_logging.setup_logging(hermes_home=hermes_home, force=True)
+        hermes_logging.setup_logging(hermes_home=hermes_home, log_level="INFO")
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home, log_level="DEBUG", force=True
+        )
 
         root = logging.getLogger()
         agent_handlers = [
@@ -122,6 +122,24 @@ class TestSetupLogging:
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert len(agent_handlers) == 1
+        assert agent_handlers[0].level == logging.DEBUG
+
+    def test_force_replaces_old_log_directory(self, tmp_path):
+        home_a = tmp_path / "home-a"
+        home_b = tmp_path / "home-b"
+
+        hermes_logging.setup_logging(hermes_home=home_a)
+        hermes_logging.setup_logging(hermes_home=home_b, force=True)
+
+        root = logging.getLogger()
+        agent_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "agent.log" in getattr(h, "baseFilename", "")
+        ]
+
+        assert len(agent_handlers) == 1
+        assert Path(agent_handlers[0].baseFilename).resolve() == (home_b / "logs" / "agent.log").resolve()
 
     def test_custom_log_level(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="DEBUG")

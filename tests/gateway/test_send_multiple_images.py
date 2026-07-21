@@ -132,7 +132,7 @@ class TestTelegramMultiImage:
         import telegram
         images = [(f"https://x.com/{i}.png", f"alt{i}") for i in range(3)]
         # Make InputMediaPhoto a concrete class that records its args
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media, "caption": caption})
+        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None, has_spoiler=False: {"media": media, "caption": caption})
 
         _run(adapter.send_multiple_images("12345", images))
 
@@ -145,7 +145,7 @@ class TestTelegramMultiImage:
         """15 photos → two send_media_group calls (10 + 5)."""
         import telegram
         images = [(f"https://x.com/{i}.png", "") for i in range(15)]
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
+        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None, has_spoiler=False: {"media": media})
 
         _run(adapter.send_multiple_images("12345", images))
 

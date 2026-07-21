@@ -91,12 +91,25 @@ echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
 echo "▶ launching test runner"
-exec env -i \
+# A few modules resolve Hermes paths during import, before pytest's autouse
+# fixture replaces HERMES_HOME.  Keep those imports hermetic too; on native
+# Windows, a fully blank environment otherwise makes Path.home() fail before
+# collection.  Each test fixture still replaces this directory per test.
+RUNNER_HERMES_HOME="$(mktemp -d)"
+cleanup_runner_hermes_home() {
+  rm -rf "$RUNNER_HERMES_HOME" || true
+}
+trap cleanup_runner_hermes_home EXIT
+env -i \
   PATH="$PATH" \
   HOME="$HOME" \
+  HERMES_HOME="$RUNNER_HERMES_HOME" \
+  LOCALAPPDATA="$RUNNER_HERMES_HOME" \
+  USERPROFILE="$RUNNER_HERMES_HOME" \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
+  PYTHONIOENCODING=utf-8 \
   PYTHONHASHSEED=0 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \

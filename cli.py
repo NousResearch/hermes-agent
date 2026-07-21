@@ -9819,6 +9819,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             last_response,
             user_initiated=True,
             background_processes=_bg_procs,
+            cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
         )
         msg = decision.get("message") or ""
         if msg:

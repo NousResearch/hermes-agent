@@ -28,7 +28,7 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 2
+_VERIFY_SCHEMA_VERSION = 3
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 _OUTCOME_TERMINAL_KINDS = frozenset(
     {"judge_done_unconfirmed", "blocked", "cancelled", "achieved_confirmed"}
@@ -115,6 +115,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS workspace_edit_state (
+            root TEXT PRIMARY KEY,
+            last_edit_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS outcome_receipts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             recorded_at TEXT NOT NULL,
@@ -140,6 +148,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_outcome_receipts_reusable
         ON outcome_receipts(root, reusable, id DESC)
+        """
+    )
+    # Existing session-local stale records predate workspace-level receipt
+    # eligibility.  Seed the new monotonic root marker without overwriting a
+    # marker written by the new path.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO workspace_edit_state(root, last_edit_at)
+        SELECT root, MAX(last_edit_at)
+        FROM verification_state
+        WHERE last_edit_at IS NOT NULL
+        GROUP BY root
         """
     )
     conn.execute(
@@ -571,6 +591,22 @@ def mark_workspace_edited(
                 """,
                 (sid, root, edited_at, json.dumps(merged)),
             )
+            # Do not couple this marker to a session's latest verification.
+            # A later passing event may supersede evidence for that session,
+            # but it must never make an older receipt from another session
+            # reusable again.
+            conn.execute(
+                """
+                INSERT INTO workspace_edit_state(root, last_edit_at)
+                VALUES (?, ?)
+                ON CONFLICT(root) DO UPDATE SET
+                    last_edit_at = MAX(
+                        workspace_edit_state.last_edit_at,
+                        excluded.last_edit_at
+                    )
+                """,
+                (root, edited_at),
+            )
             conn.commit()
 
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
@@ -676,6 +712,43 @@ def _receipt_from_row(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
     return receipt
 
 
+def _outcome_verification_status(
+    *, session_id: str, root: str
+) -> dict[str, Any]:
+    """Return receipt eligibility without trusting a session-local edit view.
+
+    Verification events remain scoped to their recording session, but an
+    outcome receipt is a workspace-level learning candidate.  Any later edit
+    recorded for the same root therefore makes the event behind that receipt
+    stale, even when a different session performed the edit.
+    """
+    status = verification_status(session_id=session_id, cwd=Path(root))
+    evidence = status.get("evidence") or {}
+    created_at = evidence.get("created_at")
+    if not created_at:
+        return status
+
+    with _DB_LOCK:
+        with _connect() as conn:
+            root_edit = conn.execute(
+                """
+                SELECT last_edit_at
+                FROM workspace_edit_state
+                WHERE root = ?
+                  AND last_edit_at > ?
+                LIMIT 1
+                """,
+                (root, created_at),
+            ).fetchone()
+    if root_edit is None:
+        return status
+
+    stale = dict(status)
+    stale["status"] = "stale"
+    stale["root_last_edit_at"] = root_edit["last_edit_at"]
+    return stale
+
+
 def record_outcome_receipt(
     *,
     session_id: str | None,
@@ -704,7 +777,7 @@ def record_outcome_receipt(
         return None
     sid = str(session_id or "default")
     actor = str(actor or "agent").strip() or "agent"
-    status = verification_status(session_id=sid, cwd=cwd)
+    status = _outcome_verification_status(session_id=sid, root=root)
     evidence = status.get("evidence") or {}
     verification_status_value = str(status.get("status") or "unverified")
     confirmed_at = _utc_now() if user_confirmed else None
@@ -749,16 +822,23 @@ def record_outcome_receipt(
 def confirm_outcome_receipt(
     receipt_id: int,
     *,
+    expected_session_id: str | None,
+    cwd: str | Path | None,
     actor: str = "user",
 ) -> Optional[dict[str, Any]]:
     """Convert one judge-done receipt into an explicitly confirmed outcome.
 
-    Confirmation re-checks the current workspace evidence.  Passing evidence
-    makes the record reusable; stale, failed, and absent evidence remain an
-    audited confirmation but are never promoted for future learning.
+    Confirmation is restricted to the active session and workspace.  It then
+    re-checks current workspace evidence.  Passing evidence makes the record
+    reusable; stale, failed, and absent evidence remain an audited confirmation
+    but are never promoted for future learning.
     """
     receipt_id = int(receipt_id)
     actor = str(actor or "user").strip() or "user"
+    expected_sid = str(expected_session_id or "").strip()
+    expected_root = _outcome_root(cwd)
+    if not expected_sid or expected_root is None:
+        raise ValueError("current session and workspace are required")
     with _DB_LOCK:
         with _connect() as conn:
             row = conn.execute(
@@ -767,13 +847,20 @@ def confirm_outcome_receipt(
     if row is None:
         return None
     existing = dict(row)
+    if (
+        existing["session_id"] != expected_sid
+        or existing["root"] != expected_root
+    ):
+        # Do not disclose another session's receipt existence to a shared
+        # gateway or TUI user who guesses a global receipt id.
+        return None
     if existing["terminal_kind"] != "judge_done_unconfirmed":
         raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
 
     # ``verification_status`` opens the same SQLite ledger, so it must run
     # outside the non-reentrant write lock held for receipt mutation.
-    status = verification_status(
-        session_id=existing["session_id"], cwd=Path(existing["root"])
+    status = _outcome_verification_status(
+        session_id=existing["session_id"], root=existing["root"]
     )
     evidence = status.get("evidence") or {}
     verification_status_value = str(status.get("status") or "unverified")
@@ -783,9 +870,15 @@ def confirm_outcome_receipt(
     with _DB_LOCK:
         with _connect() as conn:
             current = conn.execute(
-                "SELECT terminal_kind FROM outcome_receipts WHERE id = ?", (receipt_id,)
+                "SELECT session_id, root, terminal_kind FROM outcome_receipts WHERE id = ?",
+                (receipt_id,),
             ).fetchone()
             if current is None:
+                return None
+            if (
+                current["session_id"] != expected_sid
+                or current["root"] != expected_root
+            ):
                 return None
             if current["terminal_kind"] != "judge_done_unconfirmed":
                 raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
@@ -819,10 +912,12 @@ def confirm_outcome_receipt(
 def list_reusable_outcome_receipts(
     *, cwd: str | Path | None = None, limit: int = 20
 ) -> list[dict[str, Any]]:
-    """Return explicitly confirmed, freshly verified learning candidates.
+    """Return explicitly confirmed learning candidates with current proof.
 
     Retrieval is intentionally explicit.  Callers decide how to present these
-    receipts; this ledger never silently expands a model prompt.
+    receipts; this ledger never silently expands a model prompt.  A receipt
+    marked reusable at confirmation is still excluded when a later workspace
+    edit makes its supporting verification stale.
     """
     root = _outcome_root(cwd) if cwd is not None else None
     limit = max(1, min(int(limit or 20), 100))
@@ -831,12 +926,36 @@ def list_reusable_outcome_receipts(
     if root is not None:
         where += " AND root = ?"
         params.append(root)
-    params.append(limit)
-
-    with _DB_LOCK:
-        with _connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM outcome_receipts {where} ORDER BY id DESC LIMIT ?",
-                params,
-            ).fetchall()
-    return [receipt for row in rows if (receipt := _receipt_from_row(row)) is not None]
+    reusable: list[dict[str, Any]] = []
+    before_id: Optional[int] = None
+    batch_size = 100
+    while len(reusable) < limit:
+        batch_where = where
+        batch_params = list(params)
+        if before_id is not None:
+            batch_where += " AND id < ?"
+            batch_params.append(before_id)
+        batch_params.append(batch_size)
+        with _DB_LOCK:
+            with _connect() as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM outcome_receipts {batch_where} ORDER BY id DESC LIMIT ?",
+                    batch_params,
+                ).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            receipt = _receipt_from_row(row)
+            if receipt is None:
+                continue
+            status = _outcome_verification_status(
+                session_id=receipt["session_id"], root=receipt["root"]
+            )
+            if status.get("status") == "passed":
+                reusable.append(receipt)
+                if len(reusable) == limit:
+                    return reusable
+        if len(rows) < batch_size:
+            break
+        before_id = int(rows[-1]["id"])
+    return reusable

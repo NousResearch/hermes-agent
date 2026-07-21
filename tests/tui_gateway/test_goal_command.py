@@ -176,6 +176,54 @@ def test_goal_stop_and_done_are_clear_aliases(server, session):
     assert "cleared" in r["result"]["output"].lower()
 
 
+def test_goal_confirm_promotes_receipt_with_explicit_user_action(server, session):
+    sid, session_key, record = session
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={"id": 73, "reusable": True},
+    ) as confirm_receipt:
+        r = _call(server, "command.dispatch", name="goal", arg="confirm 73", session_id=sid)
+
+    assert r["result"]["type"] == "exec"
+    assert "73" in r["result"]["output"]
+    assert "reusable" in r["result"]["output"]
+    confirm_receipt.assert_called_once_with(
+        73,
+        expected_session_id=session_key,
+        cwd=server._session_cwd(record),
+        actor="user",
+    )
+
+
+def test_goal_wait_supports_session_and_time_barriers(server, session):
+    sid, session_key, _ = session
+    _call(server, "command.dispatch", name="goal", arg="build a rocket", session_id=sid)
+
+    session_wait = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="wait session ci-watch CI is running",
+        session_id=sid,
+    )
+    from hermes_cli.goals import GoalManager
+
+    assert "session ci-watch" in session_wait["result"]["output"]
+    assert GoalManager(session_key).state.waiting_on_session == "ci-watch"
+
+    time_wait = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="wait for 45 retry backoff",
+        session_id=sid,
+    )
+    state = GoalManager(session_key).state
+    assert "45s" in time_wait["result"]["output"]
+    assert state.waiting_on_session is None
+    assert state.waiting_until > 0
+
+
 def test_goal_requires_session(server):
     r = _call(server, "command.dispatch", name="goal", arg="nope", session_id="unknown")
     assert "error" in r

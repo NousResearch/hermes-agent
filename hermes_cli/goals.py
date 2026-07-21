@@ -35,6 +35,7 @@ import re
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -1562,6 +1563,7 @@ class GoalManager:
         *,
         user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
+        cwd: str | Path | None = None,
     ) -> Dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
@@ -1581,6 +1583,7 @@ class GoalManager:
           - ``verdict``: "done" | "continue" | "wait" | "skipped" | "inactive"
           - ``reason``: str
           - ``message``: user-visible one-liner to print/send
+          - ``receipt_id``: optional user-confirmable outcome receipt id
         """
         state = self._state
         if state is None or state.status != "active":
@@ -1691,13 +1694,37 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
+            receipt_id: Optional[int] = None
+            try:
+                from agent.verification_evidence import record_outcome_receipt
+
+                receipt = record_outcome_receipt(
+                    session_id=self.session_id,
+                    cwd=cwd,
+                    goal=state.goal,
+                    terminal_kind="judge_done_unconfirmed",
+                    actor="goal_judge",
+                )
+                if receipt is not None:
+                    receipt_id = int(receipt["id"])
+            except Exception as exc:
+                # A receipt is useful audit evidence, but it must never turn a
+                # successful goal completion into a failed user-visible turn.
+                logger.debug("outcome receipt recording failed: %s", exc)
+            message = f"✓ Goal achieved: {reason}"
+            if receipt_id is not None:
+                message += (
+                    f" Outcome receipt #{receipt_id} recorded; review it, then "
+                    f"run /goal confirm {receipt_id} to make it reusable."
+                )
             return {
                 "status": "done",
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "done",
                 "reason": reason,
-                "message": f"✓ Goal achieved: {reason}",
+                "message": message,
+                "receipt_id": receipt_id,
             }
 
         # Auto-pause when the judge cannot reach the API at all N turns in a

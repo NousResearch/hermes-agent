@@ -60,6 +60,33 @@ time, and `reusable` flag. It never stores the raw goal text.
 `list_reusable_outcome_receipts()` is explicit pull-only retrieval. This change
 does not alter memory prompts, background learning writes, or skill files.
 
+When a `/goal` judge returns `done`, the shared `GoalManager` first persists
+the goal terminal state, then records a `judge_done_unconfirmed` receipt for
+the frontend's actual workspace. Hermes reports the receipt id but does not
+promote it: the same active session in the same workspace must run
+`/goal confirm <receipt-id>`. A receipt id from another session or workspace
+is treated as unavailable. Retrieval rechecks the receipt's current workspace
+evidence and excludes a receipt after a later edit by **any** session in that
+workspace makes its supporting evidence stale. This workspace edit marker is
+monotonic: a later verification can establish a new receipt, but cannot revive
+an older receipt whose proof predates the edit. The read path does not update
+receipt state, inject a prompt, or create a memory/skill artifact.
+
+## Manual wait controls
+
+The same durable wait state is available on CLI, gateway, and TUI without new
+tools or schema:
+
+```text
+/goal wait <pid> [reason]
+/goal wait session <process-session-id> [reason]
+/goal wait for <seconds> [reason]
+```
+
+The session form releases on the registered process trigger or exit; the time
+form releases at its deadline. All three reuse the existing persisted barrier
+and CAS-backed continuation flow.
+
 ## Research basis and bounded decisions
 
 The local ULR journal is under

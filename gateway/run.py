@@ -10662,7 +10662,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # wait/unwait barrier verbs which take a pid argument.
                 _is_control = (
                     not _goal_arg
-                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
+                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait", "confirm"}
+                    or _goal_arg.startswith("confirm ")
                     or _goal_verb == "wait"
                 )
                 if _is_control:
@@ -14303,6 +14304,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             final_response or "",
             user_initiated=True,
             background_processes=_bg_procs,
+            cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
         )
         msg = decision.get("message") or ""
 

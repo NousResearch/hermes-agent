@@ -304,6 +304,33 @@ class TestGoalManager:
         assert mgr.state.status == "done"
         assert mgr.state.turns_used == 1
 
+    def test_evaluate_done_records_confirmable_outcome_receipt(self, hermes_home, tmp_path):
+        """A judge verdict creates a candidate, never automatic learning."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-receipt")
+        mgr.set("ship it")
+
+        with (
+            patch.object(goals, "judge_goal", return_value=("done", "shipped", False, None, False)),
+            patch(
+                "agent.verification_evidence.record_outcome_receipt",
+                return_value={"id": 73, "reusable": False},
+            ) as record_receipt,
+        ):
+            decision = mgr.evaluate_after_turn("I shipped the feature.", cwd=tmp_path)
+
+        assert decision["receipt_id"] == 73
+        assert "/goal confirm 73" in decision["message"]
+        record_receipt.assert_called_once_with(
+            session_id="eval-receipt",
+            cwd=tmp_path,
+            goal="ship it",
+            terminal_kind="judge_done_unconfirmed",
+            actor="goal_judge",
+        )
+
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager

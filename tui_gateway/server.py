@@ -10241,6 +10241,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 raw,
                                 user_initiated=True,
                                 background_processes=_bg_procs,
+                                cwd=_session_cwd(session),
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
@@ -13419,6 +13420,78 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "confirm" or lower.startswith("confirm "):
+            receipt_arg = arg.strip()[len("confirm"):].strip()
+            try:
+                receipt_id = int(receipt_arg)
+            except ValueError:
+                return _err(rid, 4004, "Usage: /goal confirm <receipt-id>")
+            if receipt_id <= 0:
+                return _err(rid, 4004, "/goal confirm: <receipt-id> must be positive.")
+            try:
+                from agent.verification_evidence import confirm_outcome_receipt
+
+                receipt = confirm_outcome_receipt(
+                    receipt_id,
+                    expected_session_id=sid_key,
+                    cwd=_session_cwd(session),
+                    actor="user",
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"/goal confirm: {exc}")
+            if receipt is None:
+                return _ok(
+                    rid,
+                    {"type": "exec", "output": f"/goal confirm: outcome receipt #{receipt_id} was not found."},
+                )
+            if receipt.get("reusable"):
+                output = f"✓ Outcome receipt #{receipt_id} confirmed and reusable."
+            else:
+                status = receipt.get("verification_status") or "unverified"
+                output = (
+                    f"✓ Outcome receipt #{receipt_id} confirmed, but current verification "
+                    f"is {status}; it is not reusable."
+                )
+            return _ok(rid, {"type": "exec", "output": output})
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg.strip()[len("wait"):].strip()
+            if not wait_arg:
+                return _err(rid, 4004, "Usage: /goal wait <pid>|session <id>|for <seconds> [reason]")
+            wait_tokens = wait_arg.split(None, 1)
+            try:
+                if wait_tokens[0].lower() == "session":
+                    if len(wait_tokens) < 2:
+                        return _err(rid, 4004, "/goal wait: session requires a process-session id.")
+                    session_tokens = wait_tokens[1].split(None, 1)
+                    session_id = session_tokens[0]
+                    reason = session_tokens[1].strip() if len(session_tokens) > 1 else ""
+                    mgr.wait_on_session(session_id, reason=reason)
+                    output = (
+                        f"⏳ Goal parked on session {session_id}"
+                        f"{f' ({reason})' if reason else ''}. Loop resumes on its trigger or exit."
+                    )
+                elif wait_tokens[0].lower() == "for":
+                    if len(wait_tokens) < 2:
+                        return _err(rid, 4004, "/goal wait: for requires a positive number of seconds.")
+                    seconds_tokens = wait_tokens[1].split(None, 1)
+                    seconds = int(seconds_tokens[0])
+                    reason = seconds_tokens[1].strip() if len(seconds_tokens) > 1 else ""
+                    mgr.wait_for_seconds(seconds, reason=reason)
+                    output = (
+                        f"⏳ Goal parked for {seconds}s"
+                        f"{f' ({reason})' if reason else ''}. Loop resumes after the deadline."
+                    )
+                else:
+                    pid = int(wait_tokens[0])
+                    reason = wait_tokens[1].strip() if len(wait_tokens) > 1 else ""
+                    mgr.wait_on(pid, reason=reason)
+                    output = f"⏳ Goal parked on pid {pid}{f' ({reason})' if reason else ''}. Loop pauses until it exits."
+            except (RuntimeError, ValueError) as exc:
+                return _err(rid, 4004, f"/goal wait: {exc}")
+            return _ok(rid, {"type": "exec", "output": output})
+        if lower == "unwait":
+            output = "▶ Wait barrier cleared — goal loop resumes." if mgr.stop_waiting() else "No wait barrier set."
+            return _ok(rid, {"type": "exec", "output": output})
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"

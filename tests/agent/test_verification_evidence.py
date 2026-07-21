@@ -119,13 +119,152 @@ def test_confirmed_passing_outcome_receipt_becomes_explicitly_reusable(tmp_path,
     assert receipt["reusable"] is False
     assert list_reusable_outcome_receipts(cwd=tmp_path) == []
 
-    confirmed = confirm_outcome_receipt(receipt["id"])
+    confirmed = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
     assert confirmed is not None
     assert confirmed["terminal_kind"] == "achieved_confirmed"
     assert confirmed["user_confirmed_at"] is not None
     assert confirmed["verification_status"] == "passed"
     assert confirmed["reusable"] is True
     assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path)] == [receipt["id"]]
+
+
+def test_other_session_edit_stales_outcome_receipt_for_learning_candidates(
+    tmp_path, monkeypatch
+):
+    """A receipt may not teach later work after its proof has gone stale."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="ship the verified widget",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )["reusable"] is True
+
+    mark_workspace_edited(
+        session_id="s2",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "src" / "app.ts")],
+    )
+
+    # Session-scoped status remains passed, but a reusable outcome receipt is
+    # workspace-scoped and must not outlive an edit by another session.
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+    assert list_reusable_outcome_receipts(cwd=tmp_path) == []
+
+
+def test_reverification_after_workspace_edit_keeps_older_receipt_stale(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="stale-session",
+        exit_code=0,
+        output="all green",
+    )
+    stale = record_outcome_receipt(
+        session_id="stale-session",
+        cwd=tmp_path,
+        goal="replace the verified widget",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert stale is not None
+    assert confirm_outcome_receipt(
+        stale["id"], expected_session_id="stale-session", cwd=tmp_path
+    )["reusable"] is True
+    mark_workspace_edited(
+        session_id="edit-session",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "src" / "app.ts")],
+    )
+
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="edit-session",
+        exit_code=0,
+        output="all green",
+    )
+    fresh = record_outcome_receipt(
+        session_id="edit-session",
+        cwd=tmp_path,
+        goal="keep the verified widget",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert fresh is not None
+    assert confirm_outcome_receipt(
+        fresh["id"], expected_session_id="edit-session", cwd=tmp_path
+    )["reusable"] is True
+    assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path)] == [
+        fresh["id"]
+    ]
+
+
+def test_delayed_older_edit_cannot_restore_reusable_receipt(tmp_path, monkeypatch):
+    """The root edit marker must stay monotonic across out-of-order writers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    clock_values = iter(
+        (
+            "2030-01-01T00:00:02+00:00",  # verification event
+            "2030-01-01T00:00:02+00:00",  # receipt record
+            "2030-01-01T00:00:02+00:00",  # confirmation
+            "2030-01-01T00:00:04+00:00",  # newer edit
+            "2030-01-01T00:00:01+00:00",  # delayed older edit
+        )
+    )
+    monkeypatch.setattr(
+        "agent.verification_evidence._utc_now", lambda: next(clock_values)
+    )
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="preserve the latest workspace edit",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )["reusable"] is True
+
+    # Simulate an edit that happened first but committed after a newer edit in
+    # another process. The old timestamp must not overwrite the newer marker.
+    mark_workspace_edited(
+        session_id="newer-edit",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "src" / "newer.ts")],
+    )
+    mark_workspace_edited(
+        session_id="delayed-older-edit",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "src" / "older.ts")],
+    )
+
+    assert list_reusable_outcome_receipts(cwd=tmp_path) == []
 
 
 def test_confirmed_outcome_without_fresh_passing_evidence_stays_nonreusable(tmp_path, monkeypatch):
@@ -138,7 +277,9 @@ def test_confirmed_outcome_without_fresh_passing_evidence_stays_nonreusable(tmp_
         terminal_kind="judge_done_unconfirmed",
     )
 
-    confirmed = confirm_outcome_receipt(receipt["id"])
+    confirmed = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
 
     assert confirmed["terminal_kind"] == "achieved_confirmed"
     assert confirmed["verification_status"] == "unverified"
@@ -165,7 +306,46 @@ def test_outcome_receipt_rejects_unconfirmed_achievement_and_nonjudge_reconfirma
         terminal_kind="blocked",
     )
     with pytest.raises(ValueError, match="judge_done_unconfirmed"):
-        confirm_outcome_receipt(blocked["id"])
+        confirm_outcome_receipt(
+            blocked["id"], expected_session_id="s1", cwd=tmp_path
+        )
+
+
+def test_outcome_receipt_confirmation_requires_current_session_and_workspace(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="protect the explicit confirmation boundary",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s2", cwd=tmp_path
+    ) is None
+    other_root = tmp_path / "other-workspace"
+    other_root.mkdir()
+    _node_project(other_root)
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=other_root
+    ) is None
+
+    confirmed = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
+    assert confirmed is not None
+    assert confirmed["reusable"] is True
 
 
 def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch):

@@ -171,6 +171,35 @@ def test_record_applied_creates_auditable_change_and_prunes_history(tmp_path):
     assert history[0]["after"] == {"value": 3}
 
 
+def test_history_pruning_never_deletes_unfinished_mutation_evidence(tmp_path):
+    store = _store(tmp_path, history_limit=1)
+    uncertain_proposal = store.create_proposal(
+        resource_type="automation", resource_id="morning", operation="update",
+        before={"alias": "Old"}, desired={"alias": "New"}, now=NOW,
+    )
+    store.claim_proposal(
+        uncertain_proposal["id"], uncertain_proposal["before_fingerprint"], now=NOW
+    )
+    uncertain = store.begin_apply(
+        uncertain_proposal["id"], created_by_hermes=False, now=NOW
+    )
+    store.mark_apply_uncertain(uncertain["id"])
+
+    completed_proposal = store.create_proposal(
+        resource_type="timer", resource_id="tea", operation="update",
+        before={"name": "Tea"}, desired={"name": "Tea timer"}, now=NOW,
+    )
+    store.claim_proposal(
+        completed_proposal["id"], completed_proposal["before_fingerprint"], now=NOW
+    )
+    store.record_applied(
+        completed_proposal["id"], after={"name": "Tea timer"},
+        created_by_hermes=False, now=NOW,
+    )
+
+    assert [item["id"] for item in store.list_unfinished()] == [uncertain["id"]]
+
+
 def test_rollback_claim_requires_current_state_to_match_applied_state(tmp_path):
     store = _store(tmp_path)
     proposal = store.create_proposal(

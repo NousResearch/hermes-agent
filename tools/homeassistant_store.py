@@ -363,7 +363,9 @@ class HomeAssistantChangeStore:
             )
             conn.execute(
                 """DELETE FROM changes WHERE id IN (
-                    SELECT id FROM changes ORDER BY applied_at DESC, rowid DESC LIMIT -1 OFFSET ?
+                    SELECT id FROM changes
+                    WHERE status IN ('applied', 'rolled_back', 'failed')
+                    ORDER BY applied_at DESC, rowid DESC LIMIT -1 OFFSET ?
                 )""",
                 (self.history_limit,),
             )

@@ -40,11 +40,13 @@ function tileView(runtimeId: string, cwd: string): SessionView {
     $awaitingResponse: atom(false),
     $busy: atom(false),
     $cwd: atom(cwd),
+    $fast: atom(false),
     $lastVisibleIsUser: atom(false),
     $messages: atom([]),
     $messagesEmpty: atom(true),
     $model: atom(''),
     $provider: atom(''),
+    $reasoningEffort: atom(''),
     $runtimeId: atom(runtimeId),
     $storedId: atom(`stored-${runtimeId}`)
   }

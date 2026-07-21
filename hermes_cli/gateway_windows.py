@@ -297,6 +297,21 @@ def get_task_name() -> str:
         return _TASK_NAME_DEFAULT
     return f"{_TASK_NAME_DEFAULT}_{suffix}"
 
+def _get_watchdog_task_name() -> str:
+    """Per-profile name for the gateway watchdog task (respawns on crash).
+
+    Default: ``Hermes_Gateway_Watchdog``
+    Named profile X: ``Hermes_Gateway_Watchdog_<X>``
+    """
+    _assert_windows()
+    from hermes_cli.gateway import _profile_suffix
+
+    suffix = _profile_suffix()
+    if not suffix:
+        return f"{_TASK_NAME_DEFAULT}_Watchdog"
+    return f"{_TASK_NAME_DEFAULT}_Watchdog_{suffix}"
+
+
 
 def _sanitize_filename(value: str) -> str:
     """Remove characters illegal in Windows filenames."""
@@ -316,6 +331,26 @@ def get_task_script_path() -> Path:
     script_dir = Path(get_hermes_home()) / "gateway-service"
     script_dir.mkdir(parents=True, exist_ok=True)
     return script_dir / f"{_sanitize_filename(get_task_name())}.cmd"
+
+def _get_watchdog_script_path() -> Path:
+    """The generated ``gateway-watchdog.cmd`` wrapper for the watchdog task.
+
+    Lives under ``<HERMES_HOME>/gateway-service/watchdog-<task_name>.cmd``
+    so it stays scoped per profile and doesn't conflict with the main gateway task.
+    """
+    _assert_windows()
+    from hermes_cli.config import get_hermes_home
+
+    script_dir = Path(get_hermes_home()) / "gateway-service"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    return script_dir / f"watchdog-{_sanitize_filename(_get_watchdog_task_name())}.cmd"
+
+
+def _get_watchdog_loop_vbs_path() -> Path:
+    """Return the hidden loop launcher used by the Startup-folder fallback."""
+    script_path = _get_watchdog_script_path()
+    return script_path.with_name(f"{script_path.stem}.loop.vbs")
+
 
 
 def _startup_dir() -> Path:
@@ -425,6 +460,43 @@ def _build_gateway_cmd_script(
     lines.append("exit /b 0")
     return "\r\n".join(lines) + "\r\n"
 
+def _build_watchdog_cmd_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+) -> str:
+    """Build the ``gateway-watchdog.cmd`` wrapper content (CRLF-terminated).
+
+    The watchdog script:
+      - cd's into the stable working directory
+      - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
+      - invokes ``pythonw -m hermes_cli.gateway_watchdog [--profile X]``
+      - runs every few minutes (1-5 min), checks if gateway is alive
+      - silently respawns gateway if it has crashed
+      - outputs to NUL (watchdog module logs to gateway-watchdog.log instead)
+
+    Uses pythonw.exe (GUI subsystem) to avoid console flashes.
+    """
+    lines = ["@echo off", f"rem {_TASK_DESCRIPTION} (Watchdog)"]
+    lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
+    lines.append(f'set "HERMES_HOME={hermes_home}"')
+    lines.append('set "PYTHONIOENCODING=utf-8"')
+    lines.append('set "HERMES_GATEWAY_DETACHED=1"')
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    lines.append(f'set "VIRTUAL_ENV={_preserve_hermes_home_path(venv_dir)}"')
+    pythonpath_entries = [
+        _preserve_hermes_home_path(Path(__file__).resolve().parent.parent),
+        *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath],
+    ]
+    lines.append(f'set "PYTHONPATH={";".join([*pythonpath_entries, "%PYTHONPATH%"])}"')
+    prog_args = [pythonw_path, "-m", "hermes_cli.gateway_watchdog"]
+    # Redirect stdout/stderr to NUL; the watchdog module writes its own log.
+    lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args) + " >NUL 2>&1")
+    lines.append("exit /b 0")
+    return "\r\n".join(lines) + "\r\n"
+
+
 
 def _quote_vbs_string(value: str) -> str:
     """Quote a value as a VBScript double-quoted string literal.
@@ -500,7 +572,52 @@ def _build_gateway_vbs_script(
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_startup_launcher(script_path: Path) -> str:
+def _build_watchdog_vbs_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    *,
+    loop: bool = False,
+) -> str:
+    """Build a console-less watchdog launcher with gateway environment parity."""
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    prog_args = [pythonw_path, "-m", "hermes_cli.gateway_watchdog"]
+    if loop:
+        prog_args.append("--loop")
+    command_line = subprocess.list2cmdline(prog_args)
+    repo_root = _preserve_hermes_home_path(Path(__file__).resolve().parent.parent)
+    static_pythonpath = os.pathsep.join(
+        [repo_root, *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath]]
+    )
+    lines = [
+        f"' {_TASK_DESCRIPTION} (Watchdog)",
+        "Option Explicit",
+        "Dim sh, env, existing_pp",
+        'Set sh = CreateObject("WScript.Shell")',
+        'Set env = sh.Environment("PROCESS")',
+        f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
+        f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
+        f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
+        f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(_preserve_hermes_home_path(venv_dir))}",
+        f"existing_pp = env.Item({_quote_vbs_string('PYTHONPATH')})",
+        "If Len(existing_pp) > 0 Then",
+        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath + os.pathsep)} & existing_pp",
+        "Else",
+        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
+        "End If",
+        f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
+        # A Scheduled Task tick waits for its short-lived watchdog process.
+        # This lets IgnoreNew prevent overlap.
+        # The Startup fallback's long-lived loop detaches from the login launcher.
+        f"sh.Run {_quote_vbs_string(command_line)}, 0, {'False' if loop else 'True'}",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _build_startup_launcher(
+    script_path: Path,
+    watchdog_loop_path: Path | None = None,
+) -> str:
     """The tiny .vbs that goes in the Startup folder and chains hidden.
 
     Defense-in-depth: bail out silently if the target script is gone. Test
@@ -521,6 +638,17 @@ def _build_startup_launcher(script_path: Path) -> str:
         'Set sh = CreateObject("WScript.Shell")',
         f"sh.Run {_quote_vbs_string(command)}, 0, False",
     ]
+    if watchdog_loop_path is not None:
+        watchdog_target = str(watchdog_loop_path)
+        watchdog_command = subprocess.list2cmdline(["wscript.exe", watchdog_target])
+        lines.extend(
+            [
+                f"target = {_quote_vbs_string(watchdog_target)}",
+                "If fso.FileExists(target) Then",
+                f"  sh.Run {_quote_vbs_string(watchdog_command)}, 0, False",
+                "End If",
+            ]
+        )
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -554,6 +682,49 @@ def _write_task_script() -> Path:
     vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
     vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
     vbs_tmp.replace(vbs_path)
+    return script_path
+
+
+def _write_watchdog_script() -> Path:
+    """Generate and write the gateway-watchdog.cmd wrapper. Return its absolute path."""
+    _assert_windows()
+    # Local imports to avoid circular-init at module load time.
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.gateway import (
+        PROJECT_ROOT,
+        get_python_path,
+    )
+
+    python_path = _preserve_hermes_home_path(get_python_path())
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
+    hermes_home = str(Path(get_hermes_home()))
+
+    content = _build_watchdog_cmd_script(python_path, working_dir, hermes_home, "")
+    script_path = _get_watchdog_script_path()
+    tmp = script_path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    tmp.replace(script_path)
+
+    vbs_content = _build_watchdog_vbs_script(
+        python_path,
+        working_dir,
+        hermes_home,
+    )
+    vbs_path = script_path.with_suffix(".vbs")
+    vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
+    vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
+    vbs_tmp.replace(vbs_path)
+
+    loop_content = _build_watchdog_vbs_script(
+        python_path,
+        working_dir,
+        hermes_home,
+        loop=True,
+    )
+    loop_path = _get_watchdog_loop_vbs_path()
+    loop_tmp = loop_path.with_name(loop_path.name + ".tmp")
+    loop_tmp.write_text(loop_content, encoding="utf-8", newline="")
+    loop_tmp.replace(loop_path)
     return script_path
 
 
@@ -640,6 +811,68 @@ def _write_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
     return xml_path
 
 
+def _build_watchdog_scheduled_task_xml(
+    task_name: str,
+    launcher_path: Path,
+    user: str | None,
+) -> str:
+    """Render a hidden periodic watchdog task using the VBS/wscript path."""
+    user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{escape(_TASK_DESCRIPTION)} watchdog</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT2M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">{user_principal}
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>//B //Nologo "{escape(str(launcher_path))}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _write_watchdog_scheduled_task_xml(
+    task_name: str,
+    launcher_path: Path,
+    user: str | None,
+) -> Path:
+    xml_path = launcher_path.with_suffix(".task.xml")
+    xml_path.write_text(
+        _build_watchdog_scheduled_task_xml(task_name, launcher_path, user),
+        encoding="utf-16",
+        newline="",
+    )
+    return xml_path
+
+
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
@@ -689,7 +922,15 @@ def _install_startup_entry(script_path: Path) -> Path:
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
     tmp = entry.with_suffix(".tmp")
-    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    watchdog_loop_path = _get_watchdog_loop_vbs_path()
+    tmp.write_text(
+        _build_startup_launcher(
+            script_path,
+            watchdog_loop_path if watchdog_loop_path.exists() else None,
+        ),
+        encoding="utf-8",
+        newline="",
+    )
     tmp.replace(entry)
     legacy_entry = _legacy_startup_entry_path()
     try:
@@ -698,6 +939,57 @@ def _install_startup_entry(script_path: Path) -> Path:
     except OSError:
         pass
     return entry
+
+
+def _install_watchdog_task() -> tuple[bool, str]:
+    """Install the watchdog Scheduled Task (respawns gateway if crashed).
+
+    Returns (success, detail).
+
+    The watchdog runs every 2 minutes and checks if the gateway is alive.
+    If the gateway is down, it respawns it. This is a best-effort mechanism
+    to keep cron jobs running even after gateway crashes (addresses #41662).
+    """
+    watchdog_task_name = _get_watchdog_task_name()
+    watchdog_script_path = _write_watchdog_script()
+
+    # Delete the task first to avoid stale trigger/action settings.
+    delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", watchdog_task_name])
+    delete_detail = (delete_err or delete_out or "").strip()
+    if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
+        if _is_access_denied(delete_detail):
+            return (False, f"schtasks /Delete (watchdog) failed: {delete_detail}")
+
+    user = _resolve_task_user()
+    launcher_path = watchdog_script_path.with_suffix(".vbs")
+    xml_path = _write_watchdog_scheduled_task_xml(
+        watchdog_task_name,
+        launcher_path,
+        user,
+    )
+    base = ["/Create", "/F", "/TN", watchdog_task_name, "/XML", str(xml_path)]
+    variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
+    variants.append(base)
+    last_code = 1
+    last_err = ""
+    try:
+        for argv in variants:
+            code, out, err = _exec_schtasks(argv)
+            if code == 0:
+                return (
+                    True,
+                    f"Created Scheduled Task {watchdog_task_name!r} (runs every 2 minutes)",
+                )
+            last_code, last_err = code, (err or out or "")
+    finally:
+        try:
+            xml_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return (
+        False,
+        f"schtasks /Create (watchdog) failed (code {last_code}): {last_err.strip()}",
+    )
 
 
 def _derive_venv_pythonw(python_exe: str) -> str:
@@ -997,9 +1289,11 @@ def _prompt_install_choices(
 def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -> None:
     """Install the Startup-folder fallback and optionally start once."""
     print(f"↻ Scheduled Task install blocked ({detail.splitlines()[0]}) — using Startup folder fallback")
+    _write_watchdog_script()
     entry = _install_startup_entry(script_path)
     print(f"✓ Installed Windows login item: {entry}")
     print(f"  Task script: {script_path}")
+    print("✓ Installed hidden gateway watchdog through the login item.")
 
     # Re-running `hermes -p <profile> gateway install` must be safe.
     # Startup-folder fallback only installs login persistence. Starting is
@@ -1092,6 +1386,17 @@ def install(
         else:
             print("ℹ Gateway not started now.")
             print("  Start manually with: hermes gateway start")
+
+        # Install the watchdog task to respawn the gateway after a crash (#41662).
+        watchdog_ok, watchdog_detail = _install_watchdog_task()
+        if watchdog_ok:
+            print(f"✓ {watchdog_detail}")
+            print("ℹ Cron jobs will continue even if the gateway crashes (watchdog respawns it).")
+        else:
+            print(f"⚠ Watchdog installation failed: {watchdog_detail}")
+            print("  The gateway will auto-start on login, but cron jobs may stop if it crashes.")
+            print("  (This is not critical; the main gateway task is working.)")
+
         _print_next_steps()
         return
 
@@ -1118,29 +1423,7 @@ def install(
 
     # schtasks create didn't work. See if it's a "fall back to startup" case.
     if _should_fall_back(1, detail):
-        print(f"↻ Scheduled Task install blocked ({detail.splitlines()[0]}) — using Startup folder fallback")
-        entry = _install_startup_entry(script_path)
-        print(f"✓ Installed Windows login item: {entry}")
-        print(f"  Task script: {script_path}")
-
-        # Re-running `hermes -p <profile> gateway install` must be safe.
-        # Startup-folder fallback only installs login persistence. Starting is
-        # controlled by the pre-UAC start_now answer so all user decisions happen
-        # before any elevation prompt.
-        from hermes_cli.gateway import find_gateway_pids, _profile_arg
-
-        running_pids = list(find_gateway_pids())
-        if running_pids:
-            print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
-        elif start_now:
-            pid = _spawn_detached()
-            _report_gateway_start(f"direct spawn (PID {pid})")
-        else:
-            profile_arg = _profile_arg()
-            start_cmd = f"hermes {profile_arg} gateway start" if profile_arg else "hermes gateway start"
-            print("ℹ Startup fallback installed; gateway not started now.")
-            print(f"  Start manually with: {start_cmd}")
-        _print_next_steps()
+        _install_startup_fallback(script_path, start_now, detail)
         return
 
     # Unknown schtasks error — surface it and bail.
@@ -1194,6 +1477,10 @@ def uninstall() -> None:
     vbs_script_path = script_path.with_suffix(".vbs")
     startup_entry = get_startup_entry_path()
     legacy_startup_entry = _legacy_startup_entry_path()
+    watchdog_task_name = _get_watchdog_task_name()
+    watchdog_script_path = _get_watchdog_script_path()
+    watchdog_vbs_path = watchdog_script_path.with_suffix(".vbs")
+    watchdog_loop_vbs_path = _get_watchdog_loop_vbs_path()
 
     scheduled_task_removed = False
     if is_task_registered():
@@ -1218,11 +1505,31 @@ def uninstall() -> None:
         else:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
+    watchdog_task_removed = False
+    if is_watchdog_task_registered():
+        code, _out, err = _exec_schtasks(
+            ["/Delete", "/F", "/TN", watchdog_task_name]
+        )
+        detail = err.strip()
+        if code == 0:
+            watchdog_task_removed = True
+            print(f"✓ Removed Scheduled Task {watchdog_task_name!r}")
+        elif _is_access_denied(detail) and not _is_running_as_admin():
+            print(
+                "⚠ Watchdog Scheduled Task needs administrator approval "
+                f"to remove: {detail or 'access denied'}"
+            )
+        else:
+            print(f"⚠ watchdog schtasks /Delete returned code {code}: {detail}")
+
     for path, label in [
         (startup_entry, "Windows login item"),
         (legacy_startup_entry, "legacy Windows login item"),
         (script_path, "Task script"),
         (vbs_script_path, "Task launcher"),
+        (watchdog_script_path, "Watchdog task script"),
+        (watchdog_vbs_path, "Watchdog task launcher"),
+        (watchdog_loop_vbs_path, "Watchdog loop launcher"),
     ]:
         try:
             path.unlink()
@@ -1232,6 +1539,8 @@ def uninstall() -> None:
 
     if is_task_registered() and not scheduled_task_removed:
         print(f"⚠ Scheduled Task still registered: {task_name}")
+    if is_watchdog_task_registered() and not watchdog_task_removed:
+        print(f"⚠ Scheduled Task still registered: {watchdog_task_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -1240,6 +1549,14 @@ def uninstall() -> None:
 
 def is_task_registered() -> bool:
     code, _out, _err = _exec_schtasks(["/Query", "/TN", get_task_name()])
+    return code == 0
+
+
+def is_watchdog_task_registered() -> bool:
+    """Return whether the periodic watchdog task exists for this profile."""
+    code, _out, _err = _exec_schtasks(
+        ["/Query", "/TN", _get_watchdog_task_name()]
+    )
     return code == 0
 
 
@@ -1252,9 +1569,11 @@ def is_installed() -> bool:
     return is_task_registered() or is_startup_entry_installed()
 
 
-def query_task_status() -> dict[str, str]:
+def query_task_status(task_name: str | None = None) -> dict[str, str]:
     """Parse ``schtasks /Query /V /FO LIST`` and pull the interesting keys."""
-    code, out, err = _exec_schtasks(["/Query", "/TN", get_task_name(), "/V", "/FO", "LIST"])
+    code, out, err = _exec_schtasks(
+        ["/Query", "/TN", task_name or get_task_name(), "/V", "/FO", "LIST"]
+    )
     if code != 0:
         return {}
     info: dict[str, str] = {}
@@ -1420,6 +1739,7 @@ def status(deep: bool = False) -> None:
     task_name = get_task_name()
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()
+    watchdog_task_installed = is_watchdog_task_registered()
     pids = _gateway_pids()
 
     if task_installed:
@@ -1437,6 +1757,19 @@ def status(deep: bool = False) -> None:
     else:
         print("✗ Gateway service not installed")
 
+    if watchdog_task_installed:
+        watchdog_task_name = _get_watchdog_task_name()
+        print(f"✓ Watchdog Scheduled Task registered: {watchdog_task_name}")
+        watchdog_info = query_task_status(watchdog_task_name)
+        if watchdog_info:
+            for key in ("status", "last run time", "last run result"):
+                if key in watchdog_info:
+                    print(f"  Watchdog {key.title()}: {watchdog_info[key]}")
+    elif startup_installed and _get_watchdog_loop_vbs_path().exists():
+        print("✓ Hidden watchdog supervisor installed through the login item")
+    else:
+        print("✗ Gateway watchdog not installed")
+
     if pids:
         print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})")
     else:
@@ -1447,6 +1780,8 @@ def status(deep: bool = False) -> None:
         print(f"  Task name:        {task_name}")
         print(f"  Task script:      {get_task_script_path()}")
         print(f"  Startup entry:    {get_startup_entry_path()}")
+        print(f"  Watchdog script:  {_get_watchdog_script_path()}")
+        print(f"  Watchdog loop:    {_get_watchdog_loop_vbs_path()}")
         # Surface the per-probe truth so the user can see *which* signal
         # is lying when the high-level summary disagrees with reality.
         _print_deep_probes()

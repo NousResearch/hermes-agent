@@ -2054,8 +2054,13 @@ def test_agent_cbs_interim_callback_skips_already_streamed_and_empty(server, mon
 
 
 def test_agent_cbs_omits_interim_callback_when_lane_disabled(server, monkeypatch):
-    """Default (display.commentary_lane off): no interim callback → upstream behavior."""
+    """commentary_lane off → the commentary lane installs no interim callback.
+
+    Upstream's own display.interim_assistant_messages feature can still set the
+    callback independently, so isolate the commentary lane's contribution by
+    disabling that too: with both off, no interim callback is installed."""
     monkeypatch.setattr(server, "_load_commentary_lane", lambda: False)
+    monkeypatch.setattr(server, "_load_interim_assistant_messages", lambda: False)
 
     cbs = server._agent_cbs("sid-1")
 

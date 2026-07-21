@@ -10,7 +10,7 @@ def _make_gating_hook(mock_config_skill_graph_mode: bool):
     """Build a pre_tool_call hook with the same logic as the skill-graph plugin."""
     from hermes_cli.config import load_config
 
-    _gated_tools = frozenset({"find", "read_file", "session_search"})
+    _gated_tools = frozenset({"find", "read_file"})
     _graph_searched_turn: dict[str, bool] = {}
 
     # Resolve from config at registration time (startup constant)
@@ -52,7 +52,7 @@ class TestSkillGraphGating:
     """Test pre_tool_call gating when agent.skill_graph_mode is enabled."""
 
     def test_blocks_gated_tools_before_search(self):
-        """read_file/session_search are blocked until skill_graph_search is called."""
+        """read_file is blocked until skill_graph_search is called."""
         mock_cfg = {"agent": {"skill_graph_mode": True}}
         with patch("hermes_cli.config.load_config", return_value=mock_cfg):
             hook, _ = _make_gating_hook(True)
@@ -78,6 +78,15 @@ class TestSkillGraphGating:
             hook, _ = _make_gating_hook(True)
 
         result = hook("terminal", turn_id="t1")
+        assert result is None
+
+    def test_session_search_not_gated(self):
+        """session_search is not in the gated set — always allowed."""
+        mock_cfg = {"agent": {"skill_graph_mode": True}}
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg):
+            hook, _ = _make_gating_hook(True)
+
+        result = hook("session_search", turn_id="t1")
         assert result is None
 
     def test_skill_graph_search_itself_always_allowed(self):

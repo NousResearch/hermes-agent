@@ -21,16 +21,36 @@ takes ~15-30s. Run with: pytest -m integration tests/test_wheel_locales_e2e.py
 from __future__ import annotations
 
 import glob
+import importlib.metadata
 import os
 import subprocess
 import sys
 import tarfile
+import tempfile
 import venv
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module")
+def sdist_package() -> Generator[str]:
+    """Make sdist package and yield the path of generated tarball"""
+    with tempfile.TemporaryDirectory() as sdist_dir:
+        build = subprocess.run(
+            ["uv", "build", "--sdist", "--out-dir", str(sdist_dir), "."],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert build.returncode == 0, f"uv build --sdist failed:\n{build.stderr}"
+        tarballs = glob.glob(os.path.join(sdist_dir, "*.tar.gz"))
+        assert tarballs, "no sdist produced"
+        yield tarballs[0]
 
 
 @pytest.mark.integration
@@ -93,7 +113,7 @@ def test_installed_wheel_renders_i18n_strings(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.timeout(300)  # overrides the global --timeout=30; cold-CI sdist build can exceed it
-def test_built_sdist_ships_locale_catalogs(tmp_path):
+def test_built_sdist_ships_locale_catalogs(sdist_package):
     """The sdist must carry locales/ too.
 
     The wheel is covered above; the sdist is a separately shipped artifact
@@ -104,19 +124,7 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     real tarball so that path can't rot silently. Closes the sdist half of
     #27632 / #35374 / #23943.
     """
-    sdist_dir = tmp_path / "sdist"
-    build = subprocess.run(
-        ["uv", "build", "--sdist", "--out-dir", str(sdist_dir), "."],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    assert build.returncode == 0, f"uv build --sdist failed:\n{build.stderr}"
-    tarballs = glob.glob(str(sdist_dir / "*.tar.gz"))
-    assert tarballs, "no sdist produced"
-
-    with tarfile.open(tarballs[0]) as tf:
+    with tarfile.open(sdist_package) as tf:
         # Members are prefixed with the sdist root dir, e.g.
         # hermes_agent-0.15.1/locales/en.yaml — match on the suffix.
         catalogs = [m for m in tf.getnames() if "/locales/" in m and m.endswith(".yaml")]
@@ -135,3 +143,21 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     assert any(m.endswith("/locales/en.yaml") for m in catalogs), (
         f"sdist missing locales/en.yaml; shipped: {catalogs[:5]}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(300)  # overrides the global --timeout=30; cold-CI sdist build can exceed it
+def test_built_sdist_ships_tests_conftest_files(sdist_package):
+    with tarfile.open(sdist_package) as tf:
+        # Members are prefixed with the sdist root dir, e.g. hermes_agent-0.15.1/locales/en.yaml
+        # Remove the prefix.
+        shipped_conftest_files = [
+            m[m.find("/")+1:] for m in tf.getnames() if m.endswith("/conftest.py")
+        ]
+
+    package_files = importlib.metadata.files("hermes-agent")
+    assert package_files, "Package metadata does not include files."
+    source_conftest_files = [str(item) for item in package_files if item.name == "conftest.py"]
+
+    assert sorted(shipped_conftest_files) == sorted(source_conftest_files), \
+        "sdist does not shipped all conftest.py files."

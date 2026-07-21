@@ -558,6 +558,38 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     assert child_after["status"] == "ready"
 
 
+def test_dashboard_cannot_promote_child_of_failed_done_gate(client):
+    """Dashboard drag/drop must honor the same semantic gate as dispatcher."""
+    parent = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "[Review] gate", "assignee": "review"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "[QA] downstream", "assignee": "qa", "parents": [parent["id"]]},
+    ).json()["task"]
+
+    with kb.connect() as conn:
+        assert kb.complete_task(
+            conn,
+            parent["id"],
+            summary=f"REQUEST_CHANGES @ {'c' * 40}",
+            metadata={"verdict": "REQUEST_CHANGES"},
+        )
+    assert client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]["status"] == "todo"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert parent["id"] in detail
+    assert "status=done" in detail
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

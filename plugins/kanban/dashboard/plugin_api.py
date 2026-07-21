@@ -956,23 +956,26 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
 def _parents_blocking_ready(
     conn: sqlite3.Connection, task_id: str,
 ) -> list:
-    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
-    and therefore prevent ``task_id`` from being promoted to ``ready``.
+    """Return parent rows that semantically block promotion to ``ready``.
 
     Used to enrich the 409 response from :func:`update_task` so the
     dashboard can show an actionable toast (#26744) instead of a silent
     no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
-    parents, or all parents already done).
+    parents, or all parents passed/are archived).  A failed terminal gate is
+    still a blocker even though its task status is ``done``.
     """
     rows = conn.execute(
         "SELECT t.id, t.title, t.status FROM tasks t "
         "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
+        "WHERE l.child_id = ?",
         (task_id,),
     ).fetchall()
     return [
         {"id": r["id"], "title": r["title"], "status": r["status"]}
         for r in rows
+        if not kanban_db._parent_dependency_satisfied(
+            conn, r["id"], child_id=task_id, parent_status=r["status"]
+        )
     ]
 
 
@@ -1003,13 +1006,16 @@ def _set_status_direct(
         # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
         if new_status == "ready":
             parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id, t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
             if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
+                kanban_db._parent_dependency_satisfied(
+                    conn, p["id"], child_id=task_id, parent_status=p["status"]
+                )
+                for p in parent_statuses
             ):
                 return False
 

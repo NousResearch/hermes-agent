@@ -3401,6 +3401,37 @@ _GATE_VERDICT_RE = re.compile(
     r"RELEASE_READY|DEPLOYED|READY_FOR_CONFIRMATION)\b",
     re.IGNORECASE,
 )
+_GATE_TITLE_RE = re.compile(
+    r"^\s*\[(?:re-?review|review(?:\+qa)?|qa|release)(?:[^\]]*)\]",
+    re.IGNORECASE,
+)
+_REMEDIATION_TITLE_RE = re.compile(
+    r"^\s*(?:\[fix(?:[^\]]*)\]|fix:)",
+    re.IGNORECASE,
+)
+
+
+def _is_gate_task(assignee: object, title: object) -> bool:
+    """Return whether a task is a semantic Review/QA/Release gate.
+
+    Assignee is authoritative.  The anchored title fallback preserves older
+    boards without letting incidental text such as ``[Release notes]`` in the
+    middle of an implementation title turn that task into a gate.
+    """
+    return (
+        str(assignee or "").lower() in _GATE_ASSIGNEES
+        or bool(_GATE_TITLE_RE.match(str(title or "")))
+    )
+
+
+def _latest_completed_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
+    """Return the newest completed attempt for semantic-verdict readback."""
+    row = conn.execute(
+        "SELECT * FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return Run.from_row(row) if row else None
 
 
 def _explicit_failed_gate_verdict(
@@ -3418,17 +3449,12 @@ def _explicit_failed_gate_verdict(
     ).fetchone()
     if task is None:
         return None
-    assignee = str(task["assignee"] or "").lower()
-    title = str(task["title"] or "").lower()
-    is_gate = (
-        assignee in _GATE_ASSIGNEES
-        or "[review" in title or "re-review" in title
-        or "[qa" in title or "[release" in title
-    )
-    if not is_gate:
+    if not _is_gate_task(task["assignee"], task["title"]):
         return None
 
-    run = latest_run(conn, task_id)
+    # A later crash/reclaim row must not erase the semantic result of the
+    # completed gate attempt.  This matches worker-context handoff readback.
+    run = _latest_completed_run(conn, task_id)
     metadata = run.metadata if run and isinstance(run.metadata, dict) else {}
     verdict = str(
         metadata.get("verdict") or metadata.get("gate_verdict") or ""
@@ -3445,6 +3471,8 @@ def _parent_dependency_satisfied(
     child_id: Optional[str] = None,
     child_title: Optional[str] = None,
     child_assignee: Optional[str] = None,
+    parent_status: Optional[str] = None,
+    failed_gate_cache: Optional[dict[str, Optional[str]]] = None,
 ) -> bool:
     """A terminal parent is satisfied unless it explicitly failed a gate.
 
@@ -3452,14 +3480,22 @@ def _parent_dependency_satisfied(
     to start *because* the parent gate failed.  Normal downstream QA/Release
     children remain held.
     """
-    row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-    ).fetchone()
-    if row is None or row["status"] not in ("done", "archived"):
+    if parent_status is None:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+        ).fetchone()
+        parent_status = str(row["status"]) if row is not None else None
+    if parent_status not in ("done", "archived"):
         return False
-    if row["status"] == "archived":
+    if parent_status == "archived":
         return True
-    if _explicit_failed_gate_verdict(conn, parent_id) is None:
+    if failed_gate_cache is None:
+        failed_verdict = _explicit_failed_gate_verdict(conn, parent_id)
+    else:
+        if parent_id not in failed_gate_cache:
+            failed_gate_cache[parent_id] = _explicit_failed_gate_verdict(conn, parent_id)
+        failed_verdict = failed_gate_cache[parent_id]
+    if failed_verdict is None:
         return True
     if child_id and (child_title is None or child_assignee is None):
         child = conn.execute(
@@ -3468,10 +3504,9 @@ def _parent_dependency_satisfied(
         if child is not None:
             child_title = str(child["title"] or "")
             child_assignee = str(child["assignee"] or "")
-    title = str(child_title or "").lower()
     assignee = str(child_assignee or "").lower()
-    return assignee == "vibe" and (
-        "[fix" in title or "remediation" in title or title.startswith("fix:")
+    return assignee == "vibe" and bool(
+        _REMEDIATION_TITLE_RE.match(str(child_title or ""))
     )
 
 
@@ -3510,8 +3545,9 @@ def recompute_ready(
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
+        failed_gate_cache: dict[str, Optional[str]] = {}
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, title, assignee, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -3530,7 +3566,15 @@ def recompute_ready(
                 (task_id,),
             ).fetchall()
             if all(
-                _parent_dependency_satisfied(conn, p["id"], child_id=task_id)
+                _parent_dependency_satisfied(
+                    conn,
+                    p["id"],
+                    child_id=task_id,
+                    child_title=row["title"],
+                    child_assignee=row["assignee"],
+                    parent_status=p["status"],
+                    failed_gate_cache=failed_gate_cache,
+                )
                 for p in parents
             ):
                 if cur_status == "blocked":

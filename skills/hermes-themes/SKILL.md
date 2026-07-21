@@ -29,7 +29,7 @@ editors or ship built-in presets.
 - Write access to the Hermes home dir — `~/.hermes` by default, or `$HERMES_HOME`
   / the active profile's dir. Skins live in `<hermes-home>/skins/`.
 - Native tools: `write_file` (create the YAML), `read_file` / `search_files`
-  (inspect existing skins), `patch` (set `display.skin`).
+  (inspect existing skins), `terminal` (activate via `hermes config set`).
 
 ## How to Run
 
@@ -68,14 +68,21 @@ full schema in `hermes_cli/skin_engine.py`.
    `ui_ok`/`ui_warn`/`ui_error` recognizably green/amber/red.
 2. **Write the file** to `<hermes-home>/skins/<name>.yaml`. Every top-level
    `colors` key from the template should be present.
-3. **Activate.** Set `display.skin: <name>` in `<hermes-home>/config.yaml` with
-   `patch` (create the `display:` block if absent). This is the source of truth
-   all surfaces read.
-   - **Desktop**: repaints automatically after the current turn (and the skin
-     appears in Appearance / `Cmd-K` / `/skin`).
-   - **CLI / TUI**: run `/skin <name>` for an immediate switch, or it loads on
-     next start.
-4. **Confirm** and tell the user how to switch back (`/skin default`).
+3. **Activate — never hand-edit `config.yaml`.** Persist the choice with the safe
+   writer via `terminal`:
+   ```
+   hermes config set display.skin <name>
+   ```
+   This is the source of truth all surfaces read; it writes valid YAML so it
+   can't corrupt the file (a bad hand-edit can break the running gateway,
+   including the `/` menu).
+   - **Desktop**: repaints automatically after the current turn, and the skin
+     appears in Appearance / `Cmd-K` / `/skin`.
+   - **CLI / TUI**: a running session does not hot-reload a config-file change —
+     you can't switch it live from a tool call. **Tell the user to run
+     `/skin <name>`** for an instant switch (it also persists); otherwise it
+     loads on next start.
+4. **Confirm** and tell the user how to switch back: `/skin default`.
 
 ## Pitfalls
 
@@ -88,12 +95,17 @@ full schema in `hermes_cli/skin_engine.py`.
 - **Name collisions**: a skin named like a desktop built-in (`mono`, `slate`,
   `cyberpunk`, `nous`, `midnight`, `ember`) won't override that built-in on the
   GUI. Pick a fresh name.
-- **Don't rebuild config.yaml** — `patch` only the `display.skin` line so you
-  don't clobber the user's other settings.
+- **Never hand-edit `config.yaml` to activate.** Use `hermes config set
+  display.skin <name>` — a stray indent in a manual edit corrupts the file and
+  can break the live gateway (including `/`). One command, always valid.
+- **A tool call can't live-switch a running CLI/TUI.** Only `/skin <name>`
+  (typed by the user) or a restart applies it in-session — say so instead of
+  claiming it switched.
 
 ## Verification
 
 - `read_file` the written `<hermes-home>/skins/<name>.yaml` and confirm valid
   YAML with the intended `name` and `colors`.
-- `read_file` `<hermes-home>/config.yaml` and confirm `display.skin: <name>`.
-- Ask the user to confirm the new look, or check the current surface repainted.
+- Run `hermes config get display.skin` and confirm it reports `<name>`.
+- Ask the user to confirm the new look (desktop repaints on the next turn; CLI/TUI
+  after `/skin <name>` or restart).

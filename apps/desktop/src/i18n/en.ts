@@ -2580,9 +2580,14 @@ export const en: Translations = {
     warningLine: message => `warning: ${message}`,
     yoloArmed: 'YOLO armed for this chat',
     yoloOff: 'YOLO off',
+    yoloStatus: active =>
+      active ? 'YOLO mode is ON. Hardline blocks and approvals.deny rules still apply.' : 'YOLO mode is OFF.',
+    yoloStatusFailed: 'Could not read YOLO status',
+    yoloStatusRequiresNewerBackend: 'Exact YOLO status requires a newer Hermes backend',
     yoloSystem: active => `YOLO ${active ? 'on' : 'off'} for this session`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'Could not toggle YOLO',
+    yoloUsage: 'Usage: /yolo [status]',
     profileStatus: current =>
       `Profile: ${current}. Use /profile <name> or the "New session" picker to start a chat in another profile.`,
     unknownProfile: 'Unknown profile',

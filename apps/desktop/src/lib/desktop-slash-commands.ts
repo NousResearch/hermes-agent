@@ -106,7 +106,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     aliases: ['/fork'],
     surface: action('branch')
   },
-  { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
+  {
+    name: '/yolo',
+    description: 'Toggle YOLO mode or show its current status',
+    surface: action('yolo'),
+    args: true
+  },
   {
     name: '/handoff',
     description: 'Hand off this session to a messaging platform',

@@ -220,7 +220,12 @@ export function usePromptActions({
   const copy = t.desktop
 
   const appendSessionTextMessage = useCallback(
-    (sessionId: string, role: ChatMessage['role'], text: string) => {
+    (
+      sessionId: string,
+      role: ChatMessage['role'],
+      text: string,
+      options?: { preserveStoredSessionId?: boolean; storedSessionId?: string | null }
+    ) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
       // in the chat panel, so without this the `[1;31m…[0m` payload leaks as
@@ -244,7 +249,11 @@ export function usePromptActions({
             }
           ]
         }),
-        selectedStoredSessionIdRef.current
+        options?.preserveStoredSessionId
+          ? undefined
+          : options && 'storedSessionId' in options
+            ? options.storedSessionId
+            : selectedStoredSessionIdRef.current
       )
     },
     [selectedStoredSessionIdRef, updateSessionState]

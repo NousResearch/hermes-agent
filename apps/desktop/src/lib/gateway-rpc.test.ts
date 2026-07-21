@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMissingPendingPromptRequest, isMissingRpcMethod } from './gateway-rpc'
+import { isMissingPendingPromptRequest, isMissingRpcMethod, isUnsupportedYoloStatus } from './gateway-rpc'
 
 describe('isMissingRpcMethod', () => {
   it('detects JSON-RPC method-not-found errors', () => {
@@ -24,5 +24,17 @@ describe('isMissingPendingPromptRequest', () => {
   it('ignores unrelated gateway failures', () => {
     expect(isMissingPendingPromptRequest(new Error('gateway not connected'), 'password')).toBe(false)
     expect(isMissingPendingPromptRequest(new Error('no pending value request'), 'password')).toBe(false)
+  })
+})
+
+describe('isUnsupportedYoloStatus', () => {
+  it('detects the exact old-backend config-key response', () => {
+    expect(isUnsupportedYoloStatus(new Error('unknown config key: yolo'))).toBe(true)
+    expect(isUnsupportedYoloStatus(new Error('RPC failed: unknown config key: yolo'))).toBe(true)
+  })
+
+  it('does not swallow unrelated unknown config keys', () => {
+    expect(isUnsupportedYoloStatus(new Error('unknown config key: model'))).toBe(false)
+    expect(isUnsupportedYoloStatus(new Error('gateway disconnected'))).toBe(false)
   })
 })

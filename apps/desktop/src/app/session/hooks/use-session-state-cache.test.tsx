@@ -12,6 +12,7 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  $yoloActive,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -19,7 +20,8 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 
 import { useSessionStateCache } from './use-session-state-cache'
@@ -118,6 +120,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setYoloActive(false)
   })
 
   afterEach(() => {
@@ -129,6 +132,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setYoloActive(false)
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
@@ -199,7 +203,8 @@ describe('useSessionStateCache — per-session turn timer', () => {
           model: 'anthropic/claude-opus-4.8',
           provider: 'anthropic',
           reasoningEffort: 'high',
-          serviceTier: 'priority'
+          serviceTier: 'priority',
+          yolo: true
         }),
         'bg-stored'
       )
@@ -209,6 +214,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentModel.get()).toBe('')
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+    expect($yoloActive.get()).toBe(false)
 
     rerender(<Harness activeSessionId="bg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="bg-stored" />)
 
@@ -224,6 +230,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentServiceTier.get()).toBe('priority')
     expect($currentFastMode.get()).toBe(true)
+    expect($yoloActive.get()).toBe(true)
   })
 
   it('clears stale model metadata when the newly focused session has no cached value', () => {
@@ -232,6 +239,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('high')
     setCurrentServiceTier('priority')
     setCurrentFastMode(true)
+    setYoloActive(true)
 
     let cache!: Cache
 
@@ -257,6 +265,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+    expect($yoloActive.get()).toBe(false)
   })
 })
 

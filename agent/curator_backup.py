@@ -209,7 +209,7 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
         if cron_info.get("parse_warning"):
             manifest["cron_jobs"]["parse_warning"] = cron_info["parse_warning"]
     (dest / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        json.dumps(manifest, indent=2, sort_keys=True, encoding="utf-8"), encoding="utf-8"
     )
 
 

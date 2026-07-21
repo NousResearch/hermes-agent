@@ -987,11 +987,11 @@ class S6ServiceManager:
         tmp_dir.mkdir(parents=True)
 
         try:
-            (tmp_dir / "type").write_text("longrun\n")
+            (tmp_dir / "type").write_text("longrun\n", encoding="utf-8")
 
             run_script = self._render_run_script(profile, extra_env or {})
             run_path = tmp_dir / "run"
-            run_path.write_text(run_script)
+            run_path.write_text(run_script, encoding="utf-8")
             run_path.chmod(0o755)
 
             finish_path = tmp_dir / "finish"

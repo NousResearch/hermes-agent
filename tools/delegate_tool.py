@@ -1606,7 +1606,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("  Common causes: oversized prompt rejected by provider, transport hang,")
         _w("  credential resolution stuck. See issue #14726 for context.")
 
-        dump_path.write_text("\n".join(lines), encoding="utf-8")
+        dump_path.write_text("\n".join(lines, encoding="utf-8"), encoding="utf-8")
         return str(dump_path)
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)

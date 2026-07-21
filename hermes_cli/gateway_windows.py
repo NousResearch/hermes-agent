@@ -633,7 +633,7 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 def _write_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> Path:
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(
-        _build_scheduled_task_xml(task_name, launcher_path, user),
+        _build_scheduled_task_xml(task_name, launcher_path, user, encoding="utf-8"),
         encoding="utf-16",
         newline="",
     )
@@ -689,7 +689,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
     tmp = entry.with_suffix(".tmp")
-    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    tmp.write_text(_build_startup_launcher(script_path, encoding="utf-8"), encoding="utf-8", newline="")
     tmp.replace(entry)
     legacy_entry = _legacy_startup_entry_path()
     try:

@@ -412,7 +412,7 @@ def save_bundle(
         payload["instruction"] = instruction
 
     path.write_text(
-        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, encoding="utf-8"),
         encoding="utf-8",
     )
     scan_bundles()  # refresh cache

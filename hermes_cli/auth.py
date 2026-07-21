@@ -4922,7 +4922,7 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         logger.debug("Shared Nous auth store at %s is unreadable: %s", path, exc)
         return None

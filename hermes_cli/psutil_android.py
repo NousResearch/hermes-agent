@@ -98,7 +98,7 @@ def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> Path:
         )
     try:
         common_py.write_text(
-            content.replace(MARKER, REPLACEMENT),
+            content.replace(MARKER, REPLACEMENT, encoding="utf-8"),
             encoding="utf-8",
         )
     except OSError as exc:

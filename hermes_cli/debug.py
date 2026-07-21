@@ -108,7 +108,7 @@ def _save_pending(entries: list[dict]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(entries, indent=2, encoding="utf-8"), encoding="utf-8")
         atomic_replace(tmp, path)
     except OSError:
         # Non-fatal — worst case the user has to run ``hermes debug delete``

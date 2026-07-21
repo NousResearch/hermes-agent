@@ -208,7 +208,7 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
         from gateway.status import get_process_start_time
         start = get_process_start_time(pid)
         text = str(pid) if start is None else "{}\n{}".format(pid, start)
-        (session_path / "bridge.pid").write_text(text)
+        (session_path / "bridge.pid").write_text(text, encoding="utf-8")
     except OSError:
         pass
 
@@ -557,7 +557,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Dependencies installed")
                     if _pkg_hash:
                         try:
-                            _dep_stamp.write_text(_pkg_hash)
+                            _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                         except OSError:
                             pass  # Stamp is an optimization; install still succeeded
                 except Exception as e:

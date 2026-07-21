@@ -2511,7 +2511,7 @@ def run_doctor(args):
                     if not wrapper.is_file():
                         continue
                     try:
-                        content = wrapper.read_text()
+                        content = wrapper.read_text(encoding="utf-8")
                         if "hermes -p" in content:
                             _m = _re.search(r"hermes -p (\S+)", content)
                             if _m and not profile_exists(_m.group(1)):

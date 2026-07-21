@@ -1255,7 +1255,7 @@ def _write_run_report(
     # run.json — machine-readable, full fidelity
     try:
         (run_dir / "run.json").write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            json.dumps(payload, indent=2, ensure_ascii=False, encoding="utf-8") + "\n",
             encoding="utf-8",
         )
     except Exception as e:
@@ -1273,7 +1273,7 @@ def _write_run_report(
     try:
         if int(cron_rewrites.get("jobs_updated", 0)) > 0:
             (run_dir / "cron_rewrites.json").write_text(
-                json.dumps(cron_rewrites, indent=2, ensure_ascii=False) + "\n",
+                json.dumps(cron_rewrites, indent=2, ensure_ascii=False, encoding="utf-8") + "\n",
                 encoding="utf-8",
             )
     except Exception as e:

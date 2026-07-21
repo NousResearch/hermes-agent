@@ -10966,7 +10966,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
             try:
-                _exit_code_path.write_text("0")
+                _exit_code_path.write_text("0", encoding="utf-8")
             except OSError:
                 pass
 

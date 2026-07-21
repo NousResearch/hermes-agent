@@ -196,7 +196,7 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     meta["spritesheetPath"] = sprite_path.name
     meta.setdefault("id", slug)
     meta.setdefault("displayName", entry.display_name)
-    (directory / "pet.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (directory / "pet.json").write_text(json.dumps(meta, indent=2, encoding="utf-8"), encoding="utf-8")
 
     pet = load_pet(slug)
     if pet is None or not pet.exists:
@@ -267,7 +267,7 @@ def register_local_pet(
         "spritesheetPath": sprite_path.name,
         "createdBy": "generator",
     }
-    (directory / "pet.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (directory / "pet.json").write_text(json.dumps(meta, indent=2, encoding="utf-8"), encoding="utf-8")
 
     pet = load_pet(slug)
     if pet is None or not pet.exists:
@@ -462,7 +462,7 @@ def rename_pet(slug: str, display_name: str) -> str | None:
             new_slug = slug  # keep the provisional slug if the move fails
 
     try:
-        pet_json.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        pet_json.write_text(json.dumps(meta, indent=2, encoding="utf-8"), encoding="utf-8")
     except OSError:
         return None
     return new_slug

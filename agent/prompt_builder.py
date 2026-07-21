@@ -1152,6 +1152,15 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
+        # Machine hostname helps the agent identify which host it's running
+        # on, avoiding redundant SSH to itself on multi-host setups.
+        try:
+            machine_hostname = platform.node().split(".")[0]
+            if machine_hostname:
+                host_lines.append(f"Hostname: {machine_hostname}")
+        except Exception:
+            pass
+
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")

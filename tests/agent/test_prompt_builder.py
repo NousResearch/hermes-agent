@@ -1216,28 +1216,32 @@ class TestEnvironmentHints:
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(platform, "system", lambda: "Linux")
         monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.setattr(platform, "node", lambda: "testhost")
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert result != ""
         assert "Host: Linux" in result
         assert "6.8.0-generic" in result
+        assert "Hostname: testhost" in result
         assert "User home directory:" in result
         assert "Current working directory:" in result
         # Linux must NOT get the Windows-specific callouts.
         assert "PowerShell" not in result
-        assert "hostname" not in result
+        assert "hostname" not in result  # lowercase — Windows warning wording
         assert "WSL" not in result
 
     def test_build_environment_hints_on_windows_local(self, monkeypatch):
         import agent.prompt_builder as _pb
-        import sys
+        import sys, platform
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "node", lambda: "DESKTOP-WIN10")
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "Host: Windows" in result
+        assert "Hostname: DESKTOP-WIN10" in result
         assert "User home directory:" in result
         # Two Windows-specific callouts that must ALWAYS appear together:
         # hostname warning + bash-not-PowerShell warning.
@@ -1248,17 +1252,19 @@ class TestEnvironmentHints:
 
     def test_build_environment_hints_on_macos_local(self, monkeypatch):
         import agent.prompt_builder as _pb
-        import sys
+        import sys, platform
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(platform, "node", lambda: "MacBook-Pro")
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "Host: macOS" in result
+        assert "Hostname: MacBook-Pro" in result
         assert "User home directory:" in result
         # macOS must NOT get the Windows-specific callouts.
         assert "PowerShell" not in result
-        assert "hostname" not in result
+        assert "hostname" not in result  # lowercase — Windows warning wording
 
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
         """Docker/remote backends must hide host info — the agent can only touch the backend."""
@@ -1274,11 +1280,41 @@ class TestEnvironmentHints:
         result = _pb.build_environment_hints()
         # Host suppression: none of the local-backend lines should appear.
         assert "Host: Windows" not in result
+        assert "Hostname:" not in result
         assert "User home directory:" not in result
         assert "PowerShell" not in result
         # Backend info must appear instead.
         assert "Terminal backend: docker" in result
         assert "inside" in result.lower()
+
+    def test_build_environment_hints_hostname_strips_fqdn(self, monkeypatch):
+        """The hostname hint should emit the short name, not the FQDN."""
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.setattr(platform, "node", lambda: "myhost.example.com")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hostname: myhost" in result
+        assert "myhost.example.com" not in result
+
+    def test_build_environment_hints_hostname_empty_when_node_returns_empty(self, monkeypatch):
+        """An empty platform.node() should not emit a Hostname line."""
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.setattr(platform, "node", lambda: "")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hostname:" not in result
 
     def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
         """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()

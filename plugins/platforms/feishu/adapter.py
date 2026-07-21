@@ -1370,7 +1370,10 @@ def check_feishu_requirements() -> bool:
     Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
     on first call if not present. Rebinds all module-level globals on success.
     """
-    if FEISHU_AVAILABLE:
+    # Check whether globals are already bound (lazy import already ran),
+    # NOT whether the package is on-disk (FEISHU_AVAILABLE from find_spec) —
+    # the globals stay None until this function runs the actual import (#68756).
+    if lark is not None:
         return True
 
     def _import():

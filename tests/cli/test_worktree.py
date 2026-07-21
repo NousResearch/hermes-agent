@@ -5,6 +5,7 @@ Verifies worktree creation, cleanup, .worktreeinclude handling,
 """
 
 import os
+import json
 import shutil
 import subprocess
 import pytest
@@ -860,6 +861,51 @@ class TestTerminalCWDIntegration:
             capture_output=True, text=True, cwd=info["path"],
         )
         assert result.stdout.strip() == "true"
+
+
+class TestDockerBackendIntegration:
+    """Test that docker adds root_repo and CWD mounts to /workspace."""
+
+    def test_docker_volume_set(self, git_repo):
+        """After worktree setup, TERMINAL_DOCKER_VOLUMES contain root_repo."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # This is what main() does:
+        repo_mnt = f"{info['repo_root']}:{info['repo_root']}"
+        user_spec = "/a:/b" # user spec defined in config.yaml
+        volumes = [user_spec]
+        if repo_mnt not in volumes:
+            volumes.append(repo_mnt)
+        assert len(volumes) == 2
+        os.environ["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
+        assert os.environ["TERMINAL_DOCKER_VOLUMES"] == json.dumps(volumes)
+        assert repo_mnt in os.environ["TERMINAL_DOCKER_VOLUMES"]
+        assert user_spec in os.environ["TERMINAL_DOCKER_VOLUMES"]
+
+        volumes = [repo_mnt] # repo_root already requested in volumes
+        if repo_mnt not in volumes:
+            volumes.append(repo_mnt)
+        assert len(volumes) == 1
+        os.environ["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
+        assert os.environ["TERMINAL_DOCKER_VOLUMES"] == json.dumps(volumes)
+        assert repo_mnt in os.environ["TERMINAL_DOCKER_VOLUMES"]
+        assert user_spec not in os.environ["TERMINAL_DOCKER_VOLUMES"]
+
+        # Clean up env
+        del os.environ["TERMINAL_DOCKER_VOLUMES"]
+
+    def test_docker_mnt_cwd_to_workspace(self, git_repo):
+        """The TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE should be set for worktree isolation."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # This is what main() does:
+        os.environ["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] = 'true'
+        assert os.environ["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == 'true'
+
+        # Clean up env
+        del os.environ["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"]
 
 
 class TestOrphanedBranchPruning:

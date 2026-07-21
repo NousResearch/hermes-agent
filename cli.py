@@ -15805,6 +15805,16 @@ def main(
                 _active_worktree = wt_info
                 os.environ["TERMINAL_CWD"] = wt_info["path"]
                 atexit.register(_cleanup_worktree, wt_info)
+                if "docker" in os.environ["TERMINAL_ENV"].lower():
+                    # Prevent orphaned worktree inside docker container
+                    import json
+                    from tools.terminal_tool import _parse_env_var
+                    repo_mnt = f"{wt_info['repo_root']}:{wt_info['repo_root']}"
+                    volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+                    if repo_mnt not in volumes:
+                        volumes.append(repo_mnt)
+                    os.environ["TERMINAL_DOCKER_VOLUMES"] = json.dumps(volumes)
+                    os.environ["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] = 'true'
             else:
                 # Worktree was explicitly requested but setup failed —
                 # don't silently run without isolation.

@@ -2203,12 +2203,20 @@ class TestPluginCommandEnumeration:
                 "args_hint": "[topic]",
                 "category": "Creative",
                 "plugin": "jokes-plugin",
+                "api_executable": True,
             },
             "status": {
                 "handler": None,
                 "description": "Plugin status",
                 "category": "Plugin",
                 "plugin": "shadow-plugin",
+            },
+            "local-only": {
+                "handler": lambda _a: "ok",
+                "description": "Local-only action",
+                "category": "Plugin",
+                "plugin": "local-plugin",
+                "api_executable": False,
             },
         })
 
@@ -2227,6 +2235,7 @@ class TestPluginCommandEnumeration:
             "plugin": "jokes-plugin",
         }
         assert "status" not in by_name
+        assert "local-only" not in by_name
         assert "handler" not in by_name["joke"]
         assert is_gateway_known_command("definitely-not-registered") is False
 

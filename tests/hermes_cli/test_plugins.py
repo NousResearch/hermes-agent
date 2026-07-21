@@ -1814,6 +1814,7 @@ class TestPluginCommands:
         # args_hint defaults to empty string when not passed.
         assert entry["args_hint"] == ""
         assert entry["category"] == "Plugin"
+        assert entry["api_executable"] is False
 
     def test_register_command_rejects_non_callable_handler(self):
         mgr = PluginManager()
@@ -1856,6 +1857,33 @@ class TestPluginCommands:
 
         entry = mgr._plugin_commands["joke"]
         assert entry["category"] == "Creative"
+
+    def test_register_command_can_explicitly_enable_api_execution(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "remote-action",
+            lambda args: args,
+            api_executable=True,
+        )
+
+        assert mgr._plugin_commands["remote-action"]["api_executable"] is True
+
+    def test_register_command_rejects_non_boolean_api_execution_flag(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(TypeError, match="api_executable must be a boolean"):
+            ctx.register_command(
+                "status",
+                lambda args: args,
+                api_executable="yes",
+            )
+
+        assert "status" not in mgr._plugin_commands
 
     def test_register_command_args_hint_whitespace_trimmed(self):
         """args_hint leading/trailing whitespace is stripped."""

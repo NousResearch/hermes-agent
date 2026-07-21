@@ -533,6 +533,7 @@ class PluginContext:
         description: str = "",
         args_hint: str = "",
         category: str = "Plugin",
+        api_executable: bool = False,
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -553,10 +554,17 @@ class PluginContext:
         ``category`` is optional metadata for API and mobile clients that group
         commands in their own command pickers.
 
+        ``api_executable`` must be explicitly enabled before the API server may
+        advertise or execute the command. CLI and messaging registrations are
+        local-only by default because their handlers may assume interactive
+        session context.
+
         Names conflicting with built-in commands are rejected with a warning.
         """
         if not callable(handler):
             raise TypeError("Plugin command handler must be callable")
+        if not isinstance(api_executable, bool):
+            raise TypeError("api_executable must be a boolean")
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning(
@@ -584,6 +592,7 @@ class PluginContext:
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
             "category": str(category or "Plugin").strip() or "Plugin",
+            "api_executable": api_executable,
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -2411,6 +2420,18 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_api_executable_plugin_commands() -> Dict[str, dict]:
+    """Return the callable plugin commands explicitly exposed to the API."""
+    return {
+        name: entry
+        for name, entry in (get_plugin_commands() or {}).items()
+        if isinstance(name, str)
+        and isinstance(entry, dict)
+        and entry.get("api_executable") is True
+        and callable(entry.get("handler"))
+    }
 
 
 def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:

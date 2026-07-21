@@ -782,16 +782,20 @@ def register(ctx):
         "mystatus",
         handler=_handle_status,
         description="Show plugin status",
+        api_executable=True,
     )
 ```
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", category: str = "Plugin")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", category: str = "Plugin", api_executable: bool = False)`
 
-`category` is optional display metadata for API/mobile command pickers. Enabled
-plugin commands are advertised by `GET /v1/capabilities` and can be executed
-with an authenticated `POST /v1/commands/{name}` request whose JSON body is
+`category` is optional display metadata for API/mobile command pickers.
+Commands remain local to CLI and messaging sessions by default. Set
+`api_executable=True` only when the handler is safe without interactive
+messaging-session context; those opted-in commands are advertised by
+`GET /v1/capabilities` and can be executed with an authenticated
+`POST /v1/commands/{name}` request whose JSON body is
 `{"args": "raw command arguments"}`.
 
 | Parameter | Type | Description |
@@ -801,6 +805,7 @@ with an authenticated `POST /v1/commands/{name}` request whose JSON body is
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 | `args_hint` | `str` | Optional usage hint appended to API/mobile command metadata |
 | `category` | `str` | Optional API/mobile picker grouping; defaults to `Plugin` |
+| `api_executable` | `bool` | Explicitly expose the command through the authenticated API server; defaults to `False` |
 
 **Key differences from `register_cli_command()`:**
 

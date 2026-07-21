@@ -221,11 +221,17 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
-When enabled plugins register slash commands, the response also contains a
-`commands` array. Every entry in that array is executable through the
-authenticated endpoint advertised as `endpoints.plugin_command`; gateway-only
-built-ins are omitted because the API server does not own their messaging
-session context. Handler callables are never serialized.
+When enabled plugins explicitly register slash commands with
+`api_executable=True`, the response also contains a `commands` array. Every
+entry in that array is executable through the authenticated endpoint
+advertised as `endpoints.plugin_command`. Local-only plugin commands and
+gateway built-ins are omitted because the API server does not own their
+interactive messaging-session context. Handler callables are never serialized.
+
+In multiplex mode, the process-global command registry belongs to the default
+profile that owns the listener. Named-profile capability responses therefore
+omit `commands` and `endpoints.plugin_command`, and named-profile command
+requests return 404 instead of exposing a command enabled by another profile.
 
 ### POST /v1/commands/{name}
 
@@ -245,7 +251,8 @@ A successful response is stable JSON with a text-or-null result:
 Malformed JSON, non-object request bodies, and non-string `args` return 400.
 Commands that are absent or no longer registered return 404. Plugin failures
 return a generic 500 response and are logged server-side without exposing the
-exception to the client.
+exception to the client. Synchronous handlers and registry discovery run off
+the API event loop, and both lookup and execution have bounded timeouts.
 
 ### GET /health
 

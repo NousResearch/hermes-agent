@@ -1306,6 +1306,11 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "headed": False,  # Local mode: launch Chromium with a visible window (also skips per-turn cleanup so the window persists between turns; idle reaper still applies)
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # Ignore TLS/SSL certificate errors (self-signed certs, expired, etc.).
+        # When true, agent-browser is invoked with --ignore-https-errors so
+        # internal services (Proxmox, homelab dashboards) with self-signed
+        # certs can be navigated. Default false for security.
+        "ignore_https_errors": False,
         # Browser engine for local mode.  Passed as ``--engine <value>`` to
         # agent-browser v0.25.3+.
         # "auto"       — use Chrome (default, don't pass --engine at all)

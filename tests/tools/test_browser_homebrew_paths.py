@@ -23,10 +23,14 @@ def _clear_browser_caches():
     _discover_homebrew_node_dirs.cache_clear()
     _bt._cached_agent_browser = None
     _bt._agent_browser_resolved = False
+    _bt._cached_ignore_https_errors = None
+    _bt._ignore_https_errors_resolved = False
     yield
     _discover_homebrew_node_dirs.cache_clear()
     _bt._cached_agent_browser = None
     _bt._agent_browser_resolved = False
+    _bt._cached_ignore_https_errors = None
+    _bt._ignore_https_errors_resolved = False
 
 
 class TestSanePath:
@@ -351,6 +355,80 @@ class TestRunBrowserCommandPathConstruction:
         assert captured_cmd[0].endswith("npx") or captured_cmd[0] == "npx"
         assert captured_cmd[1] == "agent-browser"
         assert captured_cmd[2:6] == [
+            "--session",
+            "test-session",
+            "--json",
+            "navigate",
+        ]
+
+    def _run_and_capture_cmd(self, tmp_path, *, ignore_https_errors: bool):
+        """Helper: run navigate once and return the Popen argv list."""
+        from tools.browser_tool import _run_browser_command
+        import tools.browser_tool as bt
+
+        bt._cached_ignore_https_errors = None
+        bt._ignore_https_errors_resolved = False
+
+        captured_cmd = None
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        browser_path = "/usr/local/bin/agent-browser"
+        hermes_home = str(tmp_path / "hermes-home")
+        cfg = {"browser": {"ignore_https_errors": ignore_https_errors}}
+
+        with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("hermes_constants.Path.home", return_value=tmp_path), \
+             patch("hermes_cli.config.read_raw_config", return_value=cfg), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        return captured_cmd
+
+    def test_ignore_https_errors_enabled_injects_flag(self, tmp_path):
+        """When browser.ignore_https_errors is true, argv includes the flag."""
+        captured_cmd = self._run_and_capture_cmd(tmp_path, ignore_https_errors=True)
+        assert captured_cmd is not None
+        assert "--ignore-https-errors" in captured_cmd
+        # Flag must land between backend args and --json (agent-browser global opts).
+        assert captured_cmd.index("--ignore-https-errors") < captured_cmd.index("--json")
+        assert captured_cmd[-2:] == ["navigate", "https://example.com"]
+
+    def test_ignore_https_errors_disabled_omits_flag(self, tmp_path):
+        """When browser.ignore_https_errors is false/default, argv has no flag."""
+        captured_cmd = self._run_and_capture_cmd(tmp_path, ignore_https_errors=False)
+        assert captured_cmd is not None
+        assert "--ignore-https-errors" not in captured_cmd
+        assert captured_cmd[1:5] == [
             "--session",
             "test-session",
             "--json",

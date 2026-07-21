@@ -316,6 +316,34 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_script_capture_is_pinned_to_utf8(self, cron_env, monkeypatch):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "utf8.py"
+        script.write_text('print("done")\n')
+
+        seen: dict[str, object] = {}
+
+        class DummyCompletedProcess:
+            returncode = 0
+            stdout = "done\n"
+            stderr = ""
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            return DummyCompletedProcess()
+
+        monkeypatch.setattr("cron.scheduler.subprocess.run", fake_run)
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert output == "done"
+        assert seen["kwargs"]["text"] is True
+        assert seen["kwargs"]["encoding"] == "utf-8"
+        assert seen["kwargs"]["errors"] == "replace"
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

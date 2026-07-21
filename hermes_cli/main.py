@@ -13010,13 +13010,20 @@ def cmd_gateway_enroll(args):
 
 def cmd_completion(args, parser=None):
     """Print shell completion script."""
-    from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
+    from hermes_cli.completion import (
+        generate_bash,
+        generate_fish,
+        generate_powershell,
+        generate_zsh,
+    )
 
     shell = getattr(args, "shell", "bash")
     if shell == "zsh":
         print(generate_zsh(parser))
     elif shell == "fish":
         print(generate_fish(parser))
+    elif shell in {"powershell", "pwsh"}:
+        print(generate_powershell(parser))
     else:
         print(generate_bash(parser))
 
@@ -15376,13 +15383,13 @@ def main():
     # =========================================================================
     completion_parser = subparsers.add_parser(
         "completion",
-        help="Print shell completion script (bash, zsh, or fish)",
+        help="Print shell completion script (bash, zsh, fish, or PowerShell)",
     )
     completion_parser.add_argument(
         "shell",
         nargs="?",
         default="bash",
-        choices=["bash", "zsh", "fish"],
+        choices=["bash", "zsh", "fish", "powershell", "pwsh"],
         help="Shell type (default: bash)",
     )
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))

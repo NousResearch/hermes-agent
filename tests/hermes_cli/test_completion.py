@@ -9,7 +9,13 @@ import tempfile
 
 import pytest
 
-from hermes_cli.completion import _walk, generate_bash, generate_zsh, generate_fish
+from hermes_cli.completion import (
+    _walk,
+    generate_bash,
+    generate_fish,
+    generate_powershell,
+    generate_zsh,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +229,51 @@ class TestGenerateFish:
 
 
 # ---------------------------------------------------------------------------
-# 5. Subcommand drift prevention
+# 5. PowerShell output
+# ---------------------------------------------------------------------------
+
+class TestGeneratePowerShell:
+    def test_registers_native_argument_completer(self):
+        out = generate_powershell(_make_parser())
+        assert "Register-ArgumentCompleter -Native -CommandName hermes" in out
+
+    def test_top_level_commands_present(self):
+        out = generate_powershell(_make_parser())
+        for cmd in ("chat", "gateway", "sessions", "version"):
+            assert f"'{cmd}'" in out
+
+    def test_nested_subcommands_present(self):
+        out = generate_powershell(_make_parser())
+        assert "'gateway' = @('run', 'start', 'status', 'stop')" in out
+
+    def test_profile_helpers_present(self):
+        out = generate_powershell(_make_parser())
+        assert "function __HermesProfiles" in out
+        assert "$script:HermesProfileNameActions" in out
+        assert "'-p'" in out
+        assert "'--profile'" in out
+
+    def test_valid_powershell_syntax_when_available(self):
+        pwsh = shutil.which("pwsh") or shutil.which("powershell")
+        if not pwsh:
+            pytest.skip("PowerShell not installed")
+        out = generate_powershell(_make_parser())
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1", delete=False) as f:
+            f.write(out)
+            path = f.name
+        try:
+            result = subprocess.run(
+                [pwsh, "-NoProfile", "-NonInteractive", "-File", path],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+        finally:
+            os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# 6. Subcommand drift prevention
 # ---------------------------------------------------------------------------
 
 class TestSubcommandDrift:
@@ -250,7 +300,7 @@ class TestSubcommandDrift:
 
 
 # ---------------------------------------------------------------------------
-# 6. Profile completion (regression prevention)
+# 7. Profile completion (regression prevention)
 # ---------------------------------------------------------------------------
 
 class TestProfileCompletion:
@@ -317,3 +367,20 @@ class TestProfileCompletion:
         count = out.count("(__hermes_profiles)")
         # At least the -p flag + the profile action completions
         assert count >= 2, f"Expected >=2 profile completion entries, got {count}"
+
+    def test_powershell_has_profiles_helper(self):
+        out = generate_powershell(_make_parser())
+        assert "function __HermesProfiles" in out
+        assert "Join-Path $HOME '.hermes/profiles'" in out
+
+    def test_powershell_has_profile_flag_completion(self):
+        out = generate_powershell(_make_parser())
+        assert "'-p'" in out
+        assert "'--profile'" in out
+        assert "__HermesProfiles" in out
+
+    def test_powershell_profile_actions_complete_names(self):
+        out = generate_powershell(_make_parser())
+        assert "$script:HermesProfileNameActions" in out
+        for action in ("use", "delete", "show", "alias", "rename", "export"):
+            assert f"'{action}'" in out

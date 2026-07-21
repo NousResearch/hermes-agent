@@ -160,6 +160,94 @@ async def test_no_prefix_when_reply_to_text_is_empty():
 
 
 @pytest.mark.asyncio
+async def test_reply_prefix_recovered_from_transcript_for_inbound_voice_reply():
+    """Replies to inbound voice/media messages recover their stored text."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="yes, book it",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=None,
+    )
+
+    history = [
+        {"role": "user", "content": "earlier unrelated turn"},
+        {
+            "role": "user",
+            "content": "Should I reserve the 7pm table?",
+            "message_id": "42",
+        },
+        {"role": "assistant", "content": "The 7pm slot is available."},
+    ]
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=history,
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to: "Should I reserve the 7pm table?"]')
+    assert result.endswith("yes, book it")
+
+
+@pytest.mark.asyncio
+async def test_recovered_reply_text_preserves_own_message_marker():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="this one",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=None,
+        reply_to_is_own_message=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[
+            {
+                "role": "assistant",
+                "content": "Use the direct train.",
+                "message_id": "42",
+            },
+        ],
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to your previous message: "Use the direct train."]')
+    assert result.endswith("this one")
+
+
+@pytest.mark.asyncio
+async def test_no_prefix_when_transcript_has_no_matching_message():
+    """If the replied-to message id isn't in the loaded transcript, there's
+    nothing to recover and no prefix should be injected."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="yes, book it",
+        source=source,
+        reply_to_message_id="999",
+        reply_to_text=None,
+    )
+
+    history = [
+        {"role": "user", "content": "Should I reserve the 7pm table?", "message_id": "42"},
+    ]
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=history,
+    )
+
+    assert result == "yes, book it"
+
+
+@pytest.mark.asyncio
 async def test_reply_snippet_truncated_to_500_chars():
     runner = _make_runner()
     source = _source()

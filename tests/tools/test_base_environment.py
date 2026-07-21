@@ -5,6 +5,10 @@ init_session() failure handling, and the CWD marker contract.
 """
 
 from unittest.mock import MagicMock
+import os
+import subprocess
+import sys
+import textwrap
 
 from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
@@ -520,3 +524,63 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestDelShutdownGuard:
+    """__del__ must not run cleanup() during interpreter shutdown.
+
+    Once builtins and modules are torn down, cleanup()'s sync_back path
+    raises NameError on `open` and ImportError (sys.meta_path is None).
+    The remote backends only reach sync_back when a prior push committed
+    state, so the failure surfaces on every clean shutdown for them.
+    """
+
+    def test_del_skips_cleanup_when_shutting_down(self, monkeypatch):
+        import sys
+        calls = []
+        env = _TestableEnv()
+        monkeypatch.setattr(env, "cleanup", lambda: calls.append("cleanup"))
+        monkeypatch.setattr(sys, "meta_path", None)
+        env.__del__()
+        assert calls == [], "cleanup() must not run during interpreter shutdown"
+
+    def test_del_runs_cleanup_when_runtime_intact(self, monkeypatch):
+        import sys
+        calls = []
+        env = _TestableEnv()
+        monkeypatch.setattr(env, "cleanup", lambda: calls.append("cleanup"))
+        monkeypatch.setattr(sys, "meta_path", [object()])
+        env.__del__()
+        assert calls == ["cleanup"], "cleanup() should run during normal GC"
+
+    def test_supported_python_shutdown_skips_cleanup(self):
+        """A real interpreter shutdown must not enter cleanup()."""
+        script = textwrap.dedent(
+            """
+            import os
+
+            from tools.environments.base import BaseEnvironment
+
+            class ShutdownEnv(BaseEnvironment):
+                def __init__(self):
+                    super().__init__(cwd="/tmp", timeout=10)
+
+                def cleanup(self, write=os.write):
+                    write(2, b"cleanup-ran-during-shutdown\\n")
+
+            env = ShutdownEnv()
+            """
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.getcwd()
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "cleanup-ran-during-shutdown" not in result.stderr

@@ -1590,6 +1590,12 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     if hostname == "api.anthropic.com":
         return True
     if hostname == "api.kimi.com" and "/coding" in normalized:
+        # The /coding route speaks Anthropic Messages, but /coding/v1 is
+        # the OpenAI-compatible endpoint.  Only treat it as Anthropic when
+        # the path does NOT end in /v1 (or /v1/...).
+        path = urlparse(normalized).path
+        if path.endswith("/v1") or "/v1/" in path:
+            return False
         return True
     return False
 

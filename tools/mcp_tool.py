@@ -360,9 +360,18 @@ def _jittered(seconds: float) -> float:
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
 
-# Environment variables that are safe to pass to stdio subprocesses
+# Environment variables that are safe to pass to stdio subprocesses.
+#
+# HERMES_HOME must be forwarded alongside HOME: profile-isolated runs override
+# the process HOME to "{HERMES_HOME}/home" (see get_subprocess_home), so a child
+# that inherits the overridden HOME but loses HERMES_HOME will recompute paths
+# from Path.home() and land in a doubly-nested "{HERMES_HOME}/home/.hermes/home"
+# directory. For stdio servers launched via npx/mcp-remote this manifests as a
+# bogus, empty ".mcp-auth" cache, forcing a fresh OAuth flow (and a new browser
+# tab) on every connect/reconnect.
 _SAFE_ENV_KEYS = frozenset({
-    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
+    "PATH", "HOME", "HERMES_HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL",
+    "TMPDIR",
 })
 
 _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({

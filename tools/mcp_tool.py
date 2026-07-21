@@ -2145,9 +2145,14 @@ class MCPServerTask:
                     try:
                         await self._keepalive_probe()
                     except Exception as exc:
+                        # %r, not %s: the failures this catches are raised
+                        # with no args — TimeoutError from _keepalive_probe's
+                        # wait_for, arg-less OSError subclasses like
+                        # ConnectionResetError — so str(exc) is "" and the
+                        # reason renders blank. repr() names the type (#65787).
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
-                            "triggering reconnect: %s",
+                            "triggering reconnect: %r",
                             self.name, exc,
                         )
                         self._reconnect_event.set()

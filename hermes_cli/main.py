@@ -6060,6 +6060,54 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _dashboard_probe_host(host: str) -> str:
+    """Return a connectable local address for a dashboard bind host."""
+    normalized = (host or "127.0.0.1").strip()
+    if normalized in {"0.0.0.0", "::", "[::]"}:
+        return "127.0.0.1"
+    return normalized
+
+
+def _windows_listener_pids_on_port(port: int) -> list[int]:
+    """Return Windows PIDs with a TCP LISTENING socket on ``port``.
+
+    A TCP listener is not proof that the process is Hermes. The PIDs are used
+    only for diagnostics and PID-specific operator guidance; this helper never
+    terminates anything.
+    """
+    if sys.platform != "win32" or port <= 0:
+        return []
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+
+    suffix = f":{port}"
+    pids: set[int] = set()
+    for raw in (result.stdout or "").splitlines():
+        parts = raw.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        if not parts[1].endswith(suffix) or parts[3].upper() != "LISTENING":
+            continue
+        try:
+            pids.add(int(parts[4]))
+        except ValueError:
+            continue
+    return sorted(pid for pid in pids if pid > 0)
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -6088,6 +6136,8 @@ def _find_stale_dashboard_pids(
     passes it here.  (#37532)
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
+    A Windows listener may still be present when Session 0 is invisible to
+    process scanning; lifecycle commands supplement this with an endpoint probe.
     """
     patterns = [
         "hermes dashboard",
@@ -12296,17 +12346,48 @@ def _render_distribution_plan(plan) -> None:
         )
 
 
-def _report_dashboard_status() -> int:
+def _report_unverified_dashboard_listener(host: str, port: int) -> list[int]:
+    """Print diagnostic-only guidance for an unverified Windows listener."""
+    listener_pids = _windows_listener_pids_on_port(port)
+    print(
+        f"⚠ Port {host}:{port} is in use, but no Hermes dashboard process "
+        "was found in the process scan."
+    )
+    print("  The listener may be Hermes in another Windows session or an unrelated service.")
+    if listener_pids:
+        joined = ", ".join(str(pid) for pid in listener_pids)
+        print(f"  Windows reports listening PID(s): {joined}")
+        print("  Verify the process before terminating it. From an Admin console:")
+        for pid in listener_pids:
+            print(f"    taskkill /PID {pid} /T /F")
+    else:
+        print(f"  Identify the listener first: netstat -ano | findstr :{port}")
+        print("  Then verify it and use PID-specific termination if appropriate.")
+    return listener_pids
+
+
+def _report_dashboard_status(host: str = "127.0.0.1", port: int = 9119) -> int:
     """Print ``hermes dashboard`` PIDs and return the count.
 
     Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
     current process is excluded, but since ``hermes dashboard --status``
     runs in a short-lived CLI process that never matches the pattern,
     the exclusion is irrelevant here).
+    On Windows, also reports a listener at the parsed endpoint when no Hermes
+    process is visible. A listener is diagnostic only; TCP does not establish
+    that it is Hermes or that it belongs to Session 0.
     """
     pids = _find_stale_dashboard_pids()
-    if not pids:
+    has_port_listener = False
+    if sys.platform == "win32" and not pids:
+        has_port_listener = _dashboard_listening(_dashboard_probe_host(host), port)
+
+    if not pids and not has_port_listener:
         print("No hermes dashboard processes running.")
+        return 0
+
+    if has_port_listener and not pids:
+        _report_unverified_dashboard_listener(host, port)
         return 0
 
     print(f"{len(pids)} hermes dashboard process(es) running:")
@@ -12502,17 +12583,33 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    dashboard_host = getattr(args, "host", None) or "127.0.0.1"
+    dashboard_port = int(getattr(args, "port", 9119))
+    probe_host = _dashboard_probe_host(dashboard_host)
+
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
-        count = _report_dashboard_status()
+        count = _report_dashboard_status(dashboard_host, dashboard_port)
         sys.exit(0 if count == 0 else 0)  # status is informational, always 0
 
     # --stop: kill any running dashboards and exit, no deps needed.
     if getattr(args, "stop", False):
         pids = _find_stale_dashboard_pids()
-        if not pids:
+
+        # A TCP listener supplements the Windows process scan.
+        # It is not proof that the listener is Hermes, so it stays diagnostic-only.
+        port_listening = False
+        if sys.platform == "win32" and not pids:
+            port_listening = _dashboard_listening(probe_host, dashboard_port)
+
+        if not pids and not port_listening:
             print("No hermes dashboard processes running.")
             sys.exit(0)
+
+        if port_listening and not pids:
+            _report_unverified_dashboard_listener(dashboard_host, dashboard_port)
+            sys.exit(1)
+
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
         _kill_stale_dashboard_processes(reason="requested via --stop")
         # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
@@ -12620,6 +12717,15 @@ def cmd_dashboard(args):
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
+
+    # On Windows, report an unverified listener before attempting the bind.
+    # The warning stays diagnostic-only because TCP does not identify Hermes.
+    if sys.platform == "win32":
+        stale_pids = _find_stale_dashboard_pids()
+        stale_port = _dashboard_listening(probe_host, dashboard_port)
+        if stale_port and not stale_pids:
+            _report_unverified_dashboard_listener(dashboard_host, dashboard_port)
+            print("  The new dashboard may fail to bind to this endpoint.")
 
     try:
         import fastapi  # noqa: F401

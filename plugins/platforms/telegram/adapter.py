@@ -24,6 +24,9 @@ from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
+# Regex to strip TOOLCALL markup from reply text (#61217)
+_TOOLCALL_RE = re.compile(r'<TOOLCALL>.*?</TOOLCALL>', re.DOTALL)
+
 
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
@@ -9108,6 +9111,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                     except Exception:
                         reply_to_text = None
+
+        # Strip TOOLCALL markup leaked from bot replies (#61217)
+        if isinstance(reply_to_text, str) and reply_to_text:
+            reply_to_text = _TOOLCALL_RE.sub('', reply_to_text).strip()
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

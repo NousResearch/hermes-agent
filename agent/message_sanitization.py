@@ -182,6 +182,60 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _close_unclosed_json_structures(raw: str) -> str:
+    """Close a truncated JSON payload, honouring nesting order.
+
+    Walks ``raw`` tracking string and escape state, pushing ``{``/``[`` onto a
+    stack and popping on the matching closer, then appends whatever the stack
+    still holds in LIFO (innermost-first) order.
+
+    This replaces a ``str.count`` deficit calculation that appended *all*
+    missing ``}`` before *all* missing ``]`` regardless of actual nesting, and
+    that counted delimiters appearing inside string *values*.  Either made the
+    repair emit invalid JSON for payloads it could otherwise close, which then
+    degraded to the ``"{}"`` last resort and dropped the model's arguments
+    entirely (#35151).
+
+    A payload that ends *inside* a string value is returned unchanged: there
+    the truncation cut a value rather than the structure around it, and
+    inventing a closing quote would hand the tool a plausible-looking but
+    silently incomplete argument (the failure #62948 reports).  Those stay
+    unrepairable on purpose so the caller routes them through the
+    partial-stream/truncation path instead of executing them.
+    """
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch == "}" and stack and stack[-1] == "{":
+            stack.pop()
+        elif ch == "]" and stack and stack[-1] == "[":
+            stack.pop()
+
+    if in_string or not stack:
+        return raw
+
+    # A comma the truncation left dangling would sit right in front of the
+    # closer we are about to append ("[1, 2," -> "[1, 2,]").
+    tail = raw.rstrip()
+    while tail.endswith(","):
+        tail = tail[:-1].rstrip()
+
+    return tail + "".join("}" if ch == "{" else "]" for ch in reversed(stack))
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -224,19 +278,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    # 2. Close unclosed structures
-    open_curly = fixed.count('{') - fixed.count('}')
-    open_bracket = fixed.count('[') - fixed.count(']')
-    if open_curly > 0:
-        fixed += '}' * open_curly
-    if open_bracket > 0:
-        fixed += ']' * open_bracket
+    # 2. Close unclosed structures, innermost first (string-aware)
+    fixed = _close_unclosed_json_structures(fixed)
     # 3. Remove excess closing braces/brackets (bounded to 50 iterations)
     for _ in range(50):
         try:
             json.loads(fixed)
             break
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             if fixed.endswith('}') and fixed.count('}') > fixed.count('{'):
                 fixed = fixed[:-1]
             elif fixed.endswith(']') and fixed.count(']') > fixed.count('['):
@@ -251,7 +300,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             tool_name, raw_stripped[:80], fixed[:80],
         )
         return fixed
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
         pass
 
     # Repair pass 4: escape unescaped control chars inside JSON strings,

@@ -464,12 +464,9 @@ def list_auto_decompose_triage_ids(*, tenant: Optional[str] = None) -> list[str]
             status="triage",
             tenant=tenant,
             limit=1000,
+            exclude_block_provenance=True,
         )
-    return [
-        row.id
-        for row in rows
-        if row.block_kind is None and row.block_recurrences == 0
-    ]
+    return [row.id for row in rows]
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

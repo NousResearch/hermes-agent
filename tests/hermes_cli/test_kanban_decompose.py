@@ -400,6 +400,70 @@ def test_auto_selection_skips_block_loop_triage_but_manual_decompose_works(
         assert kb.get_task(conn, escalated_id).status == "ready"
 
 
+def test_auto_selection_filters_parked_rows_before_limit(kanban_home):
+    with kb.connect_closing() as conn:
+        parked_ids = [
+            kb.create_task(
+                conn,
+                title=f"parked-{index}",
+                triage=True,
+                tenant="tenant-a",
+                priority=1,
+            )
+            for index in range(998)
+        ]
+        conn.executemany(
+            "UPDATE tasks SET block_kind = 'needs_input', "
+            "block_recurrences = 2 WHERE id = ?",
+            ((task_id,) for task_id in parked_ids),
+        )
+        kind_only_id = kb.create_task(
+            conn,
+            title="kind-only",
+            triage=True,
+            tenant="tenant-a",
+            priority=1,
+        )
+        conn.execute(
+            "UPDATE tasks SET block_kind = 'needs_input' WHERE id = ?",
+            (kind_only_id,),
+        )
+        recurrence_only_id = kb.create_task(
+            conn,
+            title="recurrence-only",
+            triage=True,
+            tenant="tenant-a",
+            priority=1,
+        )
+        conn.execute(
+            "UPDATE tasks SET block_recurrences = 1 WHERE id = ?",
+            (recurrence_only_id,),
+        )
+        parked_ids.extend((kind_only_id, recurrence_only_id))
+        fresh_id = kb.create_task(
+            conn,
+            title="fresh",
+            triage=True,
+            tenant="tenant-a",
+            priority=0,
+        )
+        other_tenant_id = kb.create_task(
+            conn,
+            title="other tenant",
+            triage=True,
+            tenant="tenant-b",
+            priority=2,
+        )
+        conn.commit()
+
+    assert decomp.list_auto_decompose_triage_ids(tenant="tenant-a") == [fresh_id]
+    assert decomp.list_auto_decompose_triage_ids(tenant="tenant-b") == [
+        other_tenant_id
+    ]
+    assert decomp.list_auto_decompose_triage_ids() == [other_tenant_id, fresh_id]
+    assert set(decomp.list_triage_ids(tenant="tenant-a")) == set(parked_ids)
+
+
 def test_decompose_handles_malformed_llm_json(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)

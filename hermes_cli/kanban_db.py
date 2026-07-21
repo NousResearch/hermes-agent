@@ -3068,6 +3068,7 @@ def list_tasks(
     order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None,
     current_step_key: Optional[str] = None,
+    exclude_block_provenance: bool = False,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -3091,6 +3092,8 @@ def list_tasks(
     if current_step_key is not None:
         query += " AND current_step_key = ?"
         params.append(current_step_key)
+    if exclude_block_provenance:
+        query += " AND block_kind IS NULL AND COALESCE(block_recurrences, 0) = 0"
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:

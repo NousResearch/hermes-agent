@@ -216,7 +216,7 @@ def format_pending_summarized(
     allow_session: bool = True,
     smart_denied: bool = False,
 ) -> tuple[str, Optional[str]]:
-    """t1: advisory summary primary; full command in disclosure + plaintext."""
+    """t1: advisory summary primary; full command only in HTML disclosure."""
     redacted = force_redact_command(command)
     reason = (description or "dangerous command").strip() or "dangerous command"
     clean_summary = sanitize_summary(summary)
@@ -227,7 +227,8 @@ def format_pending_summarized(
         smart_denied=smart_denied,
     )
 
-    # Plaintext always includes full command (clients without details support).
+    # Plaintext intentionally omits the full command; rich clients expose it
+    # in a disclosure while notification/plain clients get only the summary.
     text = (
         "⚠️ **Approval needed**\n"
         f"Reason: {reason}\n"

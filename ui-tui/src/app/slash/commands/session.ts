@@ -26,6 +26,20 @@ const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 
+const yoloModeStatusText = (active: boolean) =>
+  active ? 'YOLO mode is ON - hardline blocks and approvals.deny rules still apply' : 'YOLO mode is OFF'
+
+const yoloSessionStatusText = (active: boolean) => `YOLO ${active ? 'on' : 'off'} for this session`
+
+const isUnsupportedYoloStatus = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return (
+    /method not found|-32601|unknown method|no such method/i.test(message) ||
+    /unknown config key:\s*yolo\b/i.test(message)
+  )
+}
+
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
 
@@ -468,12 +482,48 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle yolo mode (per-session approvals)',
+    help: 'toggle yolo mode or show status (per-session approvals)',
     name: 'yolo',
-    run: (_arg, ctx) => {
+    usage: '/yolo [status]',
+    run: (arg, ctx) => {
+      const action = arg.trim().toLowerCase()
+
+      const showEffectiveStatus = (toggleResult?: ConfigSetResponse) =>
+        ctx.gateway.gw
+          .request<ConfigGetValueResponse>('config.get', { key: 'yolo', session_id: ctx.sid })
+          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(yoloModeStatusText(r.value === 'on'))))
+          .catch(error => {
+            if (ctx.stale()) {
+              return
+            }
+
+            if (!isUnsupportedYoloStatus(error)) {
+              ctx.guardedErr(error)
+
+              return
+            }
+
+            if (toggleResult?.value) {
+              ctx.transcript.sys(yoloSessionStatusText(toggleResult.value === '1'))
+
+              return
+            }
+
+            ctx.transcript.sys('Exact YOLO status requires a newer Hermes backend')
+          })
+
+      if (action === 'status') {
+        return showEffectiveStatus()
+      }
+
+      if (action) {
+        return ctx.transcript.sys('usage: /yolo [status]')
+      }
+
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
-        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
+        .then(ctx.guarded<ConfigSetResponse>(result => void showEffectiveStatus(result)))
+        .catch(ctx.guardedErr)
     }
   },
 

@@ -164,6 +164,68 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('reads /yolo status without calling the toggle RPC', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const gateway = buildGateway()
+    gateway.gw.request.mockResolvedValue({ value: 'on' })
+    const ctx = buildCtx({ gateway })
+
+    expect(createSlashHandler(ctx)('/yolo status')).toBe(true)
+    expect(gateway.gw.request).toHaveBeenCalledWith('config.get', { key: 'yolo', session_id: 'sid-abc' })
+    expect(gateway.rpc).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'YOLO mode is ON - hardline blocks and approvals.deny rules still apply'
+      )
+    })
+  })
+
+  it('re-reads effective YOLO mode after toggling the session flag off', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const gateway = buildGateway()
+    gateway.rpc.mockResolvedValueOnce({ value: '0' })
+    gateway.gw.request.mockResolvedValueOnce({ value: 'on' })
+    const ctx = buildCtx({ gateway })
+
+    expect(createSlashHandler(ctx)('/yolo')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'YOLO mode is ON - hardline blocks and approvals.deny rules still apply'
+      )
+    })
+    expect(gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'yolo', session_id: 'sid-abc' })
+    expect(gateway.gw.request).toHaveBeenCalledWith('config.get', { key: 'yolo', session_id: 'sid-abc' })
+  })
+
+  it('confirms a successful YOLO toggle when an older backend lacks effective status', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const gateway = buildGateway()
+    gateway.rpc.mockResolvedValueOnce({ value: '1' })
+    gateway.gw.request.mockRejectedValueOnce(new Error('unknown config key: yolo'))
+    const ctx = buildCtx({ gateway })
+
+    expect(createSlashHandler(ctx)('/yolo')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('YOLO on for this session')
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('error:'))
+  })
+
+  it('explains the backend requirement when exact YOLO status is unavailable', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const gateway = buildGateway()
+    gateway.gw.request.mockRejectedValue(new Error('unknown config key: yolo'))
+    const ctx = buildCtx({ gateway })
+
+    expect(createSlashHandler(ctx)('/yolo status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Exact YOLO status requires a newer Hermes backend')
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('error:'))
+    expect(gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('keeps typed /model switches session-scoped by default', async () => {
     patchUiState({ sid: 'sid-abc' })
 

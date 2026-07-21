@@ -1393,9 +1393,22 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
 # Default for unknown Bedrock models
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
 
+# Probe tiers (in tokens).  We send a request padded just past each tier and
+# read the real window from Bedrock's length-validation error.  Two reasons
+# this is tiered rather than one giant request:
+#   1. A wildly oversized payload (e.g. 5M tokens) makes Bedrock return an
+#      opaque InternalServerException after retries instead of a clean
+#      ValidationException — so we must stay within a sane overage.
+#   2. Stepping up lets us discover larger windows (2M+) without over-padding
+#      smaller ones.
+# Each tier value is the *padding target*; the error reports the true maximum,
+# which is what we actually return.
+_BEDROCK_PROBE_TIERS = (1_300_000, 2_200_000)
+_WORDS_PER_TOKEN = 0.9  # conservative: ensures the padded prompt clears the tier
 
-def get_bedrock_context_length(model_id: str) -> int:
-    """Look up the context window size for a Bedrock model.
+
+def _static_bedrock_context_length(model_id: str) -> int:
+    """Longest-substring-match lookup against the static fallback table.
 
     Uses substring matching so versioned IDs like
     ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
@@ -1408,3 +1421,103 @@ def get_bedrock_context_length(model_id: str) -> int:
             best_key = key
             best_val = val
     return best_val
+
+
+def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
+    """Discover a Bedrock model's real context window by provoking a length error.
+
+    Bedrock does not expose the context window via any metadata API
+    (``get-foundation-model`` omits it, ``Converse`` metrics omit it,
+    ``CountTokens`` is unsupported on several models).  The only authoritative
+    source is the ``ValidationException`` raised when a prompt exceeds the
+    window:
+
+        "The model returned the following errors: prompt is too long:
+         1300032 tokens > 1000000 maximum"
+
+    Length validation happens *before* inference, so an oversized request is
+    rejected immediately and cheaply — no tokens are generated and no input is
+    actually processed.  We pad a request just past each tier in
+    ``_BEDROCK_PROBE_TIERS`` and parse the reported ``maximum``.  Tiers exist
+    because (a) a *wildly* oversized payload makes Bedrock fail with an opaque
+    InternalServerException instead of a clean length error, and (b) stepping
+    up discovers larger windows without over-padding smaller ones.
+
+    Returns the detected window, or ``None`` if the probe could not run
+    (missing credentials, network error, or no parseable limit) so the caller
+    can fall back to the static table.
+    """
+    try:
+        from agent.model_metadata import parse_context_limit_from_error
+    except ImportError:  # pragma: no cover — same package
+        return None
+
+    try:
+        client = _get_bedrock_runtime_client(region)
+    except Exception as exc:  # boto3 missing / credential resolution failure
+        logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
+        return None
+
+    last_error = ""
+    for tier_tokens in _BEDROCK_PROBE_TIERS:
+        pad_words = int(tier_tokens / _WORDS_PER_TOKEN)
+        oversized = "data " * pad_words
+        try:
+            client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": oversized}]}],
+                inferenceConfig={"maxTokens": 8},
+            )
+            # Accepted a prompt this large → the window is at least this tier.
+            # Returning the tier as a lower bound is safe and avoids inventing
+            # a number we can't confirm.
+            logger.debug(
+                "Bedrock context probe for %s accepted ~%s-token prompt; "
+                "window is at least that", model_id, f"{tier_tokens:,}",
+            )
+            return tier_tokens
+        except Exception as exc:
+            msg = str(exc)
+            last_error = msg
+            limit = parse_context_limit_from_error(msg)
+            if limit and limit >= 1024:
+                logger.info(
+                    "Probed Bedrock context window for %s: %s tokens",
+                    model_id, f"{limit:,}",
+                )
+                return limit
+            # No parseable limit at this tier (opaque server error, auth,
+            # throttle).  Try the next, smaller-overage strategy is N/A here —
+            # tiers ascend — so just continue; if all fail we return None.
+            continue
+
+    logger.debug(
+        "Bedrock context probe for %s returned no parseable limit: %s",
+        model_id, last_error[:200],
+    )
+    return None
+
+
+def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
+    """Resolve the context window for a Bedrock model.
+
+    Resolution order:
+      1. Live probe against Bedrock (authoritative; cached by the caller).
+      2. Static fallback table (longest-substring match).
+      3. Conservative default.
+
+    The static table is intentionally a *fallback*, not the primary source:
+    AWS ships new model versions (opus-4-7, opus-4-8, ...) faster than the
+    table can track, and a stale entry silently caps the window (e.g. a
+    1M-token Opus pinned to 200K via an ``opus-4`` substring match).  The
+    probe asks Bedrock directly so every model — current or future — gets its
+    real window with no table maintenance.
+
+    ``probe=False`` (or an empty ``region``) skips the network call and uses
+    the static table only — used by pure-offline/display code paths.
+    """
+    if probe and region:
+        probed = probe_bedrock_context_length(model_id, region)
+        if probed:
+            return probed
+    return _static_bedrock_context_length(model_id)

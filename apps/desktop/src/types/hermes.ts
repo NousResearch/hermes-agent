@@ -256,6 +256,7 @@ export interface HermesConfig {
   display?: {
     personality?: string
     skin?: string
+    interim_assistant_messages?: boolean
   }
   terminal?: {
     cwd?: string

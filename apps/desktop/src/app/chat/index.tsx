@@ -2,7 +2,7 @@ import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo } from 'react'
+import { Suspense, useCallback, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -20,6 +20,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
+import { migrateSessionDraft } from '@/store/composer'
+import { migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
@@ -32,6 +34,7 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
+  resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -276,7 +279,27 @@ export function ChatView({
   const messagesEmpty = useStore(view.$messagesEmpty)
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
+  const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+
+  // Durable composer/queue scope (lineage root) so auto-compression tip rotation
+  // does not wipe an in-progress draft or orphan /queue entries.
+  const queueSessionKey = useMemo(
+    () => resolveComposerSessionKey(selectedSessionId, sessions),
+    [selectedSessionId, sessions]
+  )
+
+  // When the tip row arrives after compression, migrate any tip-keyed stash onto
+  // the durable lineage key before the composer remounts onto that key.
+  useEffect(() => {
+    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+      return
+    }
+
+    migrateSessionDraft(selectedSessionId, queueSessionKey)
+    migrateQueuedPrompts(selectedSessionId, queueSessionKey)
+  }, [queueSessionKey, selectedSessionId])
+
   // A tile IS its session — no route involved, never "mismatched".
   const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)
@@ -524,7 +547,7 @@ export function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={selectedSessionId}
+              queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
             />

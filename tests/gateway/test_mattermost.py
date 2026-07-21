@@ -476,6 +476,35 @@ class TestMattermostSend:
 
         assert result.success is False
 
+    @pytest.mark.asyncio
+    async def test_delete_message_calls_api_delete(self):
+        """delete_message() should delete the Mattermost post by ID."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.delete_message("channel_1", "post_to_delete")
+
+        assert result is True
+        call_args = self.adapter._session.delete.call_args
+        assert "/api/v4/posts/post_to_delete" in call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_delete_message_failure_returns_false(self):
+        mock_resp = AsyncMock()
+        mock_resp.status = 403
+        mock_resp.text = AsyncMock(return_value="Forbidden")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        assert await self.adapter.delete_message("channel_1", "post_to_delete") is False
+
 
 # ---------------------------------------------------------------------------
 # WebSocket event parsing

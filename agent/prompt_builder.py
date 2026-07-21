@@ -1889,7 +1889,8 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     if not soul_path.exists():
         return None
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+        content = soul_path.read_text(encoding="utf-8")
+        content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL).strip()
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")

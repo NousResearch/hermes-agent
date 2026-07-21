@@ -47,6 +47,20 @@ def test_matrix_html_is_single_ol_no_fences_or_details():
     assert html.count("Searching past sessions") == 1
 
 
+def test_plain_fallback_hides_arguments_and_rich_lines_are_bounded():
+    private_path = "/home/alice/private/customer-records.csv"
+    body, html = matrix_tool_activity_bodies(
+        [f"📖 read_file: {private_path} " + ("x" * 240) + "\nignored second line"]
+    )
+
+    assert body == "🛠 Tool activity (1 update)"
+    assert private_path not in body
+    assert private_path in html
+    assert "ignored second line" not in html
+    assert ("x" * 160) not in html
+    assert "..." in html
+
+
 def test_sanitize_keeps_ol_li_and_strips_details():
     html = (
         "<p><strong>🛠 Tool activity (1 update)</strong></p>"

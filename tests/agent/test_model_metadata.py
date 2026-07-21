@@ -1278,6 +1278,30 @@ class TestBedrockContextResolution:
         assert mock_fetch.called
 
 
+class TestExtractContextLengthCamelCase:
+    """Venice.ai returns camelCase keys (availableContextTokens, maxCompletionTokens)
+    nested inside a model_spec object. _extract_context_length must find them.
+
+    Regression test for the bug where all Venice models were capped at the 128K
+    fallback because the key-matching tuples used only snake_case names.
+    """
+
+    def test_extracts_available_context_tokens_from_nested_model_spec(self):
+        from agent.model_metadata import _extract_context_length, _extract_max_completion_tokens
+
+        venice_model = {
+            "id": "claude-opus-4-7",
+            "model_spec": {
+                "availableContextTokens": 1000000,
+                "maxCompletionTokens": 128000,
+                "capabilities": {"supportsVision": True},
+            },
+        }
+
+        assert _extract_context_length(venice_model) == 1000000
+        assert _extract_max_completion_tokens(venice_model) == 128000
+
+
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
 # =========================================================================

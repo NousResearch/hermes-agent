@@ -423,12 +423,14 @@ _CONTEXT_LENGTH_KEYS = (
     "n_ctx_train",
     "n_ctx",
     "ctx_size",
+    "availableContextTokens",  # Venice.ai model_spec field
 )
 
 _MAX_COMPLETION_KEYS = (
     "max_completion_tokens",
     "max_output_tokens",
     "max_tokens",
+    "maxCompletionTokens",  # Venice.ai model_spec field
 )
 
 # Local server hostnames / address patterns

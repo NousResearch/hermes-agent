@@ -26,7 +26,10 @@ def fake_session(monkeypatch):
     """Replace CodexAppServerSession with a stub that returns a fixed
     TurnResult, so we can drive AIAgent without spawning real codex."""
 
+    calls = []
+
     def fake_run_turn(self, user_input: str, **kwargs):
+        calls.append(kwargs)
         return TurnResult(
             final_text=f"echo: {user_input}",
             projected_messages=[
@@ -48,6 +51,7 @@ def fake_session(monkeypatch):
     monkeypatch.setattr(
         CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1"
     )
+    return calls
 
 
 def _make_codex_agent(**kwargs):
@@ -85,6 +89,51 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+
+    def test_kanban_turn_uses_worker_runtime_for_both_timeouts(
+        self, fake_session, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_timeout")
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "2370")
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert fake_session == [{
+            "turn_timeout": 2370,
+            "post_tool_quiet_timeout": 2370,
+        }]
+
+    def test_non_kanban_turn_keeps_app_server_defaults(
+        self, fake_session, monkeypatch
+    ):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "2370")
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert fake_session == [{}]
+
+    @pytest.mark.parametrize(
+        "terminal_timeout", [None, "", "invalid", "0", "-1", "nan", "inf"]
+    )
+    def test_invalid_kanban_timeout_keeps_app_server_defaults(
+        self, fake_session, monkeypatch, terminal_timeout
+    ):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_timeout")
+        if terminal_timeout is None:
+            monkeypatch.delenv("TERMINAL_TIMEOUT", raising=False)
+        else:
+            monkeypatch.setenv("TERMINAL_TIMEOUT", terminal_timeout)
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert fake_session == [{}]
 
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
@@ -786,4 +835,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

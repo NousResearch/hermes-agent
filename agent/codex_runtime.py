@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from types import SimpleNamespace
@@ -691,8 +692,22 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    timeout_kwargs = {}
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        try:
+            terminal_timeout = float(os.environ.get("TERMINAL_TIMEOUT", ""))
+            if terminal_timeout > 0 and math.isfinite(terminal_timeout):
+                timeout_kwargs = {
+                    "turn_timeout": terminal_timeout,
+                    "post_tool_quiet_timeout": terminal_timeout,
+                }
+        except (TypeError, ValueError):
+            pass
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message, **timeout_kwargs
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

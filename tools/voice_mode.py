@@ -1012,7 +1012,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 
 
 # ============================================================================
-# Audio playback (interruptable)
+# Audio playback (interruptible)
 # ============================================================================
 
 # Global reference to the active playback process so it can be interrupted.
@@ -1082,7 +1082,7 @@ def play_audio_file(file_path: str) -> bool:
         except Exception as e:
             logger.debug("sounddevice playback failed: %s", e)
 
-    # Fall back to system audio players (using Popen for interruptability)
+    # Fall back to system audio players (using Popen for interruptibility)
     system = platform.system()
     players = []
 

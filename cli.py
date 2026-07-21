@@ -4640,7 +4640,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model_short = format_model_for_display(model_short)
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
-        if len(model_short) > 26:
+        # display.full_model_name (config.yaml): when true, skip the status-bar
+        # truncation so long Bedrock inference-profile ids like
+        # "us.anthropic.claude-opus-4-8" render in full instead of being clipped.
+        try:
+            _show_full_model = bool(
+                (self.config or {}).get("display", {}).get("full_model_name", False)
+            )
+        except Exception:
+            _show_full_model = False
+        if not _show_full_model and len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())

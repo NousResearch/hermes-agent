@@ -3491,6 +3491,17 @@ class DiscordAdapter(BasePlatformAdapter):
 
             filename = os.path.basename(audio_path)
 
+            reference = None
+            if reply_to and self._reply_to_mode != "off":
+                try:
+                    ref_msg = await channel.fetch_message(int(reply_to))
+                    if hasattr(ref_msg, "to_reference"):
+                        reference = ref_msg.to_reference(fail_if_not_exists=False)
+                    else:
+                        reference = ref_msg
+                except Exception as e:
+                    logger.debug("Could not fetch voice reply-to message: %s", e)
+
             with open(audio_path, "rb") as f:
                 file_data = f.read()
 
@@ -3522,7 +3533,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()
 
                 import json as _json
-                payload = _json.dumps({
+                payload_data = {
                     "flags": 8192,
                     "attachments": [{
                         "id": "0",
@@ -3530,7 +3541,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         "duration_secs": round(duration_secs, 2),
                         "waveform": waveform_b64,
                     }],
-                })
+                }
+                if reference is not None:
+                    payload_data["message_reference"] = {
+                        "message_id": str(reply_to),
+                        "fail_if_not_exists": False,
+                    }
+                payload = _json.dumps(payload_data)
                 form = [
                     {"name": "payload_json", "value": payload},
                     {
@@ -3548,7 +3565,23 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
+                try:
+                    msg = await channel.send(file=file, reference=reference)
+                except Exception as send_err:
+                    err_text = str(send_err)
+                    if (
+                        reference is not None
+                        and (
+                            (
+                                "error code: 50035" in err_text
+                                and "Cannot reply to a system message" in err_text
+                            )
+                            or "error code: 10008" in err_text
+                        )
+                    ):
+                        msg = await channel.send(file=file, reference=None)
+                    else:
+                        raise
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)

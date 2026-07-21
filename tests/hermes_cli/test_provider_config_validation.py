@@ -149,6 +149,41 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
+    def test_type_openai_alias_sets_chat_completions_without_warning(self, caplog):
+        """type: openai should be accepted as an OpenAI-compatible alias."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "type": "openai",
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "chat_completions"
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_explicit_api_mode_wins_over_type_openai_alias(self):
+        """type is lowest precedence; explicit api_mode keeps compatibility."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "type": "openai",
+            "api_mode": "anthropic_messages",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "anthropic_messages"
+
+    def test_explicit_transport_wins_over_type_openai_alias(self):
+        """type is lowest precedence; explicit transport keeps compatibility."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "type": "openai",
+            "transport": "anthropic_messages",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "anthropic_messages"
+
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""
         entry = {

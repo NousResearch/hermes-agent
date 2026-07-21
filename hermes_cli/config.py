@@ -5033,7 +5033,7 @@ def _normalize_custom_provider_entry(
         # configs don't warn on every load.
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
-        "api_mode", "transport", "model", "default_model", "models",
+        "api_mode", "transport", "type", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -5110,7 +5110,13 @@ def _normalize_custom_provider_entry(
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
 
+    provider_type = entry.get("type")
     api_mode = entry.get("api_mode") or entry.get("transport")
+    if not api_mode and isinstance(provider_type, str) and provider_type.strip().lower() == "openai":
+        # Accept the common provider schema used by OpenAI-compatible endpoints
+        # (for example Ollama/LiteLLM snippets) without warning.  Treat it as a
+        # lowest-precedence alias so explicit api_mode/transport still wins.
+        api_mode = "chat_completions"
     if isinstance(api_mode, str) and api_mode.strip():
         normalized["api_mode"] = api_mode.strip()
 

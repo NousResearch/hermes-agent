@@ -115,6 +115,24 @@ class CodexAppServerClient:
             )
             writable_roots = [kanban_root]
             workspace = os.path.abspath(workspace_cwd or os.getcwd())
+            authorized_git_roots = [os.path.realpath(os.path.abspath(kanban_root))]
+            assigned_workspace = spawn_env.get("HERMES_KANBAN_WORKSPACE")
+            assigned_workspace_matches = bool(assigned_workspace) and (
+                os.path.abspath(assigned_workspace) == workspace
+            )
+            source_workspace_authorized = assigned_workspace_matches and (
+                os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                == workspace
+            )
+            worktrees_dir = os.path.dirname(workspace)
+            if (
+                assigned_workspace_matches
+                and os.path.basename(workspace) == spawn_env["HERMES_KANBAN_TASK"]
+                and os.path.basename(worktrees_dir) == ".worktrees"
+            ):
+                authorized_git_roots.append(
+                    os.path.join(os.path.dirname(worktrees_dir), ".git")
+                )
             git_marker = os.path.join(workspace, ".git")
             try:
                 if (
@@ -168,6 +186,14 @@ class CodexAppServerClient:
                                         == os.path.join(common, "worktrees")
                                         and os.path.realpath(backlink)
                                         == os.path.realpath(git_marker)
+                                        and (
+                                            source_workspace_authorized
+                                            or any(
+                                                os.path.commonpath((common, root))
+                                                == root
+                                                for root in authorized_git_roots
+                                            )
+                                        )
                                     ):
                                         writable_roots.append(common)
             except (OSError, UnicodeError, ValueError):

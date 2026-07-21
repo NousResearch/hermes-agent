@@ -273,6 +273,7 @@ class TestSpawnEnvIsolation:
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
         monkeypatch.setenv(
             "HERMES_KANBAN_DB",
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
@@ -332,6 +333,7 @@ class TestSpawnEnvIsolation:
         monkeypatch.setenv("HOME", "/users/alice")
         monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes/profiles/backend-worker")
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
         monkeypatch.setenv(
             "HERMES_KANBAN_DB",
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
@@ -352,6 +354,24 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+    def test_kanban_worker_rejects_self_consistent_foreign_git_admin(
+        self, monkeypatch, tmp_path
+    ):
+        """Workspace-controlled Git metadata cannot authorize a foreign root."""
+        workspace = tmp_path / "workspace"
+        git_common = tmp_path / "foreign-admin.git"
+        git_dir = git_common / "worktrees" / "slot"
+        marker = workspace / ".git"
+        workspace.mkdir()
+        git_dir.mkdir(parents=True)
+        marker.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{marker}\n")
+
+        assert self._spawn_kanban_client(monkeypatch, workspace) == [
+            "/users/alice/.hermes/kanban/boards/smoke"
+        ]
 
     @pytest.mark.parametrize(
         "case",

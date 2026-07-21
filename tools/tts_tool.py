@@ -960,15 +960,76 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     edge_config = tts_config.get("edge") or {}
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
+    # Pitch shift in Hz. Accepts int/float (e.g. -6 -> "-6Hz") or string ("+8Hz", "-6Hz", "+0%").
+    pitch_raw = edge_config.get("pitch", tts_config.get("pitch"))
 
     kwargs = {"voice": voice}
     if speed != 1.0:
         pct = round((speed - 1.0) * 100)
         kwargs["rate"] = f"{pct:+d}%"
+    if pitch_raw is not None and pitch_raw != "" and pitch_raw != 0:
+        pitch_str: Optional[str] = None
+        if isinstance(pitch_raw, (int, float)):
+            pitch_str = f"{int(pitch_raw):+d}Hz"
+        else:
+            raw = str(pitch_raw).strip()
+            # Already a valid edge-tts pitch like "+8Hz" or "-6Hz"
+            if re.fullmatch(r"[+-]\d+Hz", raw):
+                pitch_str = raw
+            else:
+                # Numeric string like "-6", "8", "+8" → coerce to "<sign>NHz"
+                try:
+                    pitch_str = f"{int(float(raw)):+d}Hz"
+                except (TypeError, ValueError):
+                    logger.warning("Ignoring invalid tts.edge.pitch=%r", pitch_raw)
+        if pitch_str:
+            kwargs["pitch"] = pitch_str
 
     communicate = _edge_tts.Communicate(text, **kwargs)
     await communicate.save(output_path)
+
+    # Optional ffmpeg post-processing (e.g. EQ, reverb). Configure via
+    # tts.postprocess.ffmpeg_filter (global) or tts.edge.postprocess.ffmpeg_filter
+    # (edge-specific). Falls back silently if ffmpeg is unavailable.
+    postprocess_cfg = (
+        edge_config.get("postprocess")
+        or tts_config.get("postprocess")
+        or {}
+    )
+    ffmpeg_filter = postprocess_cfg.get("ffmpeg_filter") if isinstance(postprocess_cfg, dict) else None
+    if ffmpeg_filter:
+        try:
+            _apply_ffmpeg_filter(output_path, ffmpeg_filter)
+        except Exception as exc:  # pragma: no cover - best-effort post-fx
+            logger.warning("TTS post-processing failed (%s); using raw output", exc)
+
     return output_path
+
+
+def _apply_ffmpeg_filter(path: str, ffmpeg_filter: str) -> None:
+    """Apply an ffmpeg audio filter chain in-place to ``path``.
+
+    Resolves ffmpeg from PATH first, then falls back to the ``imageio-ffmpeg``
+    bundled binary if installed. Raises FileNotFoundError if neither is found.
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            raise FileNotFoundError(
+                "ffmpeg not found. Install via `brew install ffmpeg` "
+                "or `pip install imageio-ffmpeg` to enable tts.postprocess."
+            )
+    tmp_out = f"{path}.fx.tmp{os.path.splitext(path)[1]}"
+    subprocess.run(
+        [ffmpeg_bin, "-y", "-i", path, "-af", ffmpeg_filter, tmp_out],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    os.replace(tmp_out, path)
 
 
 # ===========================================================================

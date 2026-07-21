@@ -5870,6 +5870,8 @@ def cmd_gui(args: argparse.Namespace):
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
+    connection = str(getattr(args, "connection", "") or "").strip()
+    desktop_launch_args = [f"--connection={connection}"] if connection else []
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
@@ -6038,7 +6040,12 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        launch_result = subprocess.run(
+            [npm, "exec", "--", "electron", ".", *desktop_launch_args],
+            cwd=desktop_dir,
+            env=env,
+            check=False,
+        )
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -6046,7 +6053,7 @@ def cmd_gui(args: argparse.Namespace):
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
 
-    launch_command = [str(packaged_executable)]
+    launch_command = [str(packaged_executable), *desktop_launch_args]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
             print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")

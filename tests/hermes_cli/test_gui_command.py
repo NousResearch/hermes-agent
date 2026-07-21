@@ -23,6 +23,7 @@ def _ns(**kw):
         ignore_existing=False,
         hermes_root=None,
         cwd=None,
+        connection=None,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -325,6 +326,47 @@ def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch)
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+
+
+def test_gui_forwards_named_connection_to_packaged_app(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    with patch("hermes_cli.main.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True, connection="home-lab"))
+
+    assert exc.value.code == 0
+    assert mock_run.call_args.args[0] == [str(packaged_exe), "--connection=home-lab"]
+
+
+def test_gui_forwards_named_connection_to_source_electron(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    (desktop_dir / "dist").mkdir(parents=True)
+    (desktop_dir / "dist" / "index.html").write_text("", encoding="utf-8")
+    electron_package = root / "node_modules" / "electron" / "package.json"
+    electron_package.parent.mkdir(parents=True)
+    electron_package.write_text("{}", encoding="utf-8")
+
+    launch_ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True, source=True, connection="work-vps"))
+
+    assert exc.value.code == 0
+    assert mock_run.call_args.args[0] == [
+        "/usr/bin/npm",
+        "exec",
+        "--",
+        "electron",
+        ".",
+        "--connection=work-vps",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -25,16 +25,26 @@ import {
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  globalRemoteActiveFor,
   isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeStoredConnectionConfig,
   normAuthMode,
+  parseDesktopConnectionArg,
   pathWithGlobalRemoteProfile,
+  preserveDesktopConnectionSelection,
   profileRemoteOverride,
+  removeSavedConnection,
   resolveAuthMode,
+  resolveSavedConnection,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
-  tokenPreview
+  sanitizeSavedConnections,
+  savedConnectionIdFromName,
+  selectSavedConnection,
+  tokenPreview,
+  upsertSavedConnection
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -44,6 +54,14 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(''), null)
   assert.equal(connectionScopeKey(null), null)
   assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('an explicit Local runtime selection overrides a forced remote environment', () => {
+  assert.equal(globalRemoteActiveFor('local', 'https://forced.example', 'remote'), false)
+  assert.equal(globalRemoteActiveFor('home-lab', '', 'local'), true)
+  assert.equal(globalRemoteActiveFor(null, 'https://forced.example', 'local'), true)
+  assert.equal(globalRemoteActiveFor(null, '', 'cloud'), true)
+  assert.equal(globalRemoteActiveFor(null, '', 'local'), false)
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {
@@ -64,6 +82,203 @@ test('modeIsRemoteLike is true for remote and cloud, false otherwise', () => {
   assert.equal(modeIsRemoteLike(undefined), false)
   assert.equal(modeIsRemoteLike(null), false)
   assert.equal(modeIsRemoteLike('weird'), false)
+})
+
+// --- named saved gateway connections ---
+
+test('savedConnectionIdFromName creates stable shortcut ids', () => {
+  assert.equal(savedConnectionIdFromName(' Home Lab '), 'home-lab')
+  assert.equal(savedConnectionIdFromName('Work_VPS'), 'work_vps')
+  assert.match(savedConnectionIdFromName('ホームラボ'), /^connection-[a-z0-9]+$/)
+  assert.equal(savedConnectionIdFromName('ホームラボ'), savedConnectionIdFromName('ホームラボ'))
+  assert.throws(() => savedConnectionIdFromName(''), /required/)
+  assert.throws(() => savedConnectionIdFromName('local'), /cannot be/)
+})
+
+test('sanitizeSavedConnections rejects malformed entries and normalizes auth', () => {
+  assert.deepEqual(
+    sanitizeSavedConnections({
+      HOME: { name: 'Home', url: 'https://home.example', authMode: 'oauth', token: { value: 'x' } },
+      bad: { name: 'Bad', url: '' },
+      local: { name: 'Reserved', url: 'https://x' }
+    }),
+    {
+      home: { name: 'Home', url: 'https://home.example', authMode: 'oauth', token: { value: 'x' } }
+    }
+  )
+})
+
+test('normalizeStoredConnectionConfig migrates a legacy remote without changing Local mode', () => {
+  const token = { encoding: 'safeStorage', value: 'ciphertext' }
+
+  const normalized = normalizeStoredConnectionConfig({
+    mode: 'local',
+    remote: { url: 'https://legacy.example', authMode: 'token', token }
+  })
+
+  assert.equal(normalized.mode, 'local')
+  assert.equal(normalized.selectedConnection, 'remote')
+  assert.deepEqual(normalized.connections.remote, {
+    name: 'Remote gateway',
+    url: 'https://legacy.example',
+    authMode: 'token',
+    token
+  })
+})
+
+test('normalizeStoredConnectionConfig mirrors a selected remote but does not migrate Cloud', () => {
+  const normalized = normalizeStoredConnectionConfig({
+    mode: 'remote',
+    selectedConnection: 'work',
+    remote: { url: 'https://stale.example' },
+    connections: {
+      work: { name: 'Work', url: 'https://work.example', authMode: 'oauth' }
+    }
+  })
+
+  assert.deepEqual(normalized.remote, {
+    url: 'https://work.example',
+    authMode: 'oauth',
+    token: undefined
+  })
+  assert.deepEqual(
+    normalizeStoredConnectionConfig({ mode: 'cloud', remote: { url: 'https://cloud.example' } }).connections,
+    {}
+  )
+})
+
+test('upsertSavedConnection creates a shortcut and preserves its id across renames', () => {
+  const first = upsertSavedConnection(
+    { connections: {}, selectedConnection: null },
+    {
+      connectionId: null,
+      connectionName: 'Home Lab',
+      remote: { url: 'https://home.example', authMode: 'token', token: { value: 'one' } }
+    }
+  )
+
+  assert.equal(first.selectedConnection, 'home-lab')
+  assert.equal(first.connections['home-lab'].name, 'Home Lab')
+
+  const second = upsertSavedConnection(first, {
+    connectionId: null,
+    connectionName: 'Work',
+    remote: { url: 'https://work.example', authMode: 'oauth' }
+  })
+
+  assert.equal((second.connections as Record<string, any>).work.token, undefined)
+  assert.deepEqual(second.connections['home-lab'].token, { value: 'one' })
+
+  const renamed = upsertSavedConnection(first, {
+    connectionId: 'home-lab',
+    connectionName: 'House',
+    remote: { url: 'https://house.example', authMode: 'oauth' }
+  })
+
+  assert.deepEqual(Object.keys(renamed.connections), ['home-lab'])
+  assert.equal(renamed.connections['home-lab'].name, 'House')
+  assert.throws(
+    () =>
+      upsertSavedConnection(first, {
+        connectionId: 'missing',
+        connectionName: 'Missing',
+        remote: { url: 'https://missing.example' }
+      }),
+    /Unknown saved connection/
+  )
+  assert.throws(
+    () =>
+      upsertSavedConnection(first, {
+        connectionId: null,
+        connectionName: 'Home Lab',
+        remote: { url: 'https://duplicate.example' }
+      }),
+    /already exists/
+  )
+})
+
+test('resolveSavedConnection accepts id, display name, and local', () => {
+  const config = {
+    connections: {
+      'home-lab': { name: 'Home Lab', url: 'https://home.example', authMode: 'token', token: { value: 'x' } }
+    }
+  }
+
+  assert.equal(resolveSavedConnection(config, 'home-lab').id, 'home-lab')
+  assert.equal(resolveSavedConnection(config, 'HOME LAB').id, 'home-lab')
+  assert.equal(resolveSavedConnection(config, 'local').local, true)
+  assert.equal(resolveSavedConnection(config, 'missing'), null)
+})
+
+test('selectSavedConnection mirrors a named remote without exposing a secret in the selector', () => {
+  const token = { encoding: 'safeStorage', value: 'ciphertext' }
+
+  const config = {
+    mode: 'local',
+    remote: {},
+    connections: {
+      home: { name: 'Home', url: 'https://home.example', authMode: 'token', token }
+    }
+  }
+
+  assert.deepEqual(selectSavedConnection(config, 'home'), {
+    ...config,
+    mode: 'remote',
+    selectedConnection: 'home',
+    remote: { url: 'https://home.example', authMode: 'token', token }
+  })
+  assert.equal(selectSavedConnection({ ...config, mode: 'remote' }, 'local').mode, 'local')
+  assert.throws(() => selectSavedConnection(config, 'missing'), /Available connections: home/)
+})
+
+test('preserveDesktopConnectionSelection updates the catalog without changing the default target', () => {
+  const previous = {
+    mode: 'local',
+    remote: { url: 'https://legacy.example' },
+    selectedConnection: null,
+    connections: {}
+  }
+
+  const next = {
+    mode: 'remote',
+    remote: { url: 'https://home.example' },
+    selectedConnection: 'home-lab',
+    connections: {
+      'home-lab': { name: 'Home Lab', url: 'https://home.example', authMode: 'oauth' }
+    }
+  }
+
+  assert.deepEqual(preserveDesktopConnectionSelection(next, previous), {
+    ...next,
+    mode: 'local',
+    remote: previous.remote,
+    selectedConnection: null
+  })
+})
+
+test('removeSavedConnection falls back to local only when deleting the active remote', () => {
+  const config = {
+    mode: 'remote',
+    selectedConnection: 'home',
+    connections: {
+      home: { name: 'Home', url: 'https://home.example' },
+      work: { name: 'Work', url: 'https://work.example' }
+    }
+  }
+
+  const next = removeSavedConnection(config, 'home')
+
+  assert.equal(next.mode, 'local')
+  assert.equal(next.selectedConnection, null)
+  assert.deepEqual(Object.keys(next.connections), ['work'])
+})
+
+test('parseDesktopConnectionArg supports split and equals forms', () => {
+  assert.equal(parseDesktopConnectionArg(['Hermes', '--connection', 'home']), 'home')
+  assert.equal(parseDesktopConnectionArg(['Hermes', '--connection=work-vps']), 'work-vps')
+  assert.equal(parseDesktopConnectionArg(['Hermes', '--connection', '--no-sandbox']), null)
+  assert.equal(parseDesktopConnectionArg(['Hermes']), null)
+  assert.equal(parseDesktopConnectionArg(null), null)
 })
 
 // --- profileRemoteOverride ---

@@ -59,6 +59,8 @@ declare global {
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
+      selectConnectionConfig: (selector: string) => Promise<DesktopConnectionConfig>
+      deleteConnectionConfig: (selector: string) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
@@ -431,6 +433,12 @@ export interface DesktopConnectionConfig {
   // the cloud picker. Resolution treats cloud exactly as remote
   // (cloud-auto-discovery Q3/Q6).
   mode: 'local' | 'remote' | 'cloud'
+  // Named machine/backend connections are independent from Hermes profiles.
+  // `selectedConnectionId` is the stable shortcut accepted by
+  // `hermes desktop --connection <id>`.
+  connections: DesktopSavedConnection[]
+  selectedConnectionId: null | string
+  selectedConnectionName: string
   // The profile this config describes, or null for the global/default
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
@@ -447,6 +455,13 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote' | 'cloud'
+  // Global remote saves update this stable entry. Explicit null means "save as
+  // a new named connection"; undefined updates the current selection.
+  connectionId?: null | string
+  connectionName?: string
+  // Save/update the named record without changing the persisted default target.
+  // Used by OAuth preflight before the user explicitly connects.
+  preserveSelection?: boolean
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
@@ -456,6 +471,16 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+}
+
+export interface DesktopSavedConnection {
+  id: string
+  name: string
+  remoteAuthMode: 'oauth' | 'token'
+  remoteOauthConnected: boolean
+  remoteTokenPreview: string | null
+  remoteTokenSet: boolean
+  remoteUrl: string
 }
 
 export interface DesktopConnectionTestResult {

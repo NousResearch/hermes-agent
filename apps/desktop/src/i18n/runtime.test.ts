@@ -53,6 +53,15 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
+  it('uses reviewed English copy for untranslated gateway additions', () => {
+    for (const locale of ['ja', 'zh', 'zh-hant'] as const) {
+      expect(TRANSLATIONS[locale].settings.gateway.connectionsIntro).toBe(
+        TRANSLATIONS.en.settings.gateway.connectionsIntro
+      )
+      expect(TRANSLATIONS[locale].settings.gateway.saveAndConnect).toBe(TRANSLATIONS.en.settings.gateway.saveAndConnect)
+    }
+  })
+
   it('falls back to English when the active locale cannot resolve a key', () => {
     const boot = TRANSLATIONS.ja.boot as { ready?: string }
     const originalReady = boot.ready

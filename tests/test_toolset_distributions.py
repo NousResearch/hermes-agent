@@ -84,6 +84,26 @@ class TestSampleToolsetsFromDistribution:
             result = sample_toolsets_from_distribution("reasoning")
             assert len(result) >= 1
 
+    def test_fallback_skips_invalid_highest_probability_toolset(self, monkeypatch):
+        monkeypatch.setitem(
+            DISTRIBUTIONS,
+            "_test_invalid_highest",
+            {
+                "description": "fallback should choose highest valid toolset",
+                "toolsets": {
+                    "invalid_toolset_name": 99,
+                    "web": 1,
+                },
+            },
+        )
+        try:
+            # Force random path to select none initially, then fallback path runs.
+            with patch("toolset_distributions.random.random", return_value=1.0):
+                result = sample_toolsets_from_distribution("_test_invalid_highest")
+            assert result == ["web"]
+        finally:
+            del DISTRIBUTIONS["_test_invalid_highest"]
+
 
 class TestDistributionStructure:
     def test_all_have_required_keys(self):

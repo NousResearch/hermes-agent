@@ -2450,6 +2450,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "api_server",
             model=source.get("model"),
             system_prompt=source.get("system_prompt"),
+            model_config={"_branched_from": source_id},
             parent_session_id=source_id,
         )
         messages = await asyncio.to_thread(db.get_messages, source_id)

@@ -2321,6 +2321,54 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        # ── Sub-agent Result Verification ───────────────────────────────
+        # Lightweight quality check: flag results where the subagent
+        # executed tools but produced no meaningful summary, or where
+        # all tool calls errored out.
+        if status == "completed" and summary:
+            _has_tool_calls = bool(tool_trace)
+            _all_tools_errored = (
+                _has_tool_calls
+                and all(
+                    t.get("status") == "error"
+                    for t in tool_trace
+                    if "status" in t
+                )
+            )
+            _summary_is_emptyish = not summary.strip() or len(summary.strip()) < 20
+
+            if _has_tool_calls and _all_tools_errored and _summary_is_emptyish:
+                # Subagent ran tools, all failed, and produced no real output
+                entry["status"] = "completed_with_errors"
+                entry.setdefault("error", "")
+                if entry["error"]:
+                    entry["error"] += "; "
+                entry["error"] += (
+                    "Subagent executed tools but all calls returned errors. "
+                    "Verify before using results."
+                )
+                entry["summary"] = (
+                    "[VERIFICATION: Subagent completed but all tool calls "
+                    f"({len(tool_trace)}) returned errors. "
+                    + (
+                        f"Last tool: {tool_trace[-1].get('tool', 'unknown')}] "
+                        if tool_trace
+                        else "] "
+                    )
+                    + (summary or "")
+                )
+                logger.info(
+                    "Subagent %s: %d tool calls, all errored — flagged for review",
+                    task_index, len(tool_trace),
+                )
+            elif _has_tool_calls and _all_tools_errored:
+                # Subagent produced output despite all tool errors — worth noting
+                entry.setdefault("notes", [])
+                entry["notes"].append(
+                    f"All {len(tool_trace)} tool calls returned errors, "
+                    "but subagent produced output"
+                )
+
         return entry
 
     except Exception as exc:

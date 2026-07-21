@@ -156,6 +156,7 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    hide_info_panel: bool = False # Hide the version and tools panel
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -836,6 +837,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
+        hide_info_panel=data.get("hide_info_panel", False),
     )
 
 

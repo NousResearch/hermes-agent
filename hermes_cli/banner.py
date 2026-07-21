@@ -934,4 +934,5 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
         console.print(_logo)
         console.print()
-    console.print(outer_panel)
+    if not (_bskin and hasattr(_bskin, 'hide_info_panel') and _bskin.hide_info_panel):
+        console.print(outer_panel)

@@ -14,8 +14,9 @@ class TestWriteAndRead:
         ]
         result = store.write(items)
         assert len(result) == 2
-        assert result[0]["id"] == "1"
-        assert result[1]["status"] == "in_progress"
+        assert result[0]["id"] == "2"
+        assert result[0]["status"] == "in_progress"
+        assert result[1]["id"] == "1"
 
     def test_read_returns_copy(self):
         store = TodoStore()
@@ -32,8 +33,21 @@ class TestWriteAndRead:
             {"id": "1", "content": "Latest version", "status": "in_progress"},
         ])
         assert result == [
-            {"id": "2", "content": "Other task", "status": "pending"},
             {"id": "1", "content": "Latest version", "status": "in_progress"},
+            {"id": "2", "content": "Other task", "status": "pending"},
+        ]
+
+    def test_write_moves_active_item_before_earlier_pending_step(self):
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+        ])
+        assert result == [
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
 
@@ -96,6 +110,23 @@ class TestMergeMode:
         )
         items = store.read()
         assert len(items) == 2
+
+    def test_merge_reorders_active_item_ahead_of_earlier_pending_step(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Completed", "status": "completed"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+            {"id": "3", "content": "Move archives to Trash", "status": "pending"},
+        ])
+        result = store.write(
+            [{"id": "3", "status": "in_progress"}],
+            merge=True,
+        )
+        assert result == [
+            {"id": "1", "content": "Completed", "status": "completed"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+        ]
 
 
 class TestTodoToolFunction:

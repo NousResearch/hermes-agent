@@ -493,23 +493,30 @@ def _apply_picker_hints(rows: list[dict]) -> None:
 
 def _reorder_canonical(rows: list[dict]) -> list[dict]:
     """Canonical slugs in ``CANONICAL_PROVIDERS`` declaration order;
-    truly-custom rows last.
+    truly-custom rows last, but current-provider rows pinned first.
 
     Keys on slug membership, NOT ``is_user_defined`` — section 3 of
     ``list_authenticated_providers`` sets ``is_user_defined=True`` on
     rows from the ``providers:`` config dict even when the slug is
     canonical. Keying on the flag would silently demote canonical
     providers configured via the new keyed schema.
+
+    The active provider row is always kept at the top so that the
+    picker never buries it below aggregator rows (fixes #40039).
     """
     from hermes_cli.models import CANONICAL_PROVIDERS
 
+    current = [r for r in rows if r.get("is_current")]
+    current_ids = {id(r) for r in current}
+    remaining = [r for r in rows if id(r) not in current_ids]
+
     order = {e.slug: i for i, e in enumerate(CANONICAL_PROVIDERS)}
     canon = sorted(
-        (r for r in rows if r["slug"] in order),
+        (r for r in remaining if r["slug"] in order),
         key=lambda r: order[r["slug"]],
     )
-    extras = [r for r in rows if r["slug"] not in order]
-    return canon + extras
+    extras = [r for r in remaining if r["slug"] not in order]
+    return current + canon + extras
 
 
 def _apply_pricing(

@@ -665,6 +665,47 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
 # ─── Integration: end-to-end through real load_picker_context ──────────
 
 
+
+
+def test_canonical_order_pins_current_provider_before_canonical_rows():
+    """canonical_order must keep the active (is_current) provider at the
+    top of the list, even when canonical providers like OpenRouter would
+    otherwise be sorted ahead of it (fixes #40039).
+    """
+    from hermes_cli.models import CANONICAL_PROVIDERS
+
+    # Use a real canonical slug for the "other" provider so it sorts
+    # canonically, and a custom slug for the current provider.
+    other_slug = CANONICAL_PROVIDERS[0].slug
+    rows = [
+        # Canonical provider that would sort FIRST under old behaviour
+        {"slug": other_slug, "name": "CanonicalOne", "models": ["gpt-5.5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        # Custom current provider — must stay pinned first
+        {"slug": "custom-gpt", "name": "custom-gpt", "models": ["gpt-5.5"],
+         "total_models": 1, "is_current": True, "is_user_defined": True,
+         "source": "user-config"},
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(
+            ctx,
+            include_unconfigured=True,
+            picker_hints=True,
+            canonical_order=True,
+        )
+    slugs = [r["slug"] for r in payload["providers"]]
+    # Current provider must be first
+    assert slugs[0] == "custom-gpt", (
+        f"active provider 'custom-gpt' demoted to index {slugs.index('custom-gpt')}"
+    )
+    # Current provider must come before the canonical provider
+    assert slugs.index("custom-gpt") < slugs.index(other_slug), (
+        f"active provider 'custom-gpt' at {slugs.index('custom-gpt')} "
+        f"but canonical '{other_slug}' at {slugs.index(other_slug)}"
+    )
+
 def test_end_to_end_with_real_context_no_credentials_leak(monkeypatch):
     """Full pipeline: real load_picker_context + real
     list_authenticated_providers. Verify no credential string ever

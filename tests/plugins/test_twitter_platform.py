@@ -13,7 +13,7 @@ import textwrap
 import time
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -290,6 +290,26 @@ def test_format_thread_messages_uses_x_weighted_boundaries():
     assert all(parse_tweet(part).valid for part in parts)
     assert sum(url in part for part in parts) == 1
     assert all(not part.startswith("\u200d") and not part.endswith("\u200d") for part in parts)
+
+
+def test_x_weighted_length_uses_x_url_weighting():
+    from plugins.platforms.twitter.presentation import x_weighted_length
+
+    assert x_weighted_length("https://example.com/" + "x" * 400) == 23
+
+
+def test_bot_limit_splits_into_at_most_ten_weighted_parts():
+    from plugins.platforms.twitter.presentation import (
+        X_BOT_WEIGHTED_LIMIT,
+        X_MAX_FALLBACK_PARTS,
+        format_thread_messages,
+        x_weighted_length,
+    )
+
+    parts = format_thread_messages("x" * X_BOT_WEIGHTED_LIMIT)
+
+    assert len(parts) == X_MAX_FALLBACK_PARTS
+    assert all(x_weighted_length(part) <= 280 for part in parts)
 
 
 def test_settings_reject_unsafe_limits():
@@ -2124,18 +2144,18 @@ async def test_adapter_send_uses_typed_routes(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_public_reply_over_weighted_limit_sends_reply_thread(
+async def test_public_reply_over_weighted_limit_attempts_one_long_post(
     monkeypatch, tmp_path
 ):
     from plugins.platforms.twitter.adapter import TwitterAdapter
-    from plugins.platforms.twitter.presentation import format_thread_messages
+    from plugins.platforms.twitter.presentation import format_public_message
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
     adapter._account_id = "7"
     adapter._client = Mock()
     adapter._client.conversation_posts = AsyncMock(return_value={})
-    adapter._client.create_post = AsyncMock(side_effect=["700", "701"])
+    adapter._client.create_post = AsyncMock(return_value="700")
     adapter.handle_message = AsyncMock()
     await adapter._process_mention(
         {
@@ -2148,18 +2168,497 @@ async def test_public_reply_over_weighted_limit_sends_reply_thread(
         {},
     )
     message = "word " * 100
+
+    result = await adapter.send("tweet:100:101", message, reply_to="101")
+
+    assert result.success and result.message_id == "700"
+    assert result.continuation_message_ids == ()
+    adapter._client.create_post.assert_awaited_once_with(
+        format_public_message(message), reply_to="101"
+    )
+    assert adapter._state.bot_posts_for_anchor("101") == {"700"}
+
+
+@pytest.mark.asyncio
+async def test_timeline_over_weighted_limit_attempts_one_long_post(tmp_path, monkeypatch):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import format_public_message
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+    message = "word " * 100
+
+    result = await adapter.send("timeline", message)
+
+    assert result.success and result.message_id == "700"
+    adapter._client.create_post.assert_awaited_once_with(
+        format_public_message(message)
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejected_long_timeline_post_falls_back_to_thread(
+    tmp_path, monkeypatch
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+    from plugins.platforms.twitter.presentation import (
+        format_public_message,
+        format_thread_messages,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(
+        side_effect=[XApiError(422, "/2/tweets", "too long"), "700", "701"]
+    )
+    adapter._upload_images = AsyncMock(return_value=["media-1"])
+    message = "word " * 100
+    parts = format_thread_messages(message)
+
+    result = await adapter.send("timeline", message)
+
+    assert result.success and result.message_id == "701"
+    assert result.continuation_message_ids == ("700",)
+    assert result.raw_response == {"message_ids": ["700", "701"]}
+    assert adapter._client.create_post.await_args_list[0] == call(
+        format_public_message(message), media_ids=["media-1"]
+    )
+    assert adapter._client.create_post.await_args_list[1] == call(
+        parts[0], media_ids=["media-1"]
+    )
+    assert adapter._client.create_post.await_args_list[2] == call(
+        parts[1], reply_to="700"
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_timeline_thread_is_accepted(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(
+        side_effect=[
+            XApiError(400, "/2/tweets", "too long"),
+            "700",
+            XApiError(500, "/2/tweets", "failed"),
+        ]
+    )
+
+    result = await adapter.send("timeline", "word " * 100)
+
+    assert result.success and result.message_id == "700"
+    assert result.raw_response == {
+        "partial_delivery": True,
+        "message_ids": ["700"],
+        "delivered_parts": 1,
+        "total_parts": 2,
+        "failure_status": 500,
+    }
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("rate_limited", id="429"),
+        pytest.param("ambiguous", id="ambiguous"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_long_timeline_post_does_not_split_on_uncertain_error(
+    error, monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import AmbiguousWriteError, XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    rejection = (
+        XApiError(429, "/2/tweets", "limited")
+        if error == "rate_limited"
+        else AmbiguousWriteError("uncertain")
+    )
+    adapter._client.create_post = AsyncMock(side_effect=rejection)
+
+    result = await adapter.send("timeline", "word " * 100)
+
+    assert not result.success
+    assert adapter._client.create_post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_timeline_rejects_content_over_bot_weighted_limit(tmp_path, monkeypatch):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import X_BOT_WEIGHTED_LIMIT
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+
+    result = await adapter.send("timeline", "x" * (X_BOT_WEIGHTED_LIMIT + 1))
+
+    assert not result.success
+    assert "weighted delivery limit" in result.error
+    adapter._client.create_post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dm_over_weighted_limit_sends_complete_message(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import format_public_message
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config())
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.send_dm = AsyncMock(return_value="701")
+    await adapter._mutate_state(lambda state: state.record_dm_inbound("42-7"))
+    message = "word " * 100
+
+    result = await adapter.send("dm:42-7", message)
+
+    assert result.success and result.message_id == "701"
+    adapter._client.send_dm.assert_awaited_once_with(
+        "42-7", format_public_message(message)
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejected_long_dm_falls_back_to_sequential_messages(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+    from plugins.platforms.twitter.presentation import (
+        format_public_message,
+        format_thread_messages,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config())
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.send_dm = AsyncMock(
+        side_effect=[XApiError(413, "/2/dm_conversations", "too long"), "700", "701"]
+    )
+    adapter._upload_images = AsyncMock(return_value=["media-1"])
+    await adapter._mutate_state(lambda state: state.record_dm_inbound("42-7"))
+    message = "word " * 100
+    parts = format_thread_messages(message)
+
+    result = await adapter.send("dm:42-7", message)
+
+    assert result.success and result.message_id == "701"
+    assert result.continuation_message_ids == ("700",)
+    assert result.raw_response == {"message_ids": ["700", "701"]}
+    assert adapter._client.send_dm.await_args_list == [
+        call("42-7", format_public_message(message), media_id="media-1"),
+        call("42-7", parts[0], media_id="media-1"),
+        call("42-7", parts[1]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_partial_anchored_dm_delivery_is_accepted(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.send_dm = AsyncMock(
+        side_effect=[
+            XApiError(400, "/2/dm_conversations", "too long"),
+            "700",
+            XApiError(500, "/2/dm_conversations", "failed"),
+        ]
+    )
+    adapter.handle_message = AsyncMock()
+    await adapter._process_dm(
+        {
+            "id": "501",
+            "event_type": "MessageCreate",
+            "sender_id": "42",
+            "dm_conversation_id": "42-7",
+            "text": "explain",
+        },
+        {},
+    )
+    message = "word " * 100
+
+    partial = await adapter.send("dm:42-7", message, reply_to="501")
+    retry = await adapter.send("dm:42-7", message, reply_to="501")
+
+    assert partial.success and partial.message_id == "700"
+    assert partial.raw_response == {
+        "partial_delivery": True,
+        "message_ids": ["700"],
+        "delivered_parts": 1,
+        "total_parts": 2,
+        "failure_status": 500,
+    }
+    assert not retry.success and "already reserved" in retry.error
+    assert adapter._client.send_dm.await_count == 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("rate_limited", id="429"),
+        pytest.param("ambiguous", id="ambiguous"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_long_dm_does_not_split_on_uncertain_error(error, monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import AmbiguousWriteError, XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config())
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    rejection = (
+        XApiError(429, "/2/dm_conversations", "limited")
+        if error == "rate_limited"
+        else AmbiguousWriteError("uncertain")
+    )
+    adapter._client.send_dm = AsyncMock(side_effect=rejection)
+    await adapter._mutate_state(lambda state: state.record_dm_inbound("42-7"))
+
+    result = await adapter.send("dm:42-7", "word " * 100)
+
+    assert not result.success
+    assert adapter._client.send_dm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_over_bot_limit_reply_sends_narrower_answer_notice(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import (
+        X_BOT_WEIGHTED_LIMIT,
+        X_OVER_LIMIT_NOTICE,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+    await adapter._mutate_state(
+        lambda state: state.record_public_interaction("101", "tweet:100:101")
+    )
+
+    result = await adapter.send(
+        "tweet:100:101", "x" * (X_BOT_WEIGHTED_LIMIT + 1), reply_to="101"
+    )
+
+    assert result.success
+    adapter._client.create_post.assert_awaited_once_with(
+        X_OVER_LIMIT_NOTICE, reply_to="101"
+    )
+
+
+@pytest.mark.asyncio
+async def test_over_bot_limit_dm_sends_narrower_answer_notice(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import (
+        X_BOT_WEIGHTED_LIMIT,
+        X_OVER_LIMIT_NOTICE,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config())
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.send_dm = AsyncMock(return_value="701")
+    await adapter._mutate_state(lambda state: state.record_dm_inbound("42-7"))
+
+    result = await adapter.send("dm:42-7", "x" * (X_BOT_WEIGHTED_LIMIT + 1))
+
+    assert result.success
+    adapter._client.send_dm.assert_awaited_once_with("42-7", X_OVER_LIMIT_NOTICE)
+
+
+@pytest.mark.asyncio
+async def test_bot_limit_uses_x_weighting_instead_of_python_length(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import x_weighted_length
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+    message = " ".join(
+        f"https://example.com/{index}/" + "x" * 400 for index in range(100)
+    )
+    assert len(message) > 25_000
+    assert x_weighted_length(message) < 2_800
+
+    result = await adapter.send("timeline", message)
+
+    assert result.success
+    adapter._client.create_post.assert_awaited_once_with(message)
+
+
+@pytest.mark.asyncio
+async def test_timeline_rejects_content_requiring_more_than_ten_parts(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import (
+        X_BOT_WEIGHTED_LIMIT,
+        X_MAX_FALLBACK_PARTS,
+        format_thread_messages,
+        x_weighted_length,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+    message = ("a " + "b" * 278 + " ") * 9
+    assert x_weighted_length(message) < X_BOT_WEIGHTED_LIMIT
+    assert len(format_thread_messages(message)) > X_MAX_FALLBACK_PARTS
+
+    result = await adapter.send("timeline", message)
+
+    assert not result.success
+    assert "10 fallback parts" in result.error
+    adapter._client.create_post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_requiring_more_than_ten_parts_sends_narrower_answer_notice(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import X_OVER_LIMIT_NOTICE
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+    await adapter._mutate_state(
+        lambda state: state.record_public_interaction("101", "tweet:100:101")
+    )
+    message = ("a " + "b" * 278 + " ") * 9
+
+    result = await adapter.send("tweet:100:101", message, reply_to="101")
+
+    assert result.success
+    adapter._client.create_post.assert_awaited_once_with(
+        X_OVER_LIMIT_NOTICE, reply_to="101"
+    )
+
+
+@pytest.mark.parametrize("status", [400, 403, 413, 422])
+@pytest.mark.asyncio
+async def test_rejected_long_reply_falls_back_to_reply_thread(
+    status, caplog, monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+    from plugins.platforms.twitter.presentation import (
+        format_public_message,
+        format_thread_messages,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.conversation_posts = AsyncMock(return_value={})
+    adapter._client.create_post = AsyncMock(
+        side_effect=[XApiError(status, "/2/tweets", "too long"), "700", "701"]
+    )
+    caplog.set_level(logging.INFO, logger="plugins.platforms.twitter.adapter")
+    await adapter._mutate_state(
+        lambda state: state.record_public_interaction("101", "tweet:100:101")
+    )
+    message = "word " * 100
     parts = format_thread_messages(message)
 
     result = await adapter.send("tweet:100:101", message, reply_to="101")
 
     assert result.success and result.message_id == "701"
-    assert result.continuation_message_ids == ("701",)
-    assert len(parts) == 2
-    assert adapter._client.create_post.await_args_list[0].args == (parts[0],)
+    assert result.continuation_message_ids == ("700",)
+    assert result.raw_response == {"message_ids": ["700", "701"]}
+    assert adapter._client.create_post.await_args_list[0].args == (
+        format_public_message(message),
+    )
     assert adapter._client.create_post.await_args_list[0].kwargs == {"reply_to": "101"}
-    assert adapter._client.create_post.await_args_list[1].args == (parts[1],)
-    assert adapter._client.create_post.await_args_list[1].kwargs == {"reply_to": "700"}
-    assert adapter._state.bot_posts_for_anchor("101") == {"700", "701"}
+    assert adapter._client.create_post.await_args_list[1].args == (parts[0],)
+    assert adapter._client.create_post.await_args_list[1].kwargs == {"reply_to": "101"}
+    assert adapter._client.create_post.await_args_list[2].args == (parts[1],)
+    assert adapter._client.create_post.await_args_list[2].kwargs == {"reply_to": "700"}
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert f"destination=reply status={status} total_parts=2" in log_text
+    assert "part=1 total_parts=2 message_id=700" in log_text
+    assert "part=2 total_parts=2 message_id=701" in log_text
+    assert format_public_message(message) not in log_text
+
+
+@pytest.mark.parametrize("status", [401, 429])
+@pytest.mark.asyncio
+async def test_long_reply_does_not_split_on_non_content_error(
+    status, monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(
+        side_effect=XApiError(status, "/2/tweets", "rejected")
+    )
+    await adapter._mutate_state(
+        lambda state: state.record_public_interaction("101", "tweet:100:101")
+    )
+
+    result = await adapter.send(
+        "tweet:100:101", "word " * 100, reply_to="101"
+    )
+
+    assert not result.success
+    assert adapter._client.create_post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_long_reply_does_not_split_on_ambiguous_write(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import AmbiguousWriteError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(
+        side_effect=AmbiguousWriteError("uncertain")
+    )
+    await adapter._mutate_state(
+        lambda state: state.record_public_interaction("101", "tweet:100:101")
+    )
+
+    result = await adapter.send(
+        "tweet:100:101", "word " * 100, reply_to="101"
+    )
+
+    assert not result.success
+    assert adapter._client.create_post.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -2173,7 +2672,11 @@ async def test_partial_reply_thread_is_not_duplicated_on_retry(monkeypatch, tmp_
     adapter._client = Mock()
     adapter._client.conversation_posts = AsyncMock(return_value={})
     adapter._client.create_post = AsyncMock(
-        side_effect=["700", XApiError(500, "/2/tweets", "failed")]
+        side_effect=[
+            XApiError(400, "/2/tweets", "too long"),
+            "700",
+            XApiError(500, "/2/tweets", "failed"),
+        ]
     )
     adapter.handle_message = AsyncMock()
     await adapter._process_mention(
@@ -2191,10 +2694,54 @@ async def test_partial_reply_thread_is_not_duplicated_on_retry(monkeypatch, tmp_
     partial = await adapter.send("tweet:100:101", message, reply_to="101")
     retry = await adapter.send("tweet:100:101", message, reply_to="101")
 
-    assert not partial.success and partial.retryable
+    assert partial.success and partial.message_id == "700"
+    assert partial.continuation_message_ids == ()
+    assert partial.raw_response == {
+        "partial_delivery": True,
+        "message_ids": ["700"],
+        "delivered_parts": 1,
+        "total_parts": 2,
+        "failure_status": 500,
+    }
     assert not retry.success and "not eligible" in retry.error
-    assert adapter._client.create_post.await_count == 2
+    assert adapter._client.create_post.await_count == 3
     assert adapter._state.bot_posts_for_anchor("101") == {"700"}
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_continuation_after_confirmed_reply_is_accepted(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import AmbiguousWriteError, XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(
+        side_effect=[
+            XApiError(400, "/2/tweets", "too long"),
+            "700",
+            AmbiguousWriteError("uncertain"),
+        ]
+    )
+    await adapter._mutate_state(
+        lambda state: state.record_public_interaction("101", "tweet:100:101")
+    )
+
+    result = await adapter.send(
+        "tweet:100:101", "word " * 100, reply_to="101"
+    )
+
+    assert result.success and result.message_id == "700"
+    assert result.raw_response == {
+        "partial_delivery": True,
+        "message_ids": ["700"],
+        "delivered_parts": 1,
+        "total_parts": 2,
+        "failure_kind": "ambiguous",
+    }
 
 
 @pytest.mark.asyncio
@@ -3131,7 +3678,7 @@ async def test_standalone_sender_returns_refresh_transport_error(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_send_rejects_invalid_routes_and_oversized_text(monkeypatch, tmp_path):
+async def test_send_rejects_invalid_routes(monkeypatch, tmp_path):
     from plugins.platforms.twitter.adapter import TwitterAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -3142,17 +3689,15 @@ async def test_send_rejects_invalid_routes_and_oversized_text(monkeypatch, tmp_p
 
     invalid_post = await adapter.send("tweet:not-an-id:anchor", "bad")
     invalid_dm = await adapter.send("dm:../../tokens", "bad")
-    oversized = await adapter.send("timeline", "x" * 281)
 
     assert not invalid_post.success
     assert not invalid_dm.success
-    assert not oversized.success
     adapter._client.create_post.assert_not_awaited()
     adapter._client.send_dm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_weighted_over_limit_never_calls_write(monkeypatch, tmp_path):
+async def test_timeline_long_post_supports_weighted_unicode(monkeypatch, tmp_path):
     from plugins.platforms.twitter.adapter import TwitterAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -3160,11 +3705,11 @@ async def test_weighted_over_limit_never_calls_write(monkeypatch, tmp_path):
     adapter._client = Mock()
     adapter._client.create_post = AsyncMock(return_value="1")
 
-    result = await adapter.send("timeline", "界" * 141)
+    message = "界" * 141
+    result = await adapter.send("timeline", message)
 
-    assert not result.success
-    assert "weighted limit" in result.error
-    adapter._client.create_post.assert_not_awaited()
+    assert result.success
+    adapter._client.create_post.assert_awaited_once_with(message)
 
 
 def test_conversation_context_is_bounded_and_chronological():

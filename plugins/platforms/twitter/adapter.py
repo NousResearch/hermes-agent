@@ -34,9 +34,13 @@ from .oauth import (
 )
 from .presentation import (
     TWITTER_TEXT_INSTALL_HINT,
-    format_message,
+    X_BOT_WEIGHTED_LIMIT,
+    X_MAX_FALLBACK_PARTS,
+    X_OVER_LIMIT_NOTICE,
+    format_public_message,
     format_thread_messages,
     weighted_parser_available,
+    x_weighted_length,
 )
 from .state import TwitterState, mutate_state
 from .queue import OperationNotStartedError
@@ -50,6 +54,7 @@ _MENTION_RE = re.compile(r"(?<![\w@])@[A-Za-z0-9_]{1,15}\b")
 _REPLY_DELIVERY_TARGET_RE = re.compile(
     r"((?:tweet:[0-9]+:[0-9]+)|(?:dm:[0-9]+(?:-[0-9]+)*)):([0-9]+)"
 )
+_LONG_CONTENT_REJECTION_STATUSES = frozenset({400, 403, 413, 422})
 
 
 def _confirmed_x_id(value: Any) -> str:
@@ -569,6 +574,8 @@ class TwitterAdapter(BasePlatformAdapter):
         reserved_reply_kind = ""
         write_confirmed = False
         sent_message_ids: list[str] = []
+        total_parts = 1
+        destination_kind = "unknown"
 
         def release_reservation(state: TwitterState) -> None:
             if reserved_reply_kind == "tweet":
@@ -587,6 +594,59 @@ class TwitterAdapter(BasePlatformAdapter):
                 await self._mutate_state(mutation)
             except Exception:
                 logger.exception("Failed to finalize Twitter reply reservation")
+
+        def successful_result(
+            *,
+            partial: bool = False,
+            failure_status: Optional[int] = None,
+            failure_kind: Optional[str] = None,
+        ) -> SendResult:
+            raw_response: dict[str, Any] = {"message_ids": list(sent_message_ids)}
+            if partial:
+                raw_response.update(
+                    partial_delivery=True,
+                    delivered_parts=len(sent_message_ids),
+                    total_parts=total_parts,
+                )
+                if failure_status is not None:
+                    raw_response["failure_status"] = failure_status
+                if failure_kind is not None:
+                    raw_response["failure_kind"] = failure_kind
+                logger.warning(
+                    "Twitter partial delivery destination=%s delivered_parts=%s "
+                    "total_parts=%s confirmed_ids=%s status=%s error_kind=%s",
+                    destination_kind,
+                    len(sent_message_ids),
+                    total_parts,
+                    sent_message_ids,
+                    failure_status,
+                    failure_kind,
+                )
+            return SendResult(
+                success=True,
+                message_id=sent_message_ids[-1],
+                continuation_message_ids=tuple(sent_message_ids[:-1]),
+                raw_response=raw_response,
+            )
+
+        def log_fallback_start(status: int) -> None:
+            logger.info(
+                "Twitter fallback start destination=%s status=%s total_parts=%s",
+                destination_kind,
+                status,
+                total_parts,
+            )
+
+        def log_fallback_part(message_id: str) -> None:
+            if total_parts > 1:
+                logger.info(
+                    "Twitter fallback delivered destination=%s part=%s "
+                    "total_parts=%s message_id=%s",
+                    destination_kind,
+                    len(sent_message_ids),
+                    total_parts,
+                    message_id,
+                )
 
         try:
             if reply_to is None and chat_id.startswith(("tweet:", "dm:")):
@@ -610,10 +670,31 @@ class TwitterAdapter(BasePlatformAdapter):
                     "Twitter destination must be timeline, "
                     "tweet:<conversation_id>:<anchor_id>, or dm:<conversation_id>"
                 )
-            content_parts = (
-                format_thread_messages(content) if valid_public else [format_message(content)]
+            destination_kind = (
+                "timeline" if chat_id == "timeline" else "reply" if valid_public else "dm"
             )
-            content = content_parts[0]
+            content = format_public_message(content)
+            over_weighted_limit = (
+                x_weighted_length(content) > X_BOT_WEIGHTED_LIMIT
+            )
+            fallback_parts = (
+                [] if over_weighted_limit else format_thread_messages(content)
+            )
+            over_part_limit = len(fallback_parts) > X_MAX_FALLBACK_PARTS
+            if over_weighted_limit or over_part_limit:
+                if chat_id == "timeline":
+                    if over_part_limit:
+                        raise ValueError(
+                            "Twitter content requires more than "
+                            f"{X_MAX_FALLBACK_PARTS} fallback parts"
+                        )
+                    raise ValueError(
+                        "Twitter content exceeds the bot weighted delivery limit of "
+                        f"{X_BOT_WEIGHTED_LIMIT}"
+                    )
+                content = X_OVER_LIMIT_NOTICE
+                fallback_parts = format_thread_messages(content)
+            content_parts = [content]
             is_dm = chat_id.startswith("dm:")
             if chat_id == "timeline" and _MENTION_RE.search(content):
                 raise TwitterPolicyError(
@@ -672,25 +753,71 @@ class TwitterAdapter(BasePlatformAdapter):
                     reserved_reply_kind = "dm"
             media_ids = await self._upload_images(metadata, for_dm=is_dm)
             if chat_id == "timeline":
-                if media_ids:
-                    message_id = _confirmed_x_id(
-                        await self._client.create_post(content, media_ids=media_ids)
-                    )
-                else:
-                    message_id = _confirmed_x_id(
-                        await self._client.create_post(content)
-                    )
+                parent_id = ""
+                index = 0
+                while index < len(content_parts):
+                    part = content_parts[index]
+                    send_args: dict[str, Any] = {}
+                    if index == 0 and media_ids:
+                        send_args["media_ids"] = media_ids
+                    if parent_id:
+                        send_args["reply_to"] = parent_id
+                    try:
+                        message_id = _confirmed_x_id(
+                            await self._client.create_post(part, **send_args)
+                        )
+                    except XApiError as exc:
+                        if (
+                            index == 0
+                            and len(fallback_parts) > 1
+                            and content_parts == [content]
+                            and exc.status in _LONG_CONTENT_REJECTION_STATUSES
+                        ):
+                            content_parts = fallback_parts
+                            total_parts = len(content_parts)
+                            log_fallback_start(exc.status)
+                            continue
+                        if sent_message_ids:
+                            return successful_result(
+                                partial=True, failure_status=exc.status
+                            )
+                        raise
+                    sent_message_ids.append(message_id)
+                    log_fallback_part(message_id)
+                    write_confirmed = True
+                    parent_id = message_id
+                    index += 1
             elif valid_public:
                 parent_id = str(reply_to)
                 anchor_id = chat_id.rsplit(":", 1)[1]
-                for index, part in enumerate(content_parts):
+                index = 0
+                while index < len(content_parts):
+                    part = content_parts[index]
                     send_args: dict[str, Any] = {"reply_to": parent_id}
                     if index == 0 and media_ids:
                         send_args["media_ids"] = media_ids
-                    message_id = _confirmed_x_id(
-                        await self._client.create_post(part, **send_args)
-                    )
+                    try:
+                        message_id = _confirmed_x_id(
+                            await self._client.create_post(part, **send_args)
+                        )
+                    except XApiError as exc:
+                        if (
+                            index == 0
+                            and len(fallback_parts) > 1
+                            and content_parts == [content]
+                            and exc.status in _LONG_CONTENT_REJECTION_STATUSES
+                        ):
+                            content_parts = fallback_parts
+                            total_parts = len(content_parts)
+                            log_fallback_start(exc.status)
+                            continue
+                        if sent_message_ids:
+                            return successful_result(
+                                partial=True, failure_status=exc.status
+                            )
+                        raise
                     sent_message_ids.append(message_id)
+                    log_fallback_part(message_id)
                     if index == 0:
                         write_confirmed = True
                         await self._mutate_state(
@@ -703,6 +830,7 @@ class TwitterAdapter(BasePlatformAdapter):
                             lambda state: state.map_bot_post(message_id, anchor_id)
                         )
                     parent_id = message_id
+                    index += 1
             elif valid_dm:
                 dm_ready = False
 
@@ -726,21 +854,45 @@ class TwitterAdapter(BasePlatformAdapter):
                     raise TwitterPolicyError(
                         "Twitter DM conversation opted out before delivery"
                     )
-                if media_ids:
-                    message_id = _confirmed_x_id(
-                        await self._client.send_dm(
-                            chat_id[3:], content, media_id=media_ids[0]
+                index = 0
+                while index < len(content_parts):
+                    part = content_parts[index]
+                    send_args: dict[str, Any] = {}
+                    if index == 0 and media_ids:
+                        send_args["media_id"] = media_ids[0]
+                    try:
+                        message_id = _confirmed_x_id(
+                            await self._client.send_dm(
+                                chat_id[3:], part, **send_args
+                            )
                         )
-                    )
-                else:
-                    message_id = _confirmed_x_id(
-                        await self._client.send_dm(chat_id[3:], content)
-                    )
-                if reserved_reply_kind == "dm":
-                    write_confirmed = True
-                    await self._mutate_state(
-                        lambda state: state.confirm_dm_reply(reserved_reply_id)
-                    )
+                    except XApiError as exc:
+                        if (
+                            index == 0
+                            and len(fallback_parts) > 1
+                            and content_parts == [content]
+                            and exc.status in _LONG_CONTENT_REJECTION_STATUSES
+                        ):
+                            content_parts = fallback_parts
+                            total_parts = len(content_parts)
+                            log_fallback_start(exc.status)
+                            continue
+                        if sent_message_ids:
+                            return successful_result(
+                                partial=True, failure_status=exc.status
+                            )
+                        raise
+                    sent_message_ids.append(message_id)
+                    log_fallback_part(message_id)
+                    if index == 0:
+                        write_confirmed = True
+                        if reserved_reply_kind == "dm":
+                            await self._mutate_state(
+                                lambda state: state.confirm_dm_reply(
+                                    reserved_reply_id
+                                )
+                            )
+                    index += 1
             else:
                 return SendResult(
                     success=False,
@@ -749,11 +901,7 @@ class TwitterAdapter(BasePlatformAdapter):
                         "tweet:<conversation_id>:<anchor_id>, or dm:<conversation_id>"
                     ),
                 )
-            return SendResult(
-                success=True,
-                message_id=str(message_id),
-                continuation_message_ids=tuple(sent_message_ids[1:]),
-            )
+            return successful_result()
         except OperationNotStartedError:
             if reserved_reply_id:
                 await update_reservation(release_reservation)
@@ -763,6 +911,8 @@ class TwitterAdapter(BasePlatformAdapter):
                 await update_reservation(mark_reservation_uncertain)
             raise
         except AmbiguousWriteError as exc:
+            if sent_message_ids:
+                return successful_result(partial=True, failure_kind="ambiguous")
             if reserved_reply_id:
                 await update_reservation(mark_reservation_uncertain)
             return SendResult(
@@ -772,6 +922,8 @@ class TwitterAdapter(BasePlatformAdapter):
                 error_kind="unknown",
             )
         except XApiError as exc:
+            if sent_message_ids:
+                return successful_result(partial=True, failure_status=exc.status)
             if reserved_reply_id and not write_confirmed:
                 await update_reservation(release_reservation)
             return SendResult(
@@ -781,6 +933,8 @@ class TwitterAdapter(BasePlatformAdapter):
                 error_kind="rate_limited" if exc.status == 429 else None,
             )
         except httpx.RequestError as exc:
+            if sent_message_ids:
+                return successful_result(partial=True, failure_kind="transport")
             if reserved_reply_id and not write_confirmed:
                 await update_reservation(release_reservation)
             return SendResult(
@@ -790,6 +944,8 @@ class TwitterAdapter(BasePlatformAdapter):
                 error_kind="transport",
             )
         except (OSError, RuntimeError, ValueError) as exc:
+            if sent_message_ids:
+                return successful_result(partial=True, failure_kind="local")
             if reserved_reply_id and not write_confirmed:
                 await update_reservation(release_reservation)
             return SendResult(success=False, error=str(exc))

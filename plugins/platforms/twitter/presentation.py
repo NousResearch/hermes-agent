@@ -5,6 +5,9 @@ from importlib import import_module
 from gateway.platforms.helpers import strip_markdown
 
 X_WEIGHTED_LIMIT = 280
+X_BOT_WEIGHTED_LIMIT = 2_800
+X_MAX_FALLBACK_PARTS = 10
+X_OVER_LIMIT_NOTICE = "Response was too long. Please ask for a narrower answer."
 TWITTER_TEXT_INSTALL_HINT = (
     "Run `hermes gateway setup` and choose Twitter / X to install its plugin dependency."
 )
@@ -49,11 +52,17 @@ def _parse_x_text(text: str):
     return parse_tweet(text)
 
 
-def _plain_text(markdown: str) -> str:
+def x_weighted_length(text: str) -> int:
+    return _parse_x_text(text).weightedLength
+
+
+def format_public_message(markdown: str) -> str:
     text = markdown_links_to_text(markdown)
     text = strip_markdown(text)
     text = unicodedata.normalize("NFC", text)
     reject_disallowed_controls(text)
+    if not text.strip():
+        raise ValueError("Twitter content is empty or contains unsupported characters")
     return text
 
 
@@ -67,13 +76,13 @@ def _utf16_prefix_index(text: str, units: int) -> int:
 
 
 def format_message(markdown: str) -> str:
-    text = _plain_text(markdown)
+    text = format_public_message(markdown)
     validate_x_weighted_length(text)
     return text
 
 
 def format_thread_messages(markdown: str) -> list[str]:
-    remaining = _plain_text(markdown)
+    remaining = format_public_message(markdown)
     parts: list[str] = []
     while remaining:
         parsed = _parse_x_text(remaining)

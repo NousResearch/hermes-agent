@@ -69,7 +69,7 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
 def _has_material_tool_call_after_kanban_complete(messages) -> bool:
     """Return True when a worker kept using tools after completion intent."""
     tool_messages: list[list[str]] = []
-    last_completion_index: int | None = None
+    first_completion_index: int | None = None
     for message in messages:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
@@ -89,13 +89,13 @@ def _has_material_tool_call_after_kanban_complete(messages) -> bool:
         if not names:
             continue
         tool_messages.append(names)
-        if "kanban_complete" in names:
-            last_completion_index = len(tool_messages) - 1
-    if last_completion_index is None:
+        if "kanban_complete" in names and first_completion_index is None:
+            first_completion_index = len(tool_messages) - 1
+    if first_completion_index is None:
         return False
     return any(
         name != "kanban_complete"
-        for names in tool_messages[last_completion_index:]
+        for names in tool_messages[first_completion_index:]
         for name in names
     )
 

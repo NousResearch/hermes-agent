@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -460,6 +461,67 @@ def test_manual_non_pass_is_rejected_but_valid_manual_completion_promotes(
         child_task = kb.get_task(conn, child)
         assert parent_task is not None and parent_task.status == "done"
         assert child_task is not None and child_task.status == "ready"
+
+
+def test_canonical_fix_required_underscore_cannot_release_child(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="security review", assignee="security")
+        child = kb.create_task(conn, title="BUILD child", parents=[parent])
+        assert kb.claim_task(conn, parent) is not None
+        run = kb.latest_run(conn, parent)
+        assert run is not None
+
+        with pytest.raises(kb.InvalidCompletionHandoffError, match="FIX-REQUIRED"):
+            kb.stage_task_completion(
+                conn,
+                parent,
+                expected_run_id=run.id,
+                summary="FIX_REQUIRED: changes requested",
+            )
+
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert kb.claim_task(conn, child) is None
+
+
+@pytest.mark.parametrize(
+    ("metadata", "message"),
+    [
+        ({"blocking_findings": None}, "blocking_findings"),
+        (
+            {"findings": {"severity": "CRITICAL", "title": "release bypass"}},
+            "metadata.findings",
+        ),
+    ],
+)
+def test_present_malformed_finding_fields_cannot_release_child(
+    kanban_home,
+    metadata,
+    message,
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="security review", assignee="security")
+        child = kb.create_task(conn, title="BUILD child", parents=[parent])
+        assert kb.claim_task(conn, parent) is not None
+        run = kb.latest_run(conn, parent)
+        assert run is not None
+
+        with pytest.raises(kb.InvalidCompletionHandoffError, match=message):
+            kb.stage_task_completion(
+                conn,
+                parent,
+                expected_run_id=run.id,
+                summary="Review claims a passing result.",
+                metadata=metadata,
+            )
+
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert kb.claim_task(conn, child) is None
 
 
 def test_post_completion_timeout_demotes_child_and_fences_stale_run(kanban_home):
@@ -1249,6 +1311,63 @@ def test_historical_done_compatibility_rejects_only_contradictory_history(
         contradictory_child_task = kb.get_task(conn, contradictory_child)
         assert contradictory_child_task is not None
         assert contradictory_child_task.status == "todo"
+
+
+def test_modern_build_receipt_cannot_downgrade_when_payload_marker_is_stripped(
+    kanban_home,
+):
+    receipt = {
+        "final_head": "a" * 40,
+        "base_sha": "b" * 40,
+        "changed_files": ["hermes_cli/kanban_db.py"],
+        "artifact": "bundle:guard.bundle",
+        "diff_sha256": "c" * 64,
+        "verification_summary": "targeted tests passed",
+        "blocking_findings": [],
+    }
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="modern BUILD", assignee="engineer")
+        child = kb.create_task(conn, title="review", parents=[parent])
+        assert kb.claim_task(conn, parent) is not None
+        run = kb.latest_run(conn, parent)
+        assert run is not None and run.step_key is None
+        # Reproduce a step discriminator applied after claim but before the
+        # modern completion is written. The completion must durably bind it.
+        conn.execute(
+            "UPDATE tasks SET current_step_key = 'build' WHERE id = ?", (parent,)
+        )
+        assert kb.stage_task_completion(
+            conn,
+            parent,
+            expected_run_id=run.id,
+            summary="Modern BUILD completed with an exact-head receipt.",
+            metadata=receipt,
+        )
+        assert kb.finalize_staged_completion(conn, parent, expected_run_id=run.id)
+        persisted_run = kb.get_run(conn, run.id)
+        assert persisted_run is not None and persisted_run.step_key == "build"
+        assert kb.valid_completion(conn, parent)
+
+        completed = conn.execute(
+            "SELECT id FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+            (parent,),
+        ).fetchone()
+        assert completed is not None
+        conn.execute(
+            "UPDATE task_events SET payload = NULL WHERE id = ?", (completed["id"],)
+        )
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps({"verdict": "PASS"}), run.id),
+        )
+
+        is_valid, reason = kb.completion_validity(conn, parent)
+        assert is_valid is False
+        assert "modern BUILD completion payload" in reason
+        assert kb.claim_task(conn, child) is None
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None and child_task.status == "todo"
 
 
 def test_archiving_invalid_or_pending_completion_does_not_release_child(

@@ -123,6 +123,50 @@ def test_promote_force_requires_non_empty_actor(conn, actor):
     assert task is not None and task.status == "todo"
 
 
+@pytest.mark.parametrize("invisible", ["\u200b", "\ufeff", "\u2060"])
+@pytest.mark.parametrize("field", ["actor", "reason"])
+def test_promote_force_requires_unicode_visible_audit_fields(
+    conn,
+    invisible,
+    field,
+):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    actor = invisible if field == "actor" else "operator"
+    reason = invisible if field == "reason" else "audited recovery"
+    ok, err = kb.promote_task(
+        conn,
+        child,
+        actor=actor,
+        reason=reason,
+        force=True,
+    )
+    assert ok is False
+    assert err is not None and field in err
+    task = kb.get_task(conn, child)
+    assert task is not None and task.status == "todo"
+
+
+def test_promote_force_strips_unicode_format_controls_from_audit_fields(conn):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    ok, err = kb.promote_task(
+        conn,
+        child,
+        actor="\u200b operator \ufeff",
+        reason="\u2060 audited recovery \u200b",
+        force=True,
+    )
+    assert ok and err is None
+    event = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'promoted_manual' ORDER BY id DESC LIMIT 1",
+        (child,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    assert payload["actor"] == "operator"
+    assert payload["reason"] == "audited recovery"
+    assert kb.claim_task(conn, child) is not None
+
+
 def test_claim_rejects_tampered_override_with_blank_actor(conn):
     child, _ = _stuck_todo(conn, parents_done=False)
     ok, err = kb.promote_task(
@@ -140,6 +184,33 @@ def test_claim_rejects_tampered_override_with_blank_actor(conn):
     ).fetchone()
     payload = json.loads(event["payload"])
     payload["actor"] = " "
+    conn.execute(
+        "UPDATE task_events SET payload = ? WHERE id = ?",
+        (json.dumps(payload), event["id"]),
+    )
+    assert kb.claim_task(conn, child) is None
+    task = kb.get_task(conn, child)
+    assert task is not None and task.status == "todo"
+
+
+@pytest.mark.parametrize("field", ["actor", "reason"])
+def test_claim_rejects_tampered_override_with_invisible_audit_field(conn, field):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    ok, err = kb.promote_task(
+        conn,
+        child,
+        actor="operator",
+        force=True,
+        reason="operator recovery",
+    )
+    assert ok and err is None
+    event = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'promoted_manual' ORDER BY id DESC LIMIT 1",
+        (child,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    payload[field] = "\u200b\ufeff\u2060"
     conn.execute(
         "UPDATE task_events SET payload = ? WHERE id = ?",
         (json.dumps(payload), event["id"]),

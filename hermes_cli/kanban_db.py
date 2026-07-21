@@ -85,6 +85,7 @@ import sys
 import threading
 import logging
 import time
+import unicodedata
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -4516,7 +4517,7 @@ _PASS_VERDICTS = frozenset({
     "success",
     "successful",
 })
-_FIX_REQUIRED_RE = re.compile(r"(?<![\w-])fix(?:[-\s]+)required(?![\w-])", re.IGNORECASE)
+_FIX_REQUIRED_RE = re.compile(r"(?<![\w-])fix(?:[-_\s]+)required(?![\w-])", re.IGNORECASE)
 _SEVERITY_SIGNAL = (
     r"(?:\b(?:CRITICAL|HIGH)\b|"
     r"\b(?i:critical|high)\s+"
@@ -4572,14 +4573,19 @@ def _completion_non_pass_reason(
                 f"{raw_verdict!r}"
             )
 
-        blocking_findings = metadata.get("blocking_findings")
-        if blocking_findings is not None:
-            if not isinstance(blocking_findings, (list, tuple, dict)):
+        if "blocking_findings" in metadata:
+            blocking_findings = metadata["blocking_findings"]
+            if not isinstance(blocking_findings, list):
                 return "metadata.blocking_findings is malformed"
             if blocking_findings:
                 return "metadata.blocking_findings is non-empty"
 
         findings = metadata.get("findings")
+        if "findings" in metadata and (
+            not isinstance(findings, list)
+            or not all(isinstance(item, (str, dict)) for item in findings)
+        ):
+            return "metadata.findings is malformed"
         severe_findings = (
             [
                 item
@@ -4756,9 +4762,10 @@ def completion_validity(
 
     run_id = completed["run_id"]
     metadata = None
+    completion_step_key = ""
     if run_id is not None:
         run = conn.execute(
-            "SELECT status, outcome, summary, metadata FROM task_runs "
+            "SELECT status, outcome, summary, metadata, step_key FROM task_runs "
             "WHERE id = ? AND task_id = ?",
             (int(run_id), task_id),
         ).fetchone()
@@ -4775,6 +4782,7 @@ def completion_validity(
             return False, "completion run metadata is malformed"
         if metadata is not None and not isinstance(metadata, dict):
             return False, "completion run metadata is malformed"
+        completion_step_key = _normalized_step_key(run["step_key"])
         non_pass = _completion_non_pass_reason(
             summary=run["summary"], result=None, metadata=metadata,
         )
@@ -4791,21 +4799,23 @@ def completion_validity(
     if invalidating is not None:
         return False, f"completion was invalidated by {invalidating['kind']}"
 
+    modern_build = completion_step_key in _BUILD_STEP_KEYS
     try:
-        completed_payload = (
-            json.loads(completed["payload"]) if completed["payload"] else {}
-        )
+        completed_payload = json.loads(completed["payload"])
     except (TypeError, json.JSONDecodeError):
+        if modern_build:
+            return False, "modern BUILD completion payload is missing or malformed"
         completed_payload = {}
     if not isinstance(completed_payload, dict):
+        if modern_build:
+            return False, "modern BUILD completion payload is missing or malformed"
         completed_payload = {}
     completion_contract = completed_payload.get("completion_contract")
     if completion_contract not in (None, _BUILD_COMPLETION_CONTRACT):
         return False, f"unsupported completion contract {completion_contract!r}"
-    if (
-        _normalized_step_key(task["current_step_key"]) in _BUILD_STEP_KEYS
-        and completion_contract == _BUILD_COMPLETION_CONTRACT
-    ):
+    if modern_build and completion_contract != _BUILD_COMPLETION_CONTRACT:
+        return False, "modern BUILD completion is missing its build-receipt-v1 contract"
+    if modern_build or completion_contract == _BUILD_COMPLETION_CONTRACT:
         receipt_reason = _build_receipt_reason(metadata)
         if receipt_reason:
             return False, receipt_reason
@@ -5006,10 +5016,8 @@ def _audited_dependency_override_matches(
     recorded_guard = payload.get("dependency_guard")
     recorded_snapshot = payload.get("dependency_snapshot")
     return (
-        isinstance(actor, str)
-        and bool(actor.strip())
-        and isinstance(reason, str)
-        and bool(reason.strip())
+        _normalize_visible_audit_text(actor) is not None
+        and _normalize_visible_audit_text(reason) is not None
         and recorded_guard == dependency_guard
         and isinstance(recorded, list)
         and sorted(str(item) for item in recorded) == sorted(invalid_dependencies)
@@ -5017,6 +5025,24 @@ def _audited_dependency_override_matches(
         and recorded_snapshot
         == _dependency_override_snapshot(conn, task_id, invalid_dependencies)
     )
+
+
+def _normalize_visible_audit_text(value: object) -> Optional[str]:
+    """Normalize audit prose and reject values with no visible Unicode text."""
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value)
+    without_controls = "".join(
+        " " if char.isspace() else char
+        for char in normalized
+        if not unicodedata.category(char).startswith("C")
+    )
+    cleaned = " ".join(without_controls.split())
+    if not cleaned or not any(
+        unicodedata.category(char)[0] in "LMNPS" for char in cleaned
+    ):
+        return None
+    return cleaned
 
 
 def _verify_completion_cards_or_raise(
@@ -5826,6 +5852,17 @@ def complete_task(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
+        build_completion = _task_is_build_step(conn, task_id)
+        if run_id is not None and build_completion:
+            # Bind the completion-time contract outside the event payload. The
+            # run step survives payload/metadata stripping and prevents a
+            # modern BUILD receipt from being downgraded to legacy semantics.
+            conn.execute(
+                "UPDATE task_runs SET step_key = ("
+                "  SELECT current_step_key FROM tasks WHERE id = ?"
+                ") WHERE id = ? AND task_id = ?",
+                (task_id, int(run_id), task_id),
+            )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
@@ -5836,7 +5873,7 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
-        if _task_is_build_step(conn, task_id):
+        if build_completion:
             completed_payload["completion_contract"] = _BUILD_COMPLETION_CONTRACT
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
@@ -6772,11 +6809,17 @@ def promote_task(
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
-    if not (isinstance(actor, str) and actor.strip()):
+    normalized_actor = _normalize_visible_audit_text(actor)
+    if normalized_actor is None:
         return False, "manual promotion requires a non-empty audit actor"
-    actor = actor.strip()
-    if force and not (isinstance(reason, str) and reason.strip()):
-        return False, "forced promotion requires a non-empty audit reason"
+    actor = normalized_actor
+    if force:
+        normalized_reason = _normalize_visible_audit_text(reason)
+        if normalized_reason is None:
+            return False, "forced promotion requires a non-empty audit reason"
+        reason = normalized_reason
+    elif reason is not None:
+        reason = _normalize_visible_audit_text(reason)
 
     with write_txn(conn):
         row = conn.execute(

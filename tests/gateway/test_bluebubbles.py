@@ -10,6 +10,7 @@ from gateway.config import Platform, PlatformConfig
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    monkeypatch.delenv("BLUEBUBBLES_MENTION_PATTERNS", raising=False)
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(
@@ -261,6 +262,196 @@ class TestBlueBubblesMentionGating:
 
         assert response.status == 200
         assert [event.text for event in handled] == ["hello from a dm"]
+
+    @pytest.mark.asyncio
+    async def test_group_auth_key_payload_without_mention_is_skipped(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-auth-key-1",
+                "text": "casual family chatter",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [
+                    {
+                        "[auth-key]": "any;+;family-group",
+                        "style": 43,
+                        "chatIdentifier": "family-group",
+                        "displayName": "Family",
+                    }
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_group_auth_key_payload_with_mention_uses_group_source(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-auth-key-2",
+                "text": "Hermes summarize this",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [
+                    {
+                        "[auth-key]": "any;+;family-group",
+                        "style": 43,
+                        "chatIdentifier": "family-group",
+                        "displayName": "Family",
+                    }
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "summarize this"
+        assert event.source.chat_id == "any;+;family-group"
+        assert event.source.chat_id_alt == "family-group"
+        assert event.source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_updated_message_then_new_message_uses_group_source_once(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        updated_first = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "same-message-guid",
+                "text": "Hermes diag 20-8",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chatIdentifier": "+155****0100",
+            },
+        }))
+        new_second = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "same-message-guid",
+                "text": "Hermes diag 20-8",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [
+                    {
+                        "[auth-key]": "any;+;family-group",
+                        "style": 43,
+                        "chatIdentifier": "family-group",
+                    }
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert updated_first.status == 200
+        assert new_second.status == 200
+        assert len(handled) == 1
+        assert handled[0].text == "diag 20-8"
+        assert handled[0].source.chat_id == "any;+;family-group"
+        assert handled[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_new_message_then_updated_message_does_not_duplicate(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "message-guid-1",
+                "text": "yes",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chatGuid": "any;-;+155****0100",
+                "chatIdentifier": "+155****0100",
+            },
+        }))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "message-guid-1",
+                "text": "yes",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chatIdentifier": "+155****0100",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "any;-;+155****0100"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_new_message_same_guid_is_skipped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "replayed-message-guid",
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert [event.text for event in handled] == ["hello"]
 
 
 class TestBlueBubblesWebhookParsing:

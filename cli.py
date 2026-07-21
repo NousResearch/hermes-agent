@@ -3271,27 +3271,25 @@ def _disable_prompt_toolkit_cpr_warning(app) -> None:
 
 
 def _terminal_may_leak_cpr() -> bool:
-    """Detect terminals where CPR (ESC[6n) replies are likely to leak.
+    """Whether classic CLI should suppress prompt_toolkit CPR (ESC[6n) queries.
 
-    The CPR leak in #13870 is environment-specific: it shows up over SSH +
-    cloudflared/mux tunnels and slow PTYs, where the terminal's
-    ``ESC[<row>;<col>R`` reply round-trips slowly enough to race past the input
-    parser and land in the display as raw ``20;1R`` text (and the pending-CPR
-    future can stall the renderer, freezing the prompt). On a local terminal the
-    reply returns instantly and cleanly, so CPR works fine and there is nothing
-    to fix — we leave prompt_toolkit's default behavior untouched there.
+    Delayed CPR replies (``ESC[<row>;<col>R`` / visible ``^[[<row>;<col>R``)
+    leak into the status line and can freeze input when the reply is slow
+    (#13870 on SSH/slow PTYs). The same race hits local POSIX TTYs under
+    heavy subagent / status-line load — see ``tests/cli/test_cpr_local_leak.py``.
 
-    We only suppress CPR on a remote/tunneled link (SSH env vars) or when the
-    user has explicitly opted out via prompt_toolkit's own ``PROMPT_TOOLKIT_NO_CPR``
-    escape hatch. Keeping this narrow (not the broader WSL/Ghostty/Windows set
-    that ``_preserve_ctrl_enter_newline`` keys on) means the only behavior change
-    lands exactly where the bug reproduces.
+    Policy:
+    - ``PROMPT_TOOLKIT_NO_CPR=1`` → always suppress
+    - native Windows (``win32``) → keep prompt_toolkit's default for now
+      (no native-Windows Application coverage yet); still honor NO_CPR
+    - all other platforms → suppress (CPR is only a layout hint; heuristic
+      height is enough). SSH env is no longer required to trigger this.
     """
     if os.environ.get("PROMPT_TOOLKIT_NO_CPR", "") == "1":
         return True
-    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
-        return True
-    return False
+    if sys.platform == "win32":
+        return False
+    return True
 
 
 def _build_cpr_disabled_output(stdout):
@@ -3299,23 +3297,14 @@ def _build_cpr_disabled_output(stdout):
 
     prompt_toolkit's renderer sends ``ESC[6n`` (Device Status Report) to learn
     the cursor row before painting in non-fullscreen mode; the terminal replies
-    ``ESC[<row>;<col>R``. Over SSH + cloudflared/mux tunnels and some slow PTYs
-    these replies race past the input parser and land in the display as raw text
-    like ``20;1R21;1R``, and the pending-CPR future can stall the renderer so the
-    prompt appears frozen after the agent's final answer (see #13870).
+    ``ESC[<row>;<col>R``. When that reply is delayed it races into the display
+    as raw ``^[[39;1R`` and can stall the renderer's pending-CPR future
+    (#13870; also local POSIX under heavy subagent load).
 
-    Constructing the output with ``enable_cpr=False`` makes the renderer mark CPR
-    ``NOT_SUPPORTED`` up front, so ``ESC[6n`` is never sent and no CPR response
-    can leak. This is the root-cause counterpart to the input-side scrubbing in
-    ``_strip_leaked_terminal_responses`` — that cleans leaks after the fact; this
-    stops them at the source. The UI is otherwise identical (prompt_toolkit uses
-    its heuristic available-height fallback, which it already relies on whenever a
-    terminal doesn't answer CPR).
-
-    This is only invoked on terminals flagged by ``_terminal_may_leak_cpr()`` —
-    CPR is a layout hint, not a speed optimization, and it works fine locally, so
-    we leave the upstream default in place on local terminals and only suppress it
-    where the leak actually reproduces.
+    Constructing the output with ``enable_cpr=False`` marks CPR
+    ``NOT_SUPPORTED`` so ``ESC[6n`` is never sent. prompt_toolkit then uses its
+    heuristic available-height fallback. Input-side
+    ``_strip_leaked_terminal_responses`` remains belt-and-suspenders.
 
     Note: ``Vt100_Output.from_pty()`` does NOT expose ``enable_cpr`` in
     prompt_toolkit 3.x, so we reproduce its ``get_size`` setup and call the
@@ -3339,6 +3328,18 @@ def _build_cpr_disabled_output(stdout):
         return Vt100_Output(stdout, _get_term_size, enable_cpr=False)
     except Exception:
         return None
+
+
+def _select_classic_cli_pt_output(stdout):
+    """Select prompt_toolkit Output for classic-CLI Application construction.
+
+    Returns a CPR-disabled ``Vt100_Output`` when ``_terminal_may_leak_cpr()``
+    is true, otherwise ``None`` so Application keeps prompt_toolkit's default
+    output (Windows preserve-default path).
+    """
+    if not _terminal_may_leak_cpr():
+        return None
+    return _build_cpr_disabled_output(stdout)
 
 
 def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
@@ -4197,6 +4198,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # Battery read-out in the status bar (toggled via /battery, off by
+        # default). Persisted to display.battery so it survives restarts.
+        self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4555,6 +4559,73 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return "class:status-bar-good"
 
     @staticmethod
+    def _battery_status_style(category: str) -> str:
+        """Map a battery colour category to a status-bar style class."""
+        return {
+            "good": "class:status-bar-good",
+            "warn": "class:status-bar-warn",
+            "bad": "class:status-bar-bad",
+            "critical": "class:status-bar-critical",
+        }.get(category, "class:status-bar-dim")
+
+    def _handle_battery_command(self, cmd_original: str) -> None:
+        """Toggle the status-bar battery read-out.
+
+        ``/battery`` toggles, ``/battery on|off`` sets explicitly, and
+        ``/battery status`` reports the current setting plus a live reading.
+        The choice is persisted to ``display.battery`` so it survives restarts.
+        """
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        try:
+            from agent.battery import format_battery, read_battery
+            reading = read_battery(use_cache=False)
+        except Exception:
+            reading = None
+
+        if arg in ("status", "show"):
+            state = "on" if self._battery_visible else "off"
+            if reading is not None and reading.available:
+                self._console_print(
+                    f"  Battery indicator {state} — currently {format_battery(reading)}"
+                )
+            elif reading is not None:
+                self._console_print(
+                    f"  Battery indicator {state} — no battery detected on this machine"
+                )
+            else:
+                self._console_print(f"  Battery indicator {state}")
+            return
+
+        if arg in ("on", "true", "yes"):
+            target = True
+        elif arg in ("off", "false", "no"):
+            target = False
+        elif arg in ("", "toggle"):
+            target = not self._battery_visible
+        else:
+            self._console_print("  Usage: /battery [on|off|status]")
+            return
+
+        self._battery_visible = target
+        save_config_value("display.battery", target)
+
+        if target:
+            if reading is not None and not reading.available:
+                self._console_print(
+                    "  Battery indicator on — no battery detected, so nothing will show here"
+                )
+            elif reading is not None and reading.available:
+                self._console_print(
+                    f"  Battery indicator on — {format_battery(reading)}"
+                )
+            else:
+                self._console_print("  Battery indicator on")
+        else:
+            self._console_print("  Battery indicator off")
+
+    @staticmethod
     def _compression_count_style(count: int) -> str:
         """Return a style class reflecting context compression pressure."""
         if count >= 10:
@@ -4671,7 +4742,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "battery_label": "",
+            "battery_category": "dim",
         }
+
+        # Battery read-out (first status-bar element when enabled). Reads are
+        # memoised for a few seconds inside agent.battery, so polling it on
+        # every status-bar repaint is cheap.
+        if getattr(self, "_battery_visible", False):
+            try:
+                from agent.battery import (
+                    battery_category,
+                    format_battery,
+                    read_battery,
+                )
+
+                _batt = read_battery()
+                snapshot["battery_label"] = format_battery(_batt)
+                snapshot["battery_category"] = battery_category(_batt)
+            except Exception:
+                pass
 
         # Count live /background tasks. The dict entry is removed in the
         # task thread's finally block, so len() reflects truly-running tasks.
@@ -5152,15 +5242,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            battery_label = snapshot.get("battery_label") or ""
+            battery_prefix = f"{battery_label} │ " if battery_label else ""
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{battery_prefix}⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if battery_label:
+                    parts.insert(0, battery_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5187,6 +5281,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if battery_label:
+                parts.insert(0, battery_label)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5224,6 +5320,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            battery_label = snapshot.get("battery_label") or ""
+            battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
 
             if width < 52:
                 frags = [
@@ -5323,6 +5421,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
+
+            # Battery is the first status-bar element when enabled: prepend it
+            # ahead of the leading ⚕ marker in whichever width tier ran above.
+            if battery_label:
+                frags[0:0] = [
+                    ("class:status-bar", " "),
+                    (battery_style, battery_label),
+                    ("class:status-bar-dim", " │"),
+                ]
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -6093,15 +6200,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"{_DIM}No active input buffer is available for the external editor.{_RST}")
             return False
         try:
-            existing_text = getattr(target_buffer, "text", "")
-            expanded_text = self._expand_paste_references(existing_text)
-            if expanded_text != existing_text and hasattr(target_buffer, "text"):
-                self._skip_paste_collapse = True
-                target_buffer.text = expanded_text
-                if hasattr(target_buffer, "cursor_position"):
-                    target_buffer.cursor_position = len(expanded_text)
-            # Set skip flag (again) so the text-change event fired when the
-            # editor closes does not re-collapse the returned content.
+            # Inline pastes so the editor (and the draft it submits) sees real
+            # content; skip flag unconditionally so the editor-close text-change
+            # doesn't re-collapse it, even when there was nothing to inline.
+            self._inline_pastes(target_buffer)
             self._skip_paste_collapse = True
             # Open the editor, then submit the saved draft on a clean exit —
             # matching the TUI's Ctrl+G (openEditor), which sends the buffer
@@ -6172,6 +6274,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._reset_input_buffer(buffer)
         if app is not None:
             app.invalidate()
+
+    def _inline_pastes(self, buffer) -> None:
+        """Replace collapsed-paste placeholders in ``buffer`` with real content.
+
+        A big paste shows as a compact ``[Pasted text #N -> file]`` placeholder,
+        but history recall and the external editor need the actual text — a bare
+        reference is useless once the file is gone or on another machine. Inlining
+        before ``reset(append_to_history=True)`` also lets prompt_toolkit persist
+        the content through its normal path. Sets ``_skip_paste_collapse`` so the
+        ensuing text-change doesn't re-collapse it.
+        """
+        try:
+            existing = getattr(buffer, "text", "")
+            expanded = self._expand_paste_references(existing)
+            if expanded != existing and hasattr(buffer, "text"):
+                self._skip_paste_collapse = True
+                buffer.text = expanded
+                if hasattr(buffer, "cursor_position"):
+                    buffer.cursor_position = len(expanded)
+        except Exception:
+            logger.debug("Failed to inline paste placeholders", exc_info=True)
 
     def _reset_input_buffer(self, buffer) -> None:
         """Clear an input buffer after a programmatic submit (best-effort)."""
@@ -8961,6 +9084,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self._console_print(f"  Status bar {state}")
+        elif canonical == "battery":
+            self._handle_battery_command(cmd_original)
         elif canonical == "timestamps":
             self._handle_timestamps_command(cmd_original)
         elif canonical == "verbose":
@@ -11392,7 +11517,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         import time as _time
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
+            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
 
             self._approval_state = {
@@ -11887,6 +12012,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from agent.model_metadata import get_model_context_length
                 _ctx_len = get_model_context_length(
                     self.model, base_url=self.base_url or "", api_key=self.api_key or "",
+                    provider=self.provider or "",
                     config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
                 _ctx_result = preprocess_context_references(
                     message, cwd=os.getcwd(), context_length=_ctx_len)
@@ -13369,6 +13495,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         pass
                 else:
                     self._pending_input.put(payload)
+                # History stores real pasted content, not the placeholder, so
+                # up-arrow recall restores the actual text.
+                self._inline_pastes(event.app.current_buffer)
                 event.app.current_buffer.reset(append_to_history=True)
 
         _bind_prompt_submit_keys(kb, handle_enter)
@@ -13579,15 +13708,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
 
+        def _recall_without_recollapse(buf, move):
+            """Run a history-navigation move, suppressing paste-collapse.
+
+            Recalled history can hold the full text of a paste that was
+            collapsed to a placeholder at submit time. Loading it back into the
+            buffer looks exactly like a fresh large paste to ``_on_text_changed``
+            and would be re-collapsed. Set the skip flag around the move; if the
+            move didn't change the text (plain cursor movement), clear the flag
+            so a later real paste still collapses.
+            """
+            before = buf.text
+            self._skip_paste_collapse = True
+            move()
+            if buf.text == before:
+                self._skip_paste_collapse = False
+
         @kb.add('up', filter=_normal_input)
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+            buf = event.app.current_buffer
+            _recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
             """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+            buf = event.app.current_buffer
+            _recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
 
         @kb.add('c-l')
         def handle_ctrl_l(event):
@@ -14822,22 +14969,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
 
-        # Disable CPR (Cursor Position Report) at the source so prompt_toolkit
-        # never sends ESC[6n cursor-position queries — but only on terminals
-        # where the reply is likely to leak. Over SSH/cloudflared tunnels and
-        # slow PTYs the CPR replies (ESC[<row>;<col>R) leak into the display as
-        # raw "20;1R21;1R" text and can stall the renderer's pending-CPR future,
-        # freezing the prompt after the agent's final answer (#13870). CPR is a
-        # layout hint, not a speed optimization, and it works fine locally, so we
-        # leave prompt_toolkit's default untouched on local terminals and only
-        # suppress it where the bug reproduces. None (local, or build failure)
-        # falls back to the default output; the input-side scrubbing in
-        # _strip_leaked_terminal_responses still guards against any leaks.
-        _cpr_disabled_output = (
-            _build_cpr_disabled_output(sys.stdout)
-            if _terminal_may_leak_cpr()
-            else None
-        )
+        # Select CPR-disabled output when _terminal_may_leak_cpr() says so
+        # (POSIX local + SSH; Windows keeps PT default — see helper docs).
+        # None falls back to prompt_toolkit's default output; input scrubbing
+        # in _strip_leaked_terminal_responses still guards residual leaks.
+        _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
         # Create the application
         app = Application(

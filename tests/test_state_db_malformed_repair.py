@@ -256,6 +256,160 @@ def test_repair_on_clean_db_is_noop(tmp_path):
     conn.close()
 
 
+# ── FTS read-corruption class (#66724) ───────────────────────────────────
+# Even when writes succeed, partial FTS5 shadow-table damage makes MATCH /
+# snippet / rank queries fail with DatabaseError("database disk image is
+# malformed") while plain reads of the FTS5 table still parse. The read
+# probe in _db_opens_cleanly must surface this corruption class as a reason
+# so the repair path triggers, but it must NOT misclassify the supported
+# degraded-runtime path (no fts5 module / no trigram tokenizer) as
+# corruption — doing so would route a healthy degraded DB through the
+# repair fallback that deletes the messages_fts% schema.
+
+
+def _corrupt_fts_shadow_segments(db_path: Path) -> None:
+    """Overwrite the FTS5 shadow b-tree blocks for ``messages_fts`` only.
+
+    Distinct from ``_corrupt_fts_index_data`` which targets the writes-side
+    trigger path; this targets the MATCH query path so the read probe is
+    what fires.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("UPDATE messages_fts_data SET block = X'BADC0FFEE0DDF00D'")
+    conn.close()
+
+
+def test_fts_read_corruption_detected_by_read_probe(tmp_path):
+    """Partial shadow-table damage is caught by the FTS5 read probe.
+
+    Without the read probe, ``_db_opens_cleanly`` reports the DB healthy
+    even though ``session_search`` and ``/resume`` title resolution fail
+    with ``database disk image is malformed`` — the exact silent-fail
+    behavior reported in #66724.
+    """
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    assert _db_opens_cleanly(db_path) is None
+
+    _corrupt_fts_shadow_segments(db_path)
+
+    reason = _db_opens_cleanly(db_path)
+    assert reason is not None
+    assert "messages_fts" in reason
+    assert "malformed" in reason.lower() or "database disk image" in reason.lower()
+
+
+def test_fts_read_corruption_repaired_in_place(tmp_path):
+    """``repair_state_db_schema`` rebuilds the FTS index so reads resume."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_fts_shadow_segments(db_path)
+
+    assert _db_opens_cleanly(db_path) is not None  # unhealthy before
+
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is True
+    assert _db_opens_cleanly(db_path) is None  # healthy after rebuild
+
+    # Search back online.
+    db = SessionDB(db_path=db_path)
+    try:
+        hits = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'pizza'"
+        ).fetchone()[0]
+        assert hits >= 5
+    finally:
+        db.close()
+
+
+# ── Degraded-runtime compatibility (regression for #66906 review) ────────
+# The read probe must NOT misclassify a supported degraded runtime (no
+# fts5 module / no trigram tokenizer) as corruption. If it did, a healthy
+# degraded DB would be sent into the repair path, whose final fallback
+# deletes the messages_fts% schema — breaking the very FTS tables that
+# may have been inherited from a prior build that did have FTS5.
+
+
+class _NoFts5RuntimeCursor(sqlite3.Cursor):
+    """Simulate a runtime without the fts5 module: fts5 table exists but
+    MATCH queries raise the canonical capability error."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if "MATCH" in probe and '""' in probe and "messages_fts " in probe:
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().execute(sql, parameters)
+
+
+class _NoFts5RuntimeConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFts5RuntimeCursor)
+
+
+class _NoTrigramRuntimeCursor(sqlite3.Cursor):
+    """Simulate a runtime with FTS5 but without the trigram tokenizer."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if "MATCH" in probe and '""' in probe and "messages_fts_trigram" in probe:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().execute(sql, parameters)
+
+
+class _NoTrigramRuntimeConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramRuntimeCursor)
+
+
+def test_fts_read_probe_returns_none_when_fts5_module_missing(tmp_path, monkeypatch):
+    """Capability error on MATCH must not surface as corruption.
+
+    Simulates a healthy DB on a SQLite build without the fts5 module:
+    the messages_fts table exists (from a previous init on a build with
+    fts5) and MATCH queries raise the canonical "no such module: fts5".
+    _db_opens_cleanly must NOT classify this as corruption — otherwise
+    repair would be triggered and its final fallback would delete the
+    messages_fts% schema, breaking the search feature entirely.
+    """
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    real_connect = sqlite3.connect
+
+    def connect_no_fts5(*args, **kwargs):
+        kwargs["factory"] = _NoFts5RuntimeConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("hermes_state.sqlite3.connect", connect_no_fts5)
+
+    # Healthy degraded DB → probe returns None. Repair path must NOT fire.
+    assert _db_opens_cleanly(db_path) is None
+
+
+def test_fts_read_probe_returns_none_when_trigram_missing(tmp_path, monkeypatch):
+    """Capability error on trigram MATCH must not surface as corruption."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    real_connect = sqlite3.connect
+
+    def connect_no_trigram(*args, **kwargs):
+        kwargs["factory"] = _NoTrigramRuntimeConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("hermes_state.sqlite3.connect", connect_no_trigram)
+
+    assert _db_opens_cleanly(db_path) is None
+
+
 # ── FTS write-corruption class (#50502) ──────────────────────────────────
 # A readable state.db can still reject every message write through the
 # messages_fts* triggers when the FTS index is corrupt. Plain
@@ -331,6 +485,102 @@ def test_repair_noop_db_uses_already_healthy_shortcut(tmp_path):
     report = repair_state_db_schema(db_path, backup=False)
     assert report["repaired"] is True
     assert report["strategy"] == "already_healthy"
+
+
+def _corrupt_btree_index(db_path: Path, index_name: str) -> None:
+    """Make a real B-tree index stale so integrity_check reports
+    'wrong # of entries in index <name>'.
+
+    writable_schema hack: temporarily rewrite the index definition in
+    sqlite_master to a partial index (``WHERE 0``), REINDEX so its b-tree is
+    rebuilt EMPTY, then restore the original full definition. The stored
+    b-tree now has zero entries while the schema says it must cover every
+    row — exactly the on-disk state issue #63386 reported for
+    idx_sessions_handoff_state, produced without any mocking.
+    """
+    raw = sqlite3.connect(str(db_path))
+    orig_sql = raw.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+        (index_name,),
+    ).fetchone()[0]
+
+    def _set_index_sql(conn, sql):
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql=? WHERE type='index' AND name=?",
+            (sql, index_name),
+        )
+        ver = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(f"PRAGMA schema_version={ver + 1}")
+        conn.execute("PRAGMA writable_schema=OFF")
+        conn.commit()
+
+    _set_index_sql(raw, orig_sql + " WHERE 0")
+    raw.close()
+
+    # Fresh connection so the doctored schema is re-parsed, then rebuild the
+    # index under the WHERE 0 definition — empty b-tree on disk.
+    raw = sqlite3.connect(str(db_path))
+    raw.execute(f"REINDEX {index_name}")
+    raw.commit()
+    # Restore the original (full) definition: schema and b-tree now disagree.
+    _set_index_sql(raw, orig_sql)
+    raw.close()
+
+
+def test_repair_rebuilds_stale_btree_indexes(tmp_path):
+    """repair_state_db_schema repairs a REAL stale B-tree index via REINDEX.
+
+    End-to-end, no mocks: a genuinely stale index (empty b-tree under a full
+    index definition — the #63386 'wrong # of entries in index' class) is
+    detected by the real _db_opens_cleanly, repaired by Strategy 0.5
+    (REINDEX), and the DB verifies clean afterwards with real integrity
+    checks.
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    _corrupt_btree_index(db_path, "idx_messages_session")
+
+    # The real detector must see the real corruption...
+    reason = hermes_state._db_opens_cleanly(db_path)
+    assert reason is not None
+    assert "wrong # of entries in index idx_messages_session" in reason
+
+    # ...and the real repair ladder must fix it via REINDEX.
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is True
+    assert report["strategy"] == "reindex_btree"
+
+    # Post-repair the DB is genuinely healthy: detector and raw
+    # integrity_check both agree, and the repaired index answers queries.
+    assert hermes_state._db_opens_cleanly(db_path) is None
+    raw = sqlite3.connect(str(db_path))
+    assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    n = raw.execute(
+        "SELECT count(*) FROM messages INDEXED BY idx_messages_session "
+        "WHERE session_id IS NOT NULL"
+    ).fetchone()[0]
+    raw.close()
+    assert n == 10  # every row visible through the rebuilt index
+
+
+def test_repair_stale_btree_index_preserves_rows(tmp_path):
+    """The REINDEX strategy is non-destructive: sessions/messages survive."""
+    db_path = tmp_path / "state.db"
+    sid = _build_healthy_db(db_path)
+    _corrupt_btree_index(db_path, "idx_messages_session")
+
+    report = repair_state_db_schema(db_path, backup=False)
+    assert report["strategy"] == "reindex_btree"
+
+    db = SessionDB(db_path=db_path)
+    try:
+        msgs = db.get_messages(sid)
+        assert len(msgs) == 10
+        assert msgs[0]["content"] == "hello world 0"
+    finally:
+        db.close()
 
 
 def test_select_cached_agent_history_prefers_longer_live_transcript():

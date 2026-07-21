@@ -37,6 +37,17 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
+
+// A single battery reading pushed from the Python gateway (`system.battery`).
+// `available` is false on machines without a battery; `percent` is 0-100.
+export interface BatteryInfo {
+  available: boolean
+  category: BatteryCategory
+  percent: null | number
+  plugged: null | boolean
+}
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
@@ -127,7 +138,7 @@ export interface BillingOverlayCtx {
    */
   charge: (amount: string, idempotencyKey?: string) => Promise<BillingChargeOutcome>
   /**
-   * Run the `billing.step_up` device flow (grant Remote Spending). Resolves
+   * Run the `billing.step_up` device flow (allow Remote Spending). Resolves
    * `true` when the grant lands. The browser opens via the gateway's
    * out-of-band `billing.step_up.verification` event — the overlay just awaits.
    */
@@ -176,15 +187,15 @@ export interface BillingOverlayState {
 //              scheduled at date / no-op / blocked) + the apply action.
 //   result   — the outcome, including an SCA/decline upgrade handed off to the
 //              portal.
-//   stepup   — reached when a mutation returns insufficient_scope: grants the
-//              terminal-billing scope in place, then auto-replays the held action.
+//   stepup   — reached when a mutation returns insufficient_scope: allows remote
+//              spending in place, then auto-replays the held action.
 export type SubscriptionScreen = 'confirm' | 'overview' | 'picker' | 'result' | 'stepup'
 
-// The action held while the stepup screen grants terminal billing, replayed on
-// grant: re-preview a tier, re-apply the confirmed pending change, or re-resume.
+// The action held while the stepup screen allows remote spending, replayed after
+// approval: re-preview a tier, re-apply the confirmed pending change, or re-resume.
 export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tierId: string } | { kind: 'resume' }
 
-/** Outcome of a terminal-billing step-up: granted, plus the typed denial (for copy). */
+/** Outcome of a remote-spending step-up: granted, plus the typed denial (for copy). */
 export interface StepUpResult {
   granted: boolean
   error?: string
@@ -198,8 +209,11 @@ export interface SubscriptionOverlayCtx {
    * the server doesn't say (older NAS): the confirm keeps its generic line.
    */
   fetchCard: () => Promise<BillingCardInfo | null>
-  /** Build {portal}/manage-subscription?org_id=… locally and open it. Resolves ok/false. */
-  openManageLink: () => Promise<boolean>
+  /**
+   * Build {portal}/manage-subscription?org_id=… locally and open it. Resolves
+   * ok/false. Pass `tierId` to deep-link a specific plan via `?plan=`.
+   */
+  openManageLink: (tierId?: string) => Promise<boolean>
   /** Open an arbitrary portal recovery URL (e.g. an upgrade's SCA handoff). */
   openPortal: (url: string) => void
   /** Re-fetch subscription.state. */
@@ -215,7 +229,7 @@ export interface SubscriptionOverlayCtx {
   /** POST /upgrade: charge the card on the subscription + flip the plan now. */
   upgrade: (tierId: string, idempotencyKey?: string) => Promise<SubscriptionUpgradeResponse | null>
   /**
-   * Run the `billing.step_up` device flow (grant terminal billing / "Remote
+   * Run the `billing.step_up` device flow (allow remote spending / "Remote
    * Spending"). Resolves `{granted}` plus the typed denial (`error`/`message`) so
    * the stepup screen shows the right recovery. The browser opens via the
    * gateway's out-of-band verification event — the stepup screen just awaits.
@@ -269,6 +283,8 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  dialog: DialogState | null
+  gridTest: GridTestState | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
@@ -281,10 +297,39 @@ export interface OverlayState {
   sudo: null | SudoReq
 }
 
+export interface DialogState {
+  body: string
+  hint?: string
+  title?: string
+  zone?: 'bottom' | 'bottom-left' | 'bottom-right' | 'center' | 'left' | 'right' | 'top' | 'top-left' | 'top-right'
+}
+
 export interface PagerState {
   lines: string[]
   offset: number
   title?: string
+}
+
+/** Number of live panels in the /grid-test streams demo (focus wraps mod this). */
+export const GRID_STREAM_COUNT = 6
+
+export interface GridTestState {
+  activeCol: number
+  activeRow: number
+  /** Areas mode: fixed-height 2D grid with rowSpan/colSpan demo cells. */
+  areas: boolean
+  cols: number
+  gap: null | number
+  nested: boolean
+  paddingX: null | number
+  rows: number
+  /** Streams mode: live-updating panels tiled by GridAreas. */
+  streams: boolean
+  /** Streams mode: which panel h/l focus is on (0-based, wraps). */
+  streamFocus: number
+  /** Streams mode: which panel owns the promoted 2x2 slot. */
+  streamMain: number
+  zoomed: boolean
 }
 
 export interface TranscriptRow {
@@ -294,6 +339,8 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  battery: boolean
+  batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode

@@ -7,7 +7,11 @@ export interface GatewaySkin {
   banner_logo?: string
   branding?: Record<string, string>
   colors?: Record<string, string>
+  /** Hand-tuned palette for dark terminals (light-authored skins). */
+  dark_colors?: Record<string, string>
   help_header?: string
+  /** Hand-tuned palette for light terminals (dark-authored skins). */
+  light_colors?: Record<string, string>
   tool_prefix?: string
 }
 
@@ -45,7 +49,7 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
@@ -75,6 +79,7 @@ export type CommandDispatchResponse =
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  battery?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
@@ -102,6 +107,9 @@ export interface ConfigDisplayConfig {
   // validation anyway.
   tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
+   *  (default) trusts the OSC-11 probe + env signals. */
+  tui_theme?: string
 }
 
 export interface ConfigVoiceConfig {
@@ -120,6 +128,9 @@ export interface ConfigFullResponse {
 }
 
 export interface ConfigMtimeResponse {
+  /** Revision hash of MCP-relevant config sections; reload MCP only when it
+   *  changes (cosmetic writes like /skin must not trigger reconnects). */
+  mcp_rev?: string
   mtime?: number
 }
 
@@ -141,6 +152,13 @@ export interface ConfigSetResponse {
 
 export interface SetupStatusResponse {
   provider_configured?: boolean
+}
+
+export interface SystemBatteryResponse {
+  available?: boolean
+  category?: string
+  percent?: null | number
+  plugged?: null | boolean
 }
 
 // ── Session lifecycle ────────────────────────────────────────────────

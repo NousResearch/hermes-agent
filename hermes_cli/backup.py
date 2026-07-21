@@ -288,8 +288,10 @@ def _safe_copy_db(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
         # PermissionError, silently leaving a broken copy in the snapshot.
         try:
             dst.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as cleanup_exc:
+            logger.warning(
+                "Could not remove partial copy %s: %s", dst, cleanup_exc
+            )
         return False, error
     return True, None
 
@@ -900,8 +902,8 @@ def create_quick_snapshot(
                 if _too_large(sub, sub_rel):
                     continue
                 dst = snap_dir / sub_rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
                     # Route SQLite DBs through the WAL-safe backup() path so a
                     # board DB with an open WAL (the gateway may hold it at
                     # snapshot time) is captured consistently.
@@ -925,9 +927,9 @@ def create_quick_snapshot(
             continue
 
         dst = snap_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
             if src.suffix == ".db":
                 ok, err = _safe_copy_db(src, dst)
                 if not ok:
@@ -958,8 +960,16 @@ def create_quick_snapshot(
         # protect, and why. Keeps the "was it already broken before the
         # update?" question answerable after the fact (issue #68474).
         meta["failed"] = failed
-    with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    try:
+        with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError as exc:
+        # A snapshot without a manifest cannot be restored — treat as a
+        # full failure rather than leaving an unusable directory behind.
+        print(f"  ⚠ Snapshot FAILED: could not write manifest: {exc}")
+        logger.warning("Quick snapshot manifest write failed: %s", exc)
+        shutil.rmtree(snap_dir, ignore_errors=True)
+        return None
 
     if failed:
         names = ", ".join(sorted(failed))
@@ -976,7 +986,14 @@ def create_quick_snapshot(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    #
+    # An INCOMPLETE snapshot must never evict older snapshots: with the
+    # pre-update keep=1 policy, pruning here would delete the last snapshot
+    # that may still hold a good copy of the very file this run failed to
+    # capture (in issue #68474 the previous day's snapshot was the only
+    # surviving recovery source).
+    if not failed:
+        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id

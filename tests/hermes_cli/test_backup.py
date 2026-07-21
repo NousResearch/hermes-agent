@@ -1626,6 +1626,32 @@ class TestQuickSnapshot:
         assert "disk full" in meta["failed"][".env"]
         assert "Snapshot INCOMPLETE" in capsys.readouterr().out
 
+    def test_incomplete_snapshot_never_prunes_older_snapshots(self, hermes_home):
+        """An incomplete snapshot must not evict older (possibly complete)
+        snapshots: with the pre-update keep=1 policy, pruning would delete
+        the last snapshot still holding a good copy of the very file this
+        run failed to capture (issue #68474)."""
+        from hermes_cli.backup import create_quick_snapshot
+        good_id = create_quick_snapshot(label="good", hermes_home=hermes_home, keep=1)
+        assert good_id is not None
+
+        (hermes_home / "state.db").write_bytes(b"\x00" * 8192)
+        bad_id = create_quick_snapshot(label="bad", hermes_home=hermes_home, keep=1)
+        assert bad_id is not None
+
+        root = hermes_home / "state-snapshots"
+        assert (root / good_id).is_dir(), "complete snapshot was evicted"
+        assert (root / bad_id).is_dir()
+
+    def test_complete_snapshot_still_prunes(self, hermes_home):
+        """Prune behavior is unchanged when every capture succeeds."""
+        from hermes_cli.backup import create_quick_snapshot
+        first = create_quick_snapshot(label="a", hermes_home=hermes_home, keep=1)
+        second = create_quick_snapshot(label="b", hermes_home=hermes_home, keep=1)
+        root = hermes_home / "state-snapshots"
+        assert not (root / first).exists()
+        assert (root / second).is_dir()
+
     def test_clean_snapshot_has_no_failed_key(self, hermes_home, capsys):
         """The failed key and the INCOMPLETE warning appear only on failure."""
         from hermes_cli.backup import create_quick_snapshot

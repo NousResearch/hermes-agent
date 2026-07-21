@@ -106,16 +106,22 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
-    """Return this worker's dispatcher run id when it is scoped to task_id."""
+    """Return a run fence, rejecting a malformed dispatcher worker context."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
-        return None
+        raise ValueError(
+            f"dispatcher worker for {task_id} has no HERMES_KANBAN_RUN_ID; "
+            "refusing an unfenced lifecycle mutation"
+        )
     try:
         return int(raw)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ValueError(
+            f"dispatcher worker for {task_id} has invalid "
+            "HERMES_KANBAN_RUN_ID; refusing an unfenced lifecycle mutation"
+        ) from exc
 
 
 def _stamp_worker_session_metadata(
@@ -259,29 +265,35 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
     _auto_heartbeat_last_attempt = now
     try:
+        run_id = _worker_run_id(tid)
+        if run_id is None:
+            return False
         kb, conn = _connect()
         try:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             try:
-                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+                claim_extended = kb.heartbeat_claim(
+                    conn,
+                    tid,
+                    claimer=claim_lock,
+                    expected_run_id=run_id,
+                )
             except Exception:
+                claim_extended = False
                 logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
-            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-            run_id: Optional[int]
             try:
-                run_id = int(run_id_raw) if run_id_raw else None
-            except (TypeError, ValueError):
-                run_id = None
-            try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                event_recorded = kb.heartbeat_worker(
+                    conn, tid, note=None, expected_run_id=run_id
+                )
             except Exception:
+                event_recorded = False
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-        return True
+        return claim_extended and event_recorded
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
@@ -629,11 +641,36 @@ def _handle_complete(args: dict, **kw) -> str:
                     )
 
             try:
-                ok = kb.complete_task(
-                    conn, tid,
-                    result=result, summary=summary, metadata=metadata,
-                    created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                worker_run_id = _worker_run_id(tid)
+                if worker_run_id is not None:
+                    ok = kb.stage_task_completion(
+                        conn,
+                        tid,
+                        result=result,
+                        summary=summary,
+                        metadata=metadata,
+                        created_cards=created_cards,
+                        expected_run_id=worker_run_id,
+                    )
+                else:
+                    # Manual/orchestrator completion has no enclosing agent
+                    # turn to finalize it, so preserve the immediate path.
+                    ok = kb.complete_task(
+                        conn,
+                        tid,
+                        result=result,
+                        summary=summary,
+                        metadata=metadata,
+                        created_cards=created_cards,
+                    )
+            except kb.InvalidCompletionHandoffError as handoff_err:
+                return tool_error(
+                    f"kanban_complete rejected this invalid completion handoff: "
+                    f"{handoff_err.reason}. The attempt was quarantined in "
+                    f"blocked/needs_input and its dependents remain gated. "
+                    f"Do not relabel findings or omit required BUILD receipt "
+                    f"fields; link any required rework task, then use an "
+                    f"audited unblock/retry path."
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -667,7 +704,11 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                staged=worker_run_id is not None,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -778,19 +819,25 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            worker_run_id = _worker_run_id(tid)
             # Extend the claim TTL first. The dispatcher pins
             # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
             # (see _default_spawn in kanban_db.py); falling back to the
             # default _claimer_id() covers locally-driven workers that
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            kb.heartbeat_claim(
+                conn,
+                tid,
+                claimer=claim_lock,
+                expected_run_id=worker_run_id,
+            )
 
             ok = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=worker_run_id,
             )
             if not ok:
                 return tool_error(
@@ -1434,7 +1481,13 @@ KANBAN_COMPLETE_SCHEMA = {
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required. If you created new "
+        "``summary`` or ``result`` is required. Dispatcher workers are "
+        "finalized only after the turn exits cleanly; explicit non-pass "
+        "handoffs (FIX-REQUIRED or unresolved CRITICAL/HIGH findings) "
+        "must use ``kanban_block`` instead. BUILD/implementation workflow "
+        "steps must include metadata.final_head, base_sha, a non-empty "
+        "changed_files list, an artifact handle, a verification summary, "
+        "and blocking_findings=[]. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
@@ -1466,7 +1519,10 @@ KANBAN_COMPLETE_SCHEMA = {
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "workers alongside ``summary``. For BUILD/implementation "
+                    "workflow steps, include final_head, base_sha, a non-empty "
+                    "changed_files list, artifact or artifacts, "
+                    "verification_summary, and blocking_findings=[]."
                 ),
             },
             "result": {

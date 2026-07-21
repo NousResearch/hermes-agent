@@ -43,6 +43,19 @@ def conn(kanban_home):
         yield c
 
 
+def _bind_worker_pid(conn, task_id: str, pid: int) -> bool:
+    task = kb.get_task(conn, task_id)
+    assert task is not None and task.current_run_id is not None
+    assert task.claim_lock
+    return kb._set_worker_pid(
+        conn,
+        task_id,
+        pid,
+        expected_run_id=task.current_run_id,
+        expected_claim_lock=task.claim_lock,
+    )
+
+
 def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     """A reset carrying an OLD worker's claim_lock must NOT clobber a task
     that has since been re-claimed by a new worker."""
@@ -53,7 +66,7 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead = subprocess.Popen(["true"])
     dead.wait()
-    kb._set_worker_pid(conn, tid, dead.pid)
+    _bind_worker_pid(conn, tid, dead.pid)
     old = conn.execute(
         "SELECT claim_lock, worker_pid FROM tasks WHERE id=?", (tid,)
     ).fetchone()
@@ -68,7 +81,7 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:B")
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
-        kb._set_worker_pid(conn, tid, sleeper.pid)
+        _bind_worker_pid(conn, tid, sleeper.pid)
 
         # The stale reset for worker A — same shape as the guarded UPDATE in
         # detect_crashed_workers — must reject (rowcount 0) because B owns it.
@@ -98,7 +111,7 @@ def test_genuine_crash_still_reclaims(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead = subprocess.Popen(["true"])
     dead.wait()
-    kb._set_worker_pid(conn, tid, dead.pid)
+    _bind_worker_pid(conn, tid, dead.pid)
     # Rewind started_at so the launch grace window doesn't skip the check.
     conn.execute("UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,))
     conn.execute(

@@ -1293,12 +1293,17 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
+    try:
+        worker_run_id = _worker_run_id_for(args.task_id)
+    except ValueError as exc:
+        print(f"cannot heartbeat {args.task_id}: {exc}", file=sys.stderr)
+        return 1
     with kb.connect_closing() as conn:
         ok = kb.heartbeat_worker(
             conn,
             args.task_id,
             note=getattr(args, "note", None),
-            expected_run_id=_worker_run_id_for(args.task_id),
+            expected_run_id=worker_run_id,
         )
     if not ok:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
@@ -1954,15 +1959,26 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
 
 
 def _worker_run_id_for(task_id: str) -> Optional[int]:
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+    worker_task = os.environ.get("HERMES_KANBAN_TASK")
+    if not worker_task:
         return None
+    if worker_task != task_id:
+        raise ValueError(
+            f"dispatcher worker is scoped to {worker_task}; refusing to mutate {task_id}"
+        )
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
-        return None
+        raise ValueError(
+            f"dispatcher worker for {task_id} has no HERMES_KANBAN_RUN_ID; "
+            "refusing an unfenced lifecycle mutation"
+        )
     try:
         return int(raw)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ValueError(
+            f"dispatcher worker for {task_id} has invalid "
+            "HERMES_KANBAN_RUN_ID; refusing an unfenced lifecycle mutation"
+        ) from exc
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
@@ -2040,16 +2056,44 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                         failed.append(tid)
                         continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                worker_run_id = _worker_run_id_for(tid)
+                if worker_run_id is not None:
+                    completed = kb.stage_task_completion(
+                        conn,
+                        tid,
+                        result=args.result,
+                        summary=summary,
+                        metadata=metadata,
+                        expected_run_id=worker_run_id,
+                    )
+                else:
+                    completed = kb.complete_task(
+                        conn,
+                        tid,
+                        result=args.result,
+                        summary=summary,
+                        metadata=metadata,
+                    )
+            except kb.InvalidCompletionHandoffError as exc:
+                failed.append(tid)
+                print(
+                    f"cannot complete {tid}: {exc.reason}; the invalid attempt "
+                    f"was quarantined in blocked/needs_input",
+                    file=sys.stderr,
+                )
+                continue
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"cannot complete {tid}: {exc}", file=sys.stderr)
+                continue
+            if not completed:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
+                # Preserve the stable CLI contract. Dispatcher workers stage
+                # this transition until their enclosing turn finalizes; manual
+                # callers complete immediately.
                 print(f"Completed {tid}")
     return 0 if not failed else 1
 
@@ -2090,18 +2134,24 @@ def _cmd_block(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
+            try:
+                worker_run_id = _worker_run_id_for(tid)
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"cannot block {tid}: {exc}", file=sys.stderr)
+                continue
             if not kb.block_task(
                 conn,
                 tid,
                 reason=reason,
                 kind=kind,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=worker_run_id,
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
                 # Report where the task actually landed — dependency blocks go
                 # to todo, and a tripped unblock-loop breaker routes to triage.
                 landed = kb.get_task(conn, tid)
@@ -2126,17 +2176,23 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
+            try:
+                worker_run_id = _worker_run_id_for(tid)
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"cannot schedule {tid}: {exc}", file=sys.stderr)
+                continue
             if not kb.schedule_task(
                 conn,
                 tid,
                 reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=worker_run_id,
             ):
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
                 print(f"Scheduled {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 
@@ -2153,12 +2209,12 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 

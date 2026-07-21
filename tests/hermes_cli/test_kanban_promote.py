@@ -107,6 +107,48 @@ def test_promote_force_records_forced_flag(conn):
     assert json.loads(ev["payload"])["forced"] is True
 
 
+@pytest.mark.parametrize("actor", ["", "   ", None])
+def test_promote_force_requires_non_empty_actor(conn, actor):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    ok, err = kb.promote_task(
+        conn,
+        child,
+        actor=actor,
+        force=True,
+        reason="operator recovery",
+    )
+    assert ok is False
+    assert err is not None and "actor" in err
+    task = kb.get_task(conn, child)
+    assert task is not None and task.status == "todo"
+
+
+def test_claim_rejects_tampered_override_with_blank_actor(conn):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    ok, err = kb.promote_task(
+        conn,
+        child,
+        actor="operator",
+        force=True,
+        reason="operator recovery",
+    )
+    assert ok and err is None
+    event = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'promoted_manual' ORDER BY id DESC LIMIT 1",
+        (child,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    payload["actor"] = " "
+    conn.execute(
+        "UPDATE task_events SET payload = ? WHERE id = ?",
+        (json.dumps(payload), event["id"]),
+    )
+    assert kb.claim_task(conn, child) is None
+    task = kb.get_task(conn, child)
+    assert task is not None and task.status == "todo"
+
+
 def test_promote_does_not_change_assignee(conn):
     child, _ = _stuck_todo(conn, parents_done=True)
     before = kb.get_task(conn, child).assignee
@@ -208,6 +250,25 @@ def test_cli_promote_bulk_partial_failure_exits_1(kanban_home, capsys):
     assert "t_nope" in captured.err and "not found" in captured.err
     with kb.connect() as conn:
         assert kb.get_task(conn, good).status == "ready"
+
+
+def test_cli_forced_promote_rejects_blank_profile_actor(
+    kanban_home,
+    capsys,
+    monkeypatch,
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+    monkeypatch.setattr(kb_cli, "_profile_author", lambda: " ")
+    rc = kb_cli._cmd_promote(
+        _promote_ns(child, reason=["operator recovery"], force=True)
+    )
+    assert rc == 1
+    assert "actor" in capsys.readouterr().err
+    with kb.connect() as conn:
+        task = kb.get_task(conn, child)
+        assert task is not None and task.status == "todo"
 
 
 def test_cli_promote_bulk_json_emits_list(kanban_home, capsys):

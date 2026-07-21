@@ -1638,10 +1638,17 @@ def _get_enabled_platforms() -> List[str]:
         enabled.append("discord")
     if get_env_value("SLACK_BOT_TOKEN"):
         enabled.append("slack")
-    if get_env_value("WHATSAPP_ENABLED"):
+    whatsapp_enabled = get_env_value("WHATSAPP_ENABLED", "").lower()
+    if whatsapp_enabled in ("true", "1", "yes"):
         enabled.append("whatsapp")
     if get_env_value("QQ_APP_ID"):
         enabled.append("qqbot")
+    # Matrix: check for homeserver URL (required) and either access token or password
+    matrix_homeserver = get_env_value("MATRIX_HOMESERVER")
+    matrix_token = get_env_value("MATRIX_ACCESS_TOKEN")
+    matrix_password = get_env_value("MATRIX_PASSWORD")
+    if matrix_homeserver and (matrix_token or matrix_password):
+        enabled.append("matrix")
     return enabled
 
 

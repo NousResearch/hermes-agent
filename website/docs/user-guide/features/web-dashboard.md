@@ -181,6 +181,19 @@ curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
 
 If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateway → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
 
+
+### Voice
+
+The **Voice** tab provides [Grok Voice Dispatch](./voice-dispatch.md): a realtime browser voice session that can start, monitor, and stop isolated Hermes delegates. Grok Voice is the conversational controller only; Hermes delegates perform the actual work using the normal Hermes tool and approval model.
+
+The browser never receives your long-lived `XAI_API_KEY`. The dashboard mints a short-lived xAI realtime client secret server-side and protects all `/api/voice/*` endpoints with the dashboard session token. Voice config, env lookup, ledger storage, and delegate agents honor the selected dashboard management profile.
+
+Enable it with:
+
+```bash
+hermes setup voice
+```
+
 ### Config
 
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:

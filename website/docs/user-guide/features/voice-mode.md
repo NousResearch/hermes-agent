@@ -8,6 +8,8 @@ description: "Real-time voice conversations with Hermes Agent — CLI, Telegram,
 
 Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
 
+For dashboard-based realtime voice control that dispatches work to isolated Hermes delegates through Grok Voice, see [Grok Voice Dispatch](./voice-dispatch.md).
+
 If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
 ## Prerequisites

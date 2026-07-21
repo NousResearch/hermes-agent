@@ -105,14 +105,17 @@ function RepoFlatSection({
   // git-worktree lanes) so out-of-tree/sibling worktrees — which exist as visual
   // lanes before the snapshot carries their sessions — get the new row. The
   // overlay drops lanes it empties, so re-merge to restore still-real worktrees.
-  const overlaidGroups = useMemo(() => {
+  const overlaidRepo = useMemo(() => {
+    const mergedRepo = { ...repo, groups: mergedGroups }
+
     if (!(liveSessions?.length || removedSessionIds?.size)) {
-      return mergedGroups
+      return mergedRepo
     }
 
-    const { groups } = overlayRepoLanes({ ...repo, groups: mergedGroups }, liveSessions ?? [], removedSessionIds)
+    const overlaid = overlayRepoLanes(mergedRepo, liveSessions ?? [], removedSessionIds)
+    const groups = mergeRepoWorktreeGroups(overlaid, discoveredWorktrees)
 
-    return mergeRepoWorktreeGroups({ id: repo.id, path: repo.path, groups }, discoveredWorktrees)
+    return { ...overlaid, groups }
   }, [repo, mergedGroups, discoveredWorktrees, liveSessions, removedSessionIds])
 
   const discoveredWorktreePaths = useMemo(
@@ -128,7 +131,7 @@ function RepoFlatSection({
   // Main lanes are always visible; linked worktrees can be user-dismissed.
   // A live `git worktree list` hit wins over an old dismissal: if git says the
   // worktree exists again (or still exists after "hide from sidebar"), surface it.
-  const ordered = overlaidGroups.filter(
+  const ordered = overlaidRepo.groups.filter(
     group =>
       group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
   )
@@ -164,6 +167,7 @@ function RepoFlatSection({
     <>
       {ordered.map(group => (
         <SidebarWorkspaceGroup
+          gitKind={overlaidRepo.gitKind}
           group={group}
           key={group.id}
           // The kanban bucket is read-only: it aggregates many task worktrees, so

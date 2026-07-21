@@ -250,7 +250,21 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Built-in memory is not a provider plugin: the empty sentinel renders as
   // "Built-in only" and a legacy literal `builtin` value is only kept visible
   // via enumOptionsFor's current-value passthrough (#49513).
-  'memory.provider': ['', 'honcho', 'hindsight'],
+  // Keep this in sync with the shipped provider plugins under plugins/memory/
+  // (see plugins/memory/__init__.py::list_memory_provider_names). A dynamic
+  // fetch from the backend would remove the need to touch this on every new
+  // provider — tracked as a follow-up in #68528.
+  'memory.provider': [
+    '',
+    'byterover',
+    'hindsight',
+    'holographic',
+    'honcho',
+    'mem0',
+    'openviking',
+    'retaindb',
+    'supermemory',
+  ],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).

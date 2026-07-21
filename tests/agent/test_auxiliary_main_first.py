@@ -568,7 +568,7 @@ class TestResolveVisionMainFirst:
 
         # Explicit "nous" override → uses strict backend, NOT main model path
         assert provider == "nous"
-        mock_strict.assert_called_once_with("nous", None)
+        mock_strict.assert_called_once_with("nous", None, explicit_api_key=None)
 
 
 # ── Vision — custom provider endpoint credential passthrough ────────────────

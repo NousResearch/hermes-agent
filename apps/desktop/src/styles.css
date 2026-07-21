@@ -1189,8 +1189,17 @@ text-* variant utilities. */ .btn-arc {
   font-size: 0.8125rem;
 }
 
-[data-slot='composer-rich-input']:empty::before {
+[data-slot='composer-rich-input']:empty::before,
+[data-slot='composer-rich-input']:has(> br:only-child)::before {
   color: var(--ui-text-tertiary) !important;
+}
+
+[data-slot='composer-rich-input']:has(> br:only-child) {
+  min-height: var(--composer-input-min-height);
+}
+
+[data-slot='composer-rich-input'] > br:only-child {
+  display: block;
 }
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it

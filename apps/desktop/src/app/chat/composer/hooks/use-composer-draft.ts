@@ -189,7 +189,8 @@ export function useComposerDraft({
     draftRef.current = ''
 
     if (editorRef.current) {
-      editorRef.current.replaceChildren()
+      renderComposerContents(editorRef.current, '')
+      placeCaretEnd(editorRef.current)
     }
   }, [setComposerText])
 

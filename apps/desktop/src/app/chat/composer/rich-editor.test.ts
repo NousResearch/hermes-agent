@@ -34,6 +34,17 @@ describe('renderComposerContents', () => {
     expect(editor.textContent).toContain('<b>raw</b>')
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
   })
+
+  it('keeps a caret br sentinel for the empty composer', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '')
+
+    expect(editor.childNodes.length).toBe(1)
+    expect(editor.firstChild?.nodeName).toBe('BR')
+    expect(composerPlainText(editor)).toBe('')
+  })
 })
 
 describe('normalizeComposerEditorDom', () => {
@@ -58,6 +69,18 @@ describe('normalizeComposerEditorDom', () => {
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
     expect(editor.querySelector('br')).toBeNull()
   })
+
+  it('keeps a lone caret br sentinel but still treats it as empty text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '')
+    normalizeComposerEditorDom(editor)
+
+    expect(editor.childNodes.length).toBe(1)
+    expect(editor.firstChild?.nodeName).toBe('BR')
+    expect(composerPlainText(editor)).toBe('')
+  })
 })
 
 describe('insertInlineRefsIntoEditor', () => {
@@ -68,6 +91,17 @@ describe('insertInlineRefsIntoEditor', () => {
     insertInlineRefsIntoEditor(editor, ['@file:`src/foo.ts`'])
 
     expect(editor.querySelector(':scope > div')).toBeNull()
+    expect(composerPlainText(editor)).toBe('@file:`src/foo.ts` ')
+  })
+
+  it('replaces the empty caret br sentinel before inserting refs', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    renderComposerContents(editor, '')
+
+    insertInlineRefsIntoEditor(editor, ['@file:`src/foo.ts`'])
+
+    expect(editor.firstChild?.nodeName).not.toBe('BR')
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts` ')
   })
 })
@@ -105,6 +139,21 @@ describe('insertPlainTextAtCaret', () => {
     insertPlainTextAtCaret(editor, 'cd')
 
     expect(composerPlainText(editor)).toBe('abcdef')
+
+    editor.remove()
+  })
+
+  it('drops the empty sentinel before pasting into a cleared composer', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    renderComposerContents(editor, '')
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertPlainTextAtCaret(editor, 'hello')
+
+    expect(editor.firstChild?.nodeName).not.toBe('BR')
+    expect(composerPlainText(editor)).toBe('hello')
 
     editor.remove()
   })

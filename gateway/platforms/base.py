@@ -831,6 +831,24 @@ def get_audio_cache_dir() -> Path:
     return d
 
 
+def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
+    """Prefer a container-matching extension when audio magic bytes are obvious."""
+    fallback = fallback_ext if fallback_ext.startswith(".") else f".{fallback_ext}"
+    if len(data) >= 8 and data[4:8] == b"ftyp":
+        return ".m4a"
+    if data.startswith(b"OggS"):
+        return ".ogg"
+    if data.startswith(b"fLaC"):
+        return ".flac"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WAVE":
+        return ".wav"
+    if data.startswith(b"ID3") or data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return ".mp3"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return ".webm"
+    return fallback
+
+
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
     Save raw audio bytes to the cache and return the absolute file path.
@@ -844,7 +862,8 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
     validate_inbound_media_size(len(data), media_type="audio")
     cache_dir = get_audio_cache_dir()
-    filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
+    sniffed_ext = _sniff_audio_ext(data, ext)
+    filename = f"audio_{uuid.uuid4().hex[:12]}{sniffed_ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)

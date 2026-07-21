@@ -12,7 +12,7 @@ import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
-import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
+import type { ProjectInfo, ProjectsPayload, SessionInfo } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
 // served by the live gateway's `projects.*` JSON-RPC methods, which wrap the
@@ -47,12 +47,30 @@ function projectsStaleBackendError(): Error {
   return new Error(translateNow('sidebar.projects.staleBackend'))
 }
 
-// Client-side cache eviction (Apollo-style optimistic layer): ids the user just
-// deleted/archived. The backend tree is a snapshot that still lists them until
-// its next refresh, so the render-time overlay strips these so the tree matches
-// the live `$sessions` cache exactly — same as the flat Recents list. Pruned on
-// refresh once the server snapshot has caught up.
+// Client-side cache eviction (Apollo-style optimistic layer): ids deleted or
+// archived during this renderer run. Every session-list surface filters these;
+// failed mutations and explicit archive restores remove their markers.
 export const $removedSessionIds = atom<Set<string>>(new Set())
+
+export function sessionIsTombstoned(
+  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  ids: ReadonlySet<string> = $removedSessionIds.get()
+): boolean {
+  return ids.has(session.id) || Boolean(session._lineage_root_id && ids.has(session._lineage_root_id))
+}
+
+export function filterTombstonedSessions<T extends Pick<SessionInfo, '_lineage_root_id' | 'id'>>(
+  sessions: T[],
+  tombstones: ReadonlySet<string> = $removedSessionIds.get()
+): T[] {
+  if (!tombstones.size) {
+    return sessions
+  }
+
+  const visible = sessions.filter(session => !sessionIsTombstoned(session, tombstones))
+
+  return visible.length === sessions.length ? sessions : visible
+}
 
 export function tombstoneSessions(ids: Array<null | string | undefined>): void {
   const next = new Set($removedSessionIds.get())
@@ -285,36 +303,19 @@ export async function refreshProjects(): Promise<void> {
 interface ProjectTreePayload {
   projects: SidebarProjectTree[]
   active_id: null | string
-  scoped_session_ids: string[]
 }
 
 // Pull the authoritative project tree (overview structure + counts + preview
-// sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
+// sessions). Best-effort: a failure leaves the cached tree intact so the
+// sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
     const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
-    // The flat Sessions list shows everything; scoped ids are only used here to
-    // reconcile the optimistic eviction layer against what the server still lists.
-    const scoped = new Set(res.scoped_session_ids ?? [])
 
     $projectTree.set(res.projects ?? [])
     $activeProjectId.set(res.active_id ?? null)
-
-    // Reconcile the optimistic eviction layer against the fresh snapshot: keep
-    // evicting ids the server still lists (delete in flight) and drop the rest
-    // (server caught up), so the set can't grow unbounded across a long session.
-    const tombstones = $removedSessionIds.get()
-
-    if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
-
-      if (pending.size !== tombstones.size) {
-        $removedSessionIds.set(pending)
-      }
-    }
 
     markProjectsRpcSuccess()
   } catch (err) {

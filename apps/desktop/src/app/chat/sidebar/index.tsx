@@ -75,6 +75,7 @@ import {
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
+  filterTombstonedSessions,
   openProjectCreate,
   refreshProjects,
   refreshProjectTree,
@@ -381,8 +382,22 @@ export function ChatSidebar({
   // profile in, grouped by profile below. Single-profile users land here with
   // scope === their only profile, so nothing is filtered out.
   const visibleSessions = useMemo(
-    () => (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
-    [sessions, showAllProfiles, profileScope]
+    () =>
+      filterTombstonedSessions(
+        showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope),
+        removedSessionIds
+      ),
+    [sessions, showAllProfiles, profileScope, removedSessionIds]
+  )
+
+  const visibleCronSessions = useMemo(
+    () => filterTombstonedSessions(cronSessions, removedSessionIds),
+    [cronSessions, removedSessionIds]
+  )
+
+  const visibleMessagingSessions = useMemo(
+    () => filterTombstonedSessions(messagingSessions, removedSessionIds),
+    [messagingSessions, removedSessionIds]
   )
 
   // Agent session order is pinned to creation time (started_at), NOT activity —
@@ -403,7 +418,7 @@ export function ChatSidebar({
     // Cron sessions are listed separately but can still be pinned, so index
     // them too — otherwise a pinned cron job can't resolve into the Pinned
     // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
+    for (const s of [...visibleCronSessions, ...visibleSessions]) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -412,7 +427,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [visibleSessions, cronSessions])
+  }, [visibleSessions, visibleCronSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -490,8 +505,8 @@ export function ChatSidebar({
       out.set(match.session_id, loaded ?? searchResultToSession(match))
     }
 
-    return [...out.values()]
-  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
+    return filterTombstonedSessions([...out.values()], removedSessionIds)
+  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId, removedSessionIds])
 
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
@@ -863,13 +878,13 @@ export function ChatSidebar({
   // within a platform by recency. Per-platform totals (when a "load more" has
   // resolved them) drive the count + whether more remain on disk.
   const messagingGroups = useMemo<MessagingSection[]>(() => {
-    if (!messagingSessions.length) {
+    if (!visibleMessagingSessions.length) {
       return []
     }
 
     const bySource = new Map<string, SessionInfo[]>()
 
-    for (const session of messagingSessions) {
+    for (const session of visibleMessagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -899,7 +914,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

@@ -8337,6 +8337,22 @@ def show_config():
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
+    # When ``HERMES_HOME`` redirects the secrets file outside ``~/.hermes`` —
+    # the Windows installer's default — also surface the doc-canonical
+    # ``~/.hermes/.env`` so users editing the file the API-server / setup
+    # docs point at can see the gateway will pick it up too. Issue #31144.
+    try:
+        _doc_secrets = Path.home() / ".hermes" / ".env"
+        _live_secrets = get_env_path()
+        if _doc_secrets.exists():
+            try:
+                _same = _doc_secrets.samefile(_live_secrets)
+            except OSError:
+                _same = (_doc_secrets == _live_secrets)
+            if not _same:
+                print(f"  Secrets (~):  {_doc_secrets}  (also loaded; lower precedence)")
+    except Exception:
+        pass
     print(f"  Install:      {get_project_root()}")
     
     # API Keys

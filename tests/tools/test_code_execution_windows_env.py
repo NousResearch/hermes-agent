@@ -707,3 +707,162 @@ class TestChildStdioIsUtf8:
             )
         # Otherwise: crash OR garbled output — both count as proving the
         # bug is real on this system.
+
+
+class TestScrubChildEnvCaseInsensitiveSafePrefix:
+    """Regression for #46645: Windows env keys preserve their original case
+    (``Path``, ``Home``, ``Tmp``), but ``_scrub_child_env``'s safe-prefix
+    check was a case-sensitive ``str.startswith`` against the uppercase
+    prefix list.  On a real Windows box the child subprocess therefore
+    lost PATH and crashed with ``FileNotFoundError: [WinError 2]`` on
+    every executable lookup.  These tests pin the fix: safe-prefix
+    matching must be case-insensitive, secrets must still be blocked,
+    and POSIX behavior must not regress.
+    """
+
+    @staticmethod
+    def _windows_case_env():
+        """A realistic Windows env whose keys use the native mixed case
+        the OS actually returns from ``os.environ`` (``Path``, ``Home``,
+        ``Tmp``, etc.)."""
+        return {
+            "Path": r"C:\Windows\System32;C:\Python311",
+            "Home": r"C:\Users\alice",
+            "Tmp": r"C:\Users\alice\AppData\Local\Temp",
+            "TmpDir": r"C:\Users\alice\AppData\Local\Temp",
+            "Shell": r"C:\Windows\System32\cmd.exe",
+            "UserName": "alice",                       # covered by USER prefix
+            "Logname": "alice",                        # exact-prefix match
+            "Windir": r"C:\Windows",                   # in essentials allowlist
+            "SystemRoot": r"C:\Windows",               # in essentials allowlist
+            # Should still be blocked (secret-substring check is upper-normalized
+            # and continues to work — guard against regression).
+            "Github_Token": "ghp_secret",
+            "My_Apikey": "sk-secret",
+        }
+
+    def test_path_preserved_with_mixed_case_key_on_windows(self):
+        """L1: ``Path`` (Windows native case) must survive scrub on Windows."""
+        scrubbed = _scrub_child_env(
+            self._windows_case_env(),
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "Path" in scrubbed, (
+            f"_scrub_child_env dropped Windows-native 'Path' key; "
+            f"surviving keys: {sorted(scrubbed)}"
+        )
+        assert scrubbed["Path"] == r"C:\Windows\System32;C:\Python311"
+
+    def test_path_preserved_with_lowercase_key_on_windows(self):
+        """L1: ``path`` (lowercase) must also survive — fully case-insensitive."""
+        env = {"path": r"C:\Windows\System32", "Windir": r"C:\Windows"}
+        scrubbed = _scrub_child_env(
+            env,
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "path" in scrubbed
+        assert scrubbed["path"] == r"C:\Windows\System32"
+
+    def test_home_preserved_with_mixed_case_key_on_windows(self):
+        """L1: ``Home`` (Windows native case) must survive."""
+        scrubbed = _scrub_child_env(
+            self._windows_case_env(),
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "Home" in scrubbed
+        assert scrubbed["Home"] == r"C:\Users\alice"
+
+    def test_tmp_and_tmpdir_preserved_with_mixed_case_keys(self):
+        """L1: ``Tmp`` and ``TmpDir`` (Windows variants of TMP/TMPDIR)."""
+        scrubbed = _scrub_child_env(
+            self._windows_case_env(),
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "Tmp" in scrubbed
+        assert "TmpDir" in scrubbed
+
+    def test_shell_preserved_with_mixed_case_key(self):
+        """L1: ``Shell`` (Windows variant) is required for subprocess shell=True."""
+        scrubbed = _scrub_child_env(
+            self._windows_case_env(),
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "Shell" in scrubbed
+        assert scrubbed["Shell"] == r"C:\Windows\System32\cmd.exe"
+
+    def test_user_prefix_matches_mixed_case_username(self):
+        """L1: ``USER`` prefix matches ``UserName`` (User* is in the safe
+        prefix list).  Confirms the prefix normalization is not too narrow
+        (e.g. not just exact-match on the prefix word)."""
+        scrubbed = _scrub_child_env(
+            self._windows_case_env(),
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "UserName" in scrubbed
+
+    def test_case_insensitive_prefix_does_not_regress_hermes_hardening(self):
+        """Regression guard for #27303 interaction: the broad ``HERMES_``
+        safe-prefix was deliberately removed so non-secret HERMES_* config
+        vars (e.g. ``HERMES_BASE_URL``) no longer leak into the child env.
+        The fix in #46645 only adds case-insensitivity to the safe-prefix
+        check, NOT a new ``HERMES_`` prefix — it must not bring back the
+        broad ``HERMES_*`` leak.  ``Hermes_Base_Url`` (mixed case) is a
+        perfect probe: it would match a broad case-insensitive ``HERMES_``
+        prefix, so this test pins that the fix does NOT introduce one.
+        """
+        env = {
+            "Hermes_Base_Url": "https://internal.example",  # not in allowlist
+            "Hermes_Kanban_Db": "/var/hermes/kanban.db",     # not in allowlist
+            "Windir": r"C:\Windows",
+        }
+        scrubbed = _scrub_child_env(
+            env,
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        # Neither mixed-case HERMES_* var should be in the scrubbed env
+        # — the safe-prefix list still doesn't include "HERMES_", so the
+        # trailing case-sensitive drop branch handles them.
+        assert "Hermes_Base_Url" not in scrubbed
+        assert "Hermes_Kanban_Db" not in scrubbed
+        # But Windows-essential Windir must still pass.
+        assert "Windir" in scrubbed
+
+    def test_secrets_still_blocked_with_mixed_case_keys(self):
+        """L4: case-insensitive safe-prefix must not defeat the secret block."""
+        scrubbed = _scrub_child_env(
+            self._windows_case_env(),
+            is_passthrough=_no_passthrough,
+            is_windows=True,
+        )
+        assert "Github_Token" not in scrubbed
+        assert "My_Apikey" not in scrubbed
+
+    def test_posix_path_unchanged_uppercase(self):
+        """Regression guard: the POSIX case (uppercase PATH) must still work."""
+        env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+        scrubbed = _scrub_child_env(
+            env,
+            is_passthrough=_no_passthrough,
+            is_windows=False,
+        )
+        assert "PATH" in scrubbed
+        assert "HOME" in scrubbed
+
+    def test_posix_path_unchanged_lowercase(self):
+        """Regression guard: lowercase PATH on POSIX is unusual but
+        legitimate (custom shells, Linux namespaces, Docker configs)."""
+        env = {"path": "/usr/bin:/bin", "home": "/root"}
+        scrubbed = _scrub_child_env(
+            env,
+            is_passthrough=_no_passthrough,
+            is_windows=False,
+        )
+        assert "path" in scrubbed
+        assert "home" in scrubbed

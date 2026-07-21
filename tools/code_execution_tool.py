@@ -214,6 +214,16 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
     Extracted into a helper so tests can exercise the logic without
     spawning a subprocess.
+
+    Note on case-sensitivity (#46645): env-var names on Windows are
+    case-insensitive at the OS level, and ``os.environ`` on Windows
+    preserves whatever case the OS reported (``Path``, ``Home``, ``Tmp``).
+    The safe-prefix check therefore compares against ``k.upper()`` so a
+    Windows env key like ``Path`` is recognized as a ``PATH``-prefix match.
+    The secret-substring check was already upper-normalized; the
+    ``_HERMES_CHILD_ALLOWED`` set and the trailing ``HERMES_*`` drop
+    intentionally remain case-sensitive (HERMES_* is an exact product
+    namespace, not an OS concept).
     """
     if is_passthrough is None:
         try:
@@ -224,6 +234,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     if is_windows is None:
         is_windows = _IS_WINDOWS
 
+    safe_prefixes_upper = tuple(p.upper() for p in _SAFE_ENV_PREFIXES)
     scrubbed = {}
     # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
     # broad "HERMES_" prefix used to pass these through; now only the
@@ -237,15 +248,16 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         if is_passthrough(k):
             scrubbed[k] = v
             continue
-        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+        k_upper = k.upper()
+        if any(s in k_upper for s in _SECRET_SUBSTRINGS):
             continue
-        if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+        if any(k_upper.startswith(p) for p in safe_prefixes_upper):
             scrubbed[k] = v
             continue
         if k in _HERMES_CHILD_ALLOWED:
             scrubbed[k] = v
             continue
-        if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
+        if is_windows and k_upper in _WINDOWS_ESSENTIAL_ENV_VARS:
             scrubbed[k] = v
             continue
         if k.startswith("HERMES_"):

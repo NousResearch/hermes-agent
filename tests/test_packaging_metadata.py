@@ -249,12 +249,14 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     declared as setuptools data-files (wheel) AND grafted in MANIFEST.in
     (sdist). Without both, sealed installs drop the catalogs and gateway/CLI
     commands surface raw i18n keys like `gateway.reset.header_default`.
+
+    All bare data directories (locales, optional-mcps, skills, optional-skills)
+    are declared via ``_data_file_tree()`` in setup.py's ``data_files`` list.
     """
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    data_files = data["tool"]["setuptools"].get("data-files", {})
-    assert data_files.get("locales") == ["locales/*.yaml"], (
-        "pyproject [tool.setuptools.data-files] must declare "
-        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+    setup_py = (REPO_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert '_data_file_tree("locales")' in setup_py, (
+        "setup.py data_files must include _data_file_tree('locales') "
+        "so the wheel ships i18n catalogs"
     )
 
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")

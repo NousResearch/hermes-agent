@@ -370,7 +370,8 @@ _CMDPOS = (
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'(?:(?:exec|nohup|setsid|time|command|builtin|nice|ionice|stdbuf|timeout)\s+(?:-[^\s]+\s+)*)*'  # optional wrapper commands with flags
+    r'(?:/(?:usr/|s?bin/)*|\./)?'   # optional absolute/relative path prefix
     r'\s*'
 )
 
@@ -1045,6 +1046,10 @@ _COMMAND_WRAPPER_WORDS = {
     "time",
     "command",
     "builtin",
+    "nice",
+    "ionice",
+    "stdbuf",
+    "timeout",
 }
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from",

@@ -36,11 +36,13 @@ export function normalizeRepoScanPath(rawPath: string, options: RepoScanPathOpti
   const homeDir = options.homeDir ?? os.homedir()
   const pathApi = pathApiFor(platform)
   const raw = String(rawPath ?? '').trim()
+
   if (!raw) {
     return null
   }
 
   let expanded = raw
+
   if (raw === '~') {
     expanded = homeDir
   } else if (raw.startsWith('~/') || raw.startsWith('~\\')) {
@@ -50,6 +52,7 @@ export function normalizeRepoScanPath(rawPath: string, options: RepoScanPathOpti
   const absolute = pathApi.isAbsolute(expanded) ? expanded : pathApi.resolve(homeDir, expanded)
   const value = pathApi.normalize(absolute)
   const key = platform === 'win32' ? value.toLocaleLowerCase('en-US') : value
+
   return { key, value }
 }
 
@@ -58,10 +61,13 @@ export function repoScanPathIsWithin(candidate: string, parent: string, options:
   const pathApi = pathApiFor(platform)
   const candidatePath = normalizeRepoScanPath(candidate, options)
   const parentPath = normalizeRepoScanPath(parent, options)
+
   if (!candidatePath || !parentPath) {
     return false
   }
+
   const relative = pathApi.relative(parentPath.key, candidatePath.key)
+
   return (
     relative === '' || (relative !== '..' && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative))
   )
@@ -95,6 +101,7 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
   const maxDepth = Number.isFinite(maxDepthValue) && maxDepthValue >= 0 ? maxDepthValue : DEFAULT_MAX_DEPTH
   const pathOptions: RepoScanPathOptions = {}
   const requestedRoots = Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()]
+
   const searchRoots = [
     ...new Map(
       requestedRoots
@@ -103,9 +110,11 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
         .map(entry => [entry.key, entry.value])
     ).values()
   ]
+
   const exclusions = (options.excludePaths ?? [])
     .map(excluded => normalizeRepoScanPath(excluded, pathOptions))
     .filter((entry): entry is NormalizedScanPath => entry !== null)
+
   const found = new Map<string, { root: string; label: string }>()
 
   function isExcluded(candidate: string): boolean {
@@ -118,6 +127,7 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
     }
 
     let entries: fs.Dirent[]
+
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true })
     } catch {
@@ -125,28 +135,34 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
     }
 
     const gitDir = entries.find(entry => entry.name === '.git' && entry.isDirectory())
+
     if (gitDir) {
       try {
         await fsp.access(path.join(dir, '.git', 'HEAD'), fs.constants.R_OK)
       } catch {
         return
       }
+
       const normalized = normalizeRepoScanPath(dir, pathOptions)
+
       if (normalized) {
         found.set(normalized.key, {
           root: normalized.value,
           label: path.basename(normalized.value) || normalized.value
         })
       }
+
       return
     }
 
     const subdirs = entries
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !JUNK_DIRS.has(entry.name))
       .map(entry => path.join(dir, entry.name))
+
     await mapLimit(subdirs, MAX_CONCURRENCY, subdir => walk(subdir, depth + 1))
   }
 
   await mapLimit(searchRoots, MAX_CONCURRENCY, root => walk(root, 0))
+
   return [...found.values()]
 }

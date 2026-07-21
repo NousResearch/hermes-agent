@@ -231,6 +231,7 @@ export function setApiRequestProfile(profile: null | string): void {
 
 function profileScoped(profile?: null | string): { profile?: string } {
   const selected = profile === undefined ? _apiProfile : profile
+
   return selected ? { profile: selected } : {}
 }
 

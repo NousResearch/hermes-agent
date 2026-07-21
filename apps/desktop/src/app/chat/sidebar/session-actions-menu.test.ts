@@ -22,6 +22,7 @@ const { renameSession, request, activeGateway } = vi.hoisted(() => ({
   request: vi.fn(async () => ({ title: 'rpc-title' }) as never),
   activeGateway: vi.fn<() => { request: unknown } | null>(() => ({ request: undefined }))
 }))
+
 // Wire activeGateway's default return to the shared request mock now that it exists.
 activeGateway.mockReturnValue({ request })
 

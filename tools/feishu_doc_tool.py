@@ -66,6 +66,20 @@ def _check_feishu():
         return False
 
 
+def _build_client() -> Optional[Any]:
+    """Build a lark client from env vars (fallback when set_client wasn't called)."""
+    import os
+    app_id = os.getenv("FEISHU_APP_ID", "").strip()
+    app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
+    if not app_id or not app_secret:
+        return None
+    try:
+        from lark_oapi import Client
+        return Client(app_id=app_id, app_secret=app_secret)
+    except Exception:
+        return None
+
+
 def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     doc_token = args.get("doc_token", "").strip()
     if not doc_token:
@@ -73,7 +87,12 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
 
     client = get_client()
     if client is None:
-        return tool_error("Feishu client not available (not in a Feishu comment context)")
+        client = _build_client()
+    if client is None:
+        return tool_error(
+            "Feishu client not available. Set FEISHU_APP_ID and FEISHU_APP_SECRET env vars, "
+            "or use this tool within a Feishu comment context."
+        )
 
     try:
         from lark_oapi import AccessTokenType

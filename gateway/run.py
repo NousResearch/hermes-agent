@@ -524,6 +524,38 @@ def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_mess
     return None
 
 
+def _resolve_progress_reply_to(
+    platform: Any,
+    source_thread_id: Any,
+    event_message_id: Any,
+) -> Optional[str]:
+    """Return the message ID that progress/status bubbles should reply to.
+
+    On Slack and Mattermost, progress messages thread under the user's
+    original message.  Feishu and Mattermost use ``reply_to`` when the
+    message originates inside an existing thread.
+
+    On Discord with ``auto_thread`` disabled (no ``source_thread_id``),
+    progress messages reply to the user's original message via Discord's
+    message-reference mechanism (the "replying to…" chip).  This mirrors
+    Slack's behaviour: text response inline, tool progress as replies.
+    When ``auto_thread`` is enabled, ``source_thread_id`` is set and
+    progress is routed to the thread via ``_resolve_progress_thread_id``
+    instead, so we return ``None`` here to avoid double-routing.
+    """
+    platform_value = getattr(platform, "value", platform)
+    platform_key = str(platform_value or "").lower()
+    if not event_message_id:
+        return None
+    # Feishu / Mattermost: reply_to when inside an existing thread
+    if platform_key in {"feishu", "mattermost"} and source_thread_id:
+        return str(event_message_id)
+    # Discord: reply_to when NOT in a thread (auto_thread off)
+    if platform_key == "discord" and not source_thread_id:
+        return str(event_message_id)
+    return None
+
+
 def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
     """Return True when display.platforms.<platform> explicitly sets setting."""
     display = user_config.get("display") if isinstance(user_config, dict) else None
@@ -19446,10 +19478,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
-        _progress_reply_to = (
-            event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
-            else None
+        _progress_reply_to = _resolve_progress_reply_to(
+            source.platform, source.thread_id, event_message_id,
         )
 
         async def write_tool_log():

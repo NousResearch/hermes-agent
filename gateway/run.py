@@ -22628,6 +22628,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
             except Exception:
                 pass
+            # Cooldown: give the kernel a moment to release the old
+            # gateway's listening sockets and file descriptors before
+            # we try to claim them for ourselves. Without this, a
+            # SIGKILL'd gateway can leave resources in TIME_WAIT that
+            # block the new instance from binding, creating a
+            # restart-death-spiral when the process supervisor
+            # immediately respawns us.
+            time.sleep(1.0)
         else:
             hermes_home = str(get_hermes_home())
             logger.error(

@@ -80,6 +80,30 @@ class TestSnapshotShutdownContext:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is False
 
+    def test_under_systemd_false_on_macos_when_ppid_is_one(self, monkeypatch):
+        """On macOS (darwin), PID 1 is launchd, not systemd — must NOT flag under_systemd."""
+        monkeypatch.setattr(sf, "sys", type("M", (), {"platform": "darwin"})())
+        monkeypatch.setattr(os, "getppid", lambda: 1)
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is False
+
+    def test_under_systemd_true_on_linux_when_ppid_is_one(self, monkeypatch):
+        """On Linux, PID 1 is init/systemd — ppid==1 should flag under_systemd."""
+        monkeypatch.setattr(sf, "sys", type("M", (), {"platform": "linux"})())
+        monkeypatch.setattr(os, "getppid", lambda: 1)
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is True
+
+    def test_under_systemd_invocation_id_overrides_platform(self, monkeypatch):
+        """INVOCATION_ID env var must set under_systemd=True regardless of platform."""
+        monkeypatch.setattr(sf, "sys", type("M", (), {"platform": "darwin"})())
+        monkeypatch.setattr(os, "getppid", lambda: 999)
+        monkeypatch.setenv("INVOCATION_ID", "abc123")
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is True
+
     def test_completes_quickly(self):
         """Snapshot must NOT block — it runs inside the asyncio signal handler."""
         start = time.monotonic()

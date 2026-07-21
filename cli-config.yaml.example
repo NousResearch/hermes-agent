@@ -1069,6 +1069,16 @@ stt:
 #     model: ""
 
 # =============================================================================
+# Voice Playback (TTS Audio Output)
+# =============================================================================
+# Audio player for TTS (text-to-speech) playback in voice mode.
+# On Linux systems with PipeWire (no ALSA/PulseAudio), set player to pw-play.
+# Supported players: pw-play (PipeWire) | play (sox) | ffplay | aplay | afplay (macOS)
+# When omitted, auto-detects using the fallback chain: pw-play > play > afplay > ffplay > aplay
+# voice:
+#   player: "pw-play"   # e.g. pw-play on Linux/PipeWire, play on Linux/sox
+
+# =============================================================================
 # Response Pacing (Messaging Platforms)
 # =============================================================================
 # Add human-like delays between message chunks.

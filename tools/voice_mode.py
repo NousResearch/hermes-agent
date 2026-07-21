@@ -1040,13 +1040,40 @@ def stop_playback() -> None:
         pass
 
 
+def _get_tts_player() -> Optional[str]:
+    """Return the configured TTS audio player command, or None for auto-detect.
+
+    Reads ``voice.player`` from config.yaml. Supported players:
+    - ``pw-play``  — PipeWire native (Linux, best for PipeWire/PulseAudio systems)
+    - ``play``     — sox (Linux, ALSA/PipeWire via AUDIODEV)
+    - ``ffplay``   — FFmpeg (cross-platform)
+    - ``aplay``    — ALSA (Linux, requires ALSA hardware/driver)
+    - ``afplay``   — macOS
+
+    If not set, auto-detects using the built-in fallback chain.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        voice_cfg = load_config().get("voice", {})
+        if isinstance(voice_cfg, dict):
+            player = voice_cfg.get("player")
+            if player and isinstance(player, str) and player.strip():
+                logger.debug("Using configured TTS player: %s", player)
+                return player.strip()
+    except Exception:
+        pass
+    return None
+
+
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
     Strategy:
     1. WAV files via ``sounddevice.play()`` when available.
-    2. System commands: ``afplay`` (macOS), ``ffplay`` (cross-platform),
-       ``aplay`` (Linux ALSA).
+    2. Configured ``voice.player`` from config.yaml (if set).
+    3. System commands: ``pw-play`` (Linux/PipeWire), ``play`` (sox/ALSA),
+       ``afplay`` (macOS), ``ffplay`` (cross-platform), ``aplay`` (Linux ALSA).
 
     Playback can be interrupted by calling ``stop_playback()``.
 
@@ -1084,13 +1111,21 @@ def play_audio_file(file_path: str) -> bool:
 
     # Fall back to system audio players (using Popen for interruptability)
     system = platform.system()
-    players = []
+    players: List[List[str]] = []
 
+    # 1. Configured player (if any)
+    configured = _get_tts_player()
+    if configured:
+        players.append([configured, file_path])
+
+    # 2. System-native players
     if system == "Darwin":
         players.append(["afplay", file_path])
-    players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
-        players.append(["aplay", "-q", file_path])
+        players.append(["pw-play", file_path])  # PipeWire native
+        players.append(["play", file_path])  # sox (ALSA/PipeWire via AUDIODEV)
+        players.append(["aplay", "-q", file_path])  # ALSA
+    players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
 
     for cmd in players:
         exe = shutil.which(cmd[0])

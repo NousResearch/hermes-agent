@@ -1474,6 +1474,42 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
 
+def test_history_to_messages_caps_oversized_inline_image_urls():
+    # Multi-megabyte data: URLs used to be inlined verbatim, bloating every
+    # resume/history payload and crashing older desktop renderers (V8 regexp
+    # stack overflow while extracting them — see the renderer-side fix in
+    # apps/desktop/src/lib/embedded-images.ts). Oversized URLs degrade to the
+    # existing "[image]" placeholder; small ones stay inline so the desktop
+    # keeps rendering thumbnails.
+    giant = "data:image/png;base64," + "A" * 1_000_001
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look here"},
+                {"type": "image_url", "image_url": {"url": giant}},
+            ],
+        },
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "look here\n[image]"},
+    ]
+
+
+def test_coerce_message_text_caps_oversized_dict_image_url():
+    giant = "data:image/png;base64," + "A" * 1_000_001
+
+    assert server._coerce_message_text({"type": "image_url", "image_url": giant}) == "[image]"
+
+
+def test_coerce_message_text_inlines_image_url_at_cap_boundary():
+    prefix = "data:image/png;base64,"
+    at_cap = prefix + "A" * (1_000_000 - len(prefix))
+
+    assert server._coerce_message_text({"type": "image_url", "image_url": {"url": at_cap}}) == at_cap
+
+
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     captured = {}
 

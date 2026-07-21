@@ -5369,6 +5369,21 @@ def _content_display_text(content: Any) -> str:
     return str(content)
 
 
+# Inline image URLs longer than this degrade to the "[image]" placeholder.
+# Uncapped data: URLs (a native-size screenshot is easily >10M chars of
+# base64) bloat every resume/history payload shipped over the gateway and
+# have crashed desktop renderers that extract them with a regex (V8 regexp
+# stack overflow at roughly 5.6M chars). 1M chars ≈ a 750KB image keeps
+# typical pasted screenshots inline with a wide safety margin.
+_INLINE_IMAGE_URL_MAX_CHARS = 1_000_000
+
+
+def _inline_image_url_or_placeholder(url: str) -> str:
+    if url and len(url) <= _INLINE_IMAGE_URL_MAX_CHARS:
+        return url
+    return "[image]"
+
+
 def _coerce_message_text(content: Any) -> str:
     """Render ``message['content']`` as a plain string for transport.
 
@@ -5384,6 +5399,8 @@ def _coerce_message_text(content: Any) -> str:
     instead of the URL — and it stops the resume payload from disagreeing
     with the cached message (which would otherwise cause the inline image
     to flash, then disappear when the resume payload overwrites the cache).
+    URLs longer than ``_INLINE_IMAGE_URL_MAX_CHARS`` degrade to the
+    ``[image]`` placeholder instead of being inlined.
 
     Other structured dict shapes (audio, unknown types) fall back to a
     bracketed placeholder so resume doesn't drop the message entirely.
@@ -5421,10 +5438,7 @@ def _coerce_message_text(content: Any) -> str:
                         url = candidate
                 elif isinstance(image_url, str):
                     url = image_url
-                if url:
-                    chunks.append(f"\n{url}")
-                else:
-                    chunks.append("\n[image]")
+                chunks.append(f"\n{_inline_image_url_or_placeholder(url)}")
                 continue
             if kind in {"input_audio", "audio"}:
                 chunks.append("\n[audio]")
@@ -5445,7 +5459,7 @@ def _coerce_message_text(content: Any) -> str:
                     url = candidate
             elif isinstance(image_url, str):
                 url = image_url
-            return url or "[image]"
+            return _inline_image_url_or_placeholder(url)
         if kind in {"input_audio", "audio"}:
             return "[audio]"
         if kind:

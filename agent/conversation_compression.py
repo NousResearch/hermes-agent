@@ -1926,7 +1926,21 @@ def _compress_context_via_codex_app_server(
             existing_prompt = agent._build_system_prompt(system_message)
         return messages, existing_prompt
 
-    codex_session = getattr(agent, "_codex_session", None)
+    from agent.codex_runtime import (
+        _codex_app_server_runtime_key,
+        _codex_app_server_session_for_runtime,
+        _retire_codex_app_server_session,
+    )
+
+    try:
+        runtime_key = _codex_app_server_runtime_key(agent)
+    except TypeError as exc:
+        logger.warning("codex app-server compaction skipped: %s", exc)
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+    codex_session = _codex_app_server_session_for_runtime(agent, runtime_key)
     if codex_session is None:
         logger.info(
             "codex app-server compaction skipped: no active codex thread "
@@ -1976,11 +1990,7 @@ def _compress_context_via_codex_app_server(
         _activity_heartbeat.stop("context compression completed")
 
     if getattr(result, "should_retire", False):
-        try:
-            codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
+        _retire_codex_app_server_session(agent)
 
     if getattr(result, "interrupted", False) or getattr(result, "error", None):
         try:

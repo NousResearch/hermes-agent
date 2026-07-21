@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
@@ -613,6 +614,44 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     return on_event
 
 
+def _codex_app_server_runtime_key(agent) -> tuple[str | None, str | None]:
+    reasoning_config = vars(agent).get("reasoning_config")
+    if not reasoning_config:
+        reasoning_config = {}
+    elif not isinstance(reasoning_config, Mapping):
+        raise TypeError("reasoning_config must be a mapping or None")
+    model = str(getattr(agent, "model", None) or "").strip() or None
+    reasoning_effort = (
+        "none"
+        if reasoning_config.get("enabled") is False
+        else str(reasoning_config.get("effort") or "").strip() or None
+    )
+    return model, reasoning_effort
+
+
+def _retire_codex_app_server_session(agent) -> None:
+    codex_session = getattr(agent, "_codex_session", None)
+    agent._codex_session = None
+    vars(agent).pop("_codex_session_runtime_key", None)
+    if codex_session is None:
+        return
+    try:
+        codex_session.close()
+    except Exception:
+        pass
+
+
+def _codex_app_server_session_for_runtime(agent, runtime_key):
+    codex_session = getattr(agent, "_codex_session", None)
+    if (
+        codex_session is not None
+        and vars(agent).get("_codex_session_runtime_key", runtime_key) != runtime_key
+    ):
+        _retire_codex_app_server_session(agent)
+        return None
+    return codex_session
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -634,30 +673,23 @@ def run_codex_app_server_turn(
         _ServerRequestRouting,
     )
 
-    reasoning_config = getattr(agent, "reasoning_config", None) or {}
-    model = str(getattr(agent, "model", None) or "").strip() or None
-    reasoning_effort = (
-        "none"
-        if reasoning_config.get("enabled") is False
-        else str(reasoning_config.get("effort") or "").strip() or None
-    )
-    runtime_key = (model, reasoning_effort)
+    try:
+        runtime_key = _codex_app_server_runtime_key(agent)
+    except TypeError as exc:
+        return {
+            "final_response": f"Codex app-server configuration invalid: {exc}.",
+            "messages": messages,
+            "api_calls": 0,
+            "completed": False,
+            "partial": True,
+            "error": str(exc),
+        }
+    model, reasoning_effort = runtime_key
 
     # Lazy session: one CodexAppServerSession per unchanged process runtime.
     # Model and reasoning are process config, so a live selection change must
     # retire the old thread before the next turn instead of billing stale config.
-    codex_session = getattr(agent, "_codex_session", None)
-    if (
-        codex_session is not None
-        and vars(agent).get("_codex_session_runtime_key", runtime_key)
-        != runtime_key
-    ):
-        try:
-            codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
-        codex_session = None
+    codex_session = _codex_app_server_session_for_runtime(agent, runtime_key)
 
     if codex_session is None:
         from agent.runtime_cwd import resolve_agent_cwd
@@ -737,11 +769,7 @@ def run_codex_app_server_turn(
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
         # respawns from scratch instead of reusing a dead client.
-        try:
-            agent._codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
+        _retire_codex_app_server_session(agent)
         _user_interrupted = bool(
             getattr(agent, "_interrupt_requested", False)
         )
@@ -792,11 +820,7 @@ def run_codex_app_server_turn(
             "codex app-server session retired (turn error: %s)",
             turn.error,
         )
-        try:
-            agent._codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
+        _retire_codex_app_server_session(agent)
 
     # Splice projected messages into the conversation. The projector emits
     # standard {role, content, tool_calls, tool_call_id} entries, which

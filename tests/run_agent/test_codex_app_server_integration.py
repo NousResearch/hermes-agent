@@ -744,9 +744,71 @@ class TestSessionRetirementOnRunAgent:
 
 
 class TestSessionRuntimeSelection:
-    def test_live_runtime_switch_replaces_session_before_next_turn(
-        self, monkeypatch
+    @pytest.mark.parametrize("reasoning_config", ["high", ["high"], True])
+    def test_malformed_reasoning_config_fails_without_mutating_session(
+        self, reasoning_config
     ):
+        agent = _make_codex_agent()
+        agent.model = "gpt-5.6-sol"
+        agent.reasoning_config = reasoning_config
+        session = MagicMock()
+        agent._codex_session = session
+        agent._codex_session_runtime_key = ("gpt-5.6-sol", "max")
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "reasoning_config must be a mapping" in result["error"]
+        assert agent._codex_session is session
+        session.run_turn.assert_not_called()
+        session.close.assert_not_called()
+
+    def test_session_reset_starts_fresh_thread_at_same_runtime(self, monkeypatch):
+        sessions = []
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.thread_id = f"thread-{len(sessions) + 1}"
+                self.inputs = []
+                self.close_calls = 0
+                sessions.append(self)
+
+            def run_turn(self, user_input, **kwargs):
+                self.inputs.append(user_input)
+                return TurnResult(
+                    final_text="ok",
+                    projected_messages=[],
+                    turn_id=f"turn-{user_input}",
+                    thread_id=self.thread_id,
+                )
+
+            def close(self):
+                self.close_calls += 1
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+        agent = _make_codex_agent()
+        agent.model = "gpt-5.6-sol"
+        agent.reasoning_config = {"enabled": True, "effort": "max"}
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            first = agent.run_conversation("old-session-secret")
+            agent.session_id = "fresh-session"
+            agent.reset_session_state()
+            second = agent.run_conversation("fresh-session-question")
+
+        assert len(sessions) == 2
+        assert sessions[0].close_calls == 1
+        assert sessions[0].inputs == ["old-session-secret"]
+        assert sessions[1].inputs == ["fresh-session-question"]
+        assert first["codex_thread_id"] == "thread-1"
+        assert second["codex_thread_id"] == "thread-2"
+
+    def test_live_runtime_switch_replaces_session_before_next_turn(self, monkeypatch):
         events = []
         sessions = []
 
@@ -786,7 +848,8 @@ class TestSessionRuntimeSelection:
             first = agent.run_conversation("first")
             agent.model = "gpt-5.6-terra"
             agent.reasoning_config = {"enabled": True, "effort": "high"}
-            second = agent.run_conversation("second")
+            second = agent.run_conversation("[Persistent goal continuation]")
+            event = agent.run_conversation("[Kanban task completed]")
             agent.model = "gpt-5.6-sol"
             agent.reasoning_config = {"enabled": True, "effort": "max"}
             third = agent.run_conversation("third")
@@ -794,12 +857,22 @@ class TestSessionRuntimeSelection:
         assert len(sessions) == 2
         assert sessions[0].close_calls == 1
         assert sessions[1].close_calls == 0
-        assert first["codex_thread_id"] == second["codex_thread_id"] == "thread-1"
+        assert (
+            first["codex_thread_id"]
+            == second["codex_thread_id"]
+            == event["codex_thread_id"]
+            == "thread-1"
+        )
         assert third["codex_thread_id"] == "thread-2"
         assert events == [
             ("constructed", ("gpt-5.6-terra", "high")),
             ("turn", ("gpt-5.6-terra", "high"), "first"),
-            ("turn", ("gpt-5.6-terra", "high"), "second"),
+            (
+                "turn",
+                ("gpt-5.6-terra", "high"),
+                "[Persistent goal continuation]",
+            ),
+            ("turn", ("gpt-5.6-terra", "high"), "[Kanban task completed]"),
             ("closed", ("gpt-5.6-terra", "high")),
             ("constructed", ("gpt-5.6-sol", "max")),
             ("turn", ("gpt-5.6-sol", "max"), "third"),

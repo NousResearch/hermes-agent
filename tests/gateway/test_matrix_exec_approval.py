@@ -27,6 +27,9 @@ class TestMatrixExecApprovalReactions:
         assert result.success is True
         assert adapter._approval_prompt_by_session["sess-1"] == "$evt1"
         assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
+        prompt_text = adapter.send.await_args.args[1]
+        assert "❌ = deny" in prompt_text
+        assert "❎ = deny" not in prompt_text
         assert adapter._send_reaction.await_count == 3
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
         assert emojis == ["✅", "♾️", "❌"]

@@ -351,20 +351,15 @@ describe('deriveBillingView', () => {
     })
   })
 
-  it('renders top-up balance as a full ok bar when credits remain', () => {
+  it('renders top-up balance as a bare amount — no bar (no denominator exists)', () => {
     const view = deriveBillingView(okBilling(postTrainBillingState), okSubscription(postTrainSubscriptionState))
+    const topup = view.usageRows.find(row => row.id === 'topup_credits')
 
-    expect(view.usageRows.find(row => row.id === 'topup_credits')).toMatchObject({
-      bar: {
-        state: 'ok',
-        tone: 'topup',
-        value: 1
-      },
-      value: '$75'
-    })
+    expect(topup?.value).toBe('$75')
+    expect(topup?.bar).toBeUndefined()
   })
 
-  it('renders zero top-up balance as an empty neutral bar', () => {
+  it('renders zero top-up balance without a bar too', () => {
     const view = deriveBillingView(
       okBilling({
         ...todayBillingState,
@@ -378,14 +373,10 @@ describe('deriveBillingView', () => {
       undefined
     )
 
-    expect(view.usageRows.find(row => row.id === 'topup_credits')).toMatchObject({
-      bar: {
-        state: 'neutral',
-        tone: 'topup',
-        value: 0
-      },
-      value: '$0'
-    })
+    const topup = view.usageRows.find(row => row.id === 'topup_credits')
+
+    expect(topup?.value).toBe('$0')
+    expect(topup?.bar).toBeUndefined()
   })
 })
 

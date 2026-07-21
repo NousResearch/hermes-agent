@@ -140,6 +140,14 @@ export const StreamStallIndicator: FC = () => {
 
     return `${s.message.content.length}:${textLength}`
   })
+  // Every running assistant bubble mounts this component (see
+  // assistant-message.tsx), so a reconnect + queued prompt can leave two
+  // bubbles simultaneously `running` and each render its own "Summarizing
+  // thread" / "Hermes is thinking" row with the same timer (#68634). The
+  // component's own contract above is tail-only ("the thinking indicator
+  // returns at the tail"), so gate on this being the last message in the
+  // thread and render nothing for non-tail bubbles.
+  const isLast = useAuiState(s => s.message.isLast)
 
   const [stalled, setStalled] = useState(false)
   const compacting = useStore($compactionActive)
@@ -156,7 +164,7 @@ export const StreamStallIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const active = (stalled || compacting) && !awaitingInput
+  const active = isLast && (stalled || compacting) && !awaitingInput
   const elapsed = useElapsedSeconds(active, compacting ? turnTimerKey : undefined)
 
   if (!active) {

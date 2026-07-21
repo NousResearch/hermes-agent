@@ -1389,7 +1389,7 @@ class TestIsAnthropicBedrockModel:
 
     def test_bare_claude(self):
         from agent.bedrock_adapter import is_anthropic_bedrock_model
-        assert is_anthropic_bedrock_model("anthropic.claude-haiku-4-5-20251001-v1:0") is True
+        assert is_anthropic_bedrock_model("anthropic.claude-haiku-4-5-v1:0") is True
 
     def test_nova_is_not_anthropic(self):
         from agent.bedrock_adapter import is_anthropic_bedrock_model

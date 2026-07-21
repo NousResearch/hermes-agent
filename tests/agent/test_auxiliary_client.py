@@ -655,7 +655,7 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
 
         assert client is not None
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == "claude-haiku-4-5"
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
@@ -829,7 +829,7 @@ class TestResolveProviderClientUniversalModelFallback:
             ) as mock_read_main,
             patch(
                 "agent.auxiliary_client._get_aux_model_for_provider",
-                return_value="claude-haiku-4-5-20251001",
+                return_value="claude-haiku-4-5",
             ),
             patch(
                 "agent.anthropic_adapter.build_anthropic_client",
@@ -848,7 +848,7 @@ class TestResolveProviderClientUniversalModelFallback:
         # Catalog default takes precedence — main_model was a no-op
         # because step 2 of the fallback chain already produced a model.
         assert client is not None
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == "claude-haiku-4-5"
         mock_read_main.assert_not_called()
 
     def test_explicit_model_takes_precedence_over_fallbacks(self):
@@ -1214,7 +1214,7 @@ class TestVisionClientFallback:
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == "claude-haiku-4-5"
 
     def test_anthropic_auxiliary_client_aggregates_stream_response(self):
         from agent.auxiliary_client import AnthropicAuxiliaryClient
@@ -2193,7 +2193,7 @@ class TestStaleFallbackCandidateSkip:
 
         def _cached_client(provider, model=None, **kw):
             if provider == "anthropic":
-                return (fresh_fb, "claude-haiku-4-5-20251001")
+                return (fresh_fb, "claude-haiku-4-5")
             return (primary_client, "gpt-5.5")
 
         with patch("agent.auxiliary_client._resolve_task_provider_model",
@@ -2204,7 +2204,7 @@ class TestStaleFallbackCandidateSkip:
              patch("agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_payment_fallback",
-                   return_value=(stale_fb, "claude-haiku-4-5-20251001", "anthropic")), \
+                   return_value=(stale_fb, "claude-haiku-4-5", "anthropic")), \
              patch("agent.auxiliary_client._refresh_provider_credentials",
                    return_value=True) as mock_refresh:
             result = call_llm(
@@ -2233,7 +2233,7 @@ class TestStaleFallbackCandidateSkip:
         healthy_fb.chat.completions.create.return_value = _DummyResponse("openrouter-serves")
 
         fb_walks = [
-            (stale_fb, "claude-haiku-4-5-20251001", "anthropic"),
+            (stale_fb, "claude-haiku-4-5", "anthropic"),
             (healthy_fb, "fallback-model", "openrouter"),
         ]
 
@@ -2281,7 +2281,7 @@ class TestStaleFallbackCandidateSkip:
              patch("agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_payment_fallback",
-                   return_value=(broken_fb, "claude-haiku-4-5-20251001", "anthropic")):
+                   return_value=(broken_fb, "claude-haiku-4-5", "anthropic")):
             with pytest.raises(ValueError, match="malformed response"):
                 call_llm(
                     task="compression",
@@ -3792,14 +3792,14 @@ class TestAuxiliaryAuthRefreshRetry:
         fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-anthropic")
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5-20251001", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5-20251001"), (fresh_client, "claude-haiku-4-5-20251001")]),
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5"), (fresh_client, "claude-haiku-4-5")]),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = call_llm(
                 task="compression",
                 provider="anthropic",
-                model="claude-haiku-4-5-20251001",
+                model="claude-haiku-4-5",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -3844,7 +3844,7 @@ class TestAuxiliaryAuthRefreshRetry:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
         with (
-            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
+            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5", None)}),
             patch("agent.anthropic_adapter.read_claude_code_credentials", return_value={
                 "accessToken": "expired-token",
                 "refreshToken": "refresh-token",
@@ -3876,14 +3876,14 @@ class TestAuxiliaryAuthRefreshRetry:
         fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("fresh-async-anthropic"))
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5-20251001", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5-20251001"), (fresh_client, "claude-haiku-4-5-20251001")]),
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5"), (fresh_client, "claude-haiku-4-5")]),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = await async_call_llm(
                 task="compression",
                 provider="anthropic",
-                model="claude-haiku-4-5-20251001",
+                model="claude-haiku-4-5",
                 messages=[{"role": "user", "content": "hi"}],
             )
 

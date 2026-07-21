@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class Mem0Backend(ABC):
@@ -22,6 +25,7 @@ class Mem0Backend(ABC):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         ...
 
@@ -65,10 +69,18 @@ class PlatformBackend(Mem0Backend):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
         if metadata:
             kwargs["metadata"] = metadata
+        if run_id is not None:
+            try:
+                return self._client.add(messages, run_id=run_id, **kwargs)
+            except TypeError:
+                # Older mem0ai versions don't support run_id — fold it into metadata.
+                merged = {**(kwargs.get("metadata") or {}), "run_id": run_id}
+                kwargs["metadata"] = merged
         return self._client.add(messages, **kwargs)
 
     def update(self, memory_id: str, text: str) -> dict:
@@ -127,6 +139,7 @@ class SelfHostedBackend(Mem0Backend):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
         body: dict[str, Any] = {
             "messages": messages,
@@ -136,6 +149,8 @@ class SelfHostedBackend(Mem0Backend):
         }
         if metadata:
             body["metadata"] = metadata
+        if run_id is not None:
+            body["run_id"] = run_id
         return self._json("POST", "/memories", json=body)
 
     def update(self, memory_id: str, text: str) -> dict:
@@ -204,6 +219,11 @@ class OSSBackend(Mem0Backend):
             "version": "v1.1",
         }
         self._memory = Memory.from_config(config)
+        try:
+            from ._entity_sidecar import init_db
+            init_db()
+        except Exception:
+            pass
 
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:
@@ -281,11 +301,62 @@ class OSSBackend(Mem0Backend):
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
+        run_id: str | None = None,
     ) -> dict:
+        # Structural dedup: for explicit adds (infer=False), check the Postgres sidecar
+        # before writing. Prevents exact-text duplicates from accumulating in Qdrant.
+        sidecar_key: str | None = None
+        if not infer:
+            content = next(
+                (m.get("content", "") for m in messages if m.get("role") == "user"), ""
+            )
+            if content:
+                try:
+                    from ._entity_sidecar import delete_stale, lookup, normalize, upsert
+                    sidecar_key = normalize(content)
+                    existing_id = lookup(user_id, sidecar_key)
+                    if existing_id:
+                        try:
+                            return self.update(existing_id, content)
+                        except Exception as exc:
+                            # Stale entry — Qdrant point was deleted externally
+                            err = str(exc).lower()
+                            if "not found" in err or "404" in err:
+                                delete_stale(user_id, sidecar_key)
+                            else:
+                                logger.warning("sidecar update failed (%s), falling through to add", exc)
+                            # Fall through to normal add
+                except ImportError:
+                    sidecar_key = None
+
         kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
         if metadata:
             kwargs["metadata"] = metadata
-        return self._memory.add(messages, **kwargs)
+        if run_id is not None:
+            try:
+                result = self._memory.add(messages, run_id=run_id, **kwargs)
+            except TypeError:
+                # Older mem0ai versions don't support run_id — fold it into metadata.
+                merged = {**(kwargs.get("metadata") or {}), "run_id": run_id}
+                kwargs["metadata"] = merged
+                result = self._memory.add(messages, **kwargs)
+        else:
+            result = self._memory.add(messages, **kwargs)
+
+        # Register new point IDs in the sidecar after a successful explicit add.
+        # Accept any item with an "id" — don't gate on event name (mem0 event
+        # vocabulary varies by version and the ID is what we actually need).
+        if sidecar_key and isinstance(result, dict):
+            try:
+                from ._entity_sidecar import upsert
+                for item in result.get("results", []):
+                    if isinstance(item, dict) and item.get("id"):
+                        upsert(user_id, sidecar_key, item["id"])
+                        break
+            except Exception as exc:
+                logger.warning("sidecar post-add upsert failed: %s", exc)
+
+        return result
 
     def update(self, memory_id: str, text: str) -> dict:
         self._memory.update(memory_id, data=text)

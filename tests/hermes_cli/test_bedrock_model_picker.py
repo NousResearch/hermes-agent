@@ -41,7 +41,7 @@ def _mock_botocore_session(*, return_value=None):
 
 _EU_MODELS = [
     {"id": "eu.anthropic.claude-sonnet-4-6-20250514-v1:0", "name": "Claude Sonnet 4.6 (EU)", "provider": "inference-profile"},
-    {"id": "eu.anthropic.claude-haiku-4-5-20251015-v1:0",  "name": "Claude Haiku 4.5 (EU)",  "provider": "inference-profile"},
+    {"id": "eu.anthropic.claude-haiku-4-5-v1:0",  "name": "Claude Haiku 4.5 (EU)",  "provider": "inference-profile"},
     {"id": "eu.amazon.nova-pro-v1:0",                       "name": "Nova Pro (EU)",           "provider": "inference-profile"},
 ]
 
@@ -74,7 +74,7 @@ class TestProviderModelIdsBedrock:
             result = provider_model_ids("bedrock")
 
         assert "eu.anthropic.claude-sonnet-4-6-20250514-v1:0" in result
-        assert "eu.anthropic.claude-haiku-4-5-20251015-v1:0" in result
+        assert "eu.anthropic.claude-haiku-4-5-v1:0" in result
         assert len(result) == len(_EU_MODELS)
 
     def test_region_determines_model_ids(self, monkeypatch):

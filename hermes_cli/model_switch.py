@@ -2198,6 +2198,20 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
+        # Special case: vertex auth — OAuth2 via service account JSON or ADC,
+        # no API key env vars. Check via has_vertex_credentials() which reads
+        # VERTEX_CREDENTIALS_PATH, GOOGLE_APPLICATION_CREDENTIALS, VERTEX_PROJECT_ID,
+        # and config.yaml vertex.project_id. Safe: no network calls, no google-auth import.
+        if not _cp_has_creds and _cp.slug == "vertex":
+            try:
+                from providers import get_provider_profile as _get_pp
+                _vpp = _get_pp("vertex")
+                if _vpp and getattr(_vpp, "auth_type", "") == "vertex":
+                    from agent.vertex_adapter import has_vertex_credentials
+                    _cp_has_creds = has_vertex_credentials()
+            except Exception as _ve:
+                logger.debug("Vertex credential check failed: %s", _ve)
+
         if not _cp_has_creds:
             continue
 

@@ -96,7 +96,7 @@ Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`hermes model
 |-------|-----|-------|
 | Claude Sonnet 4.6 | `us.anthropic.claude-sonnet-4-6` | 推荐——速度与能力的最佳平衡 |
 | Claude Opus 4.6 | `us.anthropic.claude-opus-4-6-v1` | 能力最强 |
-| Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 最快的 Claude |
+| Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-v1:0` | 最快的 Claude |
 | Amazon Nova Pro | `us.amazon.nova-pro-v1:0` | Amazon 旗舰模型 |
 | Amazon Nova Micro | `us.amazon.nova-micro-v1:0` | 最快、最经济 |
 | DeepSeek V3.2 | `deepseek.v3.2` | 强大的开源模型 |

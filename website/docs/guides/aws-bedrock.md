@@ -96,7 +96,7 @@ Bedrock models use **inference profile IDs** for on-demand invocation. The `herm
 |-------|-----|-------|
 | Claude Sonnet 4.6 | `us.anthropic.claude-sonnet-4-6` | Recommended — best balance of speed and capability |
 | Claude Opus 4.6 | `us.anthropic.claude-opus-4-6-v1` | Most capable |
-| Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Fastest Claude |
+| Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-v1:0` | Fastest Claude |
 | Amazon Nova Pro | `us.amazon.nova-pro-v1:0` | Amazon's flagship |
 | Amazon Nova Micro | `us.amazon.nova-micro-v1:0` | Fastest, cheapest |
 | DeepSeek V3.2 | `deepseek.v3.2` | Strong open model |

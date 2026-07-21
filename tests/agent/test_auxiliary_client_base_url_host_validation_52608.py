@@ -29,7 +29,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
+                "model": "claude-haiku-4-5",
                 "base_url": "https://openrouter.ai/api/v1",
             }
         }))
@@ -64,7 +64,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
+                "model": "claude-haiku-4-5",
                 "base_url": "https://api.anthropic.com",
             }
         }))
@@ -96,7 +96,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
+                "model": "claude-haiku-4-5",
                 "base_url": "https://api.openai.com/v1",
             }
         }))
@@ -130,7 +130,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
+                "model": "claude-haiku-4-5",
                 "base_url": "",
             }
         }))
@@ -162,7 +162,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
+                "model": "claude-haiku-4-5",
                 "base_url": "https://api.anthropic.com/v1/messages",
             }
         }))

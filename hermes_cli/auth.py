@@ -1804,6 +1804,13 @@ def resolve_provider(
         return "openrouter"
     if normalized == "custom":
         return "custom"
+    # Vertex AI: OAuth2-token provider (not in PROVIDER_REGISTRY because auth_type
+    # is "vertex", not "api_key" — the auto-extend loop skips non-api_key plugins).
+    # Resolve here so callers like main.py, status.py, doctor.py don't see
+    # "Unknown provider 'vertex'". The actual credential resolution is handled
+    # by runtime_provider.resolve_runtime_provider() via get_vertex_config().
+    if normalized == "vertex":
+        return "vertex"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":

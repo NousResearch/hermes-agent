@@ -2225,6 +2225,30 @@ class TestResponsesEndpoint:
             assert first_session_id == second_session_id
 
     @pytest.mark.asyncio
+    async def test_explicit_empty_conversation_history_overrides_previous_response_id(self, adapter):
+        """An explicit empty history must bypass previous_response_id chaining."""
+        mock_result = {"final_response": "fresh", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "fresh turn",
+                        "previous_response_id": "resp_nonexistent",
+                        "conversation_history": [],
+                    },
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["conversation_history"] == []
+        assert call_kwargs["user_message"] == "fresh turn"
+
+    @pytest.mark.asyncio
     async def test_invalid_previous_response_id_returns_404(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2237,6 +2261,51 @@ class TestResponsesEndpoint:
                 },
             )
             assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_conversation_history_skips_run_fallbacks(self, adapter):
+        """An explicit empty history must bypass previous_response_id and input-array fallback in /v1/runs."""
+        app = _create_app(adapter)
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        adapter._response_store.put("resp_prev", {
+            "response": {"id": "resp_prev", "object": "response"},
+            "conversation_history": [{"role": "user", "content": "stale history"}],
+            "instructions": "stale instructions",
+            "session_id": "stale-session",
+        })
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {"role": "user", "content": "prior message"},
+                            {"role": "user", "content": "fresh turn"},
+                        ],
+                        "previous_response_id": "resp_prev",
+                        "conversation_history": [],
+                    },
+                )
+                assert resp.status == 202
+                run_data = await resp.json()
+                await asyncio.sleep(0)
+                task = adapter._active_run_tasks.get(run_data["run_id"])
+                if task is not None:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=5)
+
+        mock_agent.run_conversation.assert_called_once()
+        call_kwargs = mock_agent.run_conversation.call_args.kwargs
+        assert call_kwargs["user_message"] == "fresh turn"
+        assert call_kwargs["conversation_history"] == []
+        assert str(call_kwargs["task_id"]).startswith("run_")
 
     @pytest.mark.asyncio
     async def test_store_false_does_not_store(self, adapter):

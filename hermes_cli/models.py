@@ -3733,6 +3733,28 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# Statuses an OpenAI-compatible /models endpoint may set on an entry to say the
+# model is no longer servable (Volcengine ARK and similar catalogs flag retiring
+# and decommissioned models this way). Standard OpenAI responses have no status
+# field, so entries without one are always kept.
+_UNAVAILABLE_MODEL_STATUSES = frozenset(
+    {"shutdown", "retiring", "deprecated", "disabled", "end_of_life", "eol"}
+)
+
+
+def _is_unavailable_model(entry: Any) -> bool:
+    """True when a catalog entry explicitly declares itself unavailable.
+
+    Only matches known ``status`` values that mean "not servable" so a provider
+    using a non-standard but active status (e.g. ``Running``) is never dropped.
+    Entries with no ``status`` field pass through unchanged.
+    """
+    if not isinstance(entry, dict):
+        return False
+    status = str(entry.get("status") or "").strip().lower()
+    return bool(status) and status in _UNAVAILABLE_MODEL_STATUSES
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3802,7 +3824,11 @@ def probe_api_models(
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": [
+                        m.get("id", "")
+                        for m in data.get("data", [])
+                        if not _is_unavailable_model(m)
+                    ],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,

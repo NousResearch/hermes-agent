@@ -425,6 +425,77 @@ def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+@pytest.mark.live_system_guard_bypass
+def test_crashed_worker_kills_surviving_process_group(kanban_home, monkeypatch):
+    import signal
+
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            """
+import os, signal, subprocess, sys, time
+
+child = subprocess.Popen(
+    [sys.executable, "-u", "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+assert child.stdout is not None
+assert child.stdout.readline() == "ready\\n"
+print(child.pid, flush=True)
+os._exit(1)
+""",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert worker.stdout is not None
+    child_pid = int(worker.stdout.readline())
+    worker.wait(timeout=2)
+    monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
+
+    try:
+        with kb.connect() as conn:
+            task_id = kb.create_task(conn, title="crashed worker", assignee="test")
+            assert kb.claim_task(conn, task_id) is not None
+            kb._set_worker_pid(conn, task_id, worker.pid)
+
+            assert task_id in kb.detect_crashed_workers(conn)
+            assert kb.get_task(conn, task_id).status == "ready"
+            events = kb.list_events(conn, task_id)
+            assert events[-1].payload["process_group"] is True
+            assert events[-1].payload["sigkill"] is True
+
+        assert not kb._pid_alive(child_pid)
+    finally:
+        try:
+            os.killpg(worker.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+def test_worker_termination_refuses_dispatcher_process_group():
+    claim_lock = f"{kb._claimer_id().split(':', 1)[0]}:self-group-test"
+
+    termination = kb._terminate_reclaimed_worker(os.getpgrp(), claim_lock)
+
+    assert termination["termination_attempted"] is False
+    assert termination["termination_blocked"] == "dispatcher_process_group"
+
+
 def test_stale_claim_reclaimed(kanban_home, monkeypatch):
     import signal
     import hermes_cli.kanban_db as _kb

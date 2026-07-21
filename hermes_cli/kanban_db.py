@@ -4220,6 +4220,12 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
+    if _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_worker_alive",
+        )
+        return False
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -6587,7 +6593,7 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker-group termination for retry paths."""
     import signal
 
     info: dict[str, Any] = {
@@ -6595,6 +6601,8 @@ def _terminate_reclaimed_worker(
         "host_local": False,
         "termination_attempted": False,
         "terminated": False,
+        "termination_blocked": None,
+        "process_group": False,
         "sigkill": False,
     }
     if not pid or pid <= 0 or not claim_lock:
@@ -6604,10 +6612,58 @@ def _terminate_reclaimed_worker(
     if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
+    if int(pid) <= 1:
+        info["termination_blocked"] = "unsafe_pid"
+        return info
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
     )
+    alive = _pid_alive
+    process_group = False
+    if (
+        signal_fn is None
+        and os.name != "nt"
+        and hasattr(os, "killpg")
+        and hasattr(os, "getpgid")
+        and hasattr(os, "getpgrp")
+    ):
+        if int(pid) == os.getpgrp():
+            info["termination_blocked"] = "dispatcher_process_group"
+            return info
+        try:
+            current_pgid = os.getpgid(int(pid))
+        except ProcessLookupError:
+            current_pgid = int(pid)
+        except OSError:
+            info["termination_blocked"] = "pgid_lookup_failed"
+            return info
+        if current_pgid != int(pid):
+            info["termination_blocked"] = "unexpected_pgid"
+            return info
+        try:
+            os.killpg(int(pid), 0)
+        except ProcessLookupError:
+            info["terminated"] = True
+            return info
+        except (PermissionError, OSError):
+            info["termination_blocked"] = "pgid_probe_failed"
+            return info
+
+        process_group = True
+        info["process_group"] = True
+
+        def kill(_pid, sig):
+            os.killpg(int(pid), sig)
+
+        def alive(_pid):
+            try:
+                os.killpg(int(pid), 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except (PermissionError, OSError):
+                return True
     if kill is None:
         return info
 
@@ -6624,38 +6680,56 @@ def _terminate_reclaimed_worker(
         return info
 
     for _ in range(10):
-        if not _pid_alive(pid):
+        if not alive(pid):
             info["terminated"] = True
             return info
         time.sleep(0.5)
 
-    if _pid_alive(pid):
+    if alive(pid):
         try:
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
             _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
             kill(int(pid), _sigkill)
             info["sigkill"] = True
-        except (ProcessLookupError, OSError):
+        except ProcessLookupError:
+            info["terminated"] = True
+            return info
+        except OSError:
             return info
 
-    info["terminated"] = not _pid_alive(pid)
+    if process_group:
+        for _ in range(10):
+            if not alive(pid):
+                info["terminated"] = True
+                return info
+            time.sleep(0.05)
+        # A successful SIGKILL cannot be handled or ignored. The kernel may
+        # retain a dead group briefly while zombies are reaped, but none of
+        # its members can overlap the retry.
+        info["terminated"] = info["sigkill"]
+        return info
+
+    info["terminated"] = not alive(pid)
     return info
 
 
 def _worker_survived_termination(termination: dict) -> bool:
-    """True when we tried to kill our own host-local worker and it is still alive.
+    """True when a host-local worker may still execute after termination.
 
     Reclaiming in this state would release the claim and let the dispatcher
     spawn a second worker while the first is still running — the duplication
-    loop. Only host-local workers we actually signalled count: a non-local
-    claim lock or a no-op attempt (no ``os.kill`` available) must fall through
-    to the normal release path, since we cannot manage that worker anyway.
+    loop. A refused unsafe PID/PGID target also counts so we fail closed rather
+    than signal a foreign group or overlap it with a retry. Non-local claims
+    and platforms without a signal primitive preserve the prior release path.
     """
     return bool(
-        termination.get("termination_attempted")
-        and termination.get("host_local")
+        termination.get("host_local")
         and not termination.get("terminated")
+        and (
+            termination.get("termination_attempted")
+            or termination.get("termination_blocked")
+        )
     )
 
 
@@ -6768,7 +6842,6 @@ def enforce_max_runtime(
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6796,31 +6869,16 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn,
         )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+            )
+            continue
+        killed = bool(termination.get("sigkill"))
 
         with write_txn(conn):
             cur = conn.execute(
@@ -7113,37 +7171,45 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
-    # Per-crash details collected inside the main txn, used after it
-    # closes to run ``_record_task_failure`` (which needs its own
+    # Per-crash details collected inside per-task txns, used after they
+    # close to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
     # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
-    with write_txn(conn):
-        rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
-        ).fetchall()
-        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
-        for row in rows:
-            # Only check liveness for claims owned by this host.
-            lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
+    rows = conn.execute(
+        "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+        "WHERE status = 'running' AND worker_pid IS NOT NULL"
+    ).fetchall()
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    for row in rows:
+        # Only check liveness for claims owned by this host.
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+        # Skip liveness check inside the launch-window grace period
+        # so a freshly-spawned worker isn't reclaimed before its PID
+        # is visible on /proc.
+        started_at = row["started_at"] if "started_at" in row.keys() else None
+        if started_at is not None:
+            grace = _resolve_crash_grace_seconds()
+            if time.time() - started_at < grace:
                 continue
-            # Skip liveness check inside the launch-window grace period
-            # so a freshly-spawned worker isn't reclaimed before its PID
-            # is visible on /proc.
-            started_at = row["started_at"] if "started_at" in row.keys() else None
-            if started_at is not None:
-                grace = _resolve_crash_grace_seconds()
-                if time.time() - started_at < grace:
-                    continue
-            if _pid_alive(row["worker_pid"]):
-                continue
+        if _pid_alive(row["worker_pid"]):
+            continue
 
-            pid = int(row["worker_pid"])
+        pid = int(row["worker_pid"])
+        termination = _terminate_reclaimed_worker(pid, row["claim_lock"])
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, row["id"], row["claim_lock"], int(time.time()), termination,
+                reason="crashed_worker_group_alive",
+            )
+            continue
+
+        with write_txn(conn):
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
@@ -7206,6 +7272,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+            event_payload.update(termination)
 
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "

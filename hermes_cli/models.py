@@ -301,6 +301,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "kimi-acp": [
+        "k3",
+        "kimi-for-coding",
+        "kimi-for-coding-highspeed",
+    ],
     "kimi-coding-cn": [
         "kimi-k2.6",
         "kimi-k2.5",

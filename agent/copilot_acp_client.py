@@ -31,6 +31,12 @@ from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
+KIMI_ACP_MARKER_BASE_URL = "acp://kimi"
+_KIMI_ACP_MODEL_ALIASES = {
+    "k3": "kimi-code/k3",
+    "kimi-for-coding": "kimi-code/kimi-for-coding",
+    "kimi-for-coding-highspeed": "kimi-code/kimi-for-coding-highspeed",
+}
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -472,6 +478,7 @@ class CopilotACPClient:
 
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
+            model=model,
             timeout_seconds=_effective_timeout,
         )
 
@@ -501,7 +508,53 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _select_requested_model(
+        self,
+        request: Any,
+        *,
+        session_id: str,
+        config_options: list[dict[str, Any]],
+        model: str | None,
+    ) -> None:
+        """Select the requested Kimi Code model before the first ACP prompt."""
+        if self.base_url.rstrip("/") != KIMI_ACP_MARKER_BASE_URL:
+            return
+
+        requested = str(model or "k3").strip()
+        selected = _KIMI_ACP_MODEL_ALIASES.get(requested, requested)
+        model_option = next(
+            (
+                option for option in config_options
+                if isinstance(option, dict) and option.get("id") == "model"
+            ),
+            None,
+        )
+        advertised = {
+            str(option.get("value") or "").strip()
+            for option in (model_option or {}).get("options", [])
+            if isinstance(option, dict)
+        }
+        if selected not in advertised:
+            raise RuntimeError(
+                f"Kimi ACP did not advertise requested model '{selected}'. "
+                f"Available models: {', '.join(sorted(advertised)) or 'none'}"
+            )
+        request(
+            "session/set_config_option",
+            {
+                "sessionId": session_id,
+                "configId": "model",
+                "value": selected,
+            },
+        )
+
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        model: str | None,
+        timeout_seconds: float,
+    ) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -640,6 +693,12 @@ class CopilotACPClient:
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+            self._select_requested_model(
+                _request,
+                session_id=session_id,
+                config_options=list(session.get("configOptions") or []),
+                model=model,
+            )
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

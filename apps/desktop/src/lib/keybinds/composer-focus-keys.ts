@@ -76,7 +76,12 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     return true
   }
 
-  if (event.defaultPrevented || event.isComposing || isEditableTarget(event.target) || composerFocusBlockedBySurface()) {
+  if (
+    event.defaultPrevented ||
+    event.isComposing ||
+    isEditableTarget(event.target) ||
+    composerFocusBlockedBySurface()
+  ) {
     return false
   }
 

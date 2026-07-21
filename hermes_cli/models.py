@@ -7,6 +7,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -98,10 +99,17 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 _openrouter_catalog_cache_at: float = 0.0
+_openrouter_catalog_cache_key_fp: str | None = None
 _openrouter_policy_catalog_cache: dict[str, dict[str, Any]] | None = None
 _openrouter_policy_catalog_cache_at: float = 0.0
+_openrouter_policy_catalog_cache_key_fp: str | None = None
 _OPENROUTER_USER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
 _OPENROUTER_CATALOG_CACHE_TTL = 300.0
+
+
+def _openrouter_api_key_fingerprint(api_key: str) -> str:
+    """Return a non-reversible cache partition key without retaining credentials."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
 
 
@@ -1460,14 +1468,17 @@ def _fetch_openrouter_policy_catalog(
     response meaning the account currently has no eligible models.
     """
     global _openrouter_policy_catalog_cache, _openrouter_policy_catalog_cache_at
+    global _openrouter_policy_catalog_cache_key_fp
 
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         return None
+    key_fp = _openrouter_api_key_fingerprint(api_key)
 
     now = time.time()
     if (
         _openrouter_policy_catalog_cache is not None
+        and _openrouter_policy_catalog_cache_key_fp == key_fp
         and not force_refresh
         and (now - _openrouter_policy_catalog_cache_at) < _OPENROUTER_CATALOG_CACHE_TTL
     ):
@@ -1501,6 +1512,7 @@ def _fetch_openrouter_policy_catalog(
 
     _openrouter_policy_catalog_cache = catalog
     _openrouter_policy_catalog_cache_at = now
+    _openrouter_policy_catalog_cache_key_fp = key_fp
     return dict(catalog)
 
 
@@ -1536,10 +1548,14 @@ def fetch_openrouter_models(
     account's current privacy settings.
     """
     global _openrouter_catalog_cache, _openrouter_catalog_cache_at
+    global _openrouter_catalog_cache_key_fp
 
     now = time.time()
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    key_fp = _openrouter_api_key_fingerprint(api_key) if api_key else None
     if (
         _openrouter_catalog_cache is not None
+        and _openrouter_catalog_cache_key_fp == key_fp
         and not force_refresh
         and (now - _openrouter_catalog_cache_at) < _OPENROUTER_CATALOG_CACHE_TTL
     ):
@@ -1560,7 +1576,9 @@ def fetch_openrouter_models(
         force_refresh=force_refresh,
     )
     if live_by_id is None:
-        return list(_openrouter_catalog_cache or [])
+        if _openrouter_catalog_cache_key_fp == key_fp:
+            return list(_openrouter_catalog_cache or [])
+        return []
 
     ordered_ids = list(preferred_ids)
     seen_ids = set(ordered_ids)
@@ -1584,6 +1602,7 @@ def fetch_openrouter_models(
 
     _openrouter_catalog_cache = models
     _openrouter_catalog_cache_at = now
+    _openrouter_catalog_cache_key_fp = key_fp
     return list(models)
 
 
@@ -3049,15 +3068,19 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     ``hermes model --refresh``.
     """
     global _openrouter_catalog_cache, _openrouter_catalog_cache_at
+    global _openrouter_catalog_cache_key_fp
     global _openrouter_policy_catalog_cache, _openrouter_policy_catalog_cache_at
+    global _openrouter_policy_catalog_cache_key_fp
 
     try:
         normalized = normalize_provider(provider) if provider is not None else None
         if provider is None or normalized == "openrouter":
             _openrouter_catalog_cache = None
             _openrouter_catalog_cache_at = 0.0
+            _openrouter_catalog_cache_key_fp = None
             _openrouter_policy_catalog_cache = None
             _openrouter_policy_catalog_cache_at = 0.0
+            _openrouter_policy_catalog_cache_key_fp = None
 
         if provider is None:
             path = _provider_models_cache_path()

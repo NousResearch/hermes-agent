@@ -246,6 +246,82 @@ class TestOpenRouterPolicyCatalog:
             "authorization": "Bearer test-key",
         }
 
+    def test_policy_and_picker_caches_are_partitioned_by_api_key(self, monkeypatch):
+        class _Resp:
+            def __init__(self, model_id):
+                self.model_id = model_id
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    '{"data":[{"id":"%s","supported_parameters":["tools"]}]}'
+                    % self.model_id
+                ).encode()
+
+        calls = []
+
+        def _open(req, *, timeout):
+            authorization = req.get_header("Authorization")
+            calls.append(authorization)
+            model_id = "account-a/model" if authorization == "Bearer key-a" else "account-b/model"
+            return _Resp(model_id)
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache_key_fp", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_policy_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_policy_catalog_cache_key_fp", None)
+        monkeypatch.setattr("hermes_cli.model_catalog.get_curated_openrouter_models", lambda: None)
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_open):
+            monkeypatch.setenv("OPENROUTER_API_KEY", "key-a")
+            first = fetch_openrouter_models(force_refresh=True)
+            monkeypatch.setenv("OPENROUTER_API_KEY", "key-b")
+            second = fetch_openrouter_models()
+
+            from hermes_cli.models import validate_requested_model
+
+            old_selection = validate_requested_model("account-a/model", "openrouter")
+            new_selection = validate_requested_model("account-b/model", "openrouter")
+
+        assert [mid for mid, _ in first] == ["account-a/model"]
+        assert [mid for mid, _ in second] == ["account-b/model"]
+        assert calls == ["Bearer key-a", "Bearer key-b"]
+        assert old_selection["accepted"] is False
+        assert new_selection["accepted"] is True
+
+    def test_picker_does_not_reuse_stale_catalog_from_another_api_key(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":[{"id":"account-a/model","supported_parameters":["tools"]}]}'
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache_key_fp", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_policy_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_policy_catalog_cache_key_fp", None)
+        monkeypatch.setattr("hermes_cli.model_catalog.get_curated_openrouter_models", lambda: None)
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "key-a")
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            first = fetch_openrouter_models(force_refresh=True)
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "key-b")
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("offline")):
+            second = fetch_openrouter_models()
+
+        assert [mid for mid, _ in first] == ["account-a/model"]
+        assert second == []
+
     def test_direct_selection_rejects_model_outside_policy(self, monkeypatch):
         from hermes_cli.models import validate_requested_model
 

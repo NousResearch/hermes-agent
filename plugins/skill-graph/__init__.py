@@ -1700,7 +1700,7 @@ def register(ctx):
     )
 
     # ── Hook: pre_tool_call — block find/read_file/recall if graph not searched ──
-    _gated_tools = frozenset({"find", "read_file", "session_search"})
+    _gated_tools = frozenset({"find", "read_file"})
     _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
 
     # Resolve skill_graph_mode from config at registration time (startup constant)

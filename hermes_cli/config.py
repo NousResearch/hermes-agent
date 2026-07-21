@@ -5526,6 +5526,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes
     "platforms",             # top-level per-platform map merged by gateway/config.py
+    "homeassistant",         # action policy + native config-management settings
     "require_mention",       # top-level convenience form honored by the gateway (#3979)
     "unauthorized_dm_behavior",  # top-level form read by gateway/config.py
     "signal",            # Signal settings bridged to env vars by gateway/config.py

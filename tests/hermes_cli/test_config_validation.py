@@ -257,6 +257,10 @@ class TestUnknownTopLevelKeys:
         """Roots Hermes itself writes/reads must not warn as unknown (#67397)."""
         issues = validate_config_structure({
             "model": {"provider": "openrouter"},
+            "homeassistant": {
+                "action_policy": {"mode": "safe", "trusted_entities": []},
+                "config_management": {"enabled": True},
+            },
             "known_plugin_toolsets": {"cli": ["spotify"]},
             "group_sessions_per_user": True,
             "thread_sessions_per_user": False,
@@ -267,6 +271,7 @@ class TestUnknownTopLevelKeys:
         })
         unknown = [i for i in issues if "Unknown top-level config key" in i.message]
         messages = " ".join(i.message for i in unknown)
+        assert "homeassistant" not in messages
         assert "known_plugin_toolsets" not in messages
         assert "group_sessions_per_user" not in messages
         assert "thread_sessions_per_user" not in messages

@@ -770,3 +770,64 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+# ── _classify_tool_call_orphans ─────────────────────────────────────────
+
+def test_classify_orphans_empty():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    sv, rs, orphaned, missing = _classify_tool_call_orphans([])
+    assert sv == set()
+    assert rs == set()
+    assert orphaned == set()
+    assert missing == set()
+
+
+def test_classify_orphans_clean_pair():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert sv == {"call_1"}
+    assert rs == {"call_1"}
+    assert orphaned == set()
+    assert missing == set()
+
+
+def test_classify_orphans_detects_orphaned_result():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "tool", "tool_call_id": "orphan_1", "content": "no matching call"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert orphaned == {"orphan_1"}
+    assert missing == set()
+
+
+def test_classify_orphans_detects_missing_result():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert orphaned == set()
+    assert missing == {"call_1"}
+
+
+def test_classify_orphans_mixed():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "call_A", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "call_B", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "ok"},
+        {"role": "tool", "tool_call_id": "call_C", "content": "orphan"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert sv == {"call_A", "call_B"}
+    assert rs == {"call_A", "call_C"}
+    assert orphaned == {"call_C"}
+    assert missing == {"call_B"}

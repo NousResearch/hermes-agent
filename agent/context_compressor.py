@@ -2817,23 +2817,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         silently dropped by the repair pass, re-exposing the original orphans.
         Stripping at the source avoids this entire class of mismatch.
         """
-        surviving_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    cid = self._get_tool_call_id(tc)
-                    if cid:
-                        surviving_call_ids.add(cid)
+        from agent.agent_runtime_helpers import _classify_tool_call_orphans
 
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    result_call_ids.add(cid)
+        _sv, _rs, orphaned_results, missing_results = _classify_tool_call_orphans(messages)
 
         # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
             messages = [
                 m for m in messages
@@ -2843,10 +2831,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
         # 2. Strip orphaned tool_calls from assistant messages whose results
-        #    were dropped.  Stripping is preferred over inserting stub results
-        #    because stubs can be dropped by downstream repair_message_sequence
-        #    when call_id != id (Codex Responses API format), re-exposing orphans.
-        missing_results = surviving_call_ids - result_call_ids
+        #    were dropped.
         if missing_results:
             for msg in messages:
                 if msg.get("role") != "assistant":

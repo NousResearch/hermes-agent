@@ -2649,6 +2649,46 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+def _classify_tool_call_orphans(
+    messages: List[Dict[str, Any]],
+) -> tuple:
+    """Return (surviving_call_ids, result_call_ids, orphaned_results, missing_results).
+
+    Collects tool-call IDs from both assistant ``tool_calls`` (using the
+    ``call_id || id`` resolution that ``_get_tool_call_id_static`` uses)
+    and from ``tool`` messages, then classifies orphans:
+
+    - ``orphaned_results``: tool messages whose ``tool_call_id`` has no
+      matching assistant tool_call in the window.
+    - ``missing_results``: assistant tool_calls whose results were dropped
+      (no matching ``tool`` message found).
+
+    This is the single source of truth for orphan detection. The caller
+    decides whether to insert stubs (pre-API sanitizer) or strip orphans
+    (context compressor) — but the *detection* logic is shared so dedup
+    and id-resolution rules never drift between the two sites (#58357).
+    """
+    surviving_call_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid:
+                    surviving_call_ids.add(cid)
+
+    result_call_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid:
+                result_call_ids.add(cid)
+
+    orphaned_results = result_call_ids - surviving_call_ids
+    missing_results = surviving_call_ids - result_call_ids
+    return surviving_call_ids, result_call_ids, orphaned_results, missing_results
+
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2752,23 +2792,9 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
-    surviving_call_ids: set = set()
-    for msg in messages:
-        if msg.get("role") == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                if cid:
-                    surviving_call_ids.add(cid)
-
-    result_call_ids: set = set()
-    for msg in messages:
-        if msg.get("role") == "tool":
-            cid = (msg.get("tool_call_id") or "").strip()
-            if cid:
-                result_call_ids.add(cid)
+    _sv, _rs, orphaned_results, missing_results = _classify_tool_call_orphans(messages)
 
     # 1. Drop tool results with no matching assistant call
-    orphaned_results = result_call_ids - surviving_call_ids
     if orphaned_results:
         messages = [
             m for m in messages
@@ -2780,7 +2806,6 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         )
 
     # 2. Inject stub results for calls whose result was dropped
-    missing_results = surviving_call_ids - result_call_ids
     if missing_results:
         patched: List[Dict[str, Any]] = []
         for msg in messages:

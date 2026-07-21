@@ -565,3 +565,85 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# unblock: reject reason-looking positional args before mutating anything
+# ---------------------------------------------------------------------------
+
+
+def _blocked_task(title: str = "real task") -> str:
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title=title)
+        kb.block_task(conn, tid, reason="waiting")
+    return tid
+
+
+def test_unblock_rejects_reason_shaped_positional_without_mutating(kanban_home, capsys):
+    """A reason passed positionally must not be treated as a task id.
+
+    ``block`` takes its reason positionally while ``unblock`` requires
+    ``--reason``, so this is an easy mistake. Previously the phrase was
+    treated as an id and the command still unblocked whichever real ids
+    followed it — a partial mutation the user never asked for.
+    """
+    tid = _blocked_task()
+
+    rc = kc._cmd_unblock(
+        argparse.Namespace(task_ids=["skill external_dirs fixed; retry review", tid], reason=None)
+    )
+
+    assert rc == 1
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "blocked", "the valid id must NOT be unblocked"
+
+    err = capsys.readouterr().err
+    assert "not a task id" in err
+    assert "--reason" in err, "should point at the correct syntax"
+    assert "No tasks were modified" in err
+
+
+def test_unblock_with_reason_flag_no_longer_raises_on_bad_positional(kanban_home):
+    """With ``--reason`` set, the pre-check also prevents an unhandled crash.
+
+    ``add_comment`` raises ValueError for an unknown task, so the bad
+    positional used to escape as a traceback before any id was processed.
+    """
+    tid = _blocked_task()
+
+    rc = kc._cmd_unblock(argparse.Namespace(task_ids=["some reason text", tid], reason="a note"))
+
+    assert rc == 1
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_unblock_still_works_for_valid_ids(kanban_home):
+    """The guard must not get in the way of the normal path, single or bulk."""
+    first, second = _blocked_task("one"), _blocked_task("two")
+
+    rc = kc._cmd_unblock(argparse.Namespace(task_ids=[first, second], reason="done waiting"))
+
+    assert rc == 0
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, first).status in {"ready", "todo"}
+        assert kb.get_task(conn, second).status in {"ready", "todo"}
+
+
+def test_unblock_accepts_legacy_short_task_ids(kanban_home):
+    """Ids have been 4, 8 and 12 hex chars across versions.
+
+    The guard checks shape, not length, so a task created by an older
+    Hermes stays reachable. A length rule would strand those tasks.
+    """
+    with kb.connect_closing() as conn:
+        legacy = "t_abcd"  # 2-hex-byte era
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (?,?,?,?)",
+            (legacy, "legacy", "blocked", 0),
+        )
+        conn.commit()
+
+    rc = kc._cmd_unblock(argparse.Namespace(task_ids=[legacy], reason=None))
+
+    assert rc == 0, "a legacy short id must not be rejected as malformed"

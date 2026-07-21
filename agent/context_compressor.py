@@ -2988,7 +2988,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         indicators and aren't what the reporter means by "the output
         of the last message you sent" (#29824).
 
-        Falling back to the most recent assistant message of ANY kind
+        Context-compaction handoff banners can also carry
+        ``role="assistant"``. They are internal continuity state, not a
+        user-visible reply, so ignore them both as text-bearing anchors and
+        as candidates for the fallback below. This mirrors the user-role
+        summary exclusion in ``_find_last_user_message_idx``.
+
+        Falling back to the most recent non-summary assistant message of ANY kind
         only kicks in when no content-bearing assistant message exists
         in the compressible region — typically a fresh session that
         just started a multi-step tool sequence with no prior reply
@@ -2998,7 +3004,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         last_any = -1
         for i in range(len(messages) - 1, head_end - 1, -1):
             msg = messages[i]
-            if msg.get("role") != "assistant":
+            if msg.get("role") != "assistant" or self._is_context_summary_content(
+                msg.get("content")
+            ):
                 continue
             if last_any < 0:
                 last_any = i

@@ -445,6 +445,7 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
       - ``us.anthropic.claude-*`` (US inference profiles)
       - ``global.anthropic.claude-*`` (global inference profiles)
       - ``eu.anthropic.claude-*`` (EU inference profiles)
+      - ``claude-*`` (Anthropic native model names via proxies)
     """
     model_lower = model_id.lower()
     # Strip regional prefix if present
@@ -455,7 +456,7 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
         if model_lower.startswith(prefix):
             model_lower = model_lower[len(prefix):]
             break
-    return model_lower.startswith("anthropic.claude")
+    return model_lower.startswith("anthropic.claude") or model_lower.startswith("claude")
 
 
 # ---------------------------------------------------------------------------

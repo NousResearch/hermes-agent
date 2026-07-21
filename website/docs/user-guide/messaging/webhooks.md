@@ -80,6 +80,9 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `signature_header` | No | Name of the header that carries the signature/token, for providers the adapter does not recognize natively (e.g. `X-Gitea-Signature`, `X-Hook-Signature`). When set, **only** this header is accepted for the route — the built-in GitHub/GitLab/Svix/generic detection is skipped. See [Custom signature headers](#custom-signature-headers). |
+| `signature_scheme` | No | How the custom header is validated: `hmac-sha256` (default — hex HMAC-SHA256 digest of the raw body) or `token` (plain constant-time string compare against the secret, GitLab-style). Only valid together with `signature_header`. |
+| `signature_prefix` | No | Prefix the provider puts before the signature value (e.g. `sha256=`). Stripped before validation. Only valid together with `signature_header`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
@@ -459,6 +462,38 @@ The adapter validates incoming webhook signatures using the appropriate method f
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
+
+### Custom signature headers {#custom-signature-headers}
+
+Many providers use the same HMAC-SHA256-over-body scheme but send it under their own header name (Gitea uses `X-Gitea-Signature`, Asana uses `X-Hook-Signature`, and so on). Instead of the adapter hardcoding every provider, a route can declare which header to validate:
+
+```yaml
+routes:
+  gitea-prs:
+    secret: "your-gitea-webhook-secret"
+    signature_header: "X-Gitea-Signature"   # raw hex HMAC-SHA256 of the body
+    prompt: "Review this Gitea event: {__raw__}"
+
+  legacy-service:
+    secret: "shared-token"
+    signature_header: "X-Auth-Token"
+    signature_scheme: "token"               # plain string compare, GitLab-style
+
+  github-like:
+    secret: "another-secret"
+    signature_header: "X-Custom-Signature"
+    signature_prefix: "sha256="             # stripped before comparing
+```
+
+Semantics:
+
+- `signature_scheme: hmac-sha256` (the default) expects the header to carry the hex HMAC-SHA256 digest of the raw request body, keyed by the route secret. Comparison is constant-time.
+- `signature_scheme: token` expects the header to carry the shared secret verbatim (constant-time compare). Use this only when the provider cannot compute an HMAC.
+- `signature_prefix` is stripped from the header value before validation; requests without the prefix are rejected.
+- When `signature_header` is set it is **exclusive and fail-closed**: the built-in GitHub/GitLab/Svix/generic header detection is skipped, and requests missing the configured header are rejected with `401`. This prevents a route pinned to one provider from being authenticated through a different (possibly weaker) scheme.
+- Like the legacy generic V1 scheme, a body-only HMAC has no replay protection — a captured request replays until the secret rotates. Prefer the generic V2 scheme when you control the sender.
+
+The same options are available on dynamic subscriptions: `hermes webhook subscribe my-route --signature-header X-Gitea-Signature` (plus `--signature-scheme` and `--signature-prefix`). `hermes webhook test` signs its test POST with the route's configured header automatically.
 
 ### Secret is required
 

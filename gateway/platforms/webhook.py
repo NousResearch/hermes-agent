@@ -28,6 +28,10 @@ Security:
     legacy body-only V1 (X-Webhook-Signature) is deprecated but still
     accepted with a warning, since it has no replay protection
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
+  - Routes can pin a custom signature header via signature_header (plus
+    optional signature_scheme / signature_prefix) for providers whose
+    header the adapter does not recognise natively (Gitea, Asana, ...);
+    when set, only that header is accepted for the route
 """
 
 import asyncio
@@ -100,6 +104,11 @@ DEFAULT_HOST = None
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+# Validation schemes accepted for a route-level custom signature header
+# (signature_header):
+#   hmac-sha256 — header carries the hex HMAC-SHA256 digest of the raw body
+#   token       — header carries the shared secret verbatim (GitLab-style)
+_SIGNATURE_SCHEMES = frozenset({"hmac-sha256", "token"})
 _RATE_WINDOW_SECONDS = 60.0
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -252,6 +261,25 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"deliver is '{deliver}'. Direct delivery requires a "
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
+
+            # Custom signature header: surface a typo'd scheme (or orphaned
+            # scheme/prefix) at startup rather than as per-request 401s.
+            sig_scheme = route.get("signature_scheme", "")
+            sig_prefix = route.get("signature_prefix", "")
+            if route.get("signature_header"):
+                if sig_scheme and sig_scheme not in _SIGNATURE_SCHEMES:
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has unknown "
+                        f"signature_scheme '{sig_scheme}'. Valid schemes: "
+                        f"{', '.join(sorted(_SIGNATURE_SCHEMES))}."
+                    )
+            elif sig_scheme or sig_prefix:
+                raise ValueError(
+                    f"[webhook] Route '{name}' sets signature_scheme/"
+                    f"signature_prefix without signature_header. Set "
+                    f"'signature_header' to the header name that carries "
+                    f"the signature (e.g. X-Gitea-Signature)."
+                )
 
         # client_max_size makes aiohttp enforce the cap on every read path,
         # including Transfer-Encoding: chunked bodies that carry no
@@ -594,7 +622,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
-            if not self._validate_signature(request, raw_body, secret):
+            if not self._validate_signature(
+                request, raw_body, secret, route_config
+            ):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
                 )
@@ -955,15 +985,61 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _validate_signature(
-        self, request: "web.Request", body: bytes, secret: str
+        self,
+        request: "web.Request",
+        body: bytes,
+        secret: str,
+        route_config: Optional[dict] = None,
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256).
+
+        When the route configures ``signature_header``, that header is the
+        only one accepted — the built-in header probing below is skipped so
+        a route pinned to one provider cannot be authenticated through a
+        different provider's (weaker) scheme.
+        """
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
                 or request.headers.get(name.lower(), "")
                 or request.headers.get(name.upper(), "")
             )
+
+        # Route-pinned custom header (Gitea, Asana, or any provider whose
+        # header the adapter does not know natively). Exclusive and
+        # fail-closed: a missing/mismatched header rejects the request.
+        custom_header = (route_config or {}).get("signature_header", "")
+        if custom_header:
+            scheme = route_config.get("signature_scheme") or "hmac-sha256"
+            prefix = route_config.get("signature_prefix", "")
+            provided = _header(custom_header)
+            if not provided:
+                logger.warning(
+                    "[webhook] Route '%s' expects signature header '%s' "
+                    "but the request did not send it",
+                    request.match_info.get("route_name", ""),
+                    custom_header,
+                )
+                return False
+            if prefix:
+                if not provided.startswith(prefix):
+                    return False
+                provided = provided[len(prefix):]
+            if scheme == "token":
+                return _hmac_str_equal(provided, secret)
+            if scheme == "hmac-sha256":
+                expected = hmac.new(
+                    secret.encode(), body, hashlib.sha256
+                ).hexdigest()
+                return _hmac_str_equal(provided, expected)
+            # Unknown scheme: connect() rejects this for startup routes, but
+            # hot-reloaded dynamic routes can still carry one — fail closed.
+            logger.error(
+                "[webhook] Route '%s' has unknown signature_scheme '%s'",
+                request.match_info.get("route_name", ""),
+                scheme,
+            )
+            return False
 
         # Svix / AgentMail:
         #   svix-id: msg_...

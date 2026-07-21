@@ -49,6 +49,28 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"
     )
     wh_sub.add_argument(
+        "--signature-header",
+        default="",
+        help="Custom header name carrying the signature/token (e.g. "
+        "X-Gitea-Signature). When set, only this header is accepted for "
+        "the route.",
+    )
+    wh_sub.add_argument(
+        "--signature-scheme",
+        default="",
+        choices=["hmac-sha256", "token"],
+        help="How the custom header is validated: 'hmac-sha256' (hex "
+        "HMAC-SHA256 of the raw body, default) or 'token' (plain "
+        "constant-time compare against the secret, GitLab-style). "
+        "Requires --signature-header.",
+    )
+    wh_sub.add_argument(
+        "--signature-prefix",
+        default="",
+        help="Prefix the provider puts before the signature value (e.g. "
+        "'sha256='). Stripped before validation. Requires --signature-header.",
+    )
+    wh_sub.add_argument(
         "--deliver-only",
         action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "

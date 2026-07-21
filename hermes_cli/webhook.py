@@ -171,6 +171,16 @@ def _cmd_subscribe(args):
     secret = args.secret or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    signature_header = (getattr(args, "signature_header", "") or "").strip()
+    signature_scheme = getattr(args, "signature_scheme", "") or ""
+    signature_prefix = getattr(args, "signature_prefix", "") or ""
+    if (signature_scheme or signature_prefix) and not signature_header:
+        print(
+            "Error: --signature-scheme/--signature-prefix require "
+            "--signature-header (the header name that carries the signature)."
+        )
+        return
+
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
@@ -180,6 +190,13 @@ def _cmd_subscribe(args):
         "deliver": args.deliver or "log",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+    if signature_header:
+        route["signature_header"] = signature_header
+        if signature_scheme:
+            route["signature_scheme"] = signature_scheme
+        if signature_prefix:
+            route["signature_prefix"] = signature_prefix
 
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
@@ -211,6 +228,11 @@ def _cmd_subscribe(args):
     else:
         print("  Events: (all)")
     print(f"  Deliver: {route['deliver']}")
+    if route.get("signature_header"):
+        scheme = route.get("signature_scheme", "hmac-sha256")
+        prefix = route.get("signature_prefix", "")
+        detail = f"{scheme}" + (f", prefix '{prefix}'" if prefix else "")
+        print(f"  Signature header: {route['signature_header']} ({detail})")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
@@ -245,6 +267,8 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("signature_header"):
+            print(f"    Header:  {route['signature_header']}")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()
@@ -282,9 +306,27 @@ def _cmd_test(args):
 
     import hmac
     import hashlib
-    sig = "sha256=" + hmac.new(
-        secret.encode(), payload.encode(), hashlib.sha256
-    ).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "test",
+    }
+    signature_header = route.get("signature_header", "")
+    if signature_header:
+        # Route pins a custom header — the adapter only accepts that one.
+        scheme = route.get("signature_scheme") or "hmac-sha256"
+        prefix = route.get("signature_prefix", "")
+        if scheme == "token":
+            value = secret
+        else:
+            value = hmac.new(
+                secret.encode(), payload.encode(), hashlib.sha256
+            ).hexdigest()
+        headers[signature_header] = prefix + value
+    else:
+        headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(
+            secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
 
     print(f"  Sending test POST to {url}")
     try:
@@ -292,11 +334,7 @@ def _cmd_test(args):
         req = urllib.request.Request(
             url,
             data=payload.encode(),
-            headers={
-                "Content-Type": "application/json",
-                "X-Hub-Signature-256": sig,
-                "X-GitHub-Event": "test",
-            },
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:

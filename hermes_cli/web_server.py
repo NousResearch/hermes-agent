@@ -4312,6 +4312,36 @@ def get_sessions(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _unique_profile_db_targets(
+    targets: List[Tuple[str, Path]],
+) -> List[Tuple[str, Path]]:
+    """Keep the first profile for each physical ``state.db``.
+
+    Profile directories can alias one another (most commonly via symlinks).
+    Scanning those entries independently duplicates every session and inflates
+    aggregate totals.  File identity also catches hard-link aliases while the
+    first target preserves ``list_profiles()`` ownership ordering (default
+    first).  Identity-check failures are left for the endpoint's existing
+    error path.
+    """
+    unique: List[Tuple[str, Path]] = []
+    seen: List[Path] = []
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            duplicate = any(db_path.samefile(existing) for existing in seen)
+        except OSError:
+            unique.append((name, home))
+            continue
+        if duplicate:
+            continue
+        seen.append(db_path)
+        unique.append((name, home))
+    return unique
+
+
 @app.get("/api/profiles/sessions")
 def get_profiles_sessions(
     limit: int = 20,
@@ -4357,6 +4387,7 @@ def get_profiles_sessions(
             targets = []
         if not targets:
             targets.append(("default", profiles_mod.get_profile_dir("default")))
+    targets = _unique_profile_db_targets(targets)
 
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"
@@ -4478,6 +4509,7 @@ def get_profiles_sessions_sidebar(
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
+    targets = _unique_profile_db_targets(targets)
 
     recents_scope = (recents_profile or "all").strip() or "all"
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]

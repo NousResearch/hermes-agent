@@ -1820,6 +1820,90 @@ class TestWebServerEndpoints:
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
 
+    def test_profiles_sessions_dedupes_symlinked_profile_database(
+        self, tmp_path, monkeypatch
+    ):
+        """A profile alias for the same state.db must not duplicate rows/counts."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        default_home = get_hermes_home()
+        db = SessionDB()
+        try:
+            db.create_session(session_id="physical-db-once", source="desktop")
+            db.append_message("physical-db-once", role="user", content="hi")
+        finally:
+            db.close()
+
+        alias_home = tmp_path / "alias"
+        alias_home.mkdir()
+        try:
+            (alias_home / "state.db").symlink_to(default_home / "state.db")
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [
+                SimpleNamespace(name="default", path=default_home),
+                SimpleNamespace(name="alias", path=alias_home),
+            ],
+        )
+
+        listed = self.client.get("/api/profiles/sessions?limit=20&min_messages=0").json()
+        rows = [s for s in listed["sessions"] if s["id"] == "physical-db-once"]
+        assert len(rows) == 1
+        assert rows[0]["profile"] == "default"
+        assert listed["total"] == 1
+        assert listed["profile_totals"] == {"default": 1}
+
+        sidebar = self.client.get(
+            "/api/profiles/sessions/sidebar"
+            "?recents_profile=all&recents_exclude=cron"
+        ).json()
+        rows = [
+            s
+            for s in sidebar["recents"]["sessions"]
+            if s["id"] == "physical-db-once"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["profile"] == "default"
+        assert sidebar["recents"]["total"] == 1
+        assert sidebar["recents"]["profile_totals"] == {"default": 1}
+
+    def test_profiles_sessions_keeps_distinct_profile_databases(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        homes = [tmp_path / "alpha", tmp_path / "beta"]
+        for name, home in zip(("alpha", "beta"), homes):
+            home.mkdir()
+            db = SessionDB(db_path=home / "state.db")
+            try:
+                db.create_session(session_id=f"{name}-session", source="desktop")
+                db.append_message(f"{name}-session", role="user", content="hi")
+            finally:
+                db.close()
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [
+                SimpleNamespace(name="alpha", path=homes[0]),
+                SimpleNamespace(name="beta", path=homes[1]),
+            ],
+        )
+
+        data = self.client.get("/api/profiles/sessions?limit=20&min_messages=0").json()
+        rows = {s["id"]: s["profile"] for s in data["sessions"]}
+        assert rows == {"alpha-session": "alpha", "beta-session": "beta"}
+        assert data["total"] == 2
+        assert data["profile_totals"] == {"alpha": 1, "beta": 1}
+
     def test_profiles_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/profiles/sessions?archived=bogus")
         assert resp.status_code == 400

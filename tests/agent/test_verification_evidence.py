@@ -4,9 +4,14 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from agent.verification_evidence import (
     classify_verification_command,
+    confirm_outcome_receipt,
+    list_reusable_outcome_receipts,
     mark_workspace_edited,
+    record_outcome_receipt,
     record_terminal_result,
     verification_status,
 )
@@ -88,6 +93,79 @@ def test_records_passed_then_marks_stale_after_edit(tmp_path, monkeypatch):
     status = verification_status(session_id="s1", cwd=tmp_path)
     assert status["status"] == "stale"
     assert status["changed_paths"] == [str(tmp_path / "src" / "app.ts")]
+
+
+def test_confirmed_passing_outcome_receipt_becomes_explicitly_reusable(tmp_path, monkeypatch):
+    """Judge completion alone must never become automatic agent memory."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="ship the verified widget",
+        terminal_kind="judge_done_unconfirmed",
+    )
+
+    assert receipt is not None
+    assert receipt["goal_digest"] != "ship the verified widget"
+    assert receipt["reusable"] is False
+    assert list_reusable_outcome_receipts(cwd=tmp_path) == []
+
+    confirmed = confirm_outcome_receipt(receipt["id"])
+    assert confirmed is not None
+    assert confirmed["terminal_kind"] == "achieved_confirmed"
+    assert confirmed["user_confirmed_at"] is not None
+    assert confirmed["verification_status"] == "passed"
+    assert confirmed["reusable"] is True
+    assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path)] == [receipt["id"]]
+
+
+def test_confirmed_outcome_without_fresh_passing_evidence_stays_nonreusable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="attempt a risky migration",
+        terminal_kind="judge_done_unconfirmed",
+    )
+
+    confirmed = confirm_outcome_receipt(receipt["id"])
+
+    assert confirmed["terminal_kind"] == "achieved_confirmed"
+    assert confirmed["verification_status"] == "unverified"
+    assert confirmed["reusable"] is False
+    assert list_reusable_outcome_receipts(cwd=tmp_path) == []
+
+
+def test_outcome_receipt_rejects_unconfirmed_achievement_and_nonjudge_reconfirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    with pytest.raises(ValueError, match="user_confirmed"):
+        record_outcome_receipt(
+            session_id="s1",
+            cwd=tmp_path,
+            goal="claim success too early",
+            terminal_kind="achieved_confirmed",
+        )
+
+    blocked = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="blocked work",
+        terminal_kind="blocked",
+    )
+    with pytest.raises(ValueError, match="judge_done_unconfirmed"):
+        confirm_outcome_receipt(blocked["id"])
 
 
 def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch):

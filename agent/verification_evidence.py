@@ -7,6 +7,7 @@ blocks completion, and never upgrades targeted checks into "repo green".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -27,8 +28,11 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 1
+_VERIFY_SCHEMA_VERSION = 2
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+_OUTCOME_TERMINAL_KINDS = frozenset(
+    {"judge_done_unconfirmed", "blocked", "cancelled", "achieved_confirmed"}
+)
 
 
 @dataclass(frozen=True)
@@ -111,8 +115,31 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS outcome_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            root TEXT NOT NULL,
+            goal_digest TEXT NOT NULL,
+            terminal_kind TEXT NOT NULL,
+            verification_status TEXT NOT NULL,
+            verification_event_id INTEGER,
+            actor TEXT NOT NULL,
+            user_confirmed_at TEXT,
+            reusable INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_verification_events_session_root
         ON verification_events(session_id, root, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_outcome_receipts_reusable
+        ON outcome_receipts(root, reusable, id DESC)
         """
     )
     conn.execute(
@@ -619,3 +646,197 @@ def verification_status(
         "session_id": sid,
         "changed_paths": changed_paths,
     }
+
+
+def _goal_digest(goal: str) -> str:
+    """Return a stable identifier without retaining raw task text."""
+    normalized = str(goal or "").strip()
+    if not normalized:
+        raise ValueError("goal must be non-empty")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _outcome_root(cwd: str | Path | None) -> Optional[str]:
+    try:
+        from agent.coding_context import project_facts_for
+
+        facts = project_facts_for(cwd)
+    except Exception:
+        facts = None
+    if not facts:
+        return None
+    return str(facts.get("root") or Path(cwd or ".").resolve())
+
+
+def _receipt_from_row(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
+    if row is None:
+        return None
+    receipt = dict(row)
+    receipt["reusable"] = bool(receipt.get("reusable"))
+    return receipt
+
+
+def record_outcome_receipt(
+    *,
+    session_id: str | None,
+    cwd: str | Path | None,
+    goal: str,
+    terminal_kind: str,
+    actor: str = "agent",
+    user_confirmed: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Append a bounded outcome receipt next to verification evidence.
+
+    This is deliberately an audit/learning *candidate*, not memory.  Raw goal
+    text is hashed, judge completion is kept unconfirmed, and no receipt is
+    automatically injected into later prompts or allowed to mutate skills.
+    Only an explicit ``achieved_confirmed`` receipt with fresh passing
+    verification can become reusable.
+    """
+    kind = str(terminal_kind or "").strip()
+    if kind not in _OUTCOME_TERMINAL_KINDS:
+        raise ValueError(f"unsupported terminal_kind: {kind or '<empty>'}")
+    if kind == "achieved_confirmed" and not user_confirmed:
+        raise ValueError("achieved_confirmed requires explicit user_confirmed=True")
+
+    root = _outcome_root(cwd)
+    if root is None:
+        return None
+    sid = str(session_id or "default")
+    actor = str(actor or "agent").strip() or "agent"
+    status = verification_status(session_id=sid, cwd=cwd)
+    evidence = status.get("evidence") or {}
+    verification_status_value = str(status.get("status") or "unverified")
+    confirmed_at = _utc_now() if user_confirmed else None
+    reusable = int(
+        kind == "achieved_confirmed"
+        and user_confirmed
+        and verification_status_value == "passed"
+    )
+    recorded_at = _utc_now()
+
+    with _DB_LOCK:
+        with _connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO outcome_receipts(
+                    recorded_at, session_id, root, goal_digest, terminal_kind,
+                    verification_status, verification_event_id, actor,
+                    user_confirmed_at, reusable
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    recorded_at,
+                    sid,
+                    root,
+                    _goal_digest(goal),
+                    kind,
+                    verification_status_value,
+                    evidence.get("id"),
+                    actor,
+                    confirmed_at,
+                    reusable,
+                ),
+            )
+            receipt_id = int(cur.lastrowid)
+            row = conn.execute(
+                "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
+            ).fetchone()
+            conn.commit()
+    return _receipt_from_row(row)
+
+
+def confirm_outcome_receipt(
+    receipt_id: int,
+    *,
+    actor: str = "user",
+) -> Optional[dict[str, Any]]:
+    """Convert one judge-done receipt into an explicitly confirmed outcome.
+
+    Confirmation re-checks the current workspace evidence.  Passing evidence
+    makes the record reusable; stale, failed, and absent evidence remain an
+    audited confirmation but are never promoted for future learning.
+    """
+    receipt_id = int(receipt_id)
+    actor = str(actor or "user").strip() or "user"
+    with _DB_LOCK:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
+            ).fetchone()
+    if row is None:
+        return None
+    existing = dict(row)
+    if existing["terminal_kind"] != "judge_done_unconfirmed":
+        raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
+
+    # ``verification_status`` opens the same SQLite ledger, so it must run
+    # outside the non-reentrant write lock held for receipt mutation.
+    status = verification_status(
+        session_id=existing["session_id"], cwd=Path(existing["root"])
+    )
+    evidence = status.get("evidence") or {}
+    verification_status_value = str(status.get("status") or "unverified")
+    reusable = int(verification_status_value == "passed")
+    confirmed_at = _utc_now()
+
+    with _DB_LOCK:
+        with _connect() as conn:
+            current = conn.execute(
+                "SELECT terminal_kind FROM outcome_receipts WHERE id = ?", (receipt_id,)
+            ).fetchone()
+            if current is None:
+                return None
+            if current["terminal_kind"] != "judge_done_unconfirmed":
+                raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
+            conn.execute(
+                """
+                UPDATE outcome_receipts
+                SET terminal_kind = 'achieved_confirmed',
+                    verification_status = ?,
+                    verification_event_id = ?,
+                    actor = ?,
+                    user_confirmed_at = ?,
+                    reusable = ?
+                WHERE id = ?
+                """,
+                (
+                    verification_status_value,
+                    evidence.get("id"),
+                    actor,
+                    confirmed_at,
+                    reusable,
+                    receipt_id,
+                ),
+            )
+            updated = conn.execute(
+                "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
+            ).fetchone()
+            conn.commit()
+    return _receipt_from_row(updated)
+
+
+def list_reusable_outcome_receipts(
+    *, cwd: str | Path | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Return explicitly confirmed, freshly verified learning candidates.
+
+    Retrieval is intentionally explicit.  Callers decide how to present these
+    receipts; this ledger never silently expands a model prompt.
+    """
+    root = _outcome_root(cwd) if cwd is not None else None
+    limit = max(1, min(int(limit or 20), 100))
+    where = "WHERE reusable = 1"
+    params: list[Any] = []
+    if root is not None:
+        where += " AND root = ?"
+        params.append(root)
+    params.append(limit)
+
+    with _DB_LOCK:
+        with _connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM outcome_receipts {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+    return [receipt for row in rows if (receipt := _receipt_from_row(row)) is not None]

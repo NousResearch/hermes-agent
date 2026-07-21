@@ -331,6 +331,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # Recursing into these with _sanitize_node() would mis-interpret
             # literal strings like "path" as bare-string schemas and replace
             # them with {"type": "object"} dicts. Pass through unchanged.
+            if key == "required" and not isinstance(value, list):
+                logger.debug(
+                    "schema_sanitizer[%s]: dropping non-list required=%r "
+                    "(strict-backend compat)",
+                    path, value,
+                )
+                continue
             out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value

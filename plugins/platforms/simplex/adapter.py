@@ -830,15 +830,17 @@ class SimplexAdapter(BasePlatformAdapter):
 
         if content:
             corr_id = self._make_corr_id()
+            # Structured form: addresses by ID, and json.dumps escapes
+            # newlines + special chars correctly.  The bare @id text
+            # syntax is unreliable for DMs — the daemon silently drops
+            # messages when it cannot resolve the display name.
+            composed = json.dumps(
+                [{"msgContent": {"type": "text", "text": content}}]
+            )
             if chat_id.startswith("group:"):
-                # Structured form: addresses by numeric ID, and json.dumps
-                # escapes newlines + special chars correctly.
-                composed = json.dumps(
-                    [{"msgContent": {"type": "text", "text": content}}]
-                )
                 cmd_str = f"/_send #{chat_id[6:]} json {composed}"
             else:
-                cmd_str = f"@{chat_id} {content}"
+                cmd_str = f"/_send @{chat_id} json {composed}"
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 
@@ -1198,8 +1200,10 @@ async def _standalone_send(
             )
             cmd_str = f"/_send #{group_id} json {composed}"
         else:
-            # Direct contacts are addressed by display name without brackets.
-            cmd_str = f"@{chat_id} {message}"
+            composed = json.dumps(
+                [{"msgContent": {"type": "text", "text": message}}]
+            )
+            cmd_str = f"/_send @{chat_id} json {composed}"
 
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",

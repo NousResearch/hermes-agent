@@ -9100,6 +9100,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
+        elif canonical == "set_compression":
+            # /set_compression <1-100> — set auto-compression threshold
+            parts = cmd_original.strip().split()
+            if len(parts) < 2:
+                cfg = self.config.get("compression", {})
+                cur = cfg.get("threshold", 0.50)
+                print(f"  Current compression threshold: {cur * 100:.0f}%")
+                print("  Usage: /set_compression <1-100>")
+            else:
+                try:
+                    pct = int(parts[1])
+                    if not 1 <= pct <= 100:
+                        print("  Threshold must be between 1 and 100")
+                    else:
+                        from hermes_cli.config import save_config_value
+                        save_config_value("compression.threshold", pct / 100.0)
+                        print(f"  Compression threshold set to {pct}%")
+                        print("  Takes effect on next session (/reset).")
+                except ValueError:
+                    print("  Invalid value. Usage: /set_compression <1-100>")
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
         elif canonical == "subscription":

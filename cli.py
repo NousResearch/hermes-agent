@@ -3190,6 +3190,10 @@ _SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
 # these fragments are extremely unlikely to be intentional user input, and
 # stripping them is better than sending corrupted prompts.
 _SGR_MOUSE_BARE_RE = re.compile(r"<\d+;\d+;\d+[Mm]")
+# Device Attributes (DA) response: terminal identity reply to ESC[c query.
+# Format: ESC[?<params>c (primary DA), ESC[><params>c (secondary DA), or bare ESC[c.
+_DA_ESC_RE = re.compile(r"\x1b\[\??>?[\d;]*c")
+_DA_VISIBLE_RE = re.compile(r"\^\[\[\??>?[\d;]*c")
 _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[?1006l"  # disable SGR mouse
     "\x1b[?1003l"  # disable any-motion tracking
@@ -3372,11 +3376,13 @@ def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
         text = _DSR_CPR_ESC_RE.sub("", text)
         text, count = _SGR_MOUSE_ESC_RE.subn("", text)
         had_mouse_reports = had_mouse_reports or count > 0
+        text = _DA_ESC_RE.sub("", text)
 
     if has_visible:
         text = _DSR_CPR_VISIBLE_RE.sub("", text)
         text, count = _SGR_MOUSE_VISIBLE_RE.subn("", text)
         had_mouse_reports = had_mouse_reports or count > 0
+        text = _DA_VISIBLE_RE.sub("", text)
 
     if has_bare_mouse:
         text, count = _SGR_MOUSE_BARE_RE.subn("", text)

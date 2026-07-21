@@ -79,3 +79,33 @@ class TestStripLeakedTerminalResponses:
     def test_does_not_strip_regular_angle_bracket_text(self):
         text = "render <div class='hero'> literal"
         assert _strip_leaked_terminal_responses(text) == text
+
+    def test_strips_da_response_primary(self):
+        """ESC[?1;2c — primary Device Attributes response (terminal identity)"""
+        text = "prefix\x1b[?1;2csuffix"
+        assert _strip_leaked_terminal_responses(text) == "prefixsuffix"
+
+    def test_strips_da_response_no_params(self):
+        """ESC[c — bare DA response"""
+        text = "before\x1b[cafter"
+        assert _strip_leaked_terminal_responses(text) == "beforeafter"
+
+    def test_strips_da_response_secondary(self):
+        """ESC[>0;0;0c — secondary DA response"""
+        text = "a\x1b[>0;0;0cb"
+        assert _strip_leaked_terminal_responses(text) == "ab"
+
+    def test_strips_da_response_visible_form(self):
+        """^[[?1;2c — visible form after ESC stripped"""
+        text = "x^[[?1;2cy"
+        assert _strip_leaked_terminal_responses(text) == "xy"
+
+    def test_strips_combined_da_and_cpr(self):
+        """Combined DA + CPR payload matching the reported '1c/2424' artifact"""
+        text = "\x1b[?1;2c\x1b[24;24R"
+        assert _strip_leaked_terminal_responses(text) == ""
+
+    def test_does_not_strip_cursor_forward(self):
+        """ESC[2C (upper-case C) is Cursor Forward, NOT a DA response — must not be stripped"""
+        text = "abc\x1b[2Cdef"
+        assert _strip_leaked_terminal_responses(text) == "abc\x1b[2Cdef"

@@ -1,11 +1,13 @@
 """CLI handlers for ``hermes secrets bitwarden ...``.
 
 Subcommands:
-    setup    — interactive wizard: install bws, prompt for token + project, test fetch
-    status   — show current config + binary version + last fetch outcome
-    sync     — run a fetch right now and show what would be applied (dry-run friendly)
-    disable  — flip ``secrets.bitwarden.enabled`` to False
-    install  — just download the bws binary (no token / project required)
+    setup      — interactive wizard: install bws, prompt for token + project, test fetch
+    status     — show current config + binary version + last fetch outcome
+    sync       — run a fetch right now and show what would be applied (dry-run friendly)
+    inventory  — list candidate env var names by profile without printing values
+    prune      — verify Bitwarden secrets, then dry-run/apply removal of plaintext .env secrets
+    disable    — flip ``secrets.bitwarden.enabled`` to False
+    install    — just download the bws binary (no token / project required)
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agent.secret_sources import bitwarden as bw
+from hermes_cli import bitwarden_migration as bwm
 from hermes_cli.config import (
     get_env_path,
     load_config,
@@ -78,6 +81,37 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         help="Actually export the secrets into the current shell's env (default: dry-run)",
     )
     sync.set_defaults(func=cmd_sync)
+
+    inventory = sub.add_parser(
+        "inventory",
+        help="List candidate env var names by profile without printing values",
+    )
+    inventory_group = inventory.add_mutually_exclusive_group()
+    inventory_group.add_argument(
+        "--profile",
+        help="Inventory one named profile (default: the active profile)",
+    )
+    inventory_group.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Inventory every profile under ~/.hermes/profiles",
+    )
+    inventory.set_defaults(func=cmd_inventory)
+
+    prune = sub.add_parser(
+        "prune",
+        help="Dry-run/apply removal of plaintext .env secrets after Bitwarden verification",
+    )
+    prune.add_argument(
+        "--profile",
+        help="Prune one named profile (default: the active profile)",
+    )
+    prune.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually rewrite the profile-local .env and make a timestamped backup",
+    )
+    prune.set_defaults(func=cmd_prune)
 
     disable = sub.add_parser("disable", help="Turn off the Bitwarden integration")
     disable.set_defaults(func=cmd_disable)
@@ -285,6 +319,83 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "  Refresh: [cyan]hermes secrets bitwarden sync[/cyan]\n"
         "  Disable: [cyan]hermes secrets bitwarden disable[/cyan]"
     )
+    return 0
+
+
+def cmd_inventory(args: argparse.Namespace) -> int:
+    profile_name = getattr(args, "profile", None)
+    all_profiles = bool(getattr(args, "all_profiles", False))
+    rows = bwm.collect_inventory_rows(profile_name, all_profiles=all_profiles)
+
+    if not rows:
+        if all_profiles:
+            print("No .env entries were found in any profile.")
+        else:
+            print("No .env entries were found for the selected profile.")
+        return 0
+
+    print("PROFILE | SURFACE | CLASS | STATE | KEY")
+    for row in rows:
+        print(
+            f"{row.profile} | {row.surface} | {row.classification} | {row.state} | {row.key}"
+        )
+    return 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    profile_name = getattr(args, "profile", None)
+    if profile_name:
+        from hermes_cli.profiles import resolve_profile_env
+
+        profile_home = Path(resolve_profile_env(profile_name))
+        profile_label = profile_name
+    else:
+        from hermes_constants import get_hermes_home
+
+        profile_home = get_hermes_home()
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_label = get_active_profile_name() or "default"
+
+    plan = bwm.prune_plan_for_profile(profile_label, profile_home)
+
+    print(f"Profile: {plan.profile}")
+    print(f"Surface: {plan.env_path}")
+    print(f"Config:  {plan.config_path} (read-only)")
+    print("PROFILE | ACTION | CLASS | STATE | KEY | REASON")
+    for row in plan.rows:
+        print(
+            f"{row.profile} | {row.action} | {row.classification} | {row.state} | {row.key} | {row.reason}"
+        )
+
+    for warning in plan.warnings:
+        print(f"warning: {warning}")
+
+    if not getattr(args, "apply", False):
+        print("Dry-run only: add --apply to rewrite the .env file after Bitwarden verification.")
+        return 0
+
+    if plan.verification_error:
+        print(f"error: {plan.verification_error}")
+        return 1
+
+    try:
+        result = bwm.apply_prune_plan(plan)
+    except Exception:  # noqa: BLE001 - filesystem errors may contain secret values
+        print(
+            "error: Secret pruning could not complete safely. "
+            "Check .env and parent-directory permissions, then retry."
+        )
+        return 1
+    if not result.changed:
+        print("No plaintext secret entries were eligible for removal.")
+        return 0
+
+    print(f"Applied {len(result.removed_keys)} removal(s) to {result.env_path}")
+    if result.backup_path is not None:
+        print(f"Backup: {result.backup_path} (0600)")
+    print("config.yaml was not modified.")
+    print(f"Removed: {', '.join(result.removed_keys)}")
     return 0
 
 

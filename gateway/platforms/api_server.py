@@ -164,6 +164,62 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _merge_extra_body(
+    base: Optional[Dict[str, Any]],
+    addition: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Merge provider-specific request body fields with request precedence."""
+    merged: Dict[str, Any] = dict(base or {})
+    for key, value in dict(addition or {}).items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = {**current, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+_TOP_LEVEL_EXTRA_BODY_OBJECT_FIELDS = frozenset({
+    "chat_template_kwargs",
+    "vllm_xargs",
+})
+
+
+def _extract_request_extra_body(
+    body: Dict[str, Any],
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """Extract OpenAI-compatible provider-specific request fields.
+
+    OpenAI SDK ``extra_body`` values are serialized into the JSON body.  For
+    provider-specific passthrough, this adapter accepts either an explicit
+    nested ``extra_body`` object or allow-listed top-level provider extension
+    objects produced by SDK ``extra_body={...}`` calls.
+    """
+    request_extra_body: Dict[str, Any] = {}
+
+    raw_extra_body = body.get("extra_body")
+    if raw_extra_body is not None:
+        if not isinstance(raw_extra_body, dict):
+            return {}, "'extra_body' must be an object"
+        request_extra_body.update(raw_extra_body)
+
+    for field in sorted(_TOP_LEVEL_EXTRA_BODY_OBJECT_FIELDS):
+        raw_value = body.get(field)
+        if raw_value is None:
+            continue
+        if not isinstance(raw_value, dict):
+            return {}, f"'{field}' must be an object"
+        existing_value = request_extra_body.get(field)
+        if existing_value is not None and not isinstance(existing_value, dict):
+            return {}, f"'extra_body.{field}' must be an object"
+        request_extra_body[field] = _merge_extra_body(
+            existing_value,
+            raw_value,
+        )
+
+    return request_extra_body, None
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -1754,6 +1810,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        request_extra_body: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1774,6 +1831,9 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``request_extra_body`` carries per-request OpenAI-compatible provider
+        extension fields into ``request_overrides.extra_body``.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1787,6 +1847,15 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        if request_extra_body:
+            runtime_kwargs = dict(runtime_kwargs or {})
+            request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
+            existing_extra_body = request_overrides.get("extra_body")
+            request_overrides["extra_body"] = _merge_extra_body(
+                existing_extra_body if isinstance(existing_extra_body, dict) else {},
+                request_extra_body,
+            )
+            runtime_kwargs["request_overrides"] = request_overrides
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
@@ -2663,6 +2732,10 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
+        request_extra_body, extra_body_err = _extract_request_extra_body(body)
+        if extra_body_err:
+            return web.json_response(_openai_error(extra_body_err), status=400)
+
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -2867,6 +2940,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                request_extra_body=request_extra_body,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2887,11 +2961,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                request_extra_body=request_extra_body,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=[
+                    "model",
+                    "messages",
+                    "tools",
+                    "tool_choice",
+                    "stream",
+                    "extra_body",
+                    "chat_template_kwargs",
+                    "vllm_xargs",
+                ],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -3804,6 +3891,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        request_extra_body, extra_body_err = _extract_request_extra_body(body)
+        if extra_body_err:
+            return web.json_response(_openai_error(extra_body_err), status=400)
+
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -3951,6 +4042,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                request_extra_body=request_extra_body,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3985,13 +4077,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                request_extra_body=request_extra_body,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=[
+                    "input",
+                    "instructions",
+                    "previous_response_id",
+                    "conversation",
+                    "model",
+                    "tools",
+                    "extra_body",
+                    "chat_template_kwargs",
+                    "vllm_xargs",
+                ],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -4634,6 +4737,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        request_extra_body: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4644,6 +4748,9 @@ class APIServerAdapter(BasePlatformAdapter):
         *route* is an optional ``model_routes`` entry (resolved from the
         request's ``model`` field) that overrides the global model/provider
         for this specific request.
+
+        *request_extra_body* carries per-request provider extension fields
+        into the underlying OpenAI-compatible provider call.
 
         If *agent_ref* is a one-element list, the AIAgent instance is stored
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
@@ -4675,6 +4782,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        request_extra_body=request_extra_body,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
@@ -4792,6 +4900,10 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        request_extra_body, extra_body_err = _extract_request_extra_body(body)
+        if extra_body_err:
+            return web.json_response(_openai_error(extra_body_err), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -4924,6 +5036,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        request_extra_body=request_extra_body,
                     )
                 self._active_run_agents[run_id] = agent
 

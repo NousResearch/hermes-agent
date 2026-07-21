@@ -12,6 +12,9 @@ export function defineWidgetApp<S>(app: WidgetApp<S>): WidgetApp<S> {
 
 export const getWidgetApp = (id: string): undefined | WidgetApp<never> => apps.get(id)
 
+/** Unregister (user-widget file deleted). Built-ins never call this. */
+export const removeWidgetApp = (id: string): boolean => apps.delete(id)
+
 /** All registered apps, id-sorted — the registry IS the catalog: slash
  *  commands and `/` completions derive from it, nothing is hardcoded. */
 export const listWidgetApps = (): WidgetApp<never>[] => [...apps.values()].sort((a, b) => a.id.localeCompare(b.id))

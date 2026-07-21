@@ -6,6 +6,7 @@ import { terminalBackgroundHex } from '@hermes/ink'
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
 import { launchWidget } from '../../../sdk/host.js'
 import { listWidgetApps } from '../../../sdk/registry.js'
+import { loadUserWidgets } from '../../../sdk/userWidgets.js'
 import { detectLightMode } from '../../../theme.js'
 import { getUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -27,6 +28,21 @@ export const widgetAppCommands: SlashCommand[] = listWidgetApps().map(app => ({
 
 export const debugCommands: SlashCommand[] = [
   ...widgetAppCommands,
+
+  {
+    help: 'rescan $HERMES_HOME/tui-widgets and (re)register user widget apps',
+    name: 'widgets-reload',
+    run: (_arg, ctx) => {
+      void loadUserWidgets().then(({ errors, loaded }) => {
+        const parts = [
+          loaded.length ? `loaded: ${loaded.join(', ')}` : 'no user widgets found',
+          ...errors.map(e => `${e.file}: ${e.message}`)
+        ]
+
+        ctx.transcript.sys(`widgets — ${parts.join(' · ')}`)
+      })
+    }
+  },
 
   {
     help: 'write a V8 heap snapshot + memory diagnostics (see HERMES_HEAPDUMP_DIR)',

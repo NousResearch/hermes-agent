@@ -734,8 +734,12 @@ export function ChatBar({
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
-          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          // Literal min-h backs the CSS var: Chromium can still collapse an empty
+          // contentEditable when the var path races with DOM normalize (#68095).
+          'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          // Lone caret <br> is our empty-editor seed — still show the placeholder.
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
+          '[&:has(>br:only-child)]:before:content-[attr(data-placeholder)] [&:has(>br:only-child)]:before:text-muted-foreground/60',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
           stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'

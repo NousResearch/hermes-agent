@@ -222,3 +222,153 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+# ---------------------------------------------------------------------------
+# First-turn readiness regressions for #38448 — hermes -z and hermes chat -q
+# must wait (bounded) for in-flight background MCP discovery before they
+# snapshot the tool registry at agent-construction time.
+# ---------------------------------------------------------------------------
+
+
+def test_oneshot_waits_for_inflight_mcp_discovery_before_agent_build(monkeypatch):
+    """hermes -z race (#38448): background discovery started by main.py, then
+    oneshot constructs its agent immediately.  _run_agent must join the
+    discovery thread (bounded) BEFORE the AIAgent construction-time tool
+    snapshot, so MCP tools are present on the first turn."""
+    discovery_done = threading.Event()
+
+    def _fast_discovery():
+        time.sleep(0.05)
+        discovery_done.set()
+
+    thread = threading.Thread(target=_fast_discovery, daemon=True)
+    thread.start()
+    mcp_startup._mcp_discovery_thread = thread
+
+    observed = []
+
+    def _observe_at_construction():
+        observed.append(discovery_done.is_set())
+
+    import run_agent
+
+    import hermes_cli.config as config_mod
+    import hermes_cli.fallback_config as fallback_mod
+    import hermes_cli.oneshot as oneshot_mod
+    import hermes_cli.runtime_provider as runtime_mod
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"mcp_discovery_timeout": 2.0})
+    monkeypatch.setattr(runtime_mod, "resolve_runtime_provider", lambda **_k: {})
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_a, **_k: ["terminal"])
+    monkeypatch.setattr(fallback_mod, "get_fallback_chain", lambda *_a, **_k: [])
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+
+    class _FakeAgent:
+        def __init__(self, **_kwargs):
+            _observe_at_construction()
+
+        def run_conversation(self, _prompt):
+            return {"final_response": "ok", "messages": []}
+
+    monkeypatch.setattr(run_agent, "AIAgent", _FakeAgent)
+
+    response, _result = oneshot_mod._run_agent("hi")
+
+    assert response == "ok"
+    assert observed == [True], (
+        "AIAgent was constructed before background MCP discovery finished — "
+        "the tool snapshot would miss MCP tools (#38448)"
+    )
+
+
+def test_oneshot_mcp_wait_is_bounded_when_discovery_is_slow(monkeypatch):
+    """A slow/dead MCP server must not freeze hermes -z: the wait is capped by
+    ``mcp_discovery_timeout`` (same bounded startup contract as the interactive
+    CLI), and the agent is still constructed when the bound expires."""
+    stop = threading.Event()
+
+    def _stuck_discovery():
+        stop.wait(10)
+
+    thread = threading.Thread(target=_stuck_discovery, daemon=True)
+    thread.start()
+    mcp_startup._mcp_discovery_thread = thread
+
+    import run_agent
+
+    import hermes_cli.config as config_mod
+    import hermes_cli.fallback_config as fallback_mod
+    import hermes_cli.oneshot as oneshot_mod
+    import hermes_cli.runtime_provider as runtime_mod
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"mcp_discovery_timeout": 0.1})
+    monkeypatch.setattr(runtime_mod, "resolve_runtime_provider", lambda **_k: {})
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_a, **_k: ["terminal"])
+    monkeypatch.setattr(fallback_mod, "get_fallback_chain", lambda *_a, **_k: [])
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+
+    built = {"n": 0}
+
+    class _FakeAgent:
+        def __init__(self, **_kwargs):
+            built["n"] += 1
+
+        def run_conversation(self, _prompt):
+            return {"final_response": "ok", "messages": []}
+
+    monkeypatch.setattr(run_agent, "AIAgent", _FakeAgent)
+
+    try:
+        start = time.monotonic()
+        response, _result = oneshot_mod._run_agent("hi")
+        elapsed = time.monotonic() - start
+    finally:
+        stop.set()
+
+    assert response == "ok"
+    assert built["n"] == 1
+    assert elapsed < 3.0, (
+        f"oneshot blocked {elapsed:.2f}s on a stuck MCP server — the wait must "
+        "stay bounded by mcp_discovery_timeout, not join unboundedly"
+    )
+
+
+def test_quiet_chat_init_agent_mcp_wait_is_bounded_when_discovery_is_slow(monkeypatch):
+    """hermes chat -q constructs its agent through HermesCLI._init_agent; its
+    MCP wait must likewise stay bounded so a dead server can't freeze the
+    single-query path (#38448 discussion)."""
+    stop = threading.Event()
+
+    thread = threading.Thread(target=lambda: stop.wait(10), daemon=True)
+    thread.start()
+    mcp_startup._mcp_discovery_thread = thread
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"mcp_discovery_timeout": 0.1})
+
+    cli = cli_mod.HermesCLI(compact=True)
+    cli._session_db = object()
+    cli._resumed = False
+    cli.conversation_history = []
+    cli._install_tool_callbacks = lambda: None
+    cli._ensure_tirith_security = lambda: None
+    cli._ensure_runtime_credentials = lambda: True
+
+    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+
+    try:
+        start = time.monotonic()
+        ok = cli._init_agent()
+        elapsed = time.monotonic() - start
+    finally:
+        stop.set()
+
+    assert ok is True
+    assert elapsed < 3.0, (
+        f"quiet-chat agent init blocked {elapsed:.2f}s on a stuck MCP server — "
+        "wait_for_mcp_discovery must keep its configured bound"
+    )

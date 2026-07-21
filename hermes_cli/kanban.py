@@ -594,7 +594,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock = sub.add_parser(
+        "unblock",
+        help="Return blocked/scheduled tasks to ready, or todo while parents remain open",
+    )
     p_unblock.add_argument(
         "--reason",
         default=None,
@@ -877,6 +880,25 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- repair ---
+    p_repair = sub.add_parser(
+        "repair",
+        help="Check kanban.db integrity and auto-repair index-only corruption",
+        description=(
+            "Runs PRAGMA integrity_check on the board's DB and reports the "
+            "result. When the failure consists only of index-scoped errors "
+            "('wrong # of entries in index <name>' / 'row N missing from "
+            "index <name>'), the corrupt file is quarantined to a "
+            ".corrupt.<hash>.bak sibling first and the damaged indexes are "
+            "rebuilt with REINDEX — the same narrow auto-repair the "
+            "connect-time guard applies. Any other corruption class is "
+            "reported and left untouched (fail-closed). Exits 0 when the DB "
+            "is healthy or was repaired, non-zero when it is still corrupt."
+        ),
+    )
+    p_repair.add_argument("--json", action="store_true",
+                          help="Emit the repair report as JSON")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -947,6 +969,12 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
+        # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
+        # init_db() itself raises KanbanDbCorruptError, which would turn
+        # every `hermes kanban repair` into "could not initialize database"
+        # without ever reaching the repair path.
+        if action == "repair":
+            return _cmd_repair(args)
         try:
             kb.init_db()
         except Exception as exc:
@@ -1993,6 +2021,50 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            # Goal-mode pre-completion judge gate (mirrors the gate in
+            # tools/kanban_tools.py:_handle_complete — Issue #38367).
+            # Without this, a goal_mode worker can call
+            # `hermes kanban complete <id>` from the terminal tool and
+            # bypass the auxiliary judge that the tool-call path enforces.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode:
+                judge_available = False
+                try:
+                    from agent.auxiliary_client import get_text_auxiliary_client
+                    _client, _model = get_text_auxiliary_client("goal_judge")
+                    judge_available = _client is not None and bool(_model)
+                except Exception:
+                    pass
+                if judge_available:
+                    from hermes_cli.goals import judge_goal
+                    verdict = "done"
+                    reason = ""
+                    try:
+                        # judge_goal returns (verdict, reason, parse_failed,
+                        # wait_directive, transport_failed) — see
+                        # hermes_cli/goals.py. Unpacking fewer raises
+                        # ValueError into the fail-open handler below,
+                        # silently disabling the gate.
+                        verdict, reason, _, _, _ = judge_goal(
+                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                            last_response=(summary or args.result or "").strip(),
+                        )
+                    except Exception as judge_exc:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "goal judge check failed, allowing completion: %s",
+                            judge_exc,
+                            exc_info=True,
+                        )
+                    if verdict != "done":
+                        print(
+                            f"kanban: goal completion of {tid} rejected by judge: {reason}. "
+                            f"Provide evidence matching the task's acceptance criteria.",
+                            file=sys.stderr,
+                        )
+                        failed.append(tid)
+                        continue
+
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
@@ -2837,6 +2909,76 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Check DB integrity and apply the narrow index-REINDEX auto-repair.
+
+    Dispatched BEFORE the auto ``kb.init_db()`` in :func:`kanban_command`
+    (init itself refuses corrupt DBs), so this is reachable on exactly the
+    boards that need it. Exit codes: 0 = healthy / repaired / no DB file,
+    1 = still corrupt (non-index corruption, or REINDEX did not produce a
+    clean re-check).
+    """
+    try:
+        report = kb.repair_db()
+    except Exception as exc:  # locked/busy probe, unexpected I/O
+        print(f"kanban repair: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "status": report.status,
+            "db_path": str(report.db_path),
+            "messages": report.messages,
+            "post_repair_messages": report.post_repair_messages,
+            "backup_path": (
+                str(report.backup_path) if report.backup_path else None
+            ),
+            "reindexed": report.reindexed,
+        }, indent=2))
+        return 0 if report.status in {"ok", "repaired", "missing"} else 1
+
+    if report.status == "missing":
+        print(f"No kanban DB at {report.db_path} — nothing to repair.")
+        return 0
+    if report.status == "ok":
+        print(f"{report.db_path}: integrity_check ok — no repair needed.")
+        return 0
+    if report.status == "repaired":
+        print(f"{report.db_path}: repaired.")
+        print(f"  reindexed: {', '.join(report.reindexed)}")
+        if report.backup_path:
+            print(f"  pre-repair backup: {report.backup_path}")
+        print("  integrity_check now ok.")
+        return 0
+    # still corrupt
+    print(f"{report.db_path}: CORRUPT.", file=sys.stderr)
+    for line in (report.messages or [])[:10]:
+        print(f"  {line}", file=sys.stderr)
+    if report.reindexed:
+        print(
+            f"  REINDEX ({', '.join(report.reindexed)}) attempted but "
+            f"integrity_check is still failing:",
+            file=sys.stderr,
+        )
+        for line in (report.post_repair_messages or [])[:10]:
+            print(f"    {line}", file=sys.stderr)
+    else:
+        print(
+            "  Not an index-only failure — automatic REINDEX repair does "
+            "not apply (fail-closed).",
+            file=sys.stderr,
+        )
+    if report.backup_path:
+        print(f"  corrupt copy quarantined at: {report.backup_path}",
+              file=sys.stderr)
+    print(
+        "  Recover manually (e.g. `sqlite3 kanban.db \".recover\"` into a "
+        "fresh file) or move the file aside to start a new board.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 # ---------------------------------------------------------------------------

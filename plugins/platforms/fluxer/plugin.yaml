@@ -1,0 +1,31 @@
+name: fluxer-platform
+label: Fluxer
+kind: platform
+version: 1.0.0
+description: >
+  Fluxer gateway adapter for Hermes Agent.
+  Connects to a Fluxer instance via WebSocket gateway (real-time messages)
+  and REST API (cron/standalone delivery). Fluxer is an open-source Discord
+  alternative that supports guilds, channels, threads, and voice.
+author: Hermes
+requires_env:
+  - name: FLUXER_BOT_TOKEN
+    description: "Fluxer bot authentication token"
+    prompt: "Fluxer bot token"
+    password: true
+  - name: FLUXER_API_URL
+    description: "Base URL of the Fluxer API (e.g. https://fluxer.example.com)"
+    prompt: "Fluxer API URL"
+    password: false
+optional_env:
+  - name: FLUXER_HOME_CHANNEL
+    description: "Default channel ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: FLUXER_HOME_CHANNEL_NAME
+    description: "Display name for the Fluxer home channel"
+    prompt: "Home channel display name"
+    password: false
+pip_dependencies:
+  - websockets>=14.0
+  - httpx>=0.27.0

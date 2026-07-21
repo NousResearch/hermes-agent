@@ -1184,10 +1184,27 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     except (OSError, PermissionError):
                         pass
         if stale:
+            # Remove the stale lock ATOMICALLY by renaming it to a tombstone
+            # instead of unlinking. With unlink()+O_EXCL, two racing starters
+            # could both observe "removed" (the second unlink() silently
+            # deleting the first racer's freshly-created lock) and both win.
+            # os.replace() is atomic: exactly one racer claims the stale
+            # file; the loser gets FileNotFoundError and falls through to
+            # the O_EXCL create below, where at most one process succeeds.
+            tombstone = lock_path.with_name(lock_path.name + ".stale")
             try:
-                lock_path.unlink(missing_ok=True)
+                os.replace(lock_path, tombstone)
+            except FileNotFoundError:
+                # Another racer already claimed the stale lock (and may have
+                # created a fresh one) — let O_EXCL below decide the winner.
+                pass
             except OSError:
                 pass
+            else:
+                try:
+                    tombstone.unlink(missing_ok=True)
+                except OSError:
+                    pass
         else:
             return False, existing
 

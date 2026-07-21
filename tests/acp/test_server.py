@@ -997,6 +997,174 @@ class TestSessionConfiguration:
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
 
+    @pytest.mark.asyncio
+    async def test_set_session_model_replays_acp_injected_mcp_servers(
+        self, tmp_path, monkeypatch
+    ):
+        """Model switch must re-register ACP-injected MCP servers on the new agent.
+
+        Regression: before the fix, ``set_session_model`` called ``_make_agent`` and
+        replaced ``state.agent`` wholesale. The fresh AIAgent's ``enabled_toolsets``
+        defaulted to ``["hermes-acp"]`` with no MCP expansion, so ACP-client-injected
+        MCP tools (Paseo, Zed-with-mcp, Continue, …) silently vanished on every
+        ``/model`` switch. This test asserts both that ``state.mcp_servers`` is
+        preserved and that the new ``state.agent`` carries the MCP tool surface.
+        """
+        from acp.schema import McpServerStdio, EnvVariable
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            # Mirror the shape of a fresh AIAgent: default toolset, empty tools.
+            # Each call returns a new SimpleNamespace, so the model switch
+            # genuinely replaces ``state.agent`` with a different object.
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=list(kwargs.get("enabled_toolsets") or ["hermes-acp"]),
+                disabled_toolsets=None,
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "openrouter/gpt-5"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        server = McpServerStdio(
+            name="paseo",
+            command="/usr/bin/paseo",
+            args=["--mcp"],
+            env=[EnvVariable(name="TOKEN", value="x")],
+        )
+        mcp_tools = [
+            {"function": {"name": "mcp_paseo_search"}},
+            {"function": {"name": "mcp_paseo_open_url"}},
+        ]
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_paseo_search"]), \
+             patch("model_tools.get_tool_definitions", return_value=mcp_tools):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+
+            # Initial ACP injection — populates state.mcp_servers and expands
+            # the tool surface on state.agent.
+            await acp_agent._register_session_mcp_servers(state, [server])
+            assert state.mcp_servers == [server]
+            assert "mcp-paseo" in state.agent.enabled_toolsets
+            assert {t["function"]["name"] for t in state.agent.tools} == {
+                "mcp_paseo_search",
+                "mcp_paseo_open_url",
+            }
+            original_agent_id = id(state.agent)
+
+            # Model switch — replaces state.agent wholesale and must replay
+            # the stashed MCP servers against the new agent.
+            result = await acp_agent.set_session_model(
+                model_id="anthropic:claude-sonnet-4-6",
+                session_id=state.session_id,
+            )
+
+        assert isinstance(result, SetSessionModelResponse)
+        # _make_agent really did produce a fresh agent.
+        assert id(state.agent) != original_agent_id
+        # The MCP server stash survives the switch.
+        assert state.mcp_servers == [server]
+        # Most importantly: MCP toolset is replayed onto the new agent.
+        assert "mcp-paseo" in state.agent.enabled_toolsets
+        tool_names = {t["function"]["name"] for t in state.agent.tools or []}
+        assert {"mcp_paseo_search", "mcp_paseo_open_url"} <= tool_names
+
+    @pytest.mark.asyncio
+    async def test_repeated_model_switches_preserve_mcp_servers(
+        self, tmp_path, monkeypatch
+    ):
+        """Stash must survive multiple consecutive model switches (A→B→A→B)."""
+        from acp.schema import McpServerStdio, EnvVariable
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=list(kwargs.get("enabled_toolsets") or ["hermes-acp"]),
+                disabled_toolsets=None,
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "openrouter/gpt-5"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        server = McpServerStdio(
+            name="paseo",
+            command="/usr/bin/paseo",
+            args=[],
+            env=[EnvVariable(name="TOKEN", value="x")],
+        )
+        mcp_tools = [{"function": {"name": "mcp_paseo_search"}}]
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_paseo_search"]), \
+             patch("model_tools.get_tool_definitions", return_value=mcp_tools):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            await acp_agent._register_session_mcp_servers(state, [server])
+
+            for model_id in [
+                "anthropic:claude-sonnet-4-6",
+                "openrouter:openai/gpt-5",
+                "anthropic:claude-sonnet-4-6",
+                "openrouter:openai/gpt-5",
+            ]:
+                await acp_agent.set_session_model(
+                    model_id=model_id, session_id=state.session_id
+                )
+                assert state.mcp_servers == [server]
+                assert "mcp-paseo" in state.agent.enabled_toolsets
+                assert "mcp_paseo_search" in {
+                    t["function"]["name"] for t in state.agent.tools or []
+                }
+
 
 # ---------------------------------------------------------------------------
 # prompt

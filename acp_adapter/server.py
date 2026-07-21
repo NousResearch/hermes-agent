@@ -798,6 +798,12 @@ class HermesACPAgent(acp.Agent):
         if not mcp_servers:
             return
 
+        # Stash on the session so model-switch (which rebuilds state.agent
+        # from scratch via _make_agent) can re-register MCP servers against
+        # the new agent. Without this, ACP-injected MCP tools silently
+        # vanish on every /model change.
+        state.mcp_servers = list(mcp_servers)
+
         try:
             from tools.mcp_tool import register_mcp_servers
 
@@ -2042,6 +2048,14 @@ class HermesACPAgent(acp.Agent):
                 base_url=current_base_url,
                 api_mode=current_api_mode,
             )
+            # Re-register ACP-injected MCP servers against the freshly-rebuilt
+            # agent — _make_agent() returns a new AIAgent with default toolsets
+            # (["hermes-acp"]) and no MCP expansion, so ACP-provided MCP tools
+            # (Paseo, etc.) would otherwise silently disappear on every model
+            # switch.
+            if state.mcp_servers:
+                await self._register_session_mcp_servers(state, state.mcp_servers)
+
             self.session_manager.save_session(session_id)
             logger.info(
                 "Session %s: model switched to %s via provider %s",

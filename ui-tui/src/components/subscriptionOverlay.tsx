@@ -170,8 +170,7 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
 
   if (res.error === 'remote_spending_revoked') {
     return {
-      message:
-        res.message || 'Remote spending was stopped for this terminal — reconnect from the portal, then retry.',
+      message: res.message || 'Remote spending was stopped for this terminal — reconnect from the portal, then retry.',
       ok: false
     }
   }
@@ -196,7 +195,8 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
 // Post-grant replays pass allowStepUp=false and surface this instead (mirrors the
 // CLI's allow_stepup=False cap).
 const scopeStillDeniedResult: SubscriptionResult = {
-  message: 'Remote spending is still off for this org — a billing admin can turn it on from the portal’s Hermes Agent page, then retry.',
+  message:
+    'Remote Spending still isn’t active for this terminal — the authorization didn’t take. Retry, or make this change on the portal.',
   ok: false
 }
 

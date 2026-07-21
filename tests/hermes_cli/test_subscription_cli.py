@@ -236,8 +236,8 @@ def test_bounded_stepup_does_not_loop_on_repeat_denial(cli, monkeypatch, capsys)
 
     assert calls["n"] == 2  # applied, granted, replayed once — no third attempt
     assert (
-        "Remote spending is still off for this org — a billing admin can turn it on "
-        "from the portal's Hermes Agent page, then retry."
+        "Remote Spending still isn't active for this terminal — the authorization "
+        "didn't take. Retry, or make this change on the portal."
     ) in out
 
 

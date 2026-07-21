@@ -142,9 +142,9 @@ just because NAS hasn't caught up yet.
 
 A **repeat** scope denial during a post-grant replay never re-enters the
 step-up screen (it's already mounted there — re-patching would freeze it);
-`allowStepUp=false` instead surfaces a terminal result: `Remote spending is
-still off for this org — a billing admin can turn it on from the portal’s Hermes
-Agent page, then retry.`
+`allowStepUp=false` instead surfaces a terminal result: `Remote Spending still
+isn’t active for this terminal — the authorization didn’t take. Retry, or make
+this change on the portal.`
 
 ## Text-mode (CLI) parity
 

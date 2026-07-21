@@ -382,7 +382,7 @@ class CLIBillingMixin:
             if allow_stepup:
                 self._subscription_handle_scope_required(state, retry=("preview", tier_id))
             else:
-                print("  Remote spending is still off for this org — a billing admin can turn it on from the portal's Hermes Agent page, then retry.")
+                print("  Remote Spending still isn't active for this terminal — the authorization didn't take. Retry, or make this change on the portal.")
             return
         except BillingError as exc:
             self._subscription_render_error(state, exc)
@@ -562,7 +562,7 @@ class CLIBillingMixin:
             if allow_stepup:
                 self._subscription_handle_scope_required(state, retry=action, idempotency_key=key)
             else:
-                print("  Remote spending is still off for this org — a billing admin can turn it on from the portal's Hermes Agent page, then retry.")
+                print("  Remote Spending still isn't active for this terminal — the authorization didn't take. Retry, or make this change on the portal.")
         except BillingError as exc:
             self._subscription_render_error(state, exc)
 

@@ -200,9 +200,7 @@ describe('BillingSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByText('Remote Spending needs approval:')).toBeTruthy()
-    expect(
-      screen.getByText('This needs Remote Spending allowed. Start a top-up to allow it, then retry.')
-    ).toBeTruthy()
+    expect(screen.getByText('This needs Remote Spending allowed. Start a top-up to allow it, then retry.')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Verify to continue' })).toBeTruthy()
   })
 

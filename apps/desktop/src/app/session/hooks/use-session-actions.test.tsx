@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -89,9 +90,11 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  navigate = vi.fn(),
   onReady,
   requestGateway
 }: {
+  navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
@@ -105,7 +108,7 @@ function Harness({
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
     getRoutedStoredSessionId: () => null,
-    navigate: vi.fn() as never,
+    navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
@@ -194,6 +197,89 @@ describe('active stored-session id rotation routing', () => {
     expect($selectedStoredSessionId.get()).toBe('stored-A-next')
     expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-A-next'), { replace: true })
     expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('keeps draft on the previous tip when the new tip row is not loaded yet', async () => {
+    const tipBefore = 'tip-root'
+    const tipAfter = 'tip-new-unloaded'
+    const runtimeSessionId = 'runtime-gap'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: runtimeSessionId }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: tipBefore }
+    const navigate = vi.fn()
+
+    setSessions([])
+    stashSessionDraft(tipBefore, 'typed during gap', [])
+    setSelectedStoredSessionId(tipBefore)
+    setActiveSessionId(runtimeSessionId)
+
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => tipBefore}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: tipAfter,
+        previousStoredSessionId: tipBefore,
+        runtimeSessionId
+      })
+    })
+
+    await waitFor(() => expect($selectedStoredSessionId.get()).toBe(tipAfter))
+    expect(takeSessionDraft(tipBefore).text).toBe('typed during gap')
+    expect(takeSessionDraft(tipAfter).text).toBe('')
+
+    clearSessionDraft(tipBefore)
+    clearSessionDraft(tipAfter)
+    setActiveSessionId(null)
+  })
+
+  it('parks an in-progress composer draft on the lineage root across tip rotation', async () => {
+    // Desktop draft must stay on the durable composer key (lineage root), not
+    // move onto the fresh tip — ChatBar scopes drafts via resolveComposerSessionKey.
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+    const runtimeSessionId = 'runtime-desktop-thinking'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: runtimeSessionId }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: tipBefore }
+    const navigate = vi.fn()
+    const typedWhileThinking = 'follow up I am still typing during thinking'
+
+    setSessions([storedSession({ id: tipAfter, message_count: 2, _lineage_root_id: tipBefore })])
+    stashSessionDraft(tipBefore, typedWhileThinking, [])
+    setSelectedStoredSessionId(tipBefore)
+    setActiveSessionId(runtimeSessionId)
+
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => tipBefore}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: tipAfter,
+        previousStoredSessionId: tipBefore,
+        runtimeSessionId
+      })
+    })
+
+    await waitFor(() => expect($selectedStoredSessionId.get()).toBe(tipAfter))
+    // Durable key remains the lineage root — same scope ChatBar will keep using.
+    expect(takeSessionDraft(tipBefore).text).toBe(typedWhileThinking)
+    expect(takeSessionDraft(tipAfter).text).toBe('')
+
+    clearSessionDraft(tipBefore)
+    clearSessionDraft(tipAfter)
+    setActiveSessionId(null)
+    setSessions([])
   })
 
   it('does not overwrite a newer route intent before its resume effect has synchronized selection', async () => {
@@ -319,6 +405,25 @@ async function createWith(
 
   return createParams
 }
+
+describe('startFreshSessionDraft', () => {
+  afterEach(() => cleanup())
+
+  it('can reset machine-bound session state without closing the current overlay route', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => handle!.startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null }))
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect($currentCwd.get()).toBe('')
+    expect($newChatWorkspaceTarget.get()).toBeNull()
+  })
+})
 
 describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {

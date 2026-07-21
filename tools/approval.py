@@ -2491,11 +2491,17 @@ def is_approval_bypass_active() -> bool:
 
 
 def _get_approval_timeout() -> int:
-    """Read the approval timeout from config. Defaults to 60 seconds."""
+    """Read the approval timeout from config. Defaults to 300 seconds.
+
+    The default matches DEFAULT_CONFIG["approvals"]["timeout"]. Gateway
+    approvals arrive as push notifications the user may not see for a couple
+    of minutes; 60s proved too tight in practice (Telegram taps landed after
+    the wait had already failed closed).
+    """
     try:
-        return int(_get_approval_config().get("timeout", 60))
+        return int(_get_approval_config().get("timeout", 300))
     except (ValueError, TypeError):
-        return 60
+        return 300
 
 
 def _get_cron_approval_mode() -> str:
@@ -3108,7 +3114,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         return {"resolved": False, "choice": None, "notify_failed": True}
 
     # Block until the user responds or the canonical approval timeout elapses
-    # (default 60s). Poll in short slices so we can fire activity heartbeats
+    # (default 300s). Poll in short slices so we can fire activity heartbeats
     # every ~10s to the agent's inactivity tracker — otherwise the gateway
     # watchdog kills the agent while the user is still responding. Mirrors
     # _wait_for_process() cadence.
@@ -3416,7 +3422,15 @@ def check_all_command_guards(command: str, env_type: str,
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
-    has_tirith = any(is_t for _, _, is_t in warnings)
+    # "Always" is offered when at least one warning is a dangerous-pattern
+    # key that the persistence layer would actually allowlist permanently.
+    # Pure-tirith findings are session-max by design (no broad permanent
+    # allowlisting of content-level security findings), so a prompt with
+    # ONLY tirith warnings keeps Always hidden.  Mixed prompts (pattern +
+    # tirith) previously hid Always too, even though choosing it would
+    # correctly persist the pattern key and downgrade the tirith key to
+    # session — the UI was stricter than the persistence layer.
+    has_permanent_capable = any(not is_t for _, _, is_t in warnings)
 
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
@@ -3446,8 +3460,10 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_keys": all_keys,
                 "description": redact_sensitive_text(combined_desc),
                 # Smart DENY overrides are one-operation decisions, so the UI
-                # must not offer a permanent scope.
-                "allow_permanent": not has_tirith and not smart_denied_for_owner,
+                # must not offer a permanent scope.  Otherwise offer Always
+                # whenever any dangerous-pattern warning can actually be
+                # persisted (pure-tirith prompts stay session-max).
+                "allow_permanent": has_permanent_capable and not smart_denied_for_owner,
             }
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
@@ -3550,7 +3566,7 @@ def check_all_command_guards(command: str, env_type: str,
         return result
 
     # CLI interactive: single combined prompt
-    # Hide [a]lways when any tirith warning is present
+    # Hide [a]lways when no persistable (non-tirith) warning is present
     _fire_approval_hook(
         "pre_approval_request",
         command=command,
@@ -3563,7 +3579,7 @@ def check_all_command_guards(command: str, env_type: str,
     choice = prompt_dangerous_approval(
         command,
         combined_desc,
-        allow_permanent=not has_tirith and not smart_denied_for_owner,
+        allow_permanent=has_permanent_capable and not smart_denied_for_owner,
         smart_denied=smart_denied_for_owner,
         approval_callback=approval_callback,
     )

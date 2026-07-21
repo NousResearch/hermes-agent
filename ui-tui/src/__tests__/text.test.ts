@@ -8,6 +8,7 @@ import {
   estimateRows,
   estimateTokensRough,
   fmtK,
+  formatToolCall,
   hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
@@ -28,6 +29,19 @@ describe('isToolTrailResultLine', () => {
   })
 })
 
+describe('formatToolCall', () => {
+  it('wraps the raw preview under the tool label when no friendly label is given', () => {
+    expect(formatToolCall('read_file', 'package.json L1-300')).toBe('Read File("package.json L1-300")')
+  })
+
+  it('renders the gateway friendly label verbatim instead of re-wrapping it (#62796)', () => {
+    // The gateway already phrased this; wrapping it again is the double-format bug.
+    expect(formatToolCall('read_file', 'package.json L1-300', 'Reading package.json L1-300')).toBe(
+      'Reading package.json L1-300'
+    )
+  })
+})
+
 describe('buildToolTrailLine', () => {
   it('puts completion duration inline before the result marker', () => {
     const line = buildToolTrailLine('read_file', 'x', false, '', 0.94)
@@ -35,6 +49,13 @@ describe('buildToolTrailLine', () => {
     expect(line).toBe('Read File("x") (0.9s) ✓')
     expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File("x") (0.9s)', detail: '', mark: '✓' })
     expect(splitToolDuration('Read File("x") (0.9s)')).toEqual({ label: 'Read File("x")', duration: ' (0.9s)' })
+  })
+
+  it('uses the friendly label verbatim for the trail line when present (#62796)', () => {
+    const line = buildToolTrailLine('read_file', 'package.json L1-300', false, '', 0.9, 'Reading package.json L1-300')
+
+    expect(line).toBe('Reading package.json L1-300 (0.9s) ✓')
+    expect(line).not.toContain('Read File("Reading')
   })
 })
 

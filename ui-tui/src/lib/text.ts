@@ -195,7 +195,16 @@ export const toolTrailLabel = (name: string) =>
     .map(p => p[0]!.toUpperCase() + p.slice(1))
     .join(' ') || name
 
-export const formatToolCall = (name: string, context = '') => {
+// `friendlyLabel` is the gateway's complete human-phrased label (e.g.
+// "Reading package.json L1-300"). When present it is rendered verbatim instead
+// of wrapping `context` as `Read File("…")` — the gateway already phrased it, so
+// wrapping again double-formats it (#62796). Falls back to the wrapped preview
+// for pre-`label` gateways, custom/MCP tools, and disabled friendly labels.
+export const formatToolCall = (name: string, context = '', friendlyLabel = '') => {
+  if (friendlyLabel) {
+    return friendlyLabel
+  }
+
   const label = toolTrailLabel(name)
   const preview = compactPreview(context, 64)
 
@@ -207,12 +216,13 @@ export const buildToolTrailLine = (
   context: string,
   error?: boolean,
   note?: string,
-  duration?: number
+  duration?: number,
+  friendlyLabel?: string
 ) => {
   const detail = compactPreview(note ?? '', 72)
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolCall(name, context, friendlyLabel)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 const verboseToolBlock = (label: string, text?: string) => {
@@ -236,7 +246,8 @@ export const buildVerboseToolTrailLine = (
   error?: boolean,
   duration?: number,
   argsText?: string,
-  resultText?: string
+  resultText?: string,
+  friendlyLabel?: string
 ) => {
   const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
     .filter(Boolean)
@@ -244,7 +255,7 @@ export const buildVerboseToolTrailLine = (
 
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolCall(name, context, friendlyLabel)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')

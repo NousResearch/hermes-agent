@@ -375,9 +375,12 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
   // On Free nothing can be mutated in-terminal (starting a subscription lives
-  // on the portal — card capture + checkout), but the catalog still renders
-  // here so plans and prices are visible before leaving the terminal.
-  const hasCatalog = isFree && s.tiers.some(tier => tier.is_enabled && tier.tier_order > 0)
+  // on the portal — card capture + checkout), but the catalog renders inline
+  // right here — the upsell happens where the user already is. Picking a plan
+  // opens the portal; openManageLink narrates the handoff itself.
+  const freePlans = isFree
+    ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
+    : []
 
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
   const busyRef = useRef(false)
@@ -426,11 +429,31 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     }
   }
 
-  if (hasCatalog) {
-    rows.push({ label: 'Choose a plan', run: () => onPatch({ pending: null, screen: 'picker' }) })
+  for (const tier of freePlans) {
+    // NAS sends a bare decimal string; tolerate pre-grouped ("1,000") too.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+    const suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
+
+    rows.push({
+      label: `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`,
+      run: () => {
+        if (busyRef.current) {
+          return
+        }
+
+        busyRef.current = true
+        void ctx.openManageLink()
+        onClose()
+      }
+    })
   }
 
-  rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
+  // With the catalog inline, the plan rows ARE the subscribe path — only a
+  // catalog-less free state still needs the generic portal row.
+  if (!isFree || freePlans.length === 0) {
+    rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
+  }
+
   rows.push({ label: 'Close', run: onClose })
 
   const sel = useMenu(rows, onClose)
@@ -493,9 +516,8 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
 // ── Screen: Picker (choose a tier → preview → confirm) ───────────────
 
-function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
+function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
   const { ctx, state: s } = overlay
-  const isFree = !s.current?.tier_id
   const currentOrder = s.tiers.find(tier => tier.is_current)?.tier_order ?? 0
 
   // Selectable = enabled, not the current plan, and not the free/no-sub tier
@@ -513,34 +535,18 @@ function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     }
 
     busyRef.current = true
-
-    // On Free there is no subscription to mutate — starting one lives on the
-    // portal (card capture + checkout). openManageLink narrates the handoff
-    // (and the missing-URL failure) itself.
-    if (isFree) {
-      void ctx.openManageLink()
-      onClose()
-
-      return
-    }
-
     void previewAndRoute(ctx, tier.tier_id, onPatch)
   }
 
   const back = () => onPatch({ screen: 'overview' })
 
   const rows: MenuRowSpec[] = choices.map(tier => {
-    // From Free every option is a start — show what the plan includes;
-    // otherwise hint the direction of the move. Monthly credits are dollars.
-    let suffix: string
-    if (isFree) {
-      const credits = Number(tier.monthly_credits)
-      suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
-    } else {
-      suffix = tier.tier_order > currentOrder ? ' · upgrade' : ' · downgrade'
-    }
+    const direction = tier.tier_order > currentOrder ? 'upgrade' : 'downgrade'
 
-    return { label: `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`, run: () => pick(tier) }
+    return {
+      label: `${tier.name} · ${tier.dollars_per_month_display}/mo · ${direction}`,
+      run: () => pick(tier)
+    }
   })
 
   rows.push({ label: 'Back', run: back })
@@ -550,12 +556,10 @@ function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        {isFree ? 'Choose a plan' : 'Change plan'}
+        Change plan
       </Text>
       <Text color={t.color.muted}>
-        {isFree
-          ? 'Current: Free. Pick a plan — you finish starting it on the portal.'
-          : `Current: ${s.current?.tier_name ?? 'Free'}. Pick a plan to see the effect before confirming.`}
+        Current: {s.current?.tier_name ?? 'Free'}. Pick a plan to see the effect before confirming.
       </Text>
       <Text />
       {choices.length === 0 && <Text color={t.color.muted}>No other plans are available to switch to right now.</Text>}
@@ -563,7 +567,7 @@ function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
         <MenuRow active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
       ))}
       <Text />
-      {footer(isFree ? '↑/↓ select · Enter opens the portal · Esc back' : '↑/↓ select · Enter preview · Esc back', t)}
+      {footer('↑/↓ select · Enter preview · Esc back', t)}
     </Box>
   )
 }

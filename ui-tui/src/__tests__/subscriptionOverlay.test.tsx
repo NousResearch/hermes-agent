@@ -149,11 +149,37 @@ describe('SubscriptionOverlay — overview', () => {
     expect(out.toLowerCase()).not.toContain('credits')
   })
 
-  it('free with catalog: offers "Choose a plan" alongside the portal row', () => {
+  it('free with catalog: plans render inline; the generic portal row disappears', () => {
     const out = render(overlay(freeWithCatalog()))
 
-    expect(out).toContain('Choose a plan')
-    expect(out).toContain('Start a subscription')
+    expect(out).toContain('Plus · $20/mo · $1,000 credits/mo')
+    expect(out).toContain('Ultra · $40/mo · $3,000 credits/mo')
+    expect(out).not.toContain('upgrade') // a start, not a move
+    expect(out).not.toContain('$0/mo') // free tier is not an option
+    expect(out).not.toContain('Choose a plan')
+    expect(out).not.toContain('Start a subscription')
+  })
+
+  it('free with catalog: picking a plan opens the portal once, even on double-Enter', async () => {
+    const openManageLink = vi.fn(() => Promise.resolve(true))
+    const preview = vi.fn(() => Promise.resolve(null))
+    const sys = vi.fn()
+
+    const mounted = mount({
+      ctx: { ...ctx, openManageLink, preview, sys } as SubscriptionOverlayState['ctx'],
+      screen: 'overview',
+      state: freeWithCatalog()
+    })
+
+    inputHarness.handler?.('', { return: true }) // first row = Plus
+    inputHarness.handler?.('', { return: true }) // double-press must not re-fire
+    await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
+    mounted.cleanup()
+
+    expect(openManageLink).toHaveBeenCalledTimes(1)
+    expect(preview).not.toHaveBeenCalled()
+    // openManageLink narrates the handoff itself — the overview adds nothing.
+    expect(sys).not.toHaveBeenCalled()
   })
 
   it('subscriber: status line + plan bar + top-up bar, no "credits"', () => {
@@ -389,38 +415,6 @@ describe('SubscriptionOverlay — picker', () => {
     expect(out).not.toContain('$0/mo') // free tier excluded — use Cancel instead
   })
 
-  it('free: lists paid plans with credits instead of direction hints', () => {
-    const out = render(at('picker', freeWithCatalog()))
-
-    expect(out).toContain('Choose a plan')
-    expect(out).toContain('Plus · $20/mo · $1,000 credits/mo')
-    expect(out).toContain('Ultra · $40/mo · $3,000 credits/mo')
-    expect(out).not.toContain('upgrade') // nothing to move from — it's a start
-    expect(out).not.toContain('$0/mo')
-    expect(out).toContain('Enter opens the portal')
-  })
-
-  it('free: picking a plan opens the portal instead of previewing, once even on double-Enter', async () => {
-    const openManageLink = vi.fn(() => Promise.resolve(true))
-    const preview = vi.fn(() => Promise.resolve(null))
-    const sys = vi.fn()
-
-    const mounted = mount(
-      at('picker', freeWithCatalog(), {
-        ctx: { ...ctx, openManageLink, preview, sys } as SubscriptionOverlayState['ctx']
-      })
-    )
-
-    inputHarness.handler?.('', { return: true }) // first row = Plus
-    inputHarness.handler?.('', { return: true }) // double-press must not re-fire
-    await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
-    mounted.cleanup()
-
-    expect(openManageLink).toHaveBeenCalledTimes(1)
-    expect(preview).not.toHaveBeenCalled()
-    // openManageLink narrates the handoff itself — the picker adds nothing.
-    expect(sys).not.toHaveBeenCalled()
-  })
 })
 
 describe('SubscriptionOverlay — confirm', () => {

@@ -110,22 +110,36 @@ export async function setAvatar(
 }
 
 /**
- * Remove the avatar from disk.
- * When profile is provided, only removes the per-profile override
- * (falls back to default). When unset, removes the IPC default too.
+ * Remove the avatar.
+ * - When profile is provided: clears ONLY that profile's localStorage override.
+ *   Other profiles and the global IPC default are left untouched.
+ * - When profile is omitted: clears the global IPC default AND ALL per-profile
+ *   localStorage overrides, returning every profile to the gradient fallback.
  */
 export async function resetAvatar(profile?: string | null): Promise<void> {
   try {
-    const key = profile || $activeProfileName.get() || 'default'
-
     if (profile) {
       // Only clear the per-profile override — fall back to default
-      writeProfileAvatar(key, null)
+      writeProfileAvatar(profile, null)
     } else {
-      // Clear both: IPC default + all localStorage overrides
+      // Clear IPC default + all localStorage overrides for every profile
       await window.hermesDesktop.avatar.reset()
       $avatarDataUrl.set(null)
-      writeProfileAvatar(key, null)
+
+      const keysToRemove: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k?.startsWith(AVATAR_PREFIX)) {
+          keysToRemove.push(k)
+        }
+      }
+      for (const k of keysToRemove) {
+        try {
+          localStorage.removeItem(k)
+        } catch {
+          // ignore
+        }
+      }
     }
   } catch (error) {
     console.error('[avatar] Failed to reset avatar:', error)

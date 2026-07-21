@@ -10,6 +10,7 @@ import { ImageIcon, LinkIcon, Loader2, Trash2, Upload } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $avatarDataUrl, resetAvatar, setAvatar } from '@/store/avatar'
 
+import { computeAvatarCrop } from './avatar-crop'
 import { SectionHeading } from './primitives'
 
 /** Convert a File or image URL to a 256×256 center-cropped PNG data URL. */
@@ -35,15 +36,16 @@ async function imageToPngDataUrl(source: File | string, maxSize = 256): Promise<
     image.src = rawDataUrl
   })
 
-  const size = Math.min(img.width, img.height, maxSize)
+  const { sx, sy, sWidth, sHeight, dWidth, dHeight } = computeAvatarCrop(
+    img.width,
+    img.height,
+    maxSize
+  )
   const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
+  canvas.width = dWidth
+  canvas.height = dHeight
   const ctx = canvas.getContext('2d')!
-
-  const sx = (img.width - size) / 2
-  const sy = (img.height - size) / 2
-  ctx.drawImage(img, sx, sy, size, size, 0, 0, size, size)
+  ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, dWidth, dHeight)
 
   return canvas.toDataURL('image/png')
 }

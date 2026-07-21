@@ -114,15 +114,21 @@ async def test_main_model_card_refreshes_after_assignment(page: Page):
     await change_btn.click()
 
     picker = page.get_by_role("dialog", name="Set Main Model")
+    # A picker that fails to open is a product bug, not an environment gap —
+    # `expect` raises here rather than letting the test skip past it.
     await expect(picker).to_be_visible()
-    if not await picker.is_visible():
-        pytest.skip("Main model picker did not open")
 
-    # Select provider
+    # The provider list is fetched after the dialog mounts. Without waiting for
+    # that load to finish, the lookup below races it, finds nothing and skips —
+    # silently retiring the assertion this test exists for.
+    await expect(picker.get_by_text("loading…")).to_have_count(0, timeout=30000)
+
+    # Select provider. It came from /api/model/options and the list has
+    # finished loading, so its absence is a rendering bug — assert, don't skip.
     prov_loc = picker.get_by_text(target_name, exact=True)
-    if await prov_loc.count() == 0:
-        await page.keyboard.press("Escape")
-        pytest.skip(f"Provider '{target_name}' not found in picker")
+    assert await prov_loc.count() > 0, (
+        f"Provider '{target_name}' is in /api/model/options but not rendered in the picker"
+    )
     await prov_loc.first.click()
     # Wait for model list to refresh after provider selection
     await expect(picker.get_by_role("button", name="Switch", exact=True)).to_be_visible()
@@ -138,10 +144,12 @@ async def test_main_model_card_refreshes_after_assignment(page: Page):
     if await model_loc.count() > 0:
         await model_loc.first.click()
 
+    # A model was selected above, so the confirm button must be actionable.
+    # Skipping here would retire the assertion this test exists for.
     confirm_btn = picker.get_by_role("button", name="Switch", exact=True)
-    if not await confirm_btn.is_enabled():
-        await page.keyboard.press("Escape")
-        pytest.skip("Could not select model in picker")
+    assert await confirm_btn.is_enabled(), (
+        f"'Switch' stayed disabled after selecting {target_name} / {target_model}"
+    )
 
     await confirm_btn.click()
     await expect(picker).to_be_hidden()

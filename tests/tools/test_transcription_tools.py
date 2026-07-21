@@ -501,6 +501,67 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_config_device_and_compute_type_passed_to_whisper(self, tmp_path):
+        """User-configured device and compute_type should be forwarded to WhisperModel.
+
+        Regression test for #8319: these values were hardcoded to "auto".
+        """
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        fake_config = {
+            "local": {
+                "device": "cpu",
+                "compute_type": "float32",
+            }
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+
+    def test_config_defaults_to_auto_when_not_set(self, tmp_path):
+        """Without config, device and compute_type should default to "auto"."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_local
+            _transcribe_local(str(audio), "base")
+
+        mock_whisper_cls.assert_called_once_with("base", device="auto", compute_type="auto")
+
     def test_multiple_segments_joined(self, tmp_path):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")

@@ -284,6 +284,7 @@ def test_extract_canonicalizes_negative_requirements_and_contextual_styles():
         ),
         ("response.style.engineering_review", "detailed by default", "user", "workflow"),
         ("response.style.slack_progress", "concise by default", "user", "constraint"),
+        ("response.style.security_review", "detailed", "user", "workflow"),
     ):
         candidate = _candidate(value=value)
         candidate["fact"].update({"key": key, "scope": scope, "kind": kind})
@@ -304,11 +305,13 @@ def test_extract_canonicalizes_negative_requirements_and_contextual_styles():
         ("rollout.default_profile_change_requires_explicit_approval", False),
         ("response.style.engineering_review", "detailed"),
         ("response.style.slack_progress", "concise"),
+        ("response.style.security_review", "detailed"),
     ]
     assert [fact["kind"] for fact in out["facts"]] == [
         "constraint",
         "constraint",
         "constraint",
+        "preference",
         "preference",
         "preference",
     ]
@@ -320,6 +323,11 @@ def test_extract_rejects_noncanonical_requirement_and_contextual_style_values():
     for key, value in (
         ("rollout.merge_requires_explicit_approval", 0),
         ("rollout.merge_requires_explicit_approval", "sometimes"),
+        ("rollout.merge_requires_explicit_approval", "Merge without explicit approval"),
+        (
+            "rollout.independent_exact_commit_review_required",
+            "Explicit approval is not always required",
+        ),
         ("proposal.presentation_order", "start with options"),
         ("proposal.delivery_format", 1),
         ("response.style.engineering_review", "verbose"),
@@ -364,7 +372,7 @@ def test_extractor_prompt_declares_response_style_value_contract():
     assert "Requirement values must be JSON booleans true or false" in instructions
     assert "Context-specific response.style.* values must also be exactly concise or detailed" in instructions
     assert "Canonical keys determine their canonical fact kinds" in instructions
-    assert out["extraction"]["prompt_version"] == 6
+    assert out["extraction"]["prompt_version"] == 7
 
 
 def test_default_timeout_is_bounded_above_observed_structured_latency():

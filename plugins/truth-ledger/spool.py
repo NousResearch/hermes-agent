@@ -414,15 +414,15 @@ class TruthSpool:
 
     def ack_processing(self, processing_path: Path) -> Dict[str, Any]:
         path = Path(processing_path)
-        record: Dict[str, Any] = {}
-        if path.exists():
-            try:
-                record = self._load_record(path)
-            except Exception:
-                record = {}
-        if not record:
-            return {"ok": True}
         with _spool_lock(self.lock_path):
+            record: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    record = self._load_record(path)
+                except Exception:
+                    record = {}
+            if not record:
+                return {"ok": True}
             flow = dict(record.get("flow") or {})
             flow["acked_at"] = time.time()
             record["state"] = "acked"
@@ -517,47 +517,48 @@ class TruthSpool:
     def recover_stale_processing(self, stale_seconds: int = 900) -> int:
         now = time.time()
         moved = 0
-        for src in sorted(self.processing_dir.glob("*.json")):
-            try:
-                age = now - src.stat().st_mtime
-            except FileNotFoundError:
-                continue
-            if age < stale_seconds:
-                continue
-            try:
-                record = self._load_record(src)
-                validate_document("spool-record.v1", record)
-                key = str(record.get("idempotency_key") or "")
-                completed = None
-                for completed_path in self.completed_dir.glob("*.json"):
-                    try:
-                        completed_record = self._load_record(completed_path)
-                    except Exception:
-                        continue
-                    if str(completed_record.get("idempotency_key") or "") == key:
-                        completed = completed_path
-                        break
-                if completed is not None:
-                    src.unlink()
-                    self._unlink_payload_if_owned(record)
-                    moved += 1
+        with _spool_lock(self.lock_path):
+            for src in sorted(self.processing_dir.glob("*.json")):
+                try:
+                    age = now - src.stat().st_mtime
+                except FileNotFoundError:
                     continue
-                record["state"] = "pending"
-                flow = dict(record.get("flow") or {})
-                flow["recovered_at"] = now
-                record["flow"] = flow
-                _write_private_json_atomic(self.pending_dir / self._new_record_name(), record)
-                src.unlink()
-                moved += 1
-            except Exception:
-                if not src.exists():
-                    # Benign race: another lifecycle path (ack/close) removed the record.
+                if age < stale_seconds:
                     continue
                 try:
-                    self._quarantine_record(src, "invalid_spool_record")
+                    record = self._load_record(src)
+                    validate_document("spool-record.v1", record)
+                    key = str(record.get("idempotency_key") or "")
+                    completed = None
+                    for completed_path in self.completed_dir.glob("*.json"):
+                        try:
+                            completed_record = self._load_record(completed_path)
+                        except Exception:
+                            continue
+                        if str(completed_record.get("idempotency_key") or "") == key:
+                            completed = completed_path
+                            break
+                    if completed is not None:
+                        src.unlink()
+                        self._unlink_payload_if_owned(record)
+                        moved += 1
+                        continue
+                    record["state"] = "pending"
+                    flow = dict(record.get("flow") or {})
+                    flow["recovered_at"] = now
+                    record["flow"] = flow
+                    _write_private_json_atomic(self.pending_dir / self._new_record_name(), record)
+                    src.unlink()
                     moved += 1
                 except Exception:
-                    continue
+                    if not src.exists():
+                        # Benign race: another lifecycle path (ack/close) removed the record.
+                        continue
+                    try:
+                        self._quarantine_record(src, "invalid_spool_record")
+                        moved += 1
+                    except Exception:
+                        continue
         return moved
 
     def _shed_soft_overflow_if_needed(self) -> None:

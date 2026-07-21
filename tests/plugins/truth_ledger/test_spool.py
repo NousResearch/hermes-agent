@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -157,6 +158,128 @@ def test_recover_stale_processing_moves_back_to_pending(tmp_path, spool_mod):
     assert moved == 1
     assert not processing_path.exists()
     assert len(list((tmp_path / "spool" / "pending").glob("*.json"))) == 1
+
+
+def test_concurrent_stale_recovery_is_serialized(tmp_path, spool_mod, monkeypatch):
+    spool = spool_mod.TruthSpool(tmp_path)
+    spool.enqueue({**_source_envelope(), "turn_id": "stale-concurrent"})
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    original_load = spool._load_record
+    first_loaded = threading.Event()
+    second_loaded = threading.Event()
+    release_first = threading.Event()
+    load_count = 0
+    count_lock = threading.Lock()
+
+    def _staged_load(path):
+        nonlocal load_count
+        record = original_load(path)
+        if Path(path) == processing_path:
+            with count_lock:
+                load_count += 1
+                current = load_count
+            if current == 1:
+                first_loaded.set()
+                assert release_first.wait(timeout=2)
+            elif current == 2:
+                second_loaded.set()
+        return record
+
+    monkeypatch.setattr(spool, "_load_record", _staged_load)
+    results = []
+    errors = []
+
+    def _recover():
+        try:
+            results.append(spool.recover_stale_processing(stale_seconds=60))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    first = threading.Thread(target=_recover)
+    second = threading.Thread(target=_recover)
+    first.start()
+    assert first_loaded.wait(timeout=2)
+    second.start()
+    serialized = not second_loaded.wait(timeout=0.2)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert errors == []
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert serialized is True
+    assert sorted(results) == [0, 1]
+    assert list(spool.processing_dir.glob("*.json")) == []
+    assert len(list(spool.pending_dir.glob("*.json"))) == 1
+
+
+def test_ack_cannot_race_stale_recovery_into_dangling_pending(
+    tmp_path, spool_mod, monkeypatch
+):
+    spool = spool_mod.TruthSpool(tmp_path)
+    spool.enqueue({**_source_envelope(), "turn_id": "stale-ack-race"})
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    processing_path = Path(claim["path"])
+    payload_path = Path(str(claim["record"]["payload_path"]))
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    original_write = spool_mod._write_private_json_atomic
+    pending_written = threading.Event()
+    release_recovery = threading.Event()
+
+    def _staged_write(path, payload):
+        result = original_write(path, payload)
+        if Path(path).parent == spool.pending_dir:
+            pending_written.set()
+            assert release_recovery.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(spool_mod, "_write_private_json_atomic", _staged_write)
+    recovery_errors = []
+    ack_errors = []
+    ack_done = threading.Event()
+
+    def _recover():
+        try:
+            spool.recover_stale_processing(stale_seconds=60)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            recovery_errors.append(exc)
+
+    def _ack():
+        try:
+            spool.ack_processing(processing_path)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            ack_errors.append(exc)
+        finally:
+            ack_done.set()
+
+    recovery = threading.Thread(target=_recover)
+    recovery.start()
+    assert pending_written.wait(timeout=2)
+    ack = threading.Thread(target=_ack)
+    ack.start()
+    ack_finished_while_recovery_paused = ack_done.wait(timeout=0.2)
+    release_recovery.set()
+    recovery.join(timeout=2)
+    ack.join(timeout=2)
+
+    assert recovery_errors == []
+    assert ack_errors == []
+    assert recovery.is_alive() is False
+    assert ack.is_alive() is False
+    assert ack_finished_while_recovery_paused is False
+    assert list(spool.processing_dir.glob("*.json")) == []
+    assert len(list(spool.pending_dir.glob("*.json"))) == 1
+    assert list(spool.completed_dir.glob("*.json")) == []
+    assert payload_path.exists() is True
 
 
 def test_ack_processing_removes_record_and_only_owned_payloads(tmp_path, spool_mod):

@@ -11057,6 +11057,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+                        if command and _cmd_def is None:
+                            plugin_candidate = command.replace("_", "-")
+                            if (
+                                plugin_candidate != command
+                                and is_gateway_known_command(plugin_candidate)
+                            ):
+                                canonical = plugin_candidate
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM

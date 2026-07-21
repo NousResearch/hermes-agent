@@ -280,6 +280,28 @@ async def test_admin_only_plugin_underscore_alias_fails_closed_before_dispatch(m
     assert "EXECUTED" not in result
 
 
+@pytest.mark.asyncio
+async def test_admin_only_plugin_quick_alias_to_underscore_fails_closed(monkeypatch):
+    runner = _make_runner(platform_extra={})
+    runner.config.quick_commands = {
+        "tl": {"type": "alias", "target": "truth_ledger process --apply"}
+    }
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: {"truth-ledger": {"admin_only": True}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda _args: "EXECUTED") if name == "truth-ledger" else None,
+    )
+
+    result = await runner._handle_message(_make_event("/tl", _make_source(user_id="anyone")))
+
+    assert result is not None
+    assert "admin-only" in result
+    assert "EXECUTED" not in result
+
+
 # ---------------------------------------------------------------------------
 # Scope isolation — DM vs group
 # ---------------------------------------------------------------------------

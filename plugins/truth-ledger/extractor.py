@@ -29,8 +29,6 @@ _KEY_ALIASES = {
 }
 _KIND_BY_KEY = {
     "response.style": "preference",
-    "response.style.engineering_review": "preference",
-    "response.style.slack_progress": "preference",
     "timezone": "preference",
     "proposal.presentation_order": "workflow",
     "proposal.delivery_format": "workflow",
@@ -52,6 +50,29 @@ _BOOLEAN_REQUIREMENT_KEYS = {
     "rollout.independent_exact_commit_review_required",
     "rollout.merge_requires_explicit_approval",
     "rollout.default_profile_change_requires_explicit_approval",
+}
+_BOOLEAN_TEXT_ALIASES_BY_KEY = {
+    "rollout.independent_exact_commit_review_required": {
+        "true": True,
+        "required": True,
+        "false": False,
+        "not required": False,
+        "an independent exact-commit review is required before rollout.": True,
+    },
+    "rollout.merge_requires_explicit_approval": {
+        "true": True,
+        "required": True,
+        "false": False,
+        "not required": False,
+        "do not merge without explicit approval.": True,
+    },
+    "rollout.default_profile_change_requires_explicit_approval": {
+        "true": True,
+        "required": True,
+        "false": False,
+        "not required": False,
+        "do not enable the default profile without explicit approval.": True,
+    },
 }
 _RESPONSE_STYLE_VALUE_ALIASES = {
     "concise": "concise",
@@ -77,14 +98,9 @@ def _normalize_fact_value(key: str, value: Any) -> Any:
         if not isinstance(value, str):
             raise ValueError(f"{key} value must be a boolean")
         normalized_text = value.strip().lower()
-        if normalized_text in {"false", "not required"} or "not required" in normalized_text:
-            return False
-        if (
-            normalized_text in {"true", "required"}
-            or "required" in normalized_text
-            or "without explicit approval" in normalized_text
-        ):
-            return True
+        aliases = _BOOLEAN_TEXT_ALIASES_BY_KEY[key]
+        if normalized_text in aliases:
+            return aliases[normalized_text]
         raise ValueError(f"{key} value must be an explicit boolean requirement")
 
     if key == "response.style" and isinstance(value, Mapping):
@@ -111,7 +127,7 @@ class ExtractorSettings:
     max_attempts: int = 6
     base_delay_ms: int = 500
     max_delay_ms: int = 60_000
-    prompt_version: int = 6
+    prompt_version: int = 7
     override_mode: str = "off"  # off | explicit
     provider_override: str | None = None
     model_override: str | None = None
@@ -235,9 +251,14 @@ def _normalize_facts(
             subject = f"platform-user:{platform}:{speaker_id}"
         raw_key = str(fact["key"]).strip()
         key = _KEY_ALIASES.get(raw_key, raw_key)
+        canonical_kind = (
+            "preference"
+            if key == "response.style" or key.startswith("response.style.")
+            else _KIND_BY_KEY.get(key, fact["kind"])
+        )
         candidate = {
             "scope": scope,
-            "kind": _KIND_BY_KEY.get(key, fact["kind"]),
+            "kind": canonical_kind,
             "subject": subject,
             "key": key,
             "value": _normalize_fact_value(key, fact.get("value")),

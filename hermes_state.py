@@ -30,9 +30,111 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
+from state_db_maintenance import (
+    MAINTENANCE_SCHEMA_SQL,
+    acquire_state_db_maintenance,
+    prepare_state_db_maintenance_for_fork,
+    record_fts_maintenance_debt,
+    release_state_db_maintenance,
+    resume_state_db_maintenance_after_fork_parent,
+    reset_state_db_maintenance_after_fork,
+)
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+
+class _ProcessDbWriteGate:
+    """Re-entrant foreground writer gate with maintenance-aware fairness."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._state_changed = threading.Condition(threading.Lock())
+        self._foreground_waiters = 0
+        self._maintenance_reserved = False
+        self._local = threading.local()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        depth = getattr(self._local, "depth", 0)
+        if depth:
+            acquired = self._lock.acquire(blocking, timeout)
+            if acquired:
+                self._local.depth = depth + 1
+            return acquired
+
+        deadline = None if timeout < 0 else time.monotonic() + timeout
+        with self._state_changed:
+            self._foreground_waiters += 1
+        try:
+            with self._state_changed:
+                while self._maintenance_reserved:
+                    if not blocking:
+                        return False
+                    if deadline is None:
+                        self._state_changed.wait()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return False
+                        self._state_changed.wait(remaining)
+
+            if deadline is None:
+                acquired = self._lock.acquire(blocking)
+            else:
+                remaining = max(0.0, deadline - time.monotonic())
+                acquired = self._lock.acquire(blocking, remaining)
+            if acquired:
+                self._local.depth = 1
+            return acquired
+        finally:
+            with self._state_changed:
+                self._foreground_waiters -= 1
+                self._state_changed.notify_all()
+
+    def try_acquire_maintenance(self, *, force: bool = False) -> bool:
+        """Try one maintenance slice, optionally reserving it after aging.
+
+        Ordinary attempts always yield to queued foreground writers. After a
+        coordinator has been deferred for a bounded period, ``force=True``
+        closes admission for *new* writers while writers that were already
+        queued drain. This reserves exactly one short maintenance slice and
+        prevents durable work from starving under sustained load.
+        """
+        with self._state_changed:
+            if force:
+                self._maintenance_reserved = True
+            elif self._foreground_waiters or self._maintenance_reserved:
+                return False
+            return self._lock.acquire(blocking=False)
+
+    def release(self) -> None:
+        depth = getattr(self._local, "depth", 0)
+        if depth <= 0:
+            raise RuntimeError("foreground write gate released without acquire")
+        self._local.depth = depth - 1
+        self._lock.release()
+        if depth == 1:
+            with self._state_changed:
+                self._state_changed.notify_all()
+
+    def release_maintenance(self) -> None:
+        """Release a maintenance slice and reopen foreground admission."""
+        self._lock.release()
+        self.cancel_maintenance_reservation()
+
+    def cancel_maintenance_reservation(self) -> None:
+        """Unblock foreground admission if a reserved slice is abandoned."""
+        with self._state_changed:
+            if self._maintenance_reserved:
+                self._maintenance_reserved = False
+                self._state_changed.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.release()
 
 
 # SQLite serializes writers per database file, but Hermes historically only
@@ -41,7 +143,7 @@ logger = logging.getLogger(__name__)
 # those handles could repeatedly collide with each other before SQLite ever saw
 # an external process.  Keep independent connections for concurrent readers,
 # while sharing one re-entrant writer coordinator per canonical DB path.
-_PROCESS_DB_WRITE_LOCKS: Dict[str, Any] = {}
+_PROCESS_DB_WRITE_LOCKS: Dict[str, _ProcessDbWriteGate] = {}
 _PROCESS_DB_WRITER_COUNTS: Dict[str, int] = {}
 _PROCESS_DB_LOCKS_GUARD = threading.Lock()
 _SESSION_DB_INSTANCES = weakref.WeakSet()
@@ -85,7 +187,7 @@ def get_process_db_write_lock(db_path: Path):
     with _PROCESS_DB_LOCKS_GUARD:
         lock = _PROCESS_DB_WRITE_LOCKS.get(key)
         if lock is None:
-            lock = threading.RLock()
+            lock = _ProcessDbWriteGate()
             _PROCESS_DB_WRITE_LOCKS[key] = lock
         return lock
 
@@ -115,6 +217,7 @@ def _process_db_writer_count(db_path: Path) -> int:
 def _reset_process_db_locks_after_fork() -> None:
     """Reset Python locks and invalidate inherited SQLite connections."""
     global _PROCESS_DB_WRITE_LOCKS, _PROCESS_DB_WRITER_COUNTS, _PROCESS_DB_LOCKS_GUARD
+    reset_state_db_maintenance_after_fork(_FORK_RETAINED_CONNECTIONS)
     _PROCESS_DB_WRITE_LOCKS = {}
     _PROCESS_DB_WRITER_COUNTS = {}
     _PROCESS_DB_LOCKS_GUARD = threading.Lock()
@@ -139,13 +242,18 @@ def _reset_process_db_locks_after_fork() -> None:
             db._lock = threading.Lock()
             db._write_lock = get_process_db_write_lock(db.db_path)
             db._writer_registered = False
+            db._maintenance = None
         except Exception:
             # at_fork handlers must never prevent the child from starting.
             pass
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_process_db_locks_after_fork)
+    os.register_at_fork(
+        before=prepare_state_db_maintenance_for_fork,
+        after_in_parent=resume_state_db_maintenance_after_fork_parent,
+        after_in_child=_reset_process_db_locks_after_fork,
+    )
 
 
 def _scrub_surrogates(value: Any) -> Any:
@@ -1138,6 +1246,10 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
 
+# Background-maintenance state is additive and declarative like the rest of
+# the core schema, so existing databases acquire it during normal init.
+SCHEMA_SQL += MAINTENANCE_SCHEMA_SQL
+
 # Indexes that reference columns added in later schema versions must be
 # created AFTER _reconcile_columns() has had a chance to ADD them on
 # existing databases. SCHEMA_SQL above is run by sqlite executescript
@@ -1530,17 +1642,11 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
+    # Queue a background PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Merge fragmented FTS5 segments every N successful writes. The message
-    # triggers append one segment per insert; left unmaintained these grow
-    # into tens of thousands of segments, so every MATCH must scan them all
-    # and every insert pays a growing automerge cost — which lengthens the
-    # write-lock hold time and starves competing writers (gateway + cron
-    # processes share one state.db), surfacing as "database is locked".
-    # 'optimize' is a no-op once the index is already merged, so an idle DB
-    # pays almost nothing; the cadence is deliberately coarse so the one-off
-    # merge cost is amortised far below the checkpoint cadence.
+    # Admit one bounded background FTS5 merge cycle after this many message
+    # mutation units. Full optimize is intentionally excluded from automatic
+    # maintenance; it remains an explicit maintenance-window operation.
     _OPTIMIZE_EVERY_N_WRITES = 1000
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
@@ -1559,6 +1665,8 @@ class SessionDB:
         self._lock = threading.Lock()
         self._write_lock = get_process_db_write_lock(self.db_path)
         self._writer_registered = False
+        self._maintenance = None
+        self._db_key = _canonical_db_path(self.db_path)
         self._owner_pid = os.getpid()
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
@@ -1659,7 +1767,51 @@ class SessionDB:
             # racing session lifecycle and the surprise disk/latency cost on
             # an unattended open. (An interrupted optimize resumes when the
             # user re-runs the command.)
+            self._maintenance = acquire_state_db_maintenance(
+                db_path=self.db_path,
+                db_key=self._db_key,
+                write_gate=self._write_lock,
+                fts_tables=tuple(
+                    table_name
+                    for table_name, enabled in (
+                        ("messages_fts", self._fts_enabled),
+                        ("messages_fts_trigram", self._trigram_available),
+                    )
+                    if enabled
+                ),
+                merge_interval=self._OPTIMIZE_EVERY_N_WRITES,
+            )
         except Exception as exc:
+            # Construction can fail after the connection and process-writer
+            # registration have succeeded (for example, while waiting for a
+            # previous maintenance worker to finish stopping). Roll back those
+            # side effects here so a failed transient open cannot leak a live
+            # connection or permanently inflate shutdown writer counts.
+            try:
+                if self._maintenance is not None:
+                    release_state_db_maintenance(
+                        db_key=self._db_key,
+                        coordinator=self._maintenance,
+                    )
+                    self._maintenance = None
+            except Exception:
+                logger.debug(
+                    "Failed to release state.db maintenance after init error",
+                    exc_info=True,
+                )
+            failed_connection = self._conn
+            self._conn = None
+            try:
+                if failed_connection is not None:
+                    failed_connection.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close state.db connection after init error",
+                    exc_info=True,
+                )
+            if self._writer_registered:
+                _unregister_process_db_writer(self.db_path)
+                self._writer_registered = False
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
             # not available."  Callers that catch this exception keep their
@@ -2165,6 +2317,7 @@ class SessionDB:
         fn: Callable[[sqlite3.Connection], T],
         *,
         write_units: int = 1,
+        fts_dirty: bool = False,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -2178,14 +2331,16 @@ class SessionDB:
         random 20-150ms, and retry — breaking the convoy pattern that
         SQLite's built-in deterministic backoff creates.
 
-        ``write_units`` preserves maintenance cadence for batched operations:
-        inserting N messages creates roughly the same FTS/WAL work as N
-        single-row transactions even though it enters the writer lane once.
+        ``write_units`` preserves background checkpoint and FTS admission
+        cadence for batched operations. ``fts_dirty`` records durable message
+        mutation units in the same transaction, so a crash between commit and
+        worker notification cannot lose the merge request.
 
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
         normalized_write_units = max(1, int(write_units))
+        effective_fts_dirty = bool(fts_dirty and self._fts_enabled)
         if self._owner_pid != os.getpid():
             raise RuntimeError(
                 "SessionDB instances cannot be reused after fork; "
@@ -2200,6 +2355,11 @@ class SessionDB:
                         self._conn.execute("BEGIN IMMEDIATE")
                         try:
                             result = fn(self._conn)
+                            if effective_fts_dirty:
+                                record_fts_maintenance_debt(
+                                    self._conn,
+                                    write_units=normalized_write_units,
+                                )
                             self._conn.commit()
                         except BaseException:
                             try:
@@ -2207,25 +2367,19 @@ class SessionDB:
                             except Exception:
                                 pass
                             raise
-                # Success — periodic best-effort checkpoint + FTS merge.
-                # Multiple gateway threads can share this SessionDB. Protect
-                # the read/modify/write cadence counters, but perform the
-                # potentially slow maintenance outside the instance lock.
+                # Success — only update counters and wake the shared worker.
+                # No checkpoint, FTS merge, or SQLite call is allowed on this
+                # foreground return path.
                 with self._lock:
-                    previous_write_count = self._write_count
                     self._write_count += normalized_write_units
-                    checkpoint_due = (
-                        previous_write_count // self._CHECKPOINT_EVERY_N_WRITES
-                        < self._write_count // self._CHECKPOINT_EVERY_N_WRITES
+                    maintenance = self._maintenance
+                if maintenance is not None:
+                    maintenance.notify_commit(
+                        write_units=normalized_write_units,
+                        checkpoint_interval=self._CHECKPOINT_EVERY_N_WRITES,
+                        fts_dirty=effective_fts_dirty,
+                        merge_interval=self._OPTIMIZE_EVERY_N_WRITES,
                     )
-                    optimize_due = (
-                        previous_write_count // self._OPTIMIZE_EVERY_N_WRITES
-                        < self._write_count // self._OPTIMIZE_EVERY_N_WRITES
-                    )
-                if checkpoint_due:
-                    self._try_wal_checkpoint()
-                if optimize_due:
-                    self._try_optimize_fts()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -2324,12 +2478,11 @@ class SessionDB:
         return True
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort PASSIVE WAL checkpoint.  Never raises.
+        """Run an explicit best-effort PASSIVE WAL checkpoint. Never raises.
 
-        Flushes committed WAL frames back into the main DB file without
-        requiring an exclusive lock.  PASSIVE is safe for frequent
-        periodic use because it does not block concurrent writers and
-        cannot corrupt B-tree pages under I/O pressure.
+        Automatic cadence is handled on the maintenance worker's independent
+        connection; this compatibility helper remains for explicit callers.
+        PASSIVE flushes committed WAL frames without an exclusive lock.
 
         PASSIVE does not truncate the WAL file — it stays at its
         high-water mark.  WAL truncation happens in :meth:`close`
@@ -2355,15 +2508,11 @@ class SessionDB:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
     def _try_optimize_fts(self) -> None:
-        """Best-effort FTS5 segment merge. Never raises.
+        """Run an explicit best-effort full FTS5 optimize. Never raises.
 
-        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
-        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
-        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
-        never reach the write path, so this is implicitly skipped for them.
-        Once the index is merged the 'optimize' command is close to free, so
-        the steady-state cost is negligible; the expensive case is only the
-        first merge of a long-neglected index.
+        Automatic maintenance never calls this method: foreground writes
+        enqueue bounded ``merge`` slices on the shared background coordinator.
+        Keep full optimize for explicit maintenance windows only.
         """
         try:
             self.optimize_fts()
@@ -2385,11 +2534,42 @@ class SessionDB:
             # multi-threaded fork.
             self._conn = None
             return
+        maintenance_release = "stopped"
+        maintenance_barrier_acquired = False
+        maintenance = self._maintenance
+        self._maintenance = None
+        if maintenance is not None:
+            # release_state_db_maintenance may join the final shared worker.
+            # This must happen before either SQLite lock is acquired below.
+            maintenance_release = release_state_db_maintenance(
+                db_key=self._db_key,
+                coordinator=maintenance,
+            )
+            if maintenance_release == "timeout":
+                logger.warning(
+                    "state.db maintenance did not stop promptly for %s; "
+                    "skipping shutdown checkpoint",
+                    self.db_path,
+                )
+            elif maintenance_release == "shared" and force_checkpoint:
+                maintenance_barrier_acquired = (
+                    maintenance.acquire_sqlite_activity_barrier()
+                )
+                if not maintenance_barrier_acquired:
+                    logger.warning(
+                        "state.db maintenance remained active for %s; "
+                        "skipping forced shutdown checkpoint",
+                        self.db_path,
+                    )
         try:
             with self._lock:
                 if self._conn:
                     should_checkpoint = (
                         checkpoint
+                        and (
+                            maintenance_release == "stopped"
+                            or maintenance_barrier_acquired
+                        )
                         and not self.read_only
                         and (
                             force_checkpoint
@@ -2408,6 +2588,8 @@ class SessionDB:
                     self._conn.close()
                     self._conn = None
         finally:
+            if maintenance_barrier_acquired and maintenance is not None:
+                maintenance.release_sqlite_activity_barrier()
             if self._writer_registered:
                 _unregister_process_db_writer(self.db_path)
                 self._writer_registered = False
@@ -6008,7 +6190,7 @@ class SessionDB:
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        return self._execute_write(_do, fts_dirty=True)
 
     def append_messages(
         self,
@@ -6046,7 +6228,11 @@ class SessionDB:
             )
             return inserted
 
-        return self._execute_write(_do, write_units=len(prepared_rows))
+        return self._execute_write(
+            _do,
+            write_units=len(prepared_rows),
+            fts_dirty=True,
+        )
 
     def _prepare_message_rows(
         self,
@@ -6230,7 +6416,11 @@ class SessionDB:
                 (total_messages, total_tool_calls, session_id),
             )
 
-        self._execute_write(_do)
+        self._execute_write(
+            _do,
+            write_units=max(1, len(messages)),
+            fts_dirty=True,
+        )
 
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.
@@ -6296,7 +6486,11 @@ class SessionDB:
             )
             return inserted
 
-        return self._execute_write(_do)
+        return self._execute_write(
+            _do,
+            write_units=max(1, len(compacted_messages)),
+            fts_dirty=bool(compacted_messages),
+        )
 
     def set_latest_user_api_content(
         self, session_id: str, content: Any, api_content: str
@@ -8604,7 +8798,11 @@ class SessionDB:
                 "errors": [],
             }
 
-        return self._execute_write(_do)
+        return self._execute_write(
+            _do,
+            write_units=max(1, total_messages),
+            fts_dirty=bool(total_messages),
+        )
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
@@ -8616,7 +8814,7 @@ class SessionDB:
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
-        self._execute_write(_do)
+        self._execute_write(_do, fts_dirty=True)
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
@@ -8679,7 +8877,7 @@ class SessionDB:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
 
-        deleted = self._execute_write(_do)
+        deleted = self._execute_write(_do, fts_dirty=True)
         if deleted:
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
@@ -8804,7 +9002,7 @@ class SessionDB:
             removed_ids.extend(existing)
             return len(existing)
 
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, fts_dirty=True)
         for sid in removed_delegate_ids:
             self._remove_session_files(sessions_dir, sid)
         for sid in removed_ids:
@@ -8898,7 +9096,7 @@ class SessionDB:
                 removed_ids.append(sid)
             return len(session_ids)
 
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, fts_dirty=True)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -9144,7 +9342,7 @@ class SessionDB:
                 removed_ids.append(sid)
             return len(session_ids)
 
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, fts_dirty=True)
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
@@ -9732,7 +9930,9 @@ class SessionDB:
         disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
         it is safe to call unconditionally.
 
-        Returns the number of FTS indexes that were optimized.
+        This full rewrite can be expensive on a neglected large database and
+        is therefore reserved for explicit maintenance windows. Returns the
+        number of FTS indexes that were optimized.
         """
         optimized = 0
         with self._lock:

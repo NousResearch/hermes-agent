@@ -699,6 +699,12 @@ class TestSessionLifecycle:
             # that lacks the fts5 module — both init paths must degrade.
             assert db._fts_table_exists("messages_fts") is False
             assert db._fts_table_exists("messages_fts_trigram") is False
+            assert db._maintenance.wait_idle(timeout_s=10)
+            requested_before = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            db._OPTIMIZE_EVERY_N_WRITES = 1
 
             db.create_session(session_id="s1", source="cli")
             db.append_message("s1", role="user", content="hello from sqlite without fts")
@@ -707,6 +713,12 @@ class TestSessionLifecycle:
             assert len(messages) == 1
             assert messages[0]["content"] == "hello from sqlite without fts"
             assert db.search_messages("hello") == []
+            requested_after = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            assert requested_after == requested_before
+            assert db._maintenance.wait_idle(timeout_s=2)
         finally:
             db.close()
 
@@ -734,6 +746,12 @@ class TestSessionLifecycle:
             assert db._fts_enabled is False
             assert db.get_session("s1") is not None
             assert len(db.get_messages("s1")) == 1
+            assert db._maintenance.wait_idle(timeout_s=10)
+            requested_before = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            db._OPTIMIZE_EVERY_N_WRITES = 1
 
             # Existing FTS triggers must be disabled too; otherwise this write
             # would try to insert into an unusable FTS virtual table.
@@ -741,6 +759,12 @@ class TestSessionLifecycle:
             messages = db.get_messages("s1")
             assert len(messages) == 2
             assert messages[1]["content"] == "after runtime change"
+            requested_after = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            assert requested_after == requested_before
+            assert db._maintenance.wait_idle(timeout_s=2)
         finally:
             db.close()
 
@@ -5240,38 +5264,49 @@ class TestOptimizeFts:
         # Search still works after repeated optimization.
         assert len(db.search_messages("repeat")) == 1
 
-    def test_write_path_optimizes_fts_on_cadence(self, db, monkeypatch):
-        """Writes periodically merge FTS segments so they never accumulate
-        into the tens-of-thousands that lengthen the write-lock hold and
-        starve competing writers ("database is locked")."""
-        db._OPTIMIZE_EVERY_N_WRITES = 5
+    def test_write_path_queues_bounded_merge_without_full_optimize(
+        self, db, monkeypatch
+    ):
+        """Message writes drain durable merge debt without full optimize."""
+        assert db._maintenance.wait_idle(timeout_s=10)
+        db._OPTIMIZE_EVERY_N_WRITES = 1
+        before = db._conn.execute(
+            "SELECT requested_seq FROM state_maintenance_jobs "
+            "WHERE job_name = 'fts_merge'"
+        ).fetchone()[0]
         calls = {"n": 0}
-        real_optimize = db.optimize_fts
 
         def _counting_optimize():
             calls["n"] += 1
-            return real_optimize()
+            return 0
 
         monkeypatch.setattr(db, "optimize_fts", _counting_optimize)
-        # create_session is write #1; appends are #2.. -> #5 and #10 trigger.
         db.create_session(session_id="s1", source="cli")
         for i in range(9):
             db.append_message(session_id="s1", role="user", content=f"needle {i}")
-        assert calls["n"] == 2
-        # The auto-merge is layout-only: search is unaffected.
+        assert db._maintenance.wait_idle(timeout_s=10)
+        job = db._conn.execute(
+            "SELECT requested_seq, completed_seq, state "
+            "FROM state_maintenance_jobs WHERE job_name = 'fts_merge'"
+        ).fetchone()
+        assert tuple(job) == (before + 9, before + 9, "idle")
+        assert calls["n"] == 0
         assert len(db.search_messages("needle")) == 9
 
     def test_write_path_optimize_failure_never_breaks_write(self, db, monkeypatch):
-        """A failing periodic optimize must not fail the surrounding write."""
-        db._OPTIMIZE_EVERY_N_WRITES = 2
+        """The foreground path never invokes the manual full optimize API."""
+        called = False
 
         def _boom():
+            nonlocal called
+            called = True
             raise sqlite3.OperationalError("simulated optimize failure")
 
         monkeypatch.setattr(db, "optimize_fts", _boom)
-        db.create_session(session_id="s1", source="cli")  # write #1
-        # write #2 trips the cadence; the swallowed failure must not propagate.
+        db.create_session(session_id="s1", source="cli")
         db.append_message(session_id="s1", role="user", content="still persists")
+        assert db._maintenance.wait_idle(timeout_s=10)
+        assert called is False
         assert len(db.get_messages("s1")) == 1
 
 
@@ -5689,13 +5724,18 @@ class TestBatchMessageAppend:
         assert session["message_count"] == 0
         assert session["tool_call_count"] == 0
 
-    def test_append_messages_preserves_row_based_maintenance_cadence(
+    def test_append_messages_records_row_weighted_durable_merge_debt(
         self, db, monkeypatch
     ):
         db.create_session(session_id="batch", source="gateway")
+        assert db._maintenance.wait_idle(timeout_s=10)
+        db._OPTIMIZE_EVERY_N_WRITES = 4
+        before = db._conn.execute(
+            "SELECT requested_seq FROM state_maintenance_jobs "
+            "WHERE job_name = 'fts_merge'"
+        ).fetchone()[0]
         db._write_count = 0
         db._CHECKPOINT_EVERY_N_WRITES = 3
-        db._OPTIMIZE_EVERY_N_WRITES = 4
         checkpoints = []
         optimizations = []
         monkeypatch.setattr(
@@ -5714,8 +5754,14 @@ class TestBatchMessageAppend:
         )
 
         assert db._write_count == 5
-        assert checkpoints == [True]
-        assert optimizations == [True]
+        assert db._maintenance.wait_idle(timeout_s=10)
+        job = db._conn.execute(
+            "SELECT requested_seq, completed_seq FROM state_maintenance_jobs "
+            "WHERE job_name = 'fts_merge'"
+        ).fetchone()
+        assert tuple(job) == (before + 5, before + 5)
+        assert checkpoints == []
+        assert optimizations == []
 
     def test_append_messages_round_trips_all_message_fields(self, db):
         db.create_session(session_id="batch", source="gateway")

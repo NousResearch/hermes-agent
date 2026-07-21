@@ -6,6 +6,7 @@ while close() and pre-VACUUM paths still use TRUNCATE.
 
 import sqlite3
 import logging
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -159,20 +160,21 @@ class TestCloseUsesTruncate:
 
 
 class TestCheckpointFrequency:
-    """Checkpoint triggers every N writes."""
+    """Checkpoint work is queued every N writes."""
 
     def test_checkpoint_triggers_at_interval(self, db):
-        """_try_wal_checkpoint is called every _CHECKPOINT_EVERY_N_WRITES writes."""
-        call_count = [0]
-        original = db._try_wal_checkpoint
+        """The Nth write wakes the shared background checkpoint worker."""
+        assert db._maintenance.wait_idle(timeout_s=10)
+        checkpoint_started = threading.Event()
+        original = db._maintenance._run_checkpoint_if_due
 
-        def counting_checkpoint():
-            call_count[0] += 1
-            original()
+        def counting_checkpoint(conn):
+            checkpoint_started.set()
+            original(conn)
 
-        db._try_wal_checkpoint = counting_checkpoint
+        db._maintenance._run_checkpoint_if_due = counting_checkpoint
+        db._CHECKPOINT_EVERY_N_WRITES = 3
 
-        # Write exactly _CHECKPOINT_EVERY_N_WRITES sessions to trigger one checkpoint
         n = db._CHECKPOINT_EVERY_N_WRITES
         import time as _time
         for i in range(n):
@@ -181,6 +183,5 @@ class TestCheckpointFrequency:
                 (f"sess_{_i}", "test", _time.time()),
             ))
 
-        assert call_count[0] == 1, (
-            f"Expected 1 checkpoint after {n} writes, got {call_count[0]}"
-        )
+        assert checkpoint_started.wait(timeout=10)
+        assert db._maintenance.wait_idle(timeout_s=10)

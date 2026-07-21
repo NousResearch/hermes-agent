@@ -179,7 +179,11 @@ class SmsAdapter(BasePlatformAdapter):
         try:
             for chunk in chunks:
                 form_data = aiohttp.FormData()
-                form_data.add_field("From", self._from_number)
+                msid = os.environ.get("TWILIO_MESSAGING_SERVICE_SID")
+                if msid:
+                    form_data.add_field("MessagingServiceSid", msid)
+                else:
+                    form_data.add_field("From", self._from_number)
                 form_data.add_field("To", chat_id)
                 form_data.add_field("Body", chunk)
 

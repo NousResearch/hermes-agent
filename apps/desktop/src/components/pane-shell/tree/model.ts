@@ -113,6 +113,18 @@ export function allPaneIds(node: LayoutNode): string[] {
   return node.type === 'group' ? [...node.panes] : node.children.flatMap(allPaneIds)
 }
 
+/** Pane ids actually visible in the layout: one active tab from every
+ * non-minimized group, excluding panes hidden or dismissed by chrome. A split
+ * contributes each child group's active pane; an inactive tab is mounted only
+ * as a tab-strip entry and is not visible content. */
+export function visiblePaneIds(node: LayoutNode, unavailable: ReadonlySet<string> = new Set()): string[] {
+  if (node.type === 'group') {
+    return node.minimized || !node.active || unavailable.has(node.active) ? [] : [node.active]
+  }
+
+  return node.children.flatMap(child => visiblePaneIds(child, unavailable))
+}
+
 // ---------------------------------------------------------------------------
 // Structural edits (pure)
 // ---------------------------------------------------------------------------

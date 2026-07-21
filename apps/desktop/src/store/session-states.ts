@@ -20,6 +20,7 @@ import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { $visibleSessionIds, setPaneContent } from '@/store/pane-content'
 import {
   $activeTreeGroup,
   $layoutTree,
@@ -171,7 +172,7 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
 
-    if (storedId !== $selectedStoredSessionId.get()) {
+    if (!$visibleSessionIds.get().includes(storedId)) {
       const cur = $unreadFinishedSessionIds.get()
 
       if (!cur.includes(storedId)) {
@@ -366,6 +367,24 @@ const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
 // A secondary window (single-chat pop-out) shows ONLY its routed session — no
 // tiles, and no repopulation on a profile switch.
 export const $sessionTiles = atom<SessionTile[]>(isSecondaryWindow() ? [] : [...(tilesByProfile[profileKey()] ?? [])])
+
+// Compatibility bridge while navigation/runtime migration is in progress:
+// existing main selection and tile records seed the pane-owned content store.
+// All visibility decisions already read only $visibleSessionIds, which derives
+// from the layout tree + this pane content. Later slices delete these listeners
+// along with $selectedStoredSessionId and $sessionTiles.
+$selectedStoredSessionId.listen(storedSessionId => {
+  setPaneContent('workspace', { kind: 'chat', storedSessionId })
+})
+
+$sessionTiles.listen(tiles => {
+  for (const tile of tiles) {
+    setPaneContent(`session-tile:${tile.storedSessionId}`, {
+      kind: 'chat',
+      storedSessionId: tile.storedSessionId
+    })
+  }
+})
 
 function persistTiles() {
   // Shares the origin's storage; a secondary window holds no tiles, so a write

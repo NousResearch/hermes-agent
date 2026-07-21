@@ -1,0 +1,11 @@
+# Keep the image small — only server code + public/ + sample data are needed
+# (see the Dockerfile COPY lines).
+tests/
+data/
+*.md
+.git
+.gitignore
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store

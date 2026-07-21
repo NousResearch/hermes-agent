@@ -3880,8 +3880,8 @@ def make_server(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hermes Hub dashboard server")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--host", default=os.environ.get("HOST") or "127.0.0.1")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 8787))
     parser.add_argument(
         "--offline",
         action="store_true",

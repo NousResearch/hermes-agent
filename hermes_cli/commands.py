@@ -412,6 +412,24 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     return resolve_command(command_name) is not None if command_name else False
 
 
+def _resolve_description_overrides() -> dict[str, str]:
+    """Return command description overrides from ``commands.descriptions`` in config.
+
+    Users can customise slash-command descriptions (e.g. for locale
+    preferences) without modifying source code.  Returns an empty dict on
+    any error so callers degrade gracefully.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        descs = cfg.get("commands", {}).get("descriptions")
+        if isinstance(descs, dict):
+            return {str(k): str(v) for k, v in descs.items()}
+    except Exception:
+        pass
+    return {}
+
+
 def _resolve_config_gates() -> set[str]:
     """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
 
@@ -465,6 +483,7 @@ def _requires_argument(args_hint: str) -> bool:
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
+    desc_overrides = _resolve_description_overrides()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
@@ -477,7 +496,8 @@ def gateway_help_lines() -> list[str]:
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        desc = desc_overrides.get(cmd.name, cmd.description)
+        lines.append(f"`/{cmd.name}{args}` -- {desc}{alias_note}")
     return lines
 
 
@@ -528,6 +548,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     because plugins may not provide a no-arg usage fallback.
     """
     overrides = _resolve_config_gates()
+    desc_overrides = _resolve_description_overrides()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
@@ -537,7 +558,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            desc = desc_overrides.get(cmd.name, cmd.description)
+            result.append((tg_name, desc))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue

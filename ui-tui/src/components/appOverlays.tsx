@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { $uiSessionId, $uiTheme, $uiState } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -155,6 +155,7 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
+  const ui = useStore($uiState)
 
   const hasAny =
     overlay.modelPicker ||
@@ -176,8 +177,17 @@ export function FloatingOverlays({
 
   const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
+  // When the status bar is pinned to the bottom (below the composer),
+  // bottom="100%" pushes the overlay into/behind the status bar rows.
+  // Anchor from the top of the relative container instead so the
+  // overlay stays visible above the composer input.
+  const overlayPositioning =
+    ui.statusBar === 'bottom'
+      ? { left: 0 as const, position: 'absolute' as const, right: 0 as const, top: 0 as const }
+      : { bottom: '100%' as const, left: 0 as const, position: 'absolute' as const, right: 0 as const }
+
   return (
-    <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+    <Box alignItems="flex-start" flexDirection="column" {...overlayPositioning}>
       {overlay.sessions && (
         <FloatBox color={theme.color.border}>
           <ActiveSessionSwitcher

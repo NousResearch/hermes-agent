@@ -525,6 +525,51 @@ class TestTranscribeLocalExtended:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+    def test_apple_silicon_forces_cpu_without_auto_probe(self, tmp_path):
+        """Apple Silicon/Rosetta should skip device='auto' to avoid SIGABRT."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "safe"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+        mock_whisper_cls = MagicMock(return_value=cpu_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "safe"
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="int8")
+
+    def test_force_cpu_detects_rosetta_on_apple_silicon(self):
+        from tools.transcription_tools import _should_force_faster_whisper_cpu
+
+        with patch("tools.transcription_tools.platform.system", return_value="Darwin"), \
+             patch("tools.transcription_tools.platform.machine", return_value="x86_64"), \
+             patch("tools.transcription_tools._sysctl_value", side_effect=lambda key: {
+                 "sysctl.proc_translated": "1",
+                 "hw.optional.arm64": "1",
+             }.get(key, "")):
+            assert _should_force_faster_whisper_cpu() is True
+
+    def test_force_cpu_false_on_intel_macos(self):
+        from tools.transcription_tools import _should_force_faster_whisper_cpu
+
+        with patch("tools.transcription_tools.platform.system", return_value="Darwin"), \
+             patch("tools.transcription_tools.platform.machine", return_value="x86_64"), \
+             patch("tools.transcription_tools._sysctl_value", return_value="0"):
+            assert _should_force_faster_whisper_cpu() is False
+
     def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
         """Missing libcublas at load time → reload on CPU, succeed."""
         audio = tmp_path / "test.ogg"
@@ -548,6 +593,7 @@ class TestTranscribeLocalExtended:
             return cpu_model
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
@@ -586,6 +632,7 @@ class TestTranscribeLocalExtended:
             return models.pop(0)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):

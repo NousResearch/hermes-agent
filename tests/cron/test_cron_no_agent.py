@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -208,6 +209,34 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert error is None
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
+
+
+def test_run_job_no_agent_refreshes_env_before_returning(hermes_env, monkeypatch):
+    """Script-only jobs must refresh process env for post-run delivery."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "env.sh"
+    script_path.write_text("#!/bin/bash\nprintf ready\n")
+    job = create_job(
+        prompt=None, schedule="every 5m", script="env.sh", no_agent=True, deliver="local"
+    )
+    monkeypatch.delenv("EMAIL_ADDRESS", raising=False)
+
+    def _load_current_env(*_args, **_kwargs):
+        os.environ["EMAIL_ADDRESS"] = "fresh@example.com"
+        return []
+
+    with patch("hermes_cli.env_loader.reset_secret_source_cache") as reset_cache, \
+         patch("hermes_cli.env_loader.load_hermes_dotenv", side_effect=_load_current_env) as load_env:
+        success, _doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert final_response == "ready"
+    assert os.environ["EMAIL_ADDRESS"] == "fresh@example.com"
+    reset_cache.assert_called_once()
+    load_env.assert_called_once()
 
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):

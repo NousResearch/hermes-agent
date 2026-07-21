@@ -243,3 +243,32 @@ def test_pet_info_meta_avoids_full_payload(monkeypatch):
     assert result["displayName"] == "Meta Pet"
     assert result["scale"] == 0.7
     assert ":" in result["spritesheetRevision"]
+
+
+def test_pet_render_mode_off_hides_tui_but_keeps_desktop_enabled(monkeypatch):
+    import hermes_cli.config as cli_config
+    from agent.pet import constants, store
+
+    sheet = Image.new("RGBA", (constants.FRAME_W * 8, constants.FRAME_H * 9), (80, 120, 220, 255))
+    pet = store.register_local_pet(sheet, slug="desktop-only", display_name="Desktop Only")
+    monkeypatch.setattr(
+        cli_config,
+        "load_config",
+        lambda: {
+            "display": {
+                "pet": {
+                    "enabled": True,
+                    "slug": pet.slug,
+                    "render_mode": "off",
+                    "scale": 0.33,
+                }
+            }
+        },
+    )
+
+    tui = server._methods["pet.cells"]("r_cells", {"graphics": True, "state": "idle"})["result"]
+    desktop = server._methods["pet.info"]("r_info", {})["result"]
+
+    assert tui["enabled"] is False
+    assert desktop["enabled"] is True
+    assert desktop["slug"] == pet.slug

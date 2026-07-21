@@ -320,6 +320,95 @@ class TestCompressionBoundaryHook:
             assert compressed
             assert agent.session_id != original_sid
 
+    def test_plugin_noop_does_not_rotate_or_emit_boundary(self):
+        """A plugin no-op must not create a compression child session.
+
+        External context engines such as LCM can be above the host token
+        threshold while having no eligible leaf backlog outside their protected
+        fresh tail.  In that case they report a no-op and return the unchanged
+        active context.  Treating that as a successful compression would split
+        the session without creating summary/DAG state for the continuation.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            messages = [{"role": "user", "content": "tail-only pressure"}]
+            compressor = MagicMock()
+            # Return a *new* equal list, not the input object.  If we returned
+            # the exact ``messages`` object, the identity no-op check
+            # (``compressed is messages``) would short-circuit and the test
+            # would pass without ever exercising the status-based no-op branch
+            # this PR adds.  A distinct object forces the ``last_compression_status
+            # == "noop"`` path to be the thing that prevents session rotation.
+            compressor.compress.return_value = list(messages)
+            compressor.compression_count = 0
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor.last_compression_status = "noop"
+            agent.context_compressor = compressor
+
+            original_sid = agent.session_id
+            compressed, _prompt = agent._compress_context(
+                messages, "sys", approx_tokens=10_000
+            )
+
+            # Distinct object returned unchanged — proves the status branch
+            # caught it rather than the identity check.
+            assert compressed is not messages
+            assert compressed == messages
+            assert agent.session_id == original_sid
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert not comp_calls
+
+    def test_plugin_noop_private_field_fallback_does_not_rotate(self):
+        """The legacy ``_last_compression_status`` private field is honored.
+
+        Older context engines / compressors may not yet expose the public
+        ``last_compression_status`` attribute.  The fix must fall back to the
+        private ``_last_compression_status`` field so the no-op boundary skip
+        still applies for those engines.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            messages = [{"role": "user", "content": "tail-only pressure"}]
+            compressor = MagicMock()
+            compressor.compress.return_value = list(messages)
+            compressor.compression_count = 0
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            # Public attribute absent; only the legacy private field set.
+            del compressor.last_compression_status
+            compressor._last_compression_status = "noop"
+            agent.context_compressor = compressor
+
+            original_sid = agent.session_id
+            compressed, _prompt = agent._compress_context(
+                messages, "sys", approx_tokens=10_000
+            )
+
+            assert compressed is not messages
+            assert compressed == messages
+            assert agent.session_id == original_sid
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert not comp_calls
+
 
 class TestSessionCompressEvent:
     """The session:compress event_callback fires after a compression split."""

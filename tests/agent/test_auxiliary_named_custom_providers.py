@@ -254,6 +254,43 @@ class TestResolveVisionProviderClientModelNormalization:
         assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
 
 
+class TestAutoClientCacheModelCompatibility:
+    """Auto client cache should not keep OpenRouter-format model overrides on non-OR clients."""
+
+    def test_first_auto_cache_miss_drops_openrouter_model_for_named_custom_runtime(self, tmp_path):
+        from agent import auxiliary_client as ac
+
+        ac._client_cache.clear()
+        try:
+            fake_client = MagicMock()
+            fake_client.base_url = "https://aixj.vip/v1"
+            fake_client.api_key = "test-key"
+
+            runtime = {
+                "provider": "custom:aixj.vip",
+                "model": "gpt-5.4",
+                "base_url": "https://aixj.vip/v1",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            }
+
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fake_client, "gpt-5.4"),
+            ) as mock_resolve:
+                client, model = ac._get_cached_client(
+                    "auto",
+                    "google/gemini-3-flash-preview",
+                    main_runtime=runtime,
+                )
+
+            assert client is fake_client
+            assert model == "gpt-5.4"
+            mock_resolve.assert_called_once()
+        finally:
+            ac._client_cache.clear()
+
+
 class TestVisionPathApiMode:
     """Vision path should propagate api_mode to _get_cached_client."""
 

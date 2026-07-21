@@ -3941,8 +3941,69 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
     return False
 
 
+def get_launchd_launcher_name() -> str:
+    """Human-readable launcher name shown in macOS Login Items.
+
+    macOS's "Allow in the Background" list (System Settings > General >
+    Login Items) displays the *executable name* of ProgramArguments[0],
+    not the launchd label. Running the gateway as ``venv/bin/python -m …``
+    therefore shows up as an anonymous "python" entry that users can't
+    identify (or distinguish from other Python agents). Scoped per profile
+    so multiple gateways remain distinguishable.
+    """
+    suffix = _profile_suffix()
+    return f"Hermes Gateway ({suffix})" if suffix else "Hermes Gateway"
+
+
+def _ensure_launchd_launcher(python_path: str) -> str:
+    """Create/refresh a named symlink to the venv python and return its path.
+
+    The symlink lives under ``<hermes_home>/bin/`` and is named
+    ``Hermes Gateway`` so Login Items shows a recognizable entry instead of
+    "python". Python is unaffected by being invoked through a differently
+    named symlink, ``-m hermes_cli.main`` works identically.
+
+    Idempotent: recreates the link only when missing or pointing at a stale
+    interpreter (e.g. after a venv rebuild). Only ever replaces symlinks —
+    if a regular file occupies the path, it is left untouched and the raw
+    ``python_path`` is used. Likewise falls back on any OSError (read-only
+    home, etc.) so gateway installation never breaks over a cosmetic feature.
+    """
+    launcher = get_hermes_home() / "bin" / get_launchd_launcher_name()
+    try:
+        if launcher.is_symlink():
+            if os.readlink(launcher) == python_path:
+                return str(launcher)
+        elif launcher.exists():
+            # Unexpected regular file/dir at the launcher path — never
+            # clobber user data for a cosmetic feature.
+            return python_path
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        tmp_link = launcher.parent / f".{launcher.name}.tmp"
+        tmp_link.unlink(missing_ok=True)
+        tmp_link.symlink_to(python_path)
+        tmp_link.replace(launcher)  # atomic swap, no unload/exec race
+        return str(launcher)
+    except OSError:
+        return python_path
+
+
+def remove_launchd_launcher() -> None:
+    """Remove the named launcher symlink (both uninstall paths call this).
+
+    Only removes symlinks — a regular file at the path is preserved.
+    Best-effort: uninstall flows must not fail over launcher cleanup.
+    """
+    try:
+        launcher = get_hermes_home() / "bin" / get_launchd_launcher_name()
+        if launcher.is_symlink():
+            launcher.unlink()
+    except OSError:
+        pass
+
+
 def generate_launchd_plist() -> str:
-    python_path = get_python_path()
+    python_path = _ensure_launchd_launcher(get_python_path())
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
@@ -4253,6 +4314,8 @@ def launchd_uninstall():
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
+
+    remove_launchd_launcher()
 
     print("✓ Service uninstalled")
 

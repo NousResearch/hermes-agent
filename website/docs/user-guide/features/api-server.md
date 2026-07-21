@@ -221,11 +221,12 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
-Enabled plugins may add metadata under `extensions.plugins.<plugin-name>`.
+Enabled plugins may add metadata under `extensions.plugins.<plugin-key>`.
 Each value is supplied by that plugin's capability provider; clients should
 treat unknown plugin keys as optional extension data.
 
-Plugins may also register HTTP handlers under `/v1/plugins/<name>`. These
+Plugins may also register HTTP handlers under their canonical
+`/v1/plugins/<plugin-key>/...` namespace. These
 routes use the same `API_SERVER_KEY` bearer authentication as core API-server
 routes. Plugin handlers receive the native `aiohttp.web.Request` and must
 return an `aiohttp.web.StreamResponse` (synchronously or asynchronously).
@@ -237,7 +238,14 @@ without exposing the exception to the API client.
 Capability providers are synchronous, one per plugin, and must return a
 JSON-serializable object or `None`. Invalid or failing providers are skipped so
 they cannot break the core capability response. Plugin routes cannot leave the
-`/v1/plugins/` namespace or replace a core route.
+registering plugin's namespace or replace a core route. Synchronous handlers
+and capability providers run off the API event loop, and both surfaces have
+bounded execution time.
+
+In multiplex mode, plugin API routes and capability extensions are available
+only on the unprefixed default-profile listener. Hermes does not expose the
+default profile's enabled plugins through `/p/<profile>/` or advertise them in
+a named profile's `/v1/capabilities` response.
 
 ### GET /health
 

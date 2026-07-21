@@ -29,6 +29,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _api_request_profile,
     _derive_chat_session_id,
     _redact_api_error_text,
     check_api_server_requirements,
@@ -1038,6 +1039,82 @@ class TestCapabilitiesEndpoint:
                 "beta": {"beta_count": 2},
             }
 
+    @pytest.mark.asyncio
+    async def test_plugin_capability_providers_run_off_event_loop(self, adapter):
+        class _PluginManager:
+            def get_api_server_capabilities(self, *, adapter=None, request=None):
+                return [{"plugin": "alpha", "capabilities": {"enabled": True}}]
+
+        adapter._plugin_manager = _PluginManager()
+        calls = []
+
+        async def _to_thread(func, *args, **kwargs):
+            calls.append(func)
+            return func(*args, **kwargs)
+
+        request = MagicMock()
+        request.headers = {}
+        with patch(
+            "gateway.platforms.api_server.asyncio.to_thread",
+            new=_to_thread,
+        ):
+            response = await adapter._handle_capabilities(request)
+
+        assert response.status == 200
+        assert calls == [adapter._plugin_manager.get_api_server_capabilities]
+
+    @pytest.mark.asyncio
+    async def test_profile_capabilities_do_not_leak_default_plugin_metadata(self, adapter):
+        provider_called = False
+
+        class _PluginManager:
+            def get_api_server_capabilities(self, *, adapter=None, request=None):
+                nonlocal provider_called
+                provider_called = True
+                return [{"plugin": "default-only", "capabilities": {"enabled": True}}]
+
+        adapter._plugin_manager = _PluginManager()
+        request = MagicMock()
+        request.headers = {}
+        token = _api_request_profile.set("coder")
+        try:
+            response = await adapter._handle_capabilities(request)
+        finally:
+            _api_request_profile.reset(token)
+
+        payload = json.loads(response.text)
+        assert "extensions" not in payload
+        assert provider_called is False
+
+    @pytest.mark.asyncio
+    async def test_plugin_capability_timeout_preserves_core_response(self, adapter):
+        class _PluginManager:
+            def get_api_server_capabilities(self, *, adapter=None, request=None):
+                raise AssertionError("provider should be represented by patched to_thread")
+
+        adapter._plugin_manager = _PluginManager()
+        request = MagicMock()
+        request.headers = {}
+
+        async def _never_returns(func, *args, **kwargs):
+            await asyncio.Event().wait()
+
+        with (
+            patch(
+                "gateway.platforms.api_server.asyncio.to_thread",
+                new=_never_returns,
+            ),
+            patch(
+                "gateway.platforms.api_server.PLUGIN_CAPABILITY_TIMEOUT_SECONDS",
+                0.01,
+            ),
+        ):
+            response = await adapter._handle_capabilities(request)
+
+        payload = json.loads(response.text)
+        assert response.status == 200
+        assert "extensions" not in payload
+
 
 class TestPluginApiServerRoutes:
     def test_mount_plugin_routes_after_core_routes(self, adapter):
@@ -1049,7 +1126,7 @@ class TestPluginApiServerRoutes:
                 return [
                     {
                         "method": "GET",
-                        "path": "/v1/plugins/test-ping",
+                        "path": "/v1/plugins/plugin-test/test-ping",
                         "handler": _plugin_handler,
                         "name": "test_ping",
                         "plugin": "plugin-test",
@@ -1061,8 +1138,8 @@ class TestPluginApiServerRoutes:
         adapter._mount_plugin_api_routes(app.router)
         paths = [res.canonical for res in app.router.resources()]
         assert "/v1/models" in paths
-        assert "/v1/plugins/test-ping" in paths
-        assert paths.index("/v1/plugins/test-ping") > paths.index("/v1/models")
+        assert "/v1/plugins/plugin-test/test-ping" in paths
+        assert paths.index("/v1/plugins/plugin-test/test-ping") > paths.index("/v1/models")
 
     @pytest.mark.asyncio
     async def test_plugin_route_uses_api_server_auth(self, auth_adapter):
@@ -1078,7 +1155,7 @@ class TestPluginApiServerRoutes:
                 return [
                     {
                         "method": "GET",
-                        "path": "/v1/plugins/secure-ping",
+                        "path": "/v1/plugins/plugin-test/secure-ping",
                         "handler": _plugin_handler,
                         "name": "secure_ping",
                         "plugin": "plugin-test",
@@ -1090,17 +1167,85 @@ class TestPluginApiServerRoutes:
         auth_adapter._mount_plugin_api_routes(app.router)
 
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/plugins/secure-ping")
+            resp = await cli.get("/v1/plugins/plugin-test/secure-ping")
             assert resp.status == 401
             assert called == 0
 
             authed = await cli.get(
-                "/v1/plugins/secure-ping",
+                "/v1/plugins/plugin-test/secure-ping",
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert authed.status == 200
             assert await authed.json() == {"ok": True}
             assert called == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_plugin_route_handler_runs_off_event_loop(self, adapter):
+        def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/plugin-test/sync",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+        calls = []
+
+        async def _to_thread(func, *args, **kwargs):
+            calls.append(func)
+            return func(*args, **kwargs)
+
+        with patch(
+            "gateway.platforms.api_server.asyncio.to_thread",
+            new=_to_thread,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.get("/v1/plugins/plugin-test/sync")
+
+        assert response.status == 200
+        assert calls == [_plugin_handler]
+
+    @pytest.mark.asyncio
+    async def test_plugin_route_rejects_multiplex_profile_context(self, adapter):
+        called = False
+
+        async def _plugin_handler(request):
+            nonlocal called
+            called = True
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/plugin-test/default-only",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+        token = _api_request_profile.set("coder")
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.get("/v1/plugins/plugin-test/default-only")
+        finally:
+            _api_request_profile.reset(token)
+
+        assert response.status == 404
+        assert called is False
 
     @pytest.mark.asyncio
     async def test_plugin_route_handler_exception_is_isolated(self, adapter, caplog):
@@ -1112,7 +1257,7 @@ class TestPluginApiServerRoutes:
                 return [
                     {
                         "method": "GET",
-                        "path": "/v1/plugins/failing",
+                        "path": "/v1/plugins/plugin-test/failing",
                         "handler": _plugin_handler,
                         "plugin": "plugin-test",
                     }
@@ -1124,13 +1269,48 @@ class TestPluginApiServerRoutes:
 
         with caplog.at_level("WARNING"):
             async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/v1/plugins/failing")
+                resp = await cli.get("/v1/plugins/plugin-test/failing")
                 body = await resp.json()
 
         assert resp.status == 500
         assert body["error"]["code"] == "plugin_route_failed"
         assert "private plugin detail" not in str(body)
         assert "plugin-test" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_plugin_route_handler_timeout_is_isolated(self, adapter, caplog):
+        async def _plugin_handler(request):
+            await asyncio.Event().wait()
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/plugin-test/timeout",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+
+        with (
+            patch(
+                "gateway.platforms.api_server.PLUGIN_API_HANDLER_TIMEOUT_SECONDS",
+                0.01,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.get("/v1/plugins/plugin-test/timeout")
+                body = await response.json()
+
+        assert response.status == 500
+        assert body["error"]["code"] == "plugin_route_failed"
+        assert "timed out" in caplog.text
 
     @pytest.mark.asyncio
     async def test_plugin_route_invalid_response_is_isolated(self, adapter, caplog):
@@ -1142,7 +1322,7 @@ class TestPluginApiServerRoutes:
                 return [
                     {
                         "method": "GET",
-                        "path": "/v1/plugins/invalid-response",
+                        "path": "/v1/plugins/plugin-test/invalid-response",
                         "handler": _plugin_handler,
                         "plugin": "plugin-test",
                     }
@@ -1154,7 +1334,7 @@ class TestPluginApiServerRoutes:
 
         with caplog.at_level("WARNING"):
             async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/v1/plugins/invalid-response")
+                resp = await cli.get("/v1/plugins/plugin-test/invalid-response")
                 body = await resp.json()
 
         assert resp.status == 500
@@ -1170,7 +1350,7 @@ class TestPluginApiServerRoutes:
                 return [
                     {
                         "method": "NOPE",
-                        "path": "/v1/plugins/bad",
+                        "path": "/v1/plugins/plugin-test/bad",
                         "handler": _plugin_handler,
                         "name": "bad",
                         "plugin": "plugin-test",
@@ -1183,8 +1363,37 @@ class TestPluginApiServerRoutes:
             adapter._mount_plugin_api_routes(app.router)
         paths = [res.canonical for res in app.router.resources()]
         assert "/v1/models" in paths
-        assert "/v1/plugins/bad" not in paths
+        assert "/v1/plugins/plugin-test/bad" not in paths
         assert "plugin route" in caplog.text.lower()
+
+    def test_plugin_route_collection_failure_is_isolated(self, adapter, caplog):
+        class _PluginManager:
+            def get_api_server_routes(self):
+                raise RuntimeError("private discovery detail")
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/models" in paths
+        assert "private discovery detail" not in caplog.text
+        assert "plugin route collection failed" in caplog.text.lower()
+
+    def test_malformed_plugin_route_entry_is_isolated(self, adapter, caplog):
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [object()]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/models" in paths
+        assert "failed to register plugin route" in caplog.text.lower()
 
     def test_plugin_route_must_use_plugin_namespace(self, adapter, caplog):
         async def _plugin_handler(request):
@@ -1211,6 +1420,30 @@ class TestPluginApiServerRoutes:
         assert len(matching) == 1
         assert "under /v1/plugins" in caplog.text.lower()
 
+    def test_plugin_route_must_stay_in_own_namespace(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/other-plugin/status",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/plugins/other-plugin/status" not in paths
+        assert "own namespace" in caplog.text.lower()
+
     def test_duplicate_plugin_route_is_rejected(self, adapter, caplog):
         async def _plugin_handler(request):
             return web.json_response({"ok": True})
@@ -1220,17 +1453,17 @@ class TestPluginApiServerRoutes:
                 return [
                     {
                         "method": "GET",
-                        "path": "/v1/plugins/dup",
+                        "path": "/v1/plugins/plugin-a/dup",
                         "handler": _plugin_handler,
                         "name": "dup_one",
                         "plugin": "plugin-a",
                     },
                     {
                         "method": "GET",
-                        "path": "/v1/plugins/dup",
+                        "path": "/v1/plugins/plugin-a/dup",
                         "handler": _plugin_handler,
                         "name": "dup_two",
-                        "plugin": "plugin-b",
+                        "plugin": "plugin-a",
                     },
                 ]
 
@@ -1239,7 +1472,11 @@ class TestPluginApiServerRoutes:
         with caplog.at_level("WARNING"):
             adapter._mount_plugin_api_routes(app.router)
 
-        matching = [res for res in app.router.resources() if res.canonical == "/v1/plugins/dup"]
+        matching = [
+            res
+            for res in app.router.resources()
+            if res.canonical == "/v1/plugins/plugin-a/dup"
+        ]
         assert len(matching) == 1
         assert "route already registered" in caplog.text.lower()
 

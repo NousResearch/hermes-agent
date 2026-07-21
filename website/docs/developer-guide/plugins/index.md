@@ -306,18 +306,27 @@ def register(ctx):
 
 Route handlers receive an `aiohttp.web.Request` and may be synchronous or
 asynchronous, but must return an `aiohttp.web.StreamResponse` such as
-`web.Response` or `web.json_response(...)`. Routes inherit the API server's
-bearer authentication and security middleware. Methods are limited to
-`GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, and `DELETE`; paths must be
-non-empty and live below `/v1/plugins/`; and method/path pairs and optional
-route names must be unique.
+`web.Response` or `web.json_response(...)`. Synchronous handlers are moved off
+the event loop, and every handler has a bounded execution time. Routes inherit
+the API server's bearer authentication and security middleware. Methods are
+limited to `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, and `DELETE`.
+Each path must be non-empty and remain below the registering plugin's canonical
+namespace, `/v1/plugins/<plugin-key>/`; method/path pairs and optional route
+names must be unique.
 
 Capability providers are synchronous callbacks invoked with keyword-only
 `adapter` and `request` context. Register at most one provider per plugin and
 return either a JSON-serializable dictionary or `None`. Valid dictionaries are
-published at `extensions.plugins.<plugin-name>` in `GET /v1/capabilities`.
+published at `extensions.plugins.<plugin-key>` in `GET /v1/capabilities`.
 Provider failures and invalid payloads are logged and skipped so one plugin
 cannot break capability discovery for the server.
+
+When `gateway.multiplex_profiles` is enabled, these extensions belong only to
+the default profile that owns the shared listener. They are not mirrored into
+`/p/<profile>/`, and named-profile capability responses do not advertise them.
+This prevents a plugin enabled in the default profile from becoming reachable
+through an independent profile. Run a separate profile gateway when that
+profile needs its own plugin API extensions.
 
 **`dispatch_tool` example — a slash command that runs a tool:**
 

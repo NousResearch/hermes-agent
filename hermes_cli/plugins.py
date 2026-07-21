@@ -38,8 +38,10 @@ import importlib.metadata
 import importlib.util
 import inspect
 import json
+import keyword
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -1216,8 +1218,23 @@ class PluginContext:
             raise ValueError("API server route path must be under /v1/plugins/")
         if path == "/v1/plugins/":
             raise ValueError("API server route path must include a route name")
+        plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
+        plugin_namespace = f"/v1/plugins/{plugin_id}/"
+        if not plugin_id or not path.startswith(plugin_namespace):
+            raise ValueError(
+                "API server route path must stay under the plugin's own namespace: "
+                f"{plugin_namespace}"
+            )
         if name is not None and (not isinstance(name, str) or not name.strip()):
             raise TypeError("API server route name must be a non-empty string or None")
+        if name is not None and any(
+            not part.isidentifier() or keyword.iskeyword(part)
+            for part in re.split(r"[.:-]", name)
+        ):
+            raise ValueError(
+                "API server route name must contain Python identifiers separated "
+                "by dash, dot, or colon"
+            )
         for route in self._manager._api_server_routes:
             if (route.get("method"), route.get("path")) == (normalized_method, path):
                 raise ValueError(f"API server route already registered: {normalized_method} {path}")
@@ -1229,7 +1246,7 @@ class PluginContext:
                 "path": path,
                 "handler": handler,
                 "name": name,
-                "plugin": self.manifest.name,
+                "plugin": plugin_id,
             }
         )
         logger.debug(
@@ -1247,16 +1264,17 @@ class PluginContext:
             getattr(provider, "__call__", None)
         ):
             raise TypeError("API server capability provider must be synchronous")
+        plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
         if any(
-            entry.get("plugin") == self.manifest.name
+            entry.get("plugin") == plugin_id
             for entry in self._manager._api_server_capability_providers
         ):
             raise ValueError(
-                f"API server capability provider already registered for plugin: {self.manifest.name}"
+                f"API server capability provider already registered for plugin: {plugin_id}"
             )
         self._manager._api_server_capability_providers.append(
             {
-                "plugin": self.manifest.name,
+                "plugin": plugin_id,
                 "provider": provider,
             }
         )
@@ -2088,9 +2106,9 @@ class PluginManager:
                 payload = provider(adapter=adapter, request=request)
             except Exception as exc:
                 logger.warning(
-                    "Plugin '%s' API server capability provider failed: %s",
+                    "Plugin '%s' API server capability provider failed (%s); skipping",
                     plugin_name,
-                    exc,
+                    type(exc).__name__,
                 )
                 continue
             if payload is None:

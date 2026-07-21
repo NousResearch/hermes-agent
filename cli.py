@@ -13393,6 +13393,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             # --- Normal input routing ---
+            # Defer during rapid text input (paste without bracketed-paste support).
+            # When newlines arrive as individual Enter events, _on_text_changed fires
+            # for each character. If the last text change was < 50 ms ago, text is
+            # still arriving — skip submission and let the buffer accumulate.
+            if _last_text_change[0] and (time.monotonic() - _last_text_change[0]) < 0.05:
+                return
+
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
@@ -14236,6 +14243,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _prev_newline_count = [0]
         _paste_just_collapsed = [False]
         self._skip_paste_collapse = False
+        _last_text_change = [None]
 
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference.
@@ -14252,6 +14260,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                still batch newlines.  Alt+Enter only adds 1 newline per
                event so it never triggers this.
             """
+            _last_text_change[0] = time.monotonic()
             text = _strip_leaked_bracketed_paste_wrappers(buf.text)
             text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
             if _had_mouse_reports:

@@ -125,9 +125,10 @@ def _warn_config_parse_failure(
         key = (str(config_path), st.st_mtime_ns, st.st_size)
     except OSError:
         key = (str(config_path), 0, 0)
-    if key in _CONFIG_PARSE_WARNED:
-        return
-    _CONFIG_PARSE_WARNED.add(key)
+    with _CONFIG_LOCK:
+        if key in _CONFIG_PARSE_WARNED:
+            return
+        _CONFIG_PARSE_WARNED.add(key)
 
     backup_path = _backup_corrupt_config(config_path)
 

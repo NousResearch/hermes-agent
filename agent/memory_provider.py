@@ -29,6 +29,8 @@ Optional hooks (override to opt in):
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
   backup_paths() -> list[str]            — extra on-disk paths to include in `hermes backup`
+  get_desktop_config() -> dict           — custom desktop configuration snapshot
+  handle_desktop_config_action() -> dict — custom desktop configuration action
 """
 
 from __future__ import annotations
@@ -38,6 +40,14 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class MemoryProviderConfigConflictError(ValueError):
+    """A provider-owned desktop config resource would be overwritten.
+
+    The dashboard maps this to HTTP 409 so a custom surface can request an
+    explicit overwrite without coupling the web layer to a specific provider.
+    """
 
 
 class MemoryProvider(ABC):
@@ -313,3 +323,22 @@ class MemoryProvider(ABC):
         from config/env only. Default returns an empty list (nothing external).
         """
         return []
+
+    def get_desktop_config(self, *, hermes_home: str) -> Dict[str, Any]:
+        """Return a provider-owned, secret-safe configuration snapshot.
+
+        Providers whose setup cannot be represented by the declarative schema
+        may override this hook. ``hermes_home`` is the active profile's Hermes
+        home selected by the dashboard request.
+        """
+        raise NotImplementedError(f"Provider {self.name} has no custom desktop config surface")
+
+    def handle_desktop_config_action(
+        self,
+        action: str,
+        payload: Dict[str, Any],
+        *,
+        hermes_home: str,
+    ) -> Dict[str, Any]:
+        """Run an action owned by a provider's custom Desktop surface."""
+        raise NotImplementedError(f"Provider {self.name} has no desktop config action {action}")

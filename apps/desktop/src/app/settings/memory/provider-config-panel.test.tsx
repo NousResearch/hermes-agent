@@ -22,6 +22,11 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
+vi.mock('./provider-config-surfaces', () => ({
+  getProviderConfigSurface: (surface: string) =>
+    surface === 'openviking' ? ({ provider }: { provider: string }) => <div>Custom settings for {provider}</div> : null
+}))
+
 function honchoSchema(): MemoryProviderConfig {
   return {
     name: 'honcho',
@@ -205,5 +210,33 @@ describe('ProviderConfigPanel', () => {
 
     await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin'))
     expect(container.querySelector('section')).toBeNull()
+  })
+
+  it('mounts a registered provider-owned config surface', async () => {
+    getMemoryProviderConfig.mockResolvedValue({
+      name: 'openviking',
+      label: 'OpenViking',
+      docs_url: '',
+      custom_surface: 'openviking',
+      fields: []
+    })
+
+    await renderPanel('openviking')
+
+    expect(await screen.findByText('Custom settings for openviking')).toBeTruthy()
+  })
+
+  it('shows a clear fallback for an unregistered custom surface', async () => {
+    getMemoryProviderConfig.mockResolvedValue({
+      name: 'unknown',
+      label: 'Unknown',
+      docs_url: '',
+      custom_surface: 'not-registered',
+      fields: []
+    })
+
+    await renderPanel('unknown')
+
+    expect(await screen.findByText('Memory provider settings are unavailable for this provider.')).toBeTruthy()
   })
 })

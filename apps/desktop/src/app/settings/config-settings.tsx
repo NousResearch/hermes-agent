@@ -16,6 +16,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { FIELD_OPTION_LABELS } from './constants'
 import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
@@ -60,7 +61,13 @@ export function ConfigSettings({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord()
+
+  const {
+    data: loadedConfig,
+    dataUpdatedAt: configUpdatedAt,
+    isError: configLoadFailed,
+    refetch: refetchConfig
+  } = useHermesConfigRecord()
 
   const {
     data: schemaResponse,
@@ -80,6 +87,8 @@ export function ConfigSettings({
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
+  // dataUpdatedAt must remain a dependency because structurally equal profile
+  // configs can reuse the same data reference after a successful refetch.
   const configSeeded = useRef(false)
 
   useEffect(() => {
@@ -87,7 +96,7 @@ export function ConfigSettings({
       configSeeded.current = true
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [configUpdatedAt, loadedConfig])
 
   // A profile switch invalidates (but doesn't clear) the shared config query, so
   // the local draft would otherwise keep profile A's data and autosave it into
@@ -295,7 +304,7 @@ export function ConfigSettings({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : FIELD_OPTION_LABELS[key]}
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

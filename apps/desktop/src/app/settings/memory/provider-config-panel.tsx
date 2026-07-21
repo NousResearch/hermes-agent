@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,18 @@ import { ListRow, Pill } from '../primitives'
 
 import { FieldControl, FieldTitle } from './field-control'
 import { ProviderConfigModal } from './provider-config-modal'
+import { getProviderConfigSurface } from './provider-config-surfaces'
+
+function CustomSurfaceLoadingState({ label }: { label: string }) {
+  return (
+    <section aria-label={`Loading ${label} settings`} className="py-3" role="status">
+      <div className="grid animate-pulse gap-4 rounded-xl bg-background/60 p-4">
+        <div className="h-4 w-36 rounded bg-muted" />
+        <div className="h-16 rounded-md border border-border bg-background/70" />
+      </div>
+    </section>
+  )
+}
 
 // Inline fields only: the compact panel must never re-write modal-owned keys.
 function seedValues(config: MemoryProviderConfig): Record<string, string> {
@@ -77,11 +89,6 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
     [provider, saved]
   )
 
-  // Providers without a declared config surface (e.g. builtin) render nothing.
-  if (config && config.fields.length === 0) {
-    return null
-  }
-
   if (!config) {
     if (loadError) {
       return (
@@ -97,6 +104,29 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
     }
 
     return <PageLoader className="min-h-24" label="Loading memory provider settings..." />
+  }
+
+  if (config.custom_surface) {
+    const CustomSurface = getProviderConfigSurface(config.custom_surface)
+
+    if (!CustomSurface) {
+      return (
+        <div className="py-2 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+          Memory provider settings are unavailable for this provider.
+        </div>
+      )
+    }
+
+    return (
+      <Suspense fallback={<CustomSurfaceLoadingState label={config.label} />}>
+        <CustomSurface provider={provider} />
+      </Suspense>
+    )
+  }
+
+  // Providers without a declared config surface (e.g. builtin) render nothing.
+  if (config.fields.length === 0) {
+    return null
   }
 
   const inlineFields = config.fields.filter(field => field.inline)

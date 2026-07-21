@@ -107,6 +107,119 @@ class TestProfileScopedConfig:
         assert resp.status_code == 404
 
 
+class TestProfileScopedMemoryProviderCustomSurface:
+    def test_custom_config_reads_requested_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        class Provider:
+            def get_desktop_config(self, *, hermes_home):
+                return {"hermes_home": hermes_home}
+
+        monkeypatch.setattr(web_server, "_load_memory_provider", lambda name: Provider())
+
+        resp = client.get(
+            "/api/memory/providers/openviking/config",
+            params={"surface": "custom", "profile": "worker_beta"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["hermes_home"] == str(isolated_profiles["worker_beta"])
+
+    def test_openviking_custom_config_reads_requested_profile_env(
+        self,
+        client,
+        isolated_profiles,
+        monkeypatch,
+    ):
+        import hermes_cli.web_server as web_server
+        import plugins.memory.openviking as openviking_module
+
+        (isolated_profiles["default"] / ".env").write_text(
+            "OPENVIKING_URL=https://dashboard-profile.example\n",
+            encoding="utf-8",
+        )
+        (isolated_profiles["worker_beta"] / ".env").write_text(
+            "OPENVIKING_URL=https://worker-profile.example\n"
+            "OPENVIKING_ACTOR_PEER_ID=worker-agent\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("OPENVIKING_URL", "https://process-global.example")
+        monkeypatch.setattr(openviking_module, "_discover_ovcli_profiles", lambda **kwargs: [])
+        def unexpected_probe(*_args, **_kwargs):
+            raise AssertionError("custom config snapshot should not perform network I/O")
+
+        monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", unexpected_probe)
+        monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", unexpected_probe)
+        monkeypatch.setattr(
+            web_server,
+            "_load_memory_provider",
+            lambda name: openviking_module.OpenVikingMemoryProvider(),
+        )
+
+        resp = client.get(
+            "/api/memory/providers/openviking/config",
+            params={"surface": "custom", "profile": "worker_beta"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["active"]["url"] == "https://worker-profile.example"
+        assert resp.json()["active"]["actor_peer_id"] == "worker-agent"
+        assert resp.json()["health"]["status"] == "checking"
+
+    def test_custom_action_runs_inside_requested_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        seen = {}
+
+        class Provider:
+            def handle_desktop_config_action(self, action, payload, *, hermes_home):
+                seen.update(
+                    action=action,
+                    payload=payload,
+                    hermes_home=hermes_home,
+                )
+                return {"ok": True}
+
+        monkeypatch.setattr(web_server, "_load_memory_provider", lambda name: Provider())
+
+        resp = client.post(
+            "/api/memory/providers/openviking/actions/validate",
+            params={"profile": "worker_beta"},
+            json={"payload": {"url": "http://127.0.0.1:1933"}},
+        )
+
+        assert resp.status_code == 200
+        assert seen == {
+            "action": "validate",
+            "payload": {"url": "http://127.0.0.1:1933"},
+            "hermes_home": str(isolated_profiles["worker_beta"]),
+        }
+
+    def test_custom_action_maps_provider_conflict_to_409(
+        self, client, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+        from agent.memory_provider import MemoryProviderConfigConflictError
+
+        class Provider:
+            def handle_desktop_config_action(self, action, payload, *, hermes_home):
+                raise MemoryProviderConfigConflictError("Profile already exists")
+
+        monkeypatch.setattr(web_server, "_load_memory_provider", lambda name: Provider())
+
+        resp = client.post(
+            "/api/memory/providers/openviking/actions/save",
+            json={"payload": {}},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Profile already exists"
+
+
 class TestProfileScopedEnv:
     def test_env_set_lands_in_target_profile_only(self, client, isolated_profiles):
         resp = client.put(

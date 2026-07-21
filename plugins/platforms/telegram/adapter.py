@@ -38,6 +38,67 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _extract_video_metadata(video_path: str) -> Dict[str, Any]:
+    """Extract video duration, width, and height via ffprobe.
+
+    Returns a dict with optional keys ``duration`` (int, seconds),
+    ``width`` (int), ``height`` (int).  Returns empty dict when
+    ffprobe is unavailable or the file cannot be probed.
+    """
+    import json
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                "-show_format",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {}
+
+        data = json.loads(result.stdout)
+        video_stream: Optional[Dict[str, Any]] = None
+        for s in data.get("streams", []):
+            if s.get("codec_type") == "video":
+                video_stream = s
+                break
+
+        if video_stream is None:
+            return {}
+
+        meta: Dict[str, Any] = {}
+        if "width" in video_stream and "height" in video_stream:
+            w = video_stream["width"]
+            h = video_stream["height"]
+            if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+                meta["width"] = w
+                meta["height"] = h
+
+        # Try stream-level duration first (more precise), then format-level
+        duration: Optional[float] = None
+        raw = video_stream.get("duration") or data.get("format", {}).get("duration")
+        if raw is not None:
+            try:
+                duration = float(raw)
+            except (ValueError, TypeError):
+                pass
+        if duration is not None and duration > 0:
+            meta["duration"] = int(duration)
+
+        return meta
+    except (FileNotFoundError, json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
+        return {}
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -6837,22 +6898,36 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_video,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "video",
-                    reset_media=lambda: f.seek(0),
-                )
+
+            # Try to extract video metadata (duration, width, height) via ffprobe.
+            # Fall back to just supports_streaming=True if probing fails.
+            video_meta = _extract_video_metadata(video_path)
+            video_kwargs: Dict[str, Any] = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "video": open(video_path, "rb"),
+                "caption": caption[:1024] if caption else None,
+                "supports_streaming": True,
+                "reply_to_message_id": reply_to_id,
+                **thread_kwargs,
+                **self._notification_kwargs(metadata),
+            }
+            if "duration" in video_meta:
+                video_kwargs["duration"] = video_meta["duration"]
+            if "width" in video_meta and "height" in video_meta:
+                video_kwargs["width"] = video_meta["width"]
+                video_kwargs["height"] = video_meta["height"]
+
+            def _reset_video() -> None:
+                video_kwargs["video"].seek(0)
+
+            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                self._bot.send_video,
+                video_kwargs,
+                metadata,
+                reply_to_id,
+                "video",
+                reset_media=_reset_video,
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(

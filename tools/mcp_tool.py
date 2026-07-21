@@ -5913,7 +5913,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
 
         for name, outcome in zip(names, outcomes):
-            if isinstance(outcome, Exception):
+            if isinstance(outcome, BaseException):
                 logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
                 continue
             probed_servers.append(outcome)
@@ -6177,7 +6177,7 @@ def shutdown_mcp_servers():
             return_exceptions=True,
         )
         for server, result in zip(servers_snapshot, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.debug(
                     "Error closing MCP server '%s': %s", server.name, result,
                 )

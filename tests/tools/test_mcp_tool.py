@@ -6,6 +6,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import concurrent.futures
 import json
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -1083,6 +1084,104 @@ class TestDiscoverAndRegister:
         assert entry.toolset == "mcp-srv"
 
         _servers.pop("srv", None)
+
+
+class TestGatherCancelledErrorParity:
+    def test_list_mcp_server_tools_treats_cancelled_error_as_failed_probe(self, caplog):
+        """CancelledError from gather(return_exceptions=True) must not be
+        treated as a successful probe result."""
+        from tools.mcp_tool import probe_mcp_server_tools
+
+        ok_server = _make_mock_server(
+            "ok",
+            tools=[_make_mcp_tool("ping", "Ping the server")],
+        )
+
+        async def fake_connect(name, _cfg):
+            if name == "cancelled":
+                raise asyncio.CancelledError("probe cancelled")
+            return ok_server
+
+        with (
+            patch("tools.mcp_tool._MCP_AVAILABLE", True),
+            patch(
+                "tools.mcp_tool._load_mcp_config",
+                return_value={
+                    "cancelled": {"command": "cancel"},
+                    "ok": {"command": "ok"},
+                },
+            ),
+            patch("tools.mcp_tool._ensure_mcp_loop"),
+            patch("tools.mcp_tool._stop_mcp_loop"),
+            patch("tools.mcp_tool._connect_server", side_effect=fake_connect),
+            patch(
+                "tools.mcp_tool._run_on_mcp_loop",
+                side_effect=lambda coro_or_factory, timeout=120: asyncio.run(
+                    coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+                ),
+            ),
+            caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"),
+        ):
+            result = probe_mcp_server_tools()
+
+        assert result == {"ok": [("ping", "Ping the server")]}
+        assert any(
+            "Probe: failed to connect to 'cancelled'" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_shutdown_mcp_servers_logs_cancelled_error_results(self, caplog):
+        """CancelledError returned by shutdown gather should be logged like any
+        other failure result."""
+        import tools.mcp_tool as mcp_mod
+
+        class _DoneFuture:
+            def result(self, timeout=None):
+                return None
+
+        class _Loop:
+            def is_running(self):
+                return True
+
+        class _Server:
+            def __init__(self, name, exc=None):
+                self.name = name
+                self._exc = exc
+
+            async def shutdown(self):
+                if self._exc is not None:
+                    raise self._exc
+                return None
+
+        cancelled = _Server("cancelled", asyncio.CancelledError("shutdown cancelled"))
+        ok = _Server("ok")
+        old_servers = dict(mcp_mod._servers)
+        old_loop = mcp_mod._mcp_loop
+        mcp_mod._servers.clear()
+        mcp_mod._servers.update({"cancelled": cancelled, "ok": ok})
+        mcp_mod._mcp_loop = _Loop()
+
+        def fake_schedule(coro, loop, logger=None, log_message=None):
+            asyncio.run(coro)
+            return _DoneFuture()
+
+        try:
+            with (
+                patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule),
+                patch("tools.mcp_tool._stop_mcp_loop"),
+                caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"),
+            ):
+                mcp_mod.shutdown_mcp_servers()
+        finally:
+            mcp_mod._servers.clear()
+            mcp_mod._servers.update(old_servers)
+            mcp_mod._mcp_loop = old_loop
+
+        assert mcp_mod._servers == old_servers
+        assert any(
+            "Error closing MCP server 'cancelled'" in rec.getMessage()
+            for rec in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------

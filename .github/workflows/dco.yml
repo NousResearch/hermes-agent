@@ -1,0 +1,26 @@
+name: DCO Sign-off Check
+
+# Verifies every non-merge, non-bot commit in a pull request carries a
+# `Signed-off-by:` trailer (parsed with `git interpret-trailers`, not matched
+# in prose) matching its author OR committer, per the Developer Certificate of
+# Origin (https://developercertificate.org). Contributors add it with
+# `git commit -s`. Mirrors the bot-exemption logic in contributor-check.yml.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: Check DCO sign-off
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0  # Full history needed for git log over the PR range
+
+      - name: Verify Signed-off-by trailer on each commit
+        run: python3 scripts/ci/check_dco.py origin/main HEAD

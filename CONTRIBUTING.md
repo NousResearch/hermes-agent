@@ -983,6 +983,37 @@ fix(security): prevent shell injection in sudo password piping
 test(tools): add unit tests for file_operations
 ```
 
+### Sign off your commits (DCO)
+
+Every commit must carry a `Signed-off-by:` trailer. Signing off certifies the [Developer Certificate of Origin](https://developercertificate.org) — you confirm you wrote the change (or have the right to submit it) and agree to contribute it under the project's [MIT License](LICENSE). There is no separate agreement to sign; the trailer is the whole attestation.
+
+Add it automatically with `-s`:
+
+```bash
+git commit -s -m "fix(cli): prevent crash on empty model string"
+```
+
+That appends a trailer matching your git identity:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+`git commit -s` signs off as the **committer**. The check accepts a trailer matching either the commit's author or its committer, so `git commit --author="Someone Else <them@example.com>" -s` (you commit, they authored) still passes on your sign-off. Bot commits (Dependabot, GitHub Actions) are exempt.
+
+Forgot to sign off? Retrofit before pushing:
+
+```bash
+# most recent commit
+git commit --amend --no-edit -s
+
+# every commit on the branch, then force-push
+git rebase --exec 'git commit --amend --no-edit -s' origin/main
+git push --force-with-lease
+```
+
+CI runs a DCO check on every pull request; an unsigned commit fails the check with the exact command to fix it.
+
 ---
 
 ## Reporting Issues

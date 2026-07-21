@@ -8100,6 +8100,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # engages drain on the first tick.
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
+        # Start background heartbeat watcher — periodically touches
+        # gateway_state.json so external liveness monitors (e.g. WebUI)
+        # can confirm the process is alive even when idle.
+        asyncio.create_task(self._heartbeat_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -8241,6 +8246,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
+
+    async def _heartbeat_watcher(self, interval: int = 60) -> None:
+        """Background task that periodically writes ``gateway_state.json``.
+
+        Without this, the file is only updated on state transitions (start,
+        stop, platform connect/disconnect).  External liveness monitors such
+        as hermes-webui rely on the ``updated_at`` field to decide whether
+        the gateway is alive; a gateway that is healthy but idle for more
+        than ~2 minutes looks dead to them.
+        """
+        # Short initial delay — let the gateway finish startup before the
+        # first heartbeat so the file already contains the "running" state.
+        await asyncio.sleep(10)
+        while self._running:
+            try:
+                self._update_runtime_status()
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
 
     async def _process_handoff(self, row: Dict[str, Any]) -> None:
         """Execute one handoff row. Raises on failure (caller marks failed)."""

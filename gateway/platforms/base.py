@@ -2849,12 +2849,12 @@ class BasePlatformAdapter(ABC):
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success."""
         from gateway.status import acquire_scoped_lock
-        self._platform_lock_scope = scope
-        self._platform_lock_identity = identity
         acquired, existing = acquire_scoped_lock(
             scope, identity, metadata={'platform': self.platform.value}
         )
         if acquired:
+            self._platform_lock_scope = scope
+            self._platform_lock_identity = identity
             return True
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
         message = (

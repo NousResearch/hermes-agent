@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -6,14 +7,6 @@ import { Pill } from '../primitives'
 
 import { TierArt } from './tier-art'
 import type { BillingPlanTierView } from './use-billing-state'
-
-function openExternal(url?: string) {
-  if (!url) {
-    return
-  }
-
-  void window.hermesDesktop?.openExternal?.(url)
-}
 
 function PlanCard({ tier }: { tier: BillingPlanTierView }) {
   const isCurrent = tier.state === 'current'
@@ -47,7 +40,7 @@ function PlanCard({ tier }: { tier: BillingPlanTierView }) {
         {isCurrent && <Pill tone="primary">Current plan</Pill>}
 
         {tier.state === 'upgrade' && tier.action && (
-          <Button onClick={() => openExternal(tier.action?.url)} size="sm" type="button" variant="outline">
+          <Button onClick={() => openExternalLink(tier.action?.url ?? '')} size="sm" type="button" variant="outline">
             {tier.action.label}
             <ExternalLink className="size-3.5" />
           </Button>

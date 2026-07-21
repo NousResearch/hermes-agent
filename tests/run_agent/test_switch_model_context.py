@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from agent.agent_init import _normalize_route_base_url
 from agent.context_compressor import ContextCompressor
 
 
@@ -18,6 +19,34 @@ class _StubStartupCompressor:
 
     def on_session_start(self, *args, **kwargs):
         return None
+
+
+def test_route_url_normalization_preserves_path_slash_before_query():
+    """A path slash before a query changes OpenAI SDK URL joining."""
+    assert _normalize_route_base_url(
+        "https://example.com/v1/?tenant=large"
+    ) != _normalize_route_base_url("https://example.com/v1?tenant=large")
+
+
+def test_route_url_normalization_preserves_trailing_whitespace():
+    """Whitespace can alter the request target and must not collapse routes."""
+    assert _normalize_route_base_url(
+        "https://example.com/v1 "
+    ) != _normalize_route_base_url("https://example.com/v1")
+
+
+def test_route_url_normalization_preserves_bracketed_host_syntax():
+    """Invalid bracketed host syntax must not collapse onto a valid DNS host."""
+    assert _normalize_route_base_url(
+        "http://[v1.Foo]/v1"
+    ) != _normalize_route_base_url("http://v1.foo/v1")
+
+
+def test_route_url_normalization_preserves_malformed_trailing_slash():
+    """Malformed URLs are kept byte-exact rather than partially normalized."""
+    assert _normalize_route_base_url(
+        "http://[bad/v1/"
+    ) != _normalize_route_base_url("http://[bad/v1")
 
 
 def _make_direct_start_agent(
@@ -202,6 +231,295 @@ def test_direct_start_preserves_context_for_bare_aggregator_model():
     assert agent.context_compressor.config_context_length == 1_000_000
 
 
+def test_direct_start_drops_context_for_same_provider_custom_base_url():
+    """An explicit endpoint override changes the route even if provider matches."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.4",
+            "provider": "openrouter",
+            "context_length": 1_000_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.4",
+        provider="openrouter",
+        base_url="https://small.example/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_for_provider_name_lookalike_host():
+    """A hostname containing a provider domain is not that provider's route."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.4",
+            "provider": "openrouter",
+            "context_length": 1_000_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.4",
+        provider="openrouter",
+        base_url="https://evil-openrouter.ai/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_preserves_context_for_codex_default_endpoint():
+    """ChatGPT's Codex endpoint belongs to the openai-codex route."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "context_length": 272_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    assert agent.context_compressor.config_context_length == 272_000
+
+
+def test_direct_start_drops_context_for_codex_wrong_path():
+    """A known host with a different route path is not the Codex endpoint."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "context_length": 272_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/unrelated",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_for_overridden_provider_wrong_path():
+    """Providers with an explicit default route require that complete route."""
+    cfg = {
+        "model": {
+            "default": "grok-4",
+            "provider": "xai",
+            "context_length": 256_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="grok-4",
+        provider="xai",
+        base_url="https://api.x.ai/not-v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_preserves_context_for_equivalent_base_url_spellings():
+    """Route identity ignores URL casing, default ports, and trailing slashes."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.4",
+            "provider": "openrouter",
+            "base_url": "HTTPS://OPENROUTER.AI:443/api/v1/",
+            "context_length": 1_000_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.4",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert agent.context_compressor.config_context_length == 1_000_000
+
+
+def test_direct_start_drops_context_when_path_parameter_segment_changes():
+    """Trailing-slash normalization must not move params to another segment."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1/;tenant=large",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1;tenant=large",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_when_empty_path_parameter_changes():
+    """An explicit empty path-parameter delimiter is not discarded."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1;",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_when_empty_query_delimiter_changes():
+    """An explicit empty query changes OpenAI SDK base-URL joining semantics."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1?",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_when_active_query_changes():
+    """Query parameters remain part of the effective route identity."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1?tenant=small",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_preserves_context_for_matching_query_route():
+    """SDK query extraction must not hide an otherwise matching route."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1?tenant=large",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1?tenant=large",
+    )
+
+    assert agent.context_compressor.config_context_length == 1_048_576
+
+
+def test_direct_start_drops_context_when_extra_trailing_segment_changes():
+    """Only one conventional trailing slash is ignored for route identity."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1//",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_when_url_userinfo_changes():
+    """Credentials embedded in a URL remain part of route identity."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://large-tenant:secret@example.com/v1",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://small-tenant:secret@example.com/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_drops_context_when_ipv6_zone_case_changes():
+    """IPv6 address hex is case-insensitive, but its zone identifier is not."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "http://[FE80::1%25ETH0]/v1",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="http://[fe80::1%25eth0]/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
 def test_direct_start_preserves_context_for_provider_alias():
     """Canonical provider aliases identify the same route when no URL is pinned."""
     cfg = {
@@ -220,6 +538,66 @@ def test_direct_start_preserves_context_for_provider_alias():
     )
 
     assert agent.context_compressor.config_context_length == 1_000_000
+
+
+def test_direct_start_preserves_context_for_registry_provider_alias():
+    """Legacy and models.dev provider IDs may identify the same route."""
+    cfg = {
+        "model": {
+            "default": "kimi-k3",
+            "provider": "kimi-for-coding",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="kimi-k3",
+        provider="kimi-coding",
+        base_url="https://api.kimi.com/coding",
+    )
+
+    assert agent.context_compressor.config_context_length == 1_048_576
+
+
+def test_direct_start_preserves_context_for_profile_route_on_shared_host():
+    """Exact provider-profile routes disambiguate providers sharing a hostname."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.4",
+            "provider": "opencode-zen",
+            "context_length": 1_000_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.4",
+        provider="opencode",
+        base_url="https://opencode.ai/zen/v1",
+    )
+
+    assert agent.context_compressor.config_context_length == 1_000_000
+
+
+def test_direct_start_drops_context_for_profile_wrong_path():
+    """A shared hostname cannot substitute for a profile's complete route."""
+    cfg = {
+        "model": {
+            "default": "gpt-5.4",
+            "provider": "opencode-go",
+            "context_length": 1_000_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="gpt-5.4",
+        provider="opencode-go",
+        base_url="https://opencode.ai/unrelated",
+    )
+
+    assert agent.context_compressor.config_context_length is None
 
 
 def test_direct_start_named_custom_route_resolves_configured_base_url():

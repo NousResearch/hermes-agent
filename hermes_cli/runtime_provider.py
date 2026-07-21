@@ -30,6 +30,7 @@ from hermes_cli.auth import (
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
+    resolve_codex_base_url,
     resolve_codex_runtime_credentials,
     resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials,
@@ -417,7 +418,7 @@ def _resolve_runtime_from_pool_entry(
     api_mode = "chat_completions"
     if provider == "openai-codex":
         api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_CODEX_BASE_URL
+        base_url = resolve_codex_base_url(base_url)
     elif provider == "xai-oauth":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL

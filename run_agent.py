@@ -4750,6 +4750,9 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        if self.provider == "openai-codex":
+            from hermes_cli.auth import resolve_codex_base_url
+            runtime_base = resolve_codex_base_url(runtime_base)
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token

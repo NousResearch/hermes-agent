@@ -84,6 +84,20 @@ ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+
+def resolve_codex_base_url(pool_base_url: str | None = None) -> str:
+    """Canonical Codex base URL resolution.
+
+    Priority: HERMES_CODEX_BASE_URL env var > pool_base_url > DEFAULT_CODEX_BASE_URL.
+
+    Single source of truth for every code path that needs the Codex
+    endpoint — credential pool seeding, pool-based runtime resolution,
+    credential rotation, and the legacy singleton resolver.
+    """
+    env = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    pool = (pool_base_url or "").strip().rstrip("/")
+    return env or pool or DEFAULT_CODEX_BASE_URL
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
 MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
@@ -3760,13 +3774,9 @@ def resolve_codex_runtime_credentials(
     if data is None:
         pool_token = _pool_codex_access_token()
         if pool_token:
-            base_url = (
-                os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-                or DEFAULT_CODEX_BASE_URL
-            )
             return {
                 "provider": "openai-codex",
-                "base_url": base_url,
+                "base_url": resolve_codex_base_url(),
                 "api_key": pool_token,
                 "source": "credential_pool",
                 "last_refresh": None,
@@ -3823,14 +3833,9 @@ def resolve_codex_runtime_credentials(
                 tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
-    base_url = (
-        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-        or DEFAULT_CODEX_BASE_URL
-    )
-
     return {
         "provider": "openai-codex",
-        "base_url": base_url,
+        "base_url": resolve_codex_base_url(),
         "api_key": access_token,
         "source": "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),

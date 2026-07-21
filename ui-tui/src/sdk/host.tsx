@@ -43,6 +43,20 @@ export function openWidget<S>(app: WidgetApp<S>, state: S): void {
   patchOverlayState({ widget: { appId: app.id, state } })
 }
 
+/** Async state delivery: patch the app's state ONLY while it is still the
+ *  active widget — a late fetch resolution can never resurrect a closed app
+ *  or clobber a different one. This is how data-backed apps land results
+ *  outside the input pipeline (see the weather reference app). */
+export function updateWidget<S>(app: WidgetApp<S>, fn: (state: S) => S): void {
+  const active = $overlayState.get().widget
+
+  if (active?.appId !== app.id) {
+    return
+  }
+
+  patchOverlayState({ widget: { appId: app.id, state: fn(active.state as S) } })
+}
+
 /** Feed one keypress to the active app. Returns true when a widget is active
  *  (apps swallow every key while open — the overlay is modal). */
 export function dispatchWidgetInput(input: WidgetInput): boolean {

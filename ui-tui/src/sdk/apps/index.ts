@@ -3,3 +3,4 @@
 export { dialogTestApp } from './dialogTest.js'
 export { gridTestApp } from './gridTest.js'
 export { GRID_STREAM_COUNT, type GridTestState } from './gridTestState.js'
+export { weatherApp, type WeatherState } from './weather.js'

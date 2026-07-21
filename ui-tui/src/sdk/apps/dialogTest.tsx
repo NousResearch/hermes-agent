@@ -51,9 +51,7 @@ export const dialogTestApp = defineWidgetApp<DialogTestState>({
     return key.escape || key.return || ch === 'q' || isCtrl(key, ch, 'c') ? null : state
   },
 
-  render({ cols, state, t }) {
-    void t
-
+  render({ cols, state }) {
     return (
       <Overlay backdrop zone={state.zone}>
         <Dialog hint={state.hint ?? 'Esc/q close'} title={state.title} width={Math.min(60, cols - 8)}>

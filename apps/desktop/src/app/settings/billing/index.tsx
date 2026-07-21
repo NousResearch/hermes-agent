@@ -93,6 +93,9 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
 }
 
 function RowValue({ onAction, row }: { onAction?: () => void; row: BillingAccountRowView }) {
+  // Destructure to a const so narrowing survives into the onClick closure below.
+  const { action } = row
+
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
       {row.value && (
@@ -114,16 +117,16 @@ function RowValue({ onAction, row }: { onAction?: () => void; row: BillingAccoun
           {chip.label}
         </Button>
       ))}
-      {row.action && (
+      {action && (
         <Button
-          disabled={row.action.disabled}
-          onClick={row.action.disabled ? undefined : onAction ? onAction : () => openExternal(row.action?.url)}
+          disabled={action.disabled}
+          onClick={action.disabled ? undefined : onAction ? onAction : () => openExternal(action.url)}
           size="sm"
           type="button"
           variant="outline"
         >
-          {row.action.label}
-          {!row.action.disabled && row.action.url && <ExternalLink className="size-3.5" />}
+          {action.label}
+          {!action.disabled && action.url && <ExternalLink className="size-3.5" />}
         </Button>
       )}
     </div>
@@ -185,7 +188,7 @@ function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan:
             </Button>
           )}
           {plan.link && (
-            <Button onClick={() => openExternal(plan.link?.url)} size="sm" type="button" variant="outline">
+            <Button onClick={() => openExternal(plan.link.url)} size="sm" type="button" variant="outline">
               {plan.link.label}
               <ExternalLink className="size-3.5" />
             </Button>
@@ -231,9 +234,10 @@ function AutoReloadRow({
   const maxBound = bounds.max_usd ?? undefined
   const minBound = bounds.min_usd ?? undefined
 
-  // Only the canonical-card enabled state edits in place. Off / divergent-card
-  // rows have no Manage affordance (or a portal link) and render read-only.
-  const editable = row.action?.label === 'Manage' && !row.action.url
+  // Only the canonical-card enabled state edits in place (flagged in the view model).
+  // Off / divergent-card rows have no Manage affordance (or a portal link) and render
+  // read-only.
+  const editable = row.manageInApp === true
 
   const resetFeedback = () => {
     setConfirmDisable(false)
@@ -890,9 +894,7 @@ function BillingSettingsContent({
     void Promise.all([billingState.refetch(), subscriptionState.refetch()])
   }
 
-  const paymentRow = view.accountRows.find(row => row.id === 'payment_method')
-  const topupRow = view.accountRows.find(row => row.id === 'buy_credits')
-  const refillRow = view.accountRows.find(row => row.id === 'auto_reload')
+  const { paymentRow, refillRow, topupRow } = view
 
   // Gate the plans sub-view on the SAME capability that renders the in-app button
   // (`plan.action`): a team / non-changer deep-linking `bview=plans` must never

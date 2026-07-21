@@ -274,6 +274,46 @@ describe('BillingSettings', () => {
     expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
   })
 
+  it('falls back to overview when a top-tier subscriber deep-links bview=plans', async () => {
+    // Capable, but on the highest tier → no upgrade → no in-app button → the deep
+    // link must not open a grid whose only actions are inert downgrades.
+    apiMocks.fetchSubscriptionState.mockResolvedValue(
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: { ...todaySubscriptionState.current, tier_id: 'top', tier_name: 'Ultra' },
+        tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 't_free',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$200',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '220',
+            name: 'Ultra',
+            tier_id: 'top',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Payment')).toBeTruthy()
+    expect(screen.queryByText('Plans')).toBeNull()
+    // The plan card's portal link is present instead of an in-app button.
+    expect(screen.getByRole('button', { name: /Adjust plan/ })).toBeTruthy()
+  })
+
   it('keeps the auto-refill edit form mounted so the row height is reserved before editing', async () => {
     renderBilling()
 

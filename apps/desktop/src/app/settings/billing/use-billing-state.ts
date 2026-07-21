@@ -5,7 +5,12 @@ import { fmtDate } from '@/lib/time'
 import type { BillingRefusal, BillingResult } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type { BillingStateResponse, SubscriptionStateResponse, UsageModelData } from './types'
+import type {
+  BillingStateResponse,
+  SubscriptionStateResponse,
+  SubscriptionTierOption,
+  UsageModelData
+} from './types'
 
 export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
@@ -51,6 +56,8 @@ export interface BillingAccountRowView {
   chips?: BillingChipView[]
   description: string
   id: 'auto_reload' | 'buy_credits' | 'payment_method'
+  /** The auto-refill row that edits its amounts in place (canonical-card enabled). */
+  manageInApp?: true
   pill?: {
     label: string
     tone: 'muted' | 'primary'
@@ -61,35 +68,34 @@ export interface BillingAccountRowView {
 }
 
 /**
- * The current-plan summary that replaces the old subscription row. Carries at
- * most ONE in-app button (`action`) — View plans (free/no sub) or Change plan
- * (subscriber) — and, for teams / accounts that cannot change plans, an optional
- * portal `link` so they are not stranded.
+ * The current-plan summary that replaces the old subscription row. Carries EITHER
+ * one in-app `action` (View plans / Change plan) OR a portal `link` ("Adjust plan
+ * ↗"), never both — a discriminated pair so consumers don't guard for the impossible
+ * "both present" / "neither present" cases.
  */
-export interface BillingPlanCardView {
-  /** In-app button that opens the plans sub-view. Absent = info-only card. */
-  action?: { label: string }
+export type BillingPlanCardView = {
   caption: string
-  /** Portal escape hatch for teams / non-changers ("Adjust plan ↗"). */
-  link?: { label: string; url: string }
   price?: string
   tierName: string
-}
+} & ({ action: { label: string }; link?: undefined } | { action?: undefined; link: { label: string; url: string } })
 
-export type BillingPlanTierState = 'current' | 'downgrade' | 'upgrade'
-
-/** One card in the `bview=plans` grid, derived from a live `tiers[]` entry. */
-export interface BillingPlanTierView {
-  /** Primary action for upgrades / no-current — opens the portal with `plan=`. */
-  action?: { label: string; url: string }
+interface BillingPlanTierBase {
   creditsDisplay?: string
-  /** Disabled-action caption; set for downgrades (ticket 11 moves these in-app). */
-  disabledCaption?: string
   name: string
   priceDisplay: string
-  state: BillingPlanTierState
   tierId: string
 }
+
+/**
+ * One card in the `bview=plans` grid, discriminated by `state`: an `upgrade` always
+ * carries its portal `action`; a `downgrade` always carries a `disabledCaption`
+ * (ticket 11 wires these in-app); `current` is inert. The union lets consumers read
+ * `action` / `disabledCaption` without defensive `?.`.
+ */
+export type BillingPlanTierView =
+  | (BillingPlanTierBase & { state: 'current' })
+  | (BillingPlanTierBase & { disabledCaption: string; state: 'downgrade' })
+  | (BillingPlanTierBase & { action: { label: string; url: string }; state: 'upgrade' })
 
 export interface BillingUsageRowView {
   bar?: {
@@ -106,14 +112,19 @@ export interface BillingUsageRowView {
 }
 
 export interface BillingView {
-  accountRows: BillingAccountRowView[]
   notice?: BillingNoticeView
+  /** Payment section row. Absent outside the normal (logged-in) state. */
+  paymentRow?: BillingAccountRowView
   /** Current-plan card (Plan section). Absent until billing.state resolves. */
   plan?: BillingPlanCardView
+  /** Automatic-refill section row. */
+  refillRow?: BillingAccountRowView
   status: 'loading' | 'logged_out' | 'normal' | 'refusal'
   summary: BillingSummaryItemView[]
   /** Live tier catalog for the plans sub-view (empty when unavailable). */
   tiers: BillingPlanTierView[]
+  /** One-time top-up section row. */
+  topupRow?: BillingAccountRowView
   usageRows: BillingUsageRowView[]
 }
 
@@ -145,7 +156,6 @@ export function deriveBillingView(
 ): BillingView {
   if (!stateResult) {
     return {
-      accountRows: [],
       status: 'loading',
       summary: emptySummary(),
       tiers: [],
@@ -155,7 +165,6 @@ export function deriveBillingView(
 
   if (!stateResult.ok) {
     return {
-      accountRows: [],
       notice: refusalNotice(stateResult.refusal),
       status: 'refusal',
       summary: emptySummary(),
@@ -169,7 +178,6 @@ export function deriveBillingView(
 
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
-      accountRows: [],
       notice: {
         action: { label: 'Open portal ↗', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
         message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
@@ -182,11 +190,17 @@ export function deriveBillingView(
     }
   }
 
-  const tiers = derivePlanTiers(subscription, billing.portal_url)
+  // One "can change plans in-app" verdict, shared by the plan card (button vs portal
+  // link) and the grid (whether upgrade tiles are actionable) so the invariant lives
+  // in one place.
+  const capable = plansCapable(subscription, subscriptionResult)
+  const tiers = derivePlanTiers(subscription, billing.portal_url, capable)
 
   return {
-    accountRows: deriveAccountRows(billing),
-    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers),
+    notice: undefined,
+    paymentRow: paymentMethodRow(billing),
+    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable),
+    refillRow: autoReloadRow(billing),
     status: 'normal',
     summary: [
       { label: 'Balance', value: displayBalance(billing) },
@@ -198,6 +212,7 @@ export function deriveBillingView(
       }
     ],
     tiers,
+    topupRow: buyCreditsRow(billing),
     usageRows: deriveUsageRows(billing, subscription)
   }
 }
@@ -290,8 +305,25 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   }
 }
 
-function deriveAccountRows(billing: BillingStateResponse): BillingAccountRowView[] {
-  return [paymentMethodRow(billing), buyCreditsRow(billing), autoReloadRow(billing)]
+// The active tier from the UNFILTERED catalog — a grandfathered current tier is
+// is_enabled:false, so it must still resolve here (by is_current or matching id).
+function findCurrentTier(subscription: null | SubscriptionStateResponse): SubscriptionTierOption | undefined {
+  const current = subscription?.current
+
+  return subscription?.tiers?.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
+}
+
+// Whether this account can change plans in-app: a personal (non-team) subscription
+// the server says the user can change, whose payload actually loaded.
+function plansCapable(
+  subscription: null | SubscriptionStateResponse,
+  subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined
+): boolean {
+  if (!subscription || (subscriptionResult && !subscriptionResult.ok)) {
+    return false
+  }
+
+  return subscription.context !== 'team' && Boolean(subscription.can_change_plan)
 }
 
 // Monthly credits are dollars; NAS sends a bare decimal string. Never render a
@@ -304,24 +336,24 @@ function creditsPerMonthDisplay(monthlyCredits: null | string): string | undefin
 
 /**
  * The current-plan card. It offers the in-app "View plans" / "Change plan" button
- * ONLY when the account can change plans AND the plans grid actually has an
- * actionable (non-current) tier to show — otherwise the button would open an empty
- * grid and silently no-op. In every no-button case (teams, non-changers, refused
- * subscription, empty catalog) the card ALWAYS carries the portal escape-hatch link
- * so the user is never stranded on an info-only card.
+ * ONLY when the account is plans-capable AND the grid has an actual UPGRADE to offer
+ * — a top-tier subscriber (only downgrades / current below them) would otherwise open
+ * a grid with nothing to do. In every no-button case (teams, non-changers, refused
+ * subscription, top tier, empty catalog) the card ALWAYS carries the portal
+ * escape-hatch link so the user is never stranded on an info-only card.
  */
 function derivePlanCard(
   billing: BillingStateResponse,
   subscription: null | SubscriptionStateResponse,
   subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined,
-  tiers: BillingPlanTierView[]
+  tiers: BillingPlanTierView[],
+  capable: boolean
 ): BillingPlanCardView {
   const current = subscription?.current
   const tierName = current?.tier_name ?? billing.usage?.plan_name ?? 'Free'
-  // Resolve price against the UNFILTERED catalog so a grandfathered (is_enabled:false)
-  // current tier still shows its price.
-  const currentTier = subscription?.tiers?.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
-  const price = currentTier?.dollars_per_month_display
+  // Price resolves against the UNFILTERED catalog so a grandfathered current tier
+  // still shows its price.
+  const price = findCurrentTier(subscription)?.dollars_per_month_display
   const renewal = formatBillingDate(current?.cycle_ends_at ?? billing.usage?.renews_at)
   const unavailable = subscriptionResult ? !subscriptionResult.ok : false
 
@@ -331,17 +363,10 @@ function derivePlanCard(
       ? `Renews ${renewal}`
       : 'No active subscription — paid models draw down top-up credits.'
 
-  const isTeam = subscription?.context === 'team'
-  const hasActionableTier = tiers.some(tier => tier.state !== 'current')
-  const canChange = Boolean(subscription?.can_change_plan) && !isTeam && !unavailable && hasActionableTier
-
-  if (canChange) {
-    return {
-      action: { label: current ? 'Change plan' : 'View plans' },
-      caption,
-      price,
-      tierName
-    }
+  // Actionable = there's a paid tier above the current one to move to. Downgrades
+  // are not counted at ticket 09 (they are inert here); ticket 11 flips this.
+  if (capable && tiers.some(tier => tier.state === 'upgrade')) {
+    return { action: { label: current ? 'Change plan' : 'View plans' }, caption, price, tierName }
   }
 
   return {
@@ -357,28 +382,31 @@ function derivePlanCard(
 }
 
 /**
- * The plans-grid catalog. Each card's action depends on its order relative to the
+ * The plans-grid catalog. Each card's state depends on its order relative to the
  * current tier: current = inert marker; higher = "Choose ↗" opening the portal with
  * the tier pre-selected; lower = disabled with a caption noting downgrades are
  * moving in-app (ticket 11 wires the gateway pending-change flow). With no active
  * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
  * there is no "subscribe to Free" upgrade and no downgrade state.
  *
- * `fallbackPortalUrl` (billing.portal_url) backs the Choose URLs when the
- * subscription payload has no portal_url, so org_id + plan are never dropped.
+ * Empty unless `capable`: only a plans-capable account gets actionable tiles, and the
+ * plan card / deep-link gate on the same verdict — so the grid never mints an
+ * upgrade action nobody may take. `fallbackPortalUrl` (billing.portal_url) backs the
+ * Choose URLs when the subscription payload has no portal_url, so org_id + plan are
+ * never dropped.
  */
 function derivePlanTiers(
   subscription: null | SubscriptionStateResponse,
-  fallbackPortalUrl: null | string
+  fallbackPortalUrl: null | string,
+  capable: boolean
 ): BillingPlanTierView[] {
-  const allTiers = subscription?.tiers ?? []
-  const current = subscription?.current
+  if (!capable || !subscription) {
+    return []
+  }
 
-  // Identity + ordering resolve against the UNFILTERED list: NAS marks a
-  // grandfathered current tier is_enabled:false (wire contract), and dropping it
-  // here would leave currentOrder undefined and misclassify every lower tier as a
-  // "Choose ↗" upgrade.
-  const explicitCurrent = allTiers.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
+  const allTiers = subscription.tiers ?? []
+  const current = subscription.current
+  const explicitCurrent = findCurrentTier(subscription)
 
   // The grid shows the enabled catalog plus the grandfathered current tier (so it
   // still renders as the inert "Current plan" card), sorted low→high.
@@ -396,10 +424,10 @@ function derivePlanTiers(
   // never leaving room for a downgrade.
   const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
   const currentOrder = currentTier?.tier_order
-  const manageBase = subscription?.portal_url ?? fallbackPortalUrl
+  const manageBase = subscription.portal_url ?? fallbackPortalUrl
 
-  return gridTiers.map(tier => {
-    const shared = {
+  return gridTiers.map((tier): BillingPlanTierView => {
+    const base: BillingPlanTierBase = {
       creditsDisplay: creditsPerMonthDisplay(tier.monthly_credits),
       name: tier.name,
       priceDisplay: tier.dollars_per_month_display,
@@ -407,22 +435,18 @@ function derivePlanTiers(
     }
 
     if (currentTier && tier.tier_id === currentTier.tier_id) {
-      return { ...shared, state: 'current' as const }
+      return { ...base, state: 'current' }
     }
 
     // Downgrade = strictly below the current tier's order.
     if (currentOrder != null && tier.tier_order < currentOrder) {
-      return {
-        ...shared,
-        disabledCaption: 'Downgrades are moving in-app — coming soon.',
-        state: 'downgrade' as const
-      }
+      return { ...base, disabledCaption: 'Downgrades are moving in-app — coming soon.', state: 'downgrade' }
     }
 
     return {
-      ...shared,
+      ...base,
       action: { label: 'Choose ↗', url: buildManageSubscriptionUrl(subscription, manageBase, tier.tier_id) },
-      state: 'upgrade' as const
+      state: 'upgrade'
     }
   })
 }
@@ -539,6 +563,9 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
     // the editable fields, so no redundant caption here.
     description: `Charges ${reloadTo} automatically when your balance falls below ${threshold}.`,
     id: 'auto_reload',
+    // The only row that edits in place — AutoReloadRow keys its swap layout off this
+    // flag rather than sniffing the action label.
+    manageInApp: true,
     pill: { label: 'Enabled', tone: 'primary' },
     title: 'Refill when low'
   }
@@ -634,8 +661,7 @@ function displayPlan(subscription: null | SubscriptionStateResponse, usage?: Usa
     return EMPTY_BILLING_VALUE
   }
 
-  const currentTier = subscription?.tiers.find(t => t.is_current || t.tier_id === current?.tier_id)
-  const price = currentTier?.dollars_per_month_display
+  const price = findCurrentTier(subscription)?.dollars_per_month_display
 
   return price ? `${tier} · ${price}/mo` : tier
 }

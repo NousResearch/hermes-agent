@@ -39,8 +39,8 @@ function PlanCard({ tier }: { tier: BillingPlanTierView }) {
       <div className="mt-auto min-w-0 pt-1">
         {isCurrent && <Pill tone="primary">Current plan</Pill>}
 
-        {tier.state === 'upgrade' && tier.action && (
-          <Button onClick={() => openExternalLink(tier.action?.url ?? '')} size="sm" type="button" variant="outline">
+        {tier.state === 'upgrade' && (
+          <Button onClick={() => openExternalLink(tier.action.url)} size="sm" type="button" variant="outline">
             {tier.action.label}
             <ExternalLink className="size-3.5" />
           </Button>
@@ -51,11 +51,9 @@ function PlanCard({ tier }: { tier: BillingPlanTierView }) {
             <Button disabled size="sm" type="button" variant="outline">
               Downgrade
             </Button>
-            {tier.disabledCaption && (
-              <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                {tier.disabledCaption}
-              </span>
-            )}
+            <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {tier.disabledCaption}
+            </span>
           </div>
         )}
       </div>

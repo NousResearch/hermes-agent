@@ -4,10 +4,9 @@ import memoryArt from '@/assets/tiers/feature-memory.webp'
 import sandboxArt from '@/assets/tiers/feature-sandbox.webp'
 import { cn } from '@/lib/utils'
 
-// Reproduces the NAS TierCard hero treatment (see nous-account-service
-// tier-card/index.tsx) at thumbnail size: each webp sits over a solid Nous-blue
-// well and blends into it. This blue well is the ONLY place Nous blue appears in
-// the billing page — everything else stays on the app's own tokens.
+// Reproduces the portal's tier-card hero treatment at thumbnail size: each webp sits
+// over a solid Nous-blue well and blends into it. This blue well is the ONLY place
+// Nous blue appears in the billing page — everything else stays on the app's own tokens.
 const NOUS_BLUE = '#0000f2'
 
 const BLEND_CLASS = {

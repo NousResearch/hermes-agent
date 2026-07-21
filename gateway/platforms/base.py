@@ -1496,11 +1496,17 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # consumer so both behave identically.
 # Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
 # ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
+#
+# Both the bare and quoted path forms use non-greedy quantifiers so two
+# ``MEDIA:`` tags glued together (``MEDIA:/a.pngMEDIA:/b.png``) or a tag
+# followed by stray text don't merge into one invalid path. The trailing
+# lookahead also accepts ``MEDIA:`` as a boundary, so the next tag stops
+# the current match cleanly (#68773).
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
-    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
+    r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
+    r'''(?=[\s`"',;:)\]}]|MEDIA:|$)[`"']?''',
     re.IGNORECASE,
 )
 
@@ -1514,10 +1520,18 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
 # under the credential/system denylist, strict-mode rules honored), so
 # prompt-injection paths that do not validate are left visible instead of
 # silently dropped.
+#
+# The path class uses a tempered-greedy token (``[^\s\n`"']+?`` followed by
+# a ``(?=...)`` lookahead) instead of the prior ``[^\s\n`"']+`` so a
+# tag glued to the next ``MEDIA:`` keyword (``MEDIA:/a.pngMEDIA:/b.png``)
+# or to arbitrary following text (``MEDIA:/a.pngSome text``) cannot
+# silently absorb the next path — that earlier behavior merged the two
+# paths into one invalid string and dropped the file (#68773).
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+)'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
+    r'''(?=[`"'\s,;:)\]}]|MEDIA:|$)'''
     r'''[`"']?\s*''',
     re.IGNORECASE,
 )

@@ -25,8 +25,8 @@ import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $filePreviewTarget, type PreviewTarget } from '@/store/preview'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $filePreviewTarget } from '@/store/preview'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -72,8 +72,6 @@ export const host = {
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */
     model: readonlyAtom<string>($currentModel),
-    /** Active file-preview target, or null when no file tab is selected. */
-    previewTarget: readonlyAtom($filePreviewTarget),
     /** Profile the live gateway is routed to. */
     profile: readonlyAtom<string>($activeGatewayProfile),
     /** Window geometry ({ width, height, narrow }). */
@@ -90,6 +88,13 @@ export const host = {
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+
+  /** Immutable snapshot of the active file-preview target. */
+  previewTarget: (): null | Readonly<PreviewTarget> => {
+    const target = $filePreviewTarget.get()
+
+    return target ? Object.freeze({ ...target }) : null
+  },
 
   /** Open a review-before-send prompt in an allowlisted local code client. */
   openCodeClient: async (input: CodeClientLaunch): Promise<void> => {
@@ -204,7 +209,6 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
-export type { PreviewTarget } from '@/store/preview'
 
 // -- contracts ----------------------------------------------------------------
 

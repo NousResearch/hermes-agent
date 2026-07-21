@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+const preview = vi.hoisted(() => ({
+  target: {
+    kind: 'file' as const,
+    label: 'today.md',
+    path: '/Users/test/repo/today.md',
+    source: '/Users/test/repo/today.md',
+    url: 'file:///Users/test/repo/today.md'
+  }
+}))
+
+vi.mock('@/store/preview', () => ({ $filePreviewTarget: { get: () => preview.target } }))
+
 import { host } from './index'
 
 describe('host.openCodeClient', () => {
@@ -24,5 +36,13 @@ describe('host.openCodeClient', () => {
     await expect(
       host.openCodeClient({ client: 'claude-code', cwd: '/Users/test/repo', prompt: 'Review notes/today.md' })
     ).rejects.toThrow('Code-client launch is unavailable')
+  })
+
+  it('returns a frozen copy of the active preview target', () => {
+    const target = host.previewTarget()
+
+    expect(target).not.toBeNull()
+    expect(target).not.toBe(preview.target)
+    expect(Object.isFrozen(target)).toBe(true)
   })
 })

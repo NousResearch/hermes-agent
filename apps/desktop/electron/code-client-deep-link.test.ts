@@ -16,8 +16,14 @@ describe('codeClientDeepLink', () => {
   })
 
   it('accepts absolute Windows paths without shell interpretation', () => {
-    expect(codeClientDeepLink({ client: 'codex', cwd: 'C:\\Users\\test\\repo', prompt: '' })).toBe(
+    expect(codeClientDeepLink({ client: 'codex', cwd: 'C:\\Users\\test\\repo', prompt: '' }, 'win32')).toBe(
       'codex://new?path=C%3A%5CUsers%5Ctest%5Crepo'
+    )
+  })
+
+  it.each(['/rooted', '\\rooted'])('rejects drive-relative Windows roots: %s', cwd => {
+    expect(() => codeClientDeepLink({ client: 'codex', cwd, prompt: '' }, 'win32')).toThrow(
+      'Invalid local working directory'
     )
   })
 
@@ -27,6 +33,8 @@ describe('codeClientDeepLink', () => {
     ['../repo', 'traversal'],
     ['/Users/test/../repo', 'absolute traversal'],
     ['//server/share', 'network'],
+    ['/\\server\\share', 'mixed-separator network'],
+    ['\\/server/share', 'mixed-separator network'],
     ['/Users/test/repo\nother', 'control']
   ])('rejects %s paths (%s)', cwd => {
     expect(() => codeClientDeepLink({ client: 'codex', cwd, prompt: '' })).toThrow('Invalid local working directory')

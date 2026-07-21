@@ -1,5 +1,3 @@
-import path from 'node:path'
-
 export type CodeClient = 'claude-code' | 'codex'
 
 export interface CodeClientLaunch {
@@ -8,23 +6,37 @@ export interface CodeClientLaunch {
   prompt: string
 }
 
-const UNSAFE_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/
 const PARENT_SEGMENT = /(?:^|[\\/])\.\.(?:[\\/]|$)/
 const MAX_PROMPT_LENGTH = 5000
 
-function validLocalDirectory(value: string): boolean {
+function hasUnsafePathCharacters(value: string): boolean {
+  return [...value].some(character => {
+    const codePoint = character.codePointAt(0) ?? 0
+
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      (codePoint >= 0x200b && codePoint <= 0x200f) ||
+      (codePoint >= 0x202a && codePoint <= 0x202e) ||
+      (codePoint >= 0x2060 && codePoint <= 0x206f)
+    )
+  })
+}
+
+function validLocalDirectory(value: string, platform: NodeJS.Platform): boolean {
+  const fullyQualified = platform === 'win32' ? /^[A-Za-z]:[\\/]/.test(value) : value.startsWith('/')
+
   return (
     value.length > 0 &&
-    (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) &&
-    !value.startsWith('//') &&
-    !value.startsWith('\\\\') &&
-    !UNSAFE_PATH_CHARACTERS.test(value) &&
+    fullyQualified &&
+    !/^[\\/]{2}/.test(value) &&
+    !hasUnsafePathCharacters(value) &&
     !PARENT_SEGMENT.test(value)
   )
 }
 
 /** Build an official, review-before-send code-client deep link. */
-export function codeClientDeepLink(value: unknown): string {
+export function codeClientDeepLink(value: unknown, platform: NodeJS.Platform = process.platform): string {
   if (!value || typeof value !== 'object') {
     throw new Error('Invalid code client request')
   }
@@ -39,7 +51,7 @@ export function codeClientDeepLink(value: unknown): string {
     throw new Error('Unsupported code client')
   }
 
-  if (!validLocalDirectory(input.cwd)) {
+  if (!validLocalDirectory(input.cwd, platform)) {
     throw new Error('Invalid local working directory')
   }
 

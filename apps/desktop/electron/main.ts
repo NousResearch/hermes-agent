@@ -4616,7 +4616,13 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token, signal?) {
-  const deadline = Date.now() + 45_000
+  // On Windows cold boot, the backend may announce readiness before its
+  // HTTP request handlers are fully registered (plugin / tool init is
+  // still in progress). Each individual fetch then hangs until Node's
+  // socket timeout fires. Use a shorter per-request timeout so we fail
+  // fast and retry often, and a longer overall deadline to absorb the
+  // extra Windows startup latency. (#68705)
+  const deadline = Date.now() + (IS_WINDOWS ? 90_000 : 45_000)
   let lastError = null
 
   while (Date.now() < deadline) {
@@ -4627,7 +4633,12 @@ async function waitForHermes(baseUrl, token, signal?) {
     }
 
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      // 5s per-request timeout: on cold boot the backend TCP listener is
+      // up but the HTTP server may not respond until its full plugin/tool
+      // initialization finishes. A short timeout lets us poll rapidly
+      // instead of wasting 15s on each hung request — we want to retry
+      // quickly until the backend is truly ready to serve.
+      await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 5_000 })
 
       return
     } catch (error) {

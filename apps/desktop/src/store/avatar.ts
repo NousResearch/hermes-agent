@@ -73,8 +73,7 @@ export function setAvatarName(role: AvatarRole, name: string): void {
   const trimmed = name.trim()
   const fallback = DEFAULT_NAMES[role]
 
-  // Empty → fall back to default, but still persist explicit empties as empty
-  // so the store knows it was intentionally cleared.
+  // Empty trims to the fallback default name.
   const next = { ...$avatarNames.get(), [role]: trimmed || fallback }
 
   $avatarNames.set(next)

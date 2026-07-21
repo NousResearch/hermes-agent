@@ -28,6 +28,50 @@ function initials(name: string): string {
     .join('')
 }
 
+function resizeImageToDataUrl(file: File, maxSize: number, onDataUrl: (url: string) => void) {
+  const img = new Image()
+  const url = URL.createObjectURL(file)
+
+  img.onload = () => {
+    URL.revokeObjectURL(url)
+
+    let { width, height } = img
+    if (width > maxSize || height > maxSize) {
+      const ratio = Math.min(maxSize / width, maxSize / height)
+      width = Math.round(width * ratio)
+      height = Math.round(height * ratio)
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      return
+    }
+
+    ctx.drawImage(img, 0, 0, width, height)
+    canvas.toBlob(
+      blob => {
+        if (!blob) {
+          return
+        }
+        const reader = new FileReader()
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            onDataUrl(reader.result)
+          }
+        }
+        reader.readAsDataURL(blob)
+      },
+      'image/jpeg',
+      0.85
+    )
+  }
+
+  img.src = url
+}
+
 function acceptImageFiles(event: React.ChangeEvent<HTMLInputElement>, onDataUrl: (url: string) => void) {
   const file = event.target.files?.[0]
 
@@ -35,15 +79,32 @@ function acceptImageFiles(event: React.ChangeEvent<HTMLInputElement>, onDataUrl:
     return
   }
 
-  const reader = new FileReader()
-
-  reader.onload = () => {
-    if (typeof reader.result === 'string') {
-      onDataUrl(reader.result)
-    }
+  // Reject non-image files
+  if (!file.type.startsWith('image/')) {
+    return
   }
 
-  reader.readAsDataURL(file)
+  // Reject files larger than 10 MB (before any resize)
+  const MAX_FILE_SIZE = 10 * 1024 * 1024
+  if (file.size > MAX_FILE_SIZE) {
+    return
+  }
+
+  // If under 1 MB, use directly; otherwise downscale to max 128x128 px
+  const DIRECT_THRESHOLD = 1 * 1024 * 1024
+
+  if (file.size <= DIRECT_THRESHOLD) {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        onDataUrl(reader.result)
+      }
+    }
+    reader.readAsDataURL(file)
+  } else {
+    resizeImageToDataUrl(file, 128, onDataUrl)
+  }
+
   // allow re-upload of the same file
   event.target.value = ''
 }

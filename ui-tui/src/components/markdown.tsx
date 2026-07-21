@@ -112,9 +112,9 @@ export const INLINE_RE = new RegExp(
     `<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>`, // 5   autolink
     `~~(.+?)~~`, // 6    strike
     `\`([^\\\`]+)\``, // 7    code
-    `\\*\\*(.+?)\\*\\*`, // 8    bold *
+    `(?<![\\w*])\\*\\*(.+?)\\*\\*(?![\\w*])`, // 8    bold *
     MD_UNDERSCORE_BOLD_RE, // 9    bold _
-    `\\*(.+?)\\*`, // 10   italic *
+    `(?<![\\w*])\\*(.+?)\\*(?![\\w*])`, // 10   italic *
     MD_UNDERSCORE_ITALIC_RE, // 11   italic _
     `==(.+?)==`, // 12   highlight
     `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
@@ -195,9 +195,9 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/<((?:https?:\/\/|mailto:)[^>\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g, '$1')
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/(?<![\w*])\*\*(.+?)\*\*(?![\w*])/g, '$1')
     .replace(STRIP_UNDERSCORE_BOLD_RE, '$1')
-    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/(?<![\w*])\*(.+?)\*(?![\w*])/g, '$1')
     .replace(STRIP_UNDERSCORE_ITALIC_RE, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')

@@ -64,9 +64,15 @@ describe('INLINE_RE emphasis', () => {
     expect(matches('print(__file__)')).toEqual([])
   })
 
-  it('still matches asterisk emphasis intraword', () => {
-    expect(matches('a*b*c')).toEqual(['*b*'])
-    expect(matches('a**bold**c')).toEqual(['**bold**'])
+  it('does not match asterisk emphasis intraword (matches underscore behavior)', () => {
+    expect(matches('a*b*c')).toEqual([])
+    expect(matches('a**bold**c')).toEqual([])
+  })
+
+  it('does not match C/C++ pointer syntax', () => {
+    expect(matches('uint8_t* base = (uint8_t*)0x20000000;')).toEqual([])
+    expect(matches('int* ptr')).toEqual([])
+    expect(matches('(char*)buf')).toEqual([])
   })
 
   it('matches short alphanumeric subscript (H~2~O, CO~2~, X~n~)', () => {
@@ -110,6 +116,18 @@ describe('stripInlineMarkup', () => {
   it('leaves ~!/~? kaomoji alone and still handles real subscript', () => {
     expect(stripInlineMarkup('Yay ~! nice work ~!')).toBe('Yay ~! nice work ~!')
     expect(stripInlineMarkup('H~2~O and CO~2~')).toBe('H_2O and CO_2')
+  })
+
+  it('preserves C/C++ pointer syntax', () => {
+    expect(stripInlineMarkup('uint8_t* base = (uint8_t*)0x20000000;')).toBe('uint8_t* base = (uint8_t*)0x20000000;')
+    expect(stripInlineMarkup('int* ptr')).toBe('int* ptr')
+    expect(stripInlineMarkup('(char*)buf')).toBe('(char*)buf')
+  })
+
+  it('still strips legitimate word-boundary emphasis', () => {
+    expect(stripInlineMarkup('say *hi* there')).toBe('say hi there')
+    expect(stripInlineMarkup('**bold** text')).toBe('bold text')
+    expect(stripInlineMarkup('(*nested*)')).toBe('(nested)')
   })
 
   it('strips inline math delimiters but keeps the formula text', () => {

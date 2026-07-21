@@ -594,6 +594,31 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_delivery_loads_hermes_env_for_standalone_gateway_config(self, monkeypatch, tmp_path):
+        """Standalone delivery should auto-load ~/.hermes/.env before resolving platforms."""
+        import gateway.config as gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=test-token\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.setattr(gateway_config, "_ENV_LOADED", False)
+
+        async_send = AsyncMock(return_value={"success": True})
+        with patch("tools.send_message_tool._send_to_platform", new=async_send), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            job = {
+                "id": "env-load-job",
+                "deliver": "telegram:123",
+            }
+            result = _deliver_result(job, "hello from standalone delivery")
+
+        assert result is None
+        assert os.environ["TELEGRAM_BOT_TOKEN"] == "test-token"
+        async_send.assert_awaited_once()
+
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
         from gateway.config import Platform

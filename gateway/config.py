@@ -22,6 +22,30 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+_ENV_LOADED = False
+
+
+def _ensure_hermes_env_loaded() -> None:
+    """Best-effort load of ~/.hermes/.env before resolving gateway platforms.
+
+    Standalone contexts such as cron delivery and direct-send helpers can call
+    ``load_gateway_config()`` without a launcher having sourced the Hermes env
+    file first. Reuse the shared Hermes env loader here so gateway config sees
+    the same env values and sanitization behavior as other entrypoints.
+    """
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+
+        load_hermes_dotenv(hermes_home=get_hermes_home())
+    except Exception as e:
+        logger.debug("Failed to load Hermes env before gateway config: %s", e)
+    finally:
+        _ENV_LOADED = True
+
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
@@ -1194,6 +1218,7 @@ def load_gateway_config() -> GatewayConfig:
     3. ~/.hermes/gateway.json (legacy — provides defaults under config.yaml)
     4. Built-in defaults
     """
+    _ensure_hermes_env_loaded()
     _home = get_hermes_home()
     gw_data: dict = {}
 

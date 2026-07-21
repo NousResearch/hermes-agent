@@ -739,6 +739,7 @@ async def upload_task_attachment(
         except HTTPException:
             raise
         except OSError as exc:
+            dest_path.unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
 
         att_id = kanban_db.add_attachment(

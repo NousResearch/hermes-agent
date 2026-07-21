@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent.cache_shape import capture_prefix_shape, diagnose_cache_miss
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
@@ -1211,7 +1212,21 @@ def run_conversation(
             logging.debug(f"API Request - Model: {agent.model}, Messages: {len(messages)}, Tools: {len(agent.tools) if agent.tools else 0}")
             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
-        
+
+        # Cache-shape capture (#68489): fingerprint the request prefix
+        # (system message, tool schemas, per-message hashes) so that a poor
+        # cache hit rate reported by the provider can be explained after the
+        # response arrives (see the diagnose_cache_miss call in the usage
+        # block).  Captured here — after the pre-API compression gate — so
+        # the previous shape always describes a request that was actually
+        # sent.  Observability only; the request itself is untouched.
+        try:
+            agent._cache_shape_prev = getattr(agent, "_cache_shape_cur", None)
+            agent._cache_shape_cur = capture_prefix_shape(api_messages, agent.tools)
+        except Exception as _shape_exc:  # noqa: BLE001 — diagnostics must never break the loop
+            logger.debug("Cache-shape capture failed: %s", _shape_exc)
+            agent._cache_shape_cur = None
+
         api_start_time = time.time()
         retry_count = 0
         max_retries = agent._api_max_retries
@@ -2406,6 +2421,32 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+
+                    # Cache-shape diagnostics (#68489): once this session has
+                    # proven the provider reports cache metrics, explain poor
+                    # hit rates by comparing the request prefix against the
+                    # previous call's (captured just before each API call).
+                    # Gated on _cache_metrics_seen so providers that never
+                    # report cache usage don't produce a bogus "miss"
+                    # diagnosis every turn.
+                    if cached or written:
+                        agent._cache_metrics_seen = True
+                    if getattr(agent, "_cache_metrics_seen", False):
+                        _shape_reason = diagnose_cache_miss(
+                            getattr(agent, "_cache_shape_prev", None),
+                            getattr(agent, "_cache_shape_cur", None),
+                            cache_read_tokens=cached,
+                            prompt_tokens=prompt,
+                        )
+                        if _shape_reason:
+                            logger.info(
+                                "Prompt-cache miss diagnosis: %s", _shape_reason
+                            )
+                            if not agent.quiet_mode:
+                                agent._vprint(
+                                    f"{agent.log_prefix}   🔍 Cache miss: "
+                                    f"{_shape_reason}"
+                                )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

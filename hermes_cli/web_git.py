@@ -540,6 +540,15 @@ def _default_branch(cwd: str) -> str:
     return ""
 
 
+def _is_repo(cwd: str) -> bool:
+    code, out, err = _git(cwd, ["rev-parse", "--is-inside-work-tree"])
+    if code == 0:
+        return out.strip() == "true"
+    if "not a git repository" in err.lower():
+        return False
+    raise RuntimeError(err.strip() or "git rev-parse --is-inside-work-tree failed")
+
+
 def _ensure_repo(cwd: str) -> None:
     """A new project folder may not be a repo (or has no commit to branch from);
     init it with a root commit so worktrees just work. No-op for a committed repo."""
@@ -650,6 +659,12 @@ def branch_switch(cwd: str, branch: str) -> dict:
     target = _sanitize_branch(branch)
     if not target:
         raise RuntimeError("Branch name is required.")
+    # A Desktop project may be a plain directory (for example a workspace that
+    # groups nested repos but is intentionally not itself a repo). If a stale or
+    # new-thread hand-off asks to "switch home" there, treat it as a no-op so
+    # normal threads can still start in that directory without creating .git.
+    if not _is_repo(cwd):
+        return {"branch": target}
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
 

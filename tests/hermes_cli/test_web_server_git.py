@@ -154,6 +154,33 @@ def test_worktree_add_initializes_plain_folder(client, tmp_path):
     assert any(file["path"] == "notes.txt" and file["untracked"] for file in status["files"])
 
 
+def test_branch_switch_noops_for_plain_folder(client, tmp_path):
+    folder = tmp_path / "plain-project"
+    folder.mkdir()
+    (folder / "notes.txt").write_text("not committed\n")
+
+    switched = client.post(
+        "/api/git/branch/switch", json={"path": str(folder), "branch": "LLVM-Gen"}
+    ).json()
+
+    assert switched == {"branch": "LLVM-Gen"}
+    assert not (folder / ".git").exists()
+    assert (folder / "notes.txt").read_text() == "not committed\n"
+
+
+def test_branch_switch_surfaces_git_probe_failures(client, tmp_path, monkeypatch):
+    folder = tmp_path / "plain-project"
+    folder.mkdir()
+    monkeypatch.setenv("PATH", "")
+
+    response = client.post(
+        "/api/git/branch/switch", json={"path": str(folder), "branch": "feature"}
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "git invocation failed"}
+
+
 def test_commit_context_includes_diff_and_untracked(client, repo):
     body = client.get("/api/git/review/commit-context", params={"path": str(repo)}).json()
 

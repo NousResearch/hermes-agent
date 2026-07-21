@@ -4,10 +4,29 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionProbeResult,
+  DesktopSavedConnection
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
-import { AlertCircle, Check, Cloud, FileText, Globe, HelpCircle, Loader2, LogIn, Monitor, RefreshCw } from '@/lib/icons'
+import {
+  AlertCircle,
+  Check,
+  Cloud,
+  FileText,
+  Globe,
+  HelpCircle,
+  Loader2,
+  LogIn,
+  Monitor,
+  Plus,
+  RefreshCw,
+  Trash2
+} from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -23,6 +42,7 @@ type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
 
 interface GatewaySettingsState {
+  connections: DesktopSavedConnection[]
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
@@ -30,10 +50,13 @@ interface GatewaySettingsState {
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
   remoteUrl: string
+  selectedConnectionId: null | string
+  selectedConnectionName: string
   cloudOrg: string
 }
 
 const EMPTY_STATE: GatewaySettingsState = {
+  connections: [],
   envOverride: false,
   mode: 'local',
   remoteAuthMode: 'token',
@@ -41,11 +64,36 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteTokenPreview: null,
   remoteTokenSet: false,
   remoteUrl: '',
+  selectedConnectionId: null,
+  selectedConnectionName: '',
   cloudOrg: ''
 }
 
 export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
   return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
+}
+
+export function stateForRemoteMode(current: GatewaySettingsState, scope: null | string): GatewaySettingsState {
+  if (scope !== null) {
+    return { ...current, mode: 'remote' }
+  }
+
+  const selected = current.connections.find(connection => connection.id === current.selectedConnectionId)
+
+  if (!selected) {
+    return { ...current, mode: 'remote' }
+  }
+
+  return {
+    ...current,
+    mode: 'remote',
+    remoteAuthMode: selected.remoteAuthMode,
+    remoteOauthConnected: selected.remoteOauthConnected,
+    remoteTokenPreview: selected.remoteTokenPreview,
+    remoteTokenSet: selected.remoteTokenSet,
+    remoteUrl: selected.remoteUrl,
+    selectedConnectionName: selected.name
+  }
 }
 
 function ModeCard({
@@ -351,7 +399,64 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     return Boolean(remoteToken.trim()) || state.remoteTokenSet
   }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
 
+  const selectRemoteMode = () => {
+    setRemoteToken('')
+    setState(current => stateForRemoteMode(current, scope))
+  }
+
+  const startNewConnection = () => {
+    setRemoteToken('')
+    setLastTest(null)
+    setState(current => ({
+      ...current,
+      mode: 'remote',
+      remoteAuthMode: 'token',
+      remoteOauthConnected: false,
+      remoteTokenPreview: null,
+      remoteTokenSet: false,
+      remoteUrl: '',
+      selectedConnectionId: null,
+      selectedConnectionName: ''
+    }))
+  }
+
+  const connectSavedConnection = async (id: string) => {
+    setSaving(true)
+
+    try {
+      const next = await window.hermesDesktop.selectConnectionConfig(id)
+      acceptSavedConfig(next)
+      setRemoteToken('')
+      notify({ kind: 'success', title: g.restartingTitle, message: g.restartingMessage })
+    } catch (err) {
+      notifyError(err, g.applyFailed)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteSavedConnection = async (connection: DesktopSavedConnection) => {
+    if (!window.confirm(g.deleteConnectionConfirm(connection.name))) {
+      return
+    }
+
+    setSaving(true)
+
+    try {
+      const next = await window.hermesDesktop.deleteConnectionConfig(connection.id)
+      acceptSavedConfig(next)
+      setRemoteToken('')
+      notify({ kind: 'success', title: g.deletedConnectionTitle, message: g.deletedConnection(connection.name) })
+    } catch (err) {
+      notifyError(err, g.deleteConnectionFailed)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const payload = () => ({
+    connectionId: scope === null ? state.selectedConnectionId : undefined,
+    connectionName: scope === null ? state.selectedConnectionName.trim() || undefined : undefined,
     mode: state.mode,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
@@ -366,6 +471,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         title: g.incompleteTitle,
         message: authMode === 'oauth' ? g.incompleteSignIn : g.incompleteToken
       })
+
+      return
+    }
+
+    if (scope === null && state.mode === 'remote' && !state.selectedConnectionName.trim()) {
+      notify({ kind: 'warning', title: g.connectionNameRequiredTitle, message: g.connectionNameRequired })
 
       return
     }
@@ -401,12 +512,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       return
     }
 
+    if (scope === null && !state.selectedConnectionName.trim()) {
+      notify({ kind: 'warning', title: g.connectionNameRequiredTitle, message: g.connectionNameRequired })
+
+      return
+    }
+
     setSigningIn(true)
 
     try {
       // Save (don't apply/restart) so the login window has a URL to use and the
       // oauth mode is persisted, without yet flipping the live connection.
       const saved = await window.hermesDesktop.saveConnectionConfig({
+        connectionId: scope === null ? state.selectedConnectionId : undefined,
+        connectionName: scope === null ? state.selectedConnectionName.trim() || undefined : undefined,
         mode: state.mode,
         profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
@@ -756,6 +875,72 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       ) : null}
 
+      {scope === null ? (
+        <div className="mb-5 grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
+                {g.savedConnectionsTitle}
+              </div>
+              <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                {g.savedConnectionsDesc}
+              </p>
+            </div>
+            <Button disabled={state.envOverride || saving} onClick={startNewConnection} size="sm" variant="outline">
+              <Plus />
+              {g.addConnection}
+            </Button>
+          </div>
+
+          {state.connections.length > 0 ? (
+            <div className="grid gap-1">
+              {state.connections.map(connection => {
+                const active =
+                  !state.envOverride && state.mode === 'remote' && state.selectedConnectionId === connection.id
+
+                return (
+                  <ListRow
+                    action={
+                      <div className="flex items-center gap-1.5">
+                        {active ? (
+                          <Pill tone="primary">
+                            <Check className="size-3" /> {g.connectedConnection}
+                          </Pill>
+                        ) : (
+                          <Button
+                            disabled={state.envOverride || saving}
+                            onClick={() => void connectSavedConnection(connection.id)}
+                            size="sm"
+                          >
+                            {g.connectConnection}
+                          </Button>
+                        )}
+                        <Button
+                          aria-label={g.deleteConnection(connection.name)}
+                          disabled={state.envOverride || saving}
+                          onClick={() => void deleteSavedConnection(connection)}
+                          size="icon-sm"
+                          variant="ghost"
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    }
+                    description={g.connectionShortcut(connection.id, connection.remoteUrl)}
+                    key={connection.id}
+                    title={connection.name}
+                  />
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {g.noSavedConnections}
+            </p>
+          )}
+        </div>
+      ) : null}
+
       {state.envOverride ? (
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -793,7 +978,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             disabled={state.envOverride}
             hint={g.remoteAuthHint}
             icon={Globe}
-            onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
+            onSelect={selectRemoteMode}
             title={g.remoteTitle}
           />
         </div>
@@ -946,6 +1131,22 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
       {state.mode === 'remote' && !state.envOverride ? (
         <div className="mt-5 grid gap-1">
+          {scope === null ? (
+            <ListRow
+              action={
+                <Input
+                  className={cn('h-8', CONTROL_TEXT)}
+                  onChange={event => setState(current => ({ ...current, selectedConnectionName: event.target.value }))}
+                  placeholder={g.connectionNamePlaceholder}
+                  value={state.selectedConnectionName}
+                />
+              }
+              description={
+                state.selectedConnectionId ? g.connectionIdDesc(state.selectedConnectionId) : g.connectionNameDesc
+              }
+              title={g.connectionNameTitle}
+            />
+          ) : null}
           <ListRow
             action={
               <Input

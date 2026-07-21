@@ -12,6 +12,7 @@ import {
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
   return {
+    connections: [],
     envOverride: false,
     mode: 'remote',
     profile: null,
@@ -20,6 +21,8 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     remoteTokenPreview: null,
     remoteTokenSet: false,
     remoteUrl: 'https://box:9119',
+    selectedConnectionId: null,
+    selectedConnectionName: '',
     cloudOrg: '',
     ...overrides
   }

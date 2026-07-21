@@ -224,6 +224,30 @@ function collectRelaunchArgs(argv) {
   })
 }
 
+function replaceRelaunchConnectionArg(args, selector) {
+  const filtered = []
+
+  for (let index = 0; index < (Array.isArray(args) ? args.length : 0); index += 1) {
+    const arg = args[index]
+
+    if (arg === '--connection') {
+      index += 1
+
+      continue
+    }
+
+    if (typeof arg === 'string' && arg.startsWith('--connection=')) {
+      continue
+    }
+
+    filtered.push(arg)
+  }
+
+  const value = String(selector || '').trim()
+
+  return value ? [...filtered, `--connection=${value}`] : filtered
+}
+
 // Env keys whose values define the relaunched instance's context (which
 // backend/profile/root it talks to). Anything HERMES_DESKTOP_* is preserved
 // plus HERMES_HOME. We snapshot the values, not the live env, so the new
@@ -306,6 +330,7 @@ export {
   INTERNAL_ARG_PREFIXES,
   PRESERVED_ENV_KEYS,
   PRESERVED_ENV_PREFIXES,
+  replaceRelaunchConnectionArg,
   resolveUnpackedRelease,
   sandboxFallbackFromEnv,
   sandboxPreflight,

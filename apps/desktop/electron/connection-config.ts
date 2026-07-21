@@ -187,6 +187,285 @@ function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
 }
 
+// Saved gateway connections are deliberately separate from Hermes Agent
+// profiles. A connection is a machine/backend endpoint; a Hermes profile is a
+// config/session namespace served by that endpoint. Conflating the two was the
+// old workaround for storing more than one remote host.
+const SAVED_CONNECTION_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+function savedConnectionIdFromName(name) {
+  const raw = String(name || '')
+    .trim()
+    .toLowerCase()
+
+  if (!raw) {
+    throw new Error('Connection name is required.')
+  }
+
+  if (raw === 'local') {
+    throw new Error('Connection name cannot be “local”.')
+  }
+
+  let id = raw
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+    .slice(0, 64)
+
+  // Display names may be entirely non-Latin. Keep the shortcut shell-safe and
+  // stable by deriving a short deterministic fallback rather than rejecting a
+  // perfectly valid localized name.
+  if (!id) {
+    let hash = 2166136261
+
+    for (let index = 0; index < raw.length; index += 1) {
+      hash ^= raw.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+
+    id = `connection-${(hash >>> 0).toString(36)}`
+  }
+
+  if (!SAVED_CONNECTION_ID_RE.test(id)) {
+    throw new Error('Connection name must contain at least one letter or number.')
+  }
+
+  return id
+}
+
+function sanitizeSavedConnections(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const out: Record<string, any> = {}
+
+  for (const [rawId, rawEntry] of Object.entries(value)) {
+    const id = String(rawId || '')
+      .trim()
+      .toLowerCase()
+
+    if (!SAVED_CONNECTION_ID_RE.test(id) || id === 'local' || !rawEntry || typeof rawEntry !== 'object') {
+      continue
+    }
+
+    const entry: any = rawEntry
+
+    const name = String(entry.name || id)
+      .trim()
+      .slice(0, 80)
+
+    const url = String(entry.url || '').trim()
+
+    if (!name || !url) {
+      continue
+    }
+
+    out[id] = {
+      name,
+      url,
+      authMode: normAuthMode(entry.authMode),
+      token: entry.token
+    }
+  }
+
+  return out
+}
+
+function savedConnectionEntries(config) {
+  const connections = sanitizeSavedConnections(config?.connections)
+
+  return Object.entries(connections)
+    .map(([id, entry]: [string, any]) => ({ id, ...entry }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function resolveSavedConnection(config, selector) {
+  const value = String(selector || '').trim()
+
+  if (!value) {
+    return null
+  }
+
+  if (value.toLowerCase() === 'local') {
+    return { id: 'local', name: 'Local gateway', local: true }
+  }
+
+  const entries = savedConnectionEntries(config)
+  const byId = entries.find(entry => entry.id === value.toLowerCase())
+
+  if (byId) {
+    return byId
+  }
+
+  const folded = value.toLocaleLowerCase()
+  const byName = entries.filter(entry => entry.name.toLocaleLowerCase() === folded)
+
+  return byName.length === 1 ? byName[0] : null
+}
+
+function selectSavedConnection(config, selector) {
+  const resolved: any = resolveSavedConnection(config, selector)
+
+  if (!resolved) {
+    const available = savedConnectionEntries(config).map(entry => entry.id)
+
+    const suffix = available.length
+      ? ` Available connections: ${available.join(', ')}.`
+      : ' No remote connections are saved.'
+
+    throw new Error(`Unknown desktop connection “${String(selector || '').trim()}”.${suffix}`)
+  }
+
+  if (resolved.local) {
+    return { ...config, mode: 'local' }
+  }
+
+  const { id, name: _name, ...remote } = resolved
+
+  return {
+    ...config,
+    mode: 'remote',
+    selectedConnection: id,
+    remote
+  }
+}
+
+function removeSavedConnection(config, selector) {
+  const resolved: any = resolveSavedConnection(config, selector)
+
+  if (!resolved || resolved.local) {
+    throw new Error(`Unknown remote desktop connection “${String(selector || '').trim()}”.`)
+  }
+
+  const connections = { ...sanitizeSavedConnections(config?.connections) }
+  delete connections[resolved.id]
+
+  const selectedConnection = config?.selectedConnection === resolved.id ? null : config?.selectedConnection || null
+  const mode = config?.selectedConnection === resolved.id && config?.mode === 'remote' ? 'local' : config?.mode
+
+  return { ...config, connections, selectedConnection, mode }
+}
+
+function parseDesktopConnectionArg(argv) {
+  if (!Array.isArray(argv)) {
+    return null
+  }
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+
+    if (typeof arg !== 'string') {
+      continue
+    }
+
+    if (arg === '--connection') {
+      const next = argv[index + 1]
+
+      return typeof next === 'string' && !next.startsWith('--') ? next.trim() || null : null
+    }
+
+    if (arg.startsWith('--connection=')) {
+      return arg.slice('--connection='.length).trim() || null
+    }
+  }
+
+  return null
+}
+
+function normalizeStoredConnectionConfig(parsed) {
+  const value = parsed && typeof parsed === 'object' ? parsed : {}
+  let remote = value.remote && typeof value.remote === 'object' ? { ...value.remote } : {}
+  remote.authMode = normAuthMode(remote.authMode)
+
+  let connections = sanitizeSavedConnections(value.connections)
+
+  const parsedSelection =
+    typeof value.selectedConnection === 'string' ? value.selectedConnection.trim().toLowerCase() : ''
+
+  let selectedConnection = parsedSelection && connections[parsedSelection] ? parsedSelection : null
+
+  // Backward migration: the old schema retained one remote block even while
+  // Local was selected. Lift it into the registry without turning Local on.
+  // A Cloud block belongs to discovery, not to the user's named remotes.
+  if (
+    Object.keys(connections).length === 0 &&
+    value.mode !== 'cloud' &&
+    typeof remote.url === 'string' &&
+    remote.url.trim()
+  ) {
+    connections = {
+      remote: {
+        name: 'Remote gateway',
+        url: remote.url,
+        authMode: normAuthMode(remote.authMode),
+        token: remote.token
+      }
+    }
+    selectedConnection = 'remote'
+  }
+
+  if (value.mode === 'remote' && selectedConnection && connections[selectedConnection]) {
+    const { name: _name, ...selectedRemote } = connections[selectedConnection]
+    remote = selectedRemote
+  }
+
+  return {
+    mode: modeIsRemoteLike(value.mode) ? value.mode : 'local',
+    remote,
+    connections,
+    selectedConnection
+  }
+}
+
+function upsertSavedConnection(config, input) {
+  const connections = sanitizeSavedConnections(config?.connections)
+
+  const storedSelection =
+    typeof config?.selectedConnection === 'string' && connections[config.selectedConnection]
+      ? config.selectedConnection
+      : null
+
+  const explicitConnectionId = typeof input?.connectionId === 'string' ? input.connectionId.trim().toLowerCase() : null
+
+  if (explicitConnectionId && !connections[explicitConnectionId]) {
+    throw new Error(`Unknown saved connection “${explicitConnectionId}”.`)
+  }
+
+  const selectedConnection =
+    explicitConnectionId && connections[explicitConnectionId] ? explicitConnectionId : storedSelection
+
+  const selectedBlock = selectedConnection ? connections[selectedConnection] : null
+  const forceNew = Object.prototype.hasOwnProperty.call(input || {}, 'connectionId') && input.connectionId === null
+  const requestedName = String(input?.connectionName || selectedBlock?.name || 'Remote gateway').trim()
+
+  if (!requestedName) {
+    throw new Error('Connection name is required.')
+  }
+
+  let id = forceNew ? savedConnectionIdFromName(requestedName) : explicitConnectionId || storedSelection
+
+  if (!id) {
+    id = savedConnectionIdFromName(requestedName)
+  }
+
+  if (forceNew && connections[id]) {
+    throw new Error(`A saved connection with shortcut name “${id}” already exists.`)
+  }
+
+  return {
+    connections: {
+      ...connections,
+      [id]: {
+        name: requestedName.slice(0, 80),
+        url: input.remote.url,
+        authMode: normAuthMode(input.remote.authMode),
+        token: input.remote.token
+      }
+    },
+    selectedConnection: id
+  }
+}
+
 // Coerce a remote auth mode to one of the two supported values ('token' default).
 function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
@@ -375,12 +654,21 @@ export {
   isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeStoredConnectionConfig,
   normAuthMode,
+  parseDesktopConnectionArg,
   pathWithGlobalRemoteProfile,
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileRemoteOverride,
+  removeSavedConnection,
   resolveAuthMode,
+  resolveSavedConnection,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
-  tokenPreview
+  sanitizeSavedConnections,
+  savedConnectionEntries,
+  savedConnectionIdFromName,
+  selectSavedConnection,
+  tokenPreview,
+  upsertSavedConnection
 }

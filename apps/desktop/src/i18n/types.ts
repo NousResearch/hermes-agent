@@ -470,6 +470,24 @@ export interface Translations {
       allProfiles: string
       defaultConnection: string
       profileConnection: (profile: string) => string
+      savedConnectionsTitle: string
+      savedConnectionsDesc: string
+      addConnection: string
+      noSavedConnections: string
+      connectedConnection: string
+      connectConnection: string
+      connectionShortcut: (id: string, url: string) => string
+      deleteConnection: (name: string) => string
+      deleteConnectionConfirm: (name: string) => string
+      deletedConnectionTitle: string
+      deletedConnection: (name: string) => string
+      deleteConnectionFailed: string
+      connectionNameTitle: string
+      connectionNamePlaceholder: string
+      connectionNameDesc: string
+      connectionIdDesc: (id: string) => string
+      connectionNameRequiredTitle: string
+      connectionNameRequired: string
       envOverrideTitle: string
       envOverrideDesc: string
       modeTitle: string

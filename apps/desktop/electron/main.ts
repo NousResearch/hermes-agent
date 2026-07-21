@@ -51,12 +51,20 @@ import {
   gatewayWsUrlIpcResult,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeStoredConnectionConfig,
   normAuthMode,
+  parseDesktopConnectionArg,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
+  removeSavedConnection,
   resolveAuthMode,
+  resolveSavedConnection,
   resolveTestWsUrl,
-  tokenPreview
+  sanitizeSavedConnections,
+  savedConnectionEntries,
+  selectSavedConnection,
+  tokenPreview,
+  upsertSavedConnection
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
 import {
@@ -130,6 +138,7 @@ import {
   collectRelaunchArgs,
   collectRelaunchEnv,
   decideRelaunchOutcome,
+  replaceRelaunchConnectionArg,
   resolveUnpackedRelease,
   sandboxFallbackFromEnv,
   sandboxPreflight
@@ -982,6 +991,12 @@ let backendStartFailure = null
 let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+// Set only by an explicit named-connection action in this process (launch argv,
+// saved-list Connect, or named Save and reconnect). Unlike the legacy global
+// default, this is authoritative over profile/env routing so a shortcut can
+// never silently land on another machine.
+let runtimeConnectionSelector = null
+let connectionSwitchQueue = Promise.resolve()
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -3005,7 +3020,17 @@ async function applyUpdatesPosixInApp(opts: any) {
       // (filtered of Electron internals) and the env/cwd that define which
       // backend/profile/root this instance talks to. Without this the
       // relaunched instance comes up with default context instead of the user's.
-      const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
+      const connectionConfig = readDesktopConnectionConfig()
+
+      const relaunchConnection =
+        runtimeConnectionSelector ||
+        (connectionConfig.mode === 'local'
+          ? 'local'
+          : connectionConfig.mode === 'remote'
+            ? connectionConfig.selectedConnection
+            : null)
+
+      const relaunchArgs = replaceRelaunchConnectionArg(collectRelaunchArgs(process.argv.slice(1)), relaunchConnection)
       const relaunchEnv = collectRelaunchEnv(process.env)
 
       const relaunchScript = buildRelaunchScript({
@@ -6082,8 +6107,8 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
 function readDesktopConnectionConfig() {
   // Check if file changed on disk since last read (e.g. modified by another
-  // process or an external tool).  Our own writes update the cache inline
-  // via writeDesktopConnectionConfig, but external changes would be missed.
+  // process or an external tool). Our own writes update the cache inline via
+  // writeDesktopConnectionConfig, but external changes would be missed.
   let mtime = null
 
   try {
@@ -6096,21 +6121,17 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {}, profiles: {} }
+  let config: any = { mode: 'local', remote: {}, profiles: {}, connections: {}, selectedConnection: null }
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object') {
-      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
-      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
-      // or 'token' (legacy static session token). Default to 'token' for
-      // backward compatibility with configs written before OAuth support.
-      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+      const normalized = normalizeStoredConnectionConfig(parsed)
+
       config = {
-        mode: modeIsRemoteLike(parsed.mode) ? parsed.mode : 'local',
-        remote,
+        ...normalized,
         // Per-profile remote overrides: each profile may point at its own
         // backend (local spawn or its own remote URL). Preserved verbatim so
         // profileRemoteOverride() can resolve them; normalized lazily on save.
@@ -6173,9 +6194,49 @@ function writeActiveDesktopProfile(name) {
 async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig(), profile = null) {
   const key = connectionScopeKey(profile)
   const scoped = key ? config.profiles?.[key] || null : null
-  const block = key ? scoped || {} : config.remote || {}
 
-  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+  const runtimeSelection =
+    !key && runtimeConnectionSelector ? resolveSavedConnection(config, runtimeConnectionSelector) : null
+
+  const block = key
+    ? scoped || {}
+    : runtimeSelection && !runtimeSelection.local
+      ? runtimeSelection
+      : config.remote || {}
+
+  const savedConnections = await Promise.all(
+    savedConnectionEntries(config).map(async (entry: any) => {
+      const token = decryptDesktopSecret(entry.token)
+      const remoteAuthMode = normAuthMode(entry.authMode)
+      const remoteUrl = String(entry.url || '')
+      let remoteOauthConnected = false
+
+      if (remoteAuthMode === 'oauth' && remoteUrl) {
+        try {
+          remoteOauthConnected = await hasLiveOauthSession(remoteUrl)
+        } catch {
+          remoteOauthConnected = false
+        }
+      }
+
+      return {
+        id: entry.id,
+        name: entry.name,
+        remoteAuthMode,
+        remoteOauthConnected,
+        remoteTokenPreview: tokenPreview(token),
+        remoteTokenSet: Boolean(token),
+        remoteUrl
+      }
+    })
+  )
+
+  const selectedConnection =
+    savedConnections.find(entry => entry.id === (runtimeSelection?.local ? null : runtimeSelection?.id)) ||
+    savedConnections.find(entry => entry.id === config.selectedConnection) ||
+    null
+
+  const envOverride = key || runtimeConnectionSelector ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
 
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
@@ -6183,7 +6244,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   // The env override forces a plain remote connection. Otherwise reflect the
   // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI
   // reopens into the cloud picker; any non-remote-like value collapses to local.
-  const savedMode = key ? scoped?.mode : config.mode
+  const savedMode = key ? scoped?.mode : runtimeSelection ? (runtimeSelection.local ? 'local' : 'remote') : config.mode
   const mode = envOverride ? 'remote' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
   let remoteOauthConnected = false
@@ -6204,6 +6265,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     mode,
     // Echo the scope back so the UI knows which profile (if any) this reflects.
     profile: key,
+    connections: savedConnections,
+    selectedConnectionId: selectedConnection?.id || null,
+    selectedConnectionName: selectedConnection?.name || '',
     remoteAuthMode: authMode,
     remoteOauthConnected,
     remoteUrl,
@@ -6252,24 +6316,43 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // Anything else collapses to local.
   const mode = modeIsRemoteLike(input.mode) ? input.mode : 'local'
   const remoteLike = modeIsRemoteLike(mode)
+  const connections = sanitizeSavedConnections(existing.connections)
 
-  // The block being edited: a per-profile entry or the global remote block.
-  const rawExistingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
-  // Leaving a CLOUD connection unselects it: a cloud block's url/org/token
-  // describe a discovered Hermes Cloud instance, NOT a user-owned remote gateway,
-  // so switching to local or remote must NOT inherit them (otherwise the stale
-  // cloud URL lingers and re-selecting Cloud looks "already connected"). When the
-  // saved block was cloud and the new mode is not cloud, start from an empty
-  // block. (remote↔local toggles still preserve a real remote URL as before.)
+  const storedSelection =
+    typeof existing.selectedConnection === 'string' && connections[existing.selectedConnection]
+      ? existing.selectedConnection
+      : null
+
+  const explicitConnectionId = typeof input.connectionId === 'string' ? input.connectionId.trim().toLowerCase() : null
+
+  const selectedConnection =
+    explicitConnectionId && connections[explicitConnectionId] ? explicitConnectionId : storedSelection
+
+  const selectedBlock = selectedConnection ? connections[selectedConnection] : null
+  const creatingConnection = !key && input.connectionId === null
+
+  // The block being edited: a per-profile entry or the global remote block. A
+  // named selection is authoritative for global remote edits and restores the
+  // saved remote after a Cloud hop instead of inheriting Cloud's URL/org.
+  const rawExistingBlock = key
+    ? existing.profiles?.[key] || {}
+    : mode === 'remote' && selectedBlock && !creatingConnection
+      ? selectedBlock
+      : existing.remote || {}
+
   const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
   const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
-  const existingBlock = leavingCloud ? {} : rawExistingBlock
+
+  // A new record must start with no credential. Inheriting the selected
+  // record's token here would copy a secret across gateway boundaries.
+  const existingBlock =
+    creatingConnection || (leavingCloud && !(mode === 'remote' && selectedBlock)) ? {} : rawExistingBlock
+
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
   // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
-  // inherit the saved org. A plain 'remote' connection never carries an org
-  // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
+  // inherit the saved org. A plain 'remote' connection never carries an org.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
@@ -6280,9 +6363,8 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     : existingBlock.token
 
   if (key) {
-    // Per-profile scope: a remote/cloud entry pins this profile to its own
-    // backend; a local entry clears the override so the profile inherits the
-    // default. The mode tag (remote vs cloud) is preserved on the entry.
+    // Per-profile scope remains backward-compatible and separate from named
+    // machine connections. It can still pin one Hermes profile to a host.
     const profiles = { ...(existing.profiles || {}) }
 
     if (remoteLike) {
@@ -6294,6 +6376,8 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     return {
       mode: modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
       remote: existing.remote || {},
+      connections,
+      selectedConnection: storedSelection,
       profiles
     }
   }
@@ -6302,8 +6386,30 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg)
     : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
 
-  // Preserve per-profile overrides when saving the global connection.
-  return { mode, remote: nextRemote, profiles: existing.profiles || {} }
+  let nextConnections = connections
+  let nextSelection = storedSelection
+
+  if (mode === 'remote') {
+    const nextSaved = upsertSavedConnection(existing, {
+      connectionId: input.connectionId,
+      connectionName: input.connectionName,
+      remote: nextRemote
+    })
+
+    nextConnections = nextSaved.connections
+    nextSelection = nextSaved.selectedConnection
+  }
+
+  // Preserve per-profile overrides and every named remote when saving the
+  // global Local/Cloud selection. `remote` remains the active compatibility
+  // mirror; named remotes are never destroyed by a Cloud selection.
+  return {
+    mode,
+    remote: nextRemote,
+    connections: nextConnections,
+    selectedConnection: nextSelection,
+    profiles: existing.profiles || {}
+  }
 }
 
 // Build a remote backend connection descriptor from an already-resolved remote
@@ -6375,15 +6481,36 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
 // Resolve the remote backend for a given profile, or null when that profile
 // should run a LOCAL backend. Precedence:
-//   1. explicit per-profile remote override (connection.json `profiles[name]`)
-//   2. env override (HERMES_DESKTOP_REMOTE_URL/_TOKEN) — applies app-wide
-//   3. global remote (connection.json `mode: 'remote'`)
+//   1. explicit runtime named selection (`--connection` or saved-list Connect)
+//   2. explicit per-profile remote override (connection.json `profiles[name]`)
+//   3. env override (HERMES_DESKTOP_REMOTE_URL/_TOKEN) — applies app-wide
+//   4. global remote (connection.json `mode: 'remote'`)
 // A null/empty profile resolves the env/global remote, so legacy callers and
 // the connection test (which pass no profile) are unchanged.
 async function resolveRemoteBackend(profile) {
   const config = readDesktopConnectionConfig()
 
-  // 1. Per-profile override — "a profile with its own remote host". Wins even
+  // A launch/switch selector is a machine choice, not a weak default. This is
+  // especially important for `--connection local`: profile/env overrides must
+  // not turn an explicit local shortcut into a remote login on another host.
+  if (runtimeConnectionSelector) {
+    if (runtimeConnectionSelector === 'local') {
+      return null
+    }
+
+    const resolved = resolveSavedConnection(config, runtimeConnectionSelector)
+
+    if (!resolved || resolved.local) {
+      throw new Error(`The selected desktop connection “${runtimeConnectionSelector}” is no longer available.`)
+    }
+
+    const authMode = normAuthMode(resolved.authMode)
+    const token = authMode === 'oauth' ? null : decryptDesktopSecret(resolved.token)
+
+    return buildRemoteConnection(resolved.url, authMode, token, 'selection')
+  }
+
+  // 2. Per-profile override — "a profile with its own remote host". Wins even
   //    over the env override so an explicitly-configured profile always
   //    reaches its intended backend.
   const override = profileRemoteOverride(config, profile)
@@ -6394,7 +6521,7 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(override.url, override.authMode, token, 'profile')
   }
 
-  // 2. Env override (global, token-auth only).
+  // 3. Env override (global, token-auth only).
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
 
@@ -6409,7 +6536,7 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
   }
 
-  // 3. Global remote (or cloud — cloud resolves to a remote backend, Q6).
+  // 4. Global remote (or cloud — cloud resolves to a remote backend, Q6).
   if (!modeIsRemoteLike(config.mode)) {
     return null
   }
@@ -6657,17 +6784,57 @@ async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
 }
 
 function sendConnectionApplied() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
+  // Every full-chrome/session window shares the main-process backend routing.
+  // Broadcast the token-free invalidation so no peer keeps stale sockets or
+  // session state after a named gateway switch.
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) {
+      continue
+    }
+
+    const { webContents } = window
+
+    if (!webContents || webContents.isDestroyed()) {
+      continue
+    }
+
+    webContents.send('hermes:connection:applied')
+  }
+}
+
+async function applySavedDesktopConnection(selector, { notifyRenderer = true, persist = true } = {}) {
+  const existing = readDesktopConnectionConfig()
+  const resolved = resolveSavedConnection(existing, selector)
+  const config = selectSavedConnection(existing, selector)
+  const target = resolved?.local ? 'local' : resolved?.id || null
+
+  if (persist) {
+    writeDesktopConnectionConfig(config)
   }
 
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
+  if (runtimeConnectionSelector === target) {
+    return sanitizeDesktopConnectionConfig(config)
   }
 
-  webContents.send('hermes:connection:applied')
+  runtimeConnectionSelector = target
+
+  stopAllPoolBackends()
+  await teardownPrimaryBackendAndWait({ soft: true })
+
+  if (notifyRenderer) {
+    sendConnectionApplied()
+  }
+
+  return sanitizeDesktopConnectionConfig(config)
+}
+
+function queueSavedDesktopConnection(selector, options = {}) {
+  const next = connectionSwitchQueue.then(() => applySavedDesktopConnection(selector, options))
+  // Keep later switches usable after an individual failure while returning the
+  // original rejection to the caller that requested this switch.
+  connectionSwitchQueue = next.catch(() => undefined)
+
+  return next
 }
 
 async function waitForBackendExit(child, timeoutMs = 5000) {
@@ -8165,6 +8332,10 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
   const key = connectionScopeKey(payload?.profile)
 
+  if (!key) {
+    runtimeConnectionSelector = config.mode === 'remote' && config.selectedConnection ? config.selectedConnection : null
+  }
+
   if (key && key !== primaryProfileKey()) {
     // Editing a NON-primary profile's connection: don't disturb the window's
     // primary backend. Drop the profile's pooled backend so the next switch
@@ -8174,11 +8345,36 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     // Global / primary connection: soft re-home. Tear down the window backend
     // without resetting boot UI or reloading — the shell stays, the renderer
     // wipes session lists (skeletons) and re-dials on hermes:connection:applied.
+    if (!key) {
+      stopAllPoolBackends()
+    }
+
     await teardownPrimaryBackendAndWait({ soft: true })
     sendConnectionApplied()
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
+})
+ipcMain.handle('hermes:connection-config:select', async (_event, selector) => queueSavedDesktopConnection(selector))
+ipcMain.handle('hermes:connection-config:delete', async (_event, selector) => {
+  const existing = readDesktopConnectionConfig()
+  const resolved = resolveSavedConnection(existing, selector)
+
+  const wasActive =
+    runtimeConnectionSelector === resolved?.id ||
+    (existing.mode === 'remote' && existing.selectedConnection === resolved?.id)
+
+  const config = removeSavedConnection(existing, selector)
+  writeDesktopConnectionConfig(config)
+
+  if (wasActive) {
+    runtimeConnectionSelector = 'local'
+    stopAllPoolBackends()
+    await teardownPrimaryBackendAndWait({ soft: true })
+    sendConnectionApplied()
+  }
+
+  return sanitizeDesktopConnectionConfig(config)
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
@@ -9710,16 +9906,36 @@ function registerDeepLinkProtocol() {
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
-const _gotSingleInstanceLock = app.requestSingleInstanceLock()
+const _initialConnectionArg = parseDesktopConnectionArg(process.argv)
+const _gotSingleInstanceLock = app.requestSingleInstanceLock({ connection: _initialConnectionArg })
 
 if (!_gotSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', (_event, argv) => {
+  app.on('second-instance', (_event, argv, _workingDirectory, additionalData) => {
     const url = _extractDeepLink(argv)
+
+    const connectionData =
+      additionalData && typeof additionalData === 'object' ? (additionalData as { connection?: unknown }) : {}
+
+    const connection =
+      typeof connectionData.connection === 'string' && connectionData.connection.trim()
+        ? connectionData.connection.trim()
+        : parseDesktopConnectionArg(argv)
 
     if (url) {
       handleDeepLink(url)
+    }
+
+    if (connection) {
+      void queueSavedDesktopConnection(connection, { persist: false }).catch(error => {
+        rememberLog(`[connection] second-instance selection failed: ${error?.message || error}`)
+        void dialog.showMessageBox({
+          type: 'error',
+          title: 'Could not switch Hermes connection',
+          message: error instanceof Error ? error.message : String(error)
+        })
+      })
     }
 
     ensureMainWindow(mainWindow, {
@@ -9740,6 +9956,26 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  const launchConnection = _initialConnectionArg
+
+  if (launchConnection) {
+    try {
+      // Resolve the explicit launch choice before the first backend resolution.
+      // This is a process-scoped override: opening a shortcut must not mutate the
+      // user's saved default. No secret travels in argv; only a saved id/name.
+      const existing = readDesktopConnectionConfig()
+      const selected = selectSavedConnection(existing, launchConnection)
+      runtimeConnectionSelector = selected.mode === 'local' ? 'local' : selected.selectedConnection
+      rememberLog(`[connection] launch selected “${launchConnection}”`)
+    } catch (error) {
+      rememberLog(`[connection] launch selection failed: ${error?.message || error}`)
+      dialog.showErrorBox('Could not launch Hermes connection', error instanceof Error ? error.message : String(error))
+      app.quit()
+
+      return
+    }
+  }
+
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {

@@ -51,6 +51,14 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)",
     )
     gui_parser.add_argument(
+        "--connection",
+        metavar="NAME",
+        help=(
+            "Select a saved Desktop gateway connection by shortcut name "
+            "(use 'local' for the bundled local backend)"
+        ),
+    )
+    gui_parser.add_argument(
         "--skip-build",
         action="store_true",
         help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",

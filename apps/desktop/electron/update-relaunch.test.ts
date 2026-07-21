@@ -30,6 +30,7 @@ import {
   collectRelaunchArgs,
   collectRelaunchEnv,
   decideRelaunchOutcome,
+  replaceRelaunchConnectionArg,
   resolveUnpackedRelease,
   sandboxFallbackFromEnv,
   sandboxPreflight,
@@ -150,11 +151,29 @@ test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', (
     '--lang=en-US',
     'hermes://open/agent/42', // deep link — keep
     '--profile=work', // app flag — keep
+    '--connection=home-lab', // saved gateway selector — keep across updates
     '--remote-debugging-port=9222' // internal — drop
   ]
 
-  assert.deepEqual(collectRelaunchArgs(argv), ['--no-sandbox', 'hermes://open/agent/42', '--profile=work'])
+  assert.deepEqual(collectRelaunchArgs(argv), [
+    '--no-sandbox',
+    'hermes://open/agent/42',
+    '--profile=work',
+    '--connection=home-lab'
+  ])
   assert.deepEqual(collectRelaunchArgs(undefined), [])
+})
+
+test('replaceRelaunchConnectionArg follows the current selection instead of stale launch argv', () => {
+  assert.deepEqual(replaceRelaunchConnectionArg(['--profile=work', '--connection=old'], 'new'), [
+    '--profile=work',
+    '--connection=new'
+  ])
+  assert.deepEqual(replaceRelaunchConnectionArg(['--connection', 'old', '--no-sandbox'], 'local'), [
+    '--no-sandbox',
+    '--connection=local'
+  ])
+  assert.deepEqual(replaceRelaunchConnectionArg(['--connection=old', '--profile=work'], null), ['--profile=work'])
 })
 
 test('collectRelaunchEnv preserves HERMES_HOME + HERMES_DESKTOP_* + sandbox opt-out only', () => {

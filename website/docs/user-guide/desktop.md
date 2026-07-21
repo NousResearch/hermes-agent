@@ -139,6 +139,7 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 | `--build-only`       | Build the desktop app but do not launch it (used by `hermes update`)                      |
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
+| `--connection NAME` | Select a saved gateway connection by shortcut name (`local` selects the bundled backend)  |
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
 | `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
@@ -201,14 +202,25 @@ The backend reads and writes your `.env` (API keys, secrets) and can run agent c
 
 **Settings → Gateway → Remote gateway:**
 
-1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
-2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. *Sign in with Nous Research*), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
-3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
+1. **Connection name** — a friendly name such as `Homelab` or `Work VPS`. Desktop derives a stable shortcut name (`homelab`, `work-vps`) for CLI launches.
+2. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
+3. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials configured on the backend). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. _Sign in with Nous Research_), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
+4. **Save and reconnect** — stores the named connection and switches the desktop shell onto it. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
 
 You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateway settings panel.
 
-:::note Per-profile remote hosts
-The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+:::tip Saved connections and launch shortcuts
+**Settings → Gateway → Saved remote gateways** can hold multiple backends. Selecting one soft-switches the running app without a full window restart. Launch directly into a saved connection with its displayed shortcut name:
+
+```bash
+hermes desktop --connection homelab
+hermes desktop --connection work-vps
+hermes desktop --connection local
+```
+
+Only the connection name is passed on the command line. Tokens stay encrypted in Electron's secure storage. If Desktop is already running, a second invocation switches and focuses the existing app because Desktop is single-instance.
+
+Named gateway connections are separate from [Hermes profiles](./profiles.md): a connection chooses the machine/backend, while a profile chooses a config/session namespace served by that backend. Existing per-profile remote overrides remain available under **Applies to** for specialized routing, but they are no longer required just to remember several machines.
 :::
 
 ### Troubleshooting

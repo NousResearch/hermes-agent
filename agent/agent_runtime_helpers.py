@@ -2832,6 +2832,63 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 
+# Action verbs an ack may announce. Word-boundaried with suffix control so a
+# stem does not match an unrelated word: creat!=creative/creature, kill!=skill/
+# killer, install!=installment, curl!=curly, boot!=booties/bootstrap/reboot,
+# generat!=generational, provision!=provisional.
+_ACK_ACTION_ALT = (
+    r"execut(?:e|es|ed|ing|ion)?|look\s+(?:into|at)|inspect(?:s|ed|ing|ion)?|"
+    r"scan(?:s|ned|ning)?|check(?:s|ed|ing)?(?!\s+in\b)|analy[sz](?:e|es|ed|ing|is)?|"
+    r"review(?:s|ed|ing)?|explor(?:e|es|ed|ing)|read(?:s|ing)?(?!\s+(?:up|you|to)\b)|"
+    r"open(?:s|ed|ing)?(?!\s+(?:with|to|by)\b)|"
+    r"run(?:s|ning)?(?!\s+(?:with|through)\b)|test(?:s|ed|ing)?|fix(?:es|ed|ing)?|"
+    r"debug(?:s|ged|ging)?|search(?:es|ed|ing)?|find(?:s|ing)?|walk\s*through|report\s+back|"
+    r"summari[sz](?:e|es|ed|ing)?|migrat(?:e|es|ed|ing|ion)?|"
+    r"deleg(?:ate|ates|ated|ating|ation)?|deploy(?:s|ed|ing|ment)?|"
+    r"install(?:s|ed|ing|ation)?|build(?:s|ing|ed)?(?!\s+on\b)|compil(?:e|es|ed|ing)?|"
+    r"scaffold(?:s|ed|ing)?|generat(?:e|es|ed|ing|ion)?|creat(?:e|es|ed|ing|ion)?|"
+    r"set(?:s|ting)?\s+(?:\w+\s+){0,3}up|"
+    r"spin(?:s|ning)?\s+(?:\w+\s+){0,3}up|"
+    r"bring(?:s|ing)?\s+(?:\w+\s+){0,3}up|launch(?:es|ed|ing)?|"
+    r"provision(?:s|ed|ing)?|configur(?:e|es|ed|ing|ation)?|verif(?:y|ies|ied|ying)|"
+    r"curl|boot(?:s|ed|ing)?|"
+    r"kill(?:s|ed|ing)?|remov(?:e|es|ed|ing)|delet(?:e|es|ed|ing|ion)?|"
+    r"tear\s+down|teardown|clean(?:\s+|-)up|shut\s+down|shutdown"
+)
+_ACK_ACTION_RE = re.compile(r"\b(?:" + _ACK_ACTION_ALT + r")\b")
+
+# First-person imminent-action lead-ins. Excludes "let me know" (a sign-off/
+# offer) and drops the phantom-prone "on it"/"let's" (which matched "suite on
+# it", "let's talk").
+_ACK_FUTURE_ACK_RE = re.compile(
+    r"\b(?:i['’]ll|i\s+will|i['’]?m\s+going\s+to|i\s+am\s+going\s+to|"
+    r"i(?:['’]?m|\s+am)\s+about\s+to|going\s+straight\s+to|let\s+me(?!\s+know)|"
+    r"now\s+i(?:['’]ll|['’]m(?=\s+\w+ing\b)|\s+will|\s+am(?=\s+\w+ing\b))|"
+    r"proceeding|executing|getting\s+started|kicking\s+off|here\s+goes|"
+    r"starting\s+now|i\s+can\s+do\s+that|i\s+can\s+help\s+with\s+that)\b"
+)
+
+# Governed announcement: a first-person lead-in directly governing an action
+# verb within the SAME clause (no sentence punctuation between them). This is
+# the precise "I'll deploy it" / "let me set up the stack" signal, and it
+# excludes cross-clause coincidences like "I'll admit, building rapport" (comma)
+# or "in the long run" (no lead-in at all).
+_ACK_ANNOUNCE_RE = re.compile(
+    r"\b(?:i['’]ll|i\s+will|i['’]?m\s+going\s+to|i\s+am\s+going\s+to|"
+    r"i(?:['’]?m|\s+am)\s+about\s+to|going\s+straight\s+to|let\s+me(?!\s+know)|"
+    r"now\s+i(?:['’]ll|['’]m(?=\s+\w+ing\b)|\s+will|\s+am(?=\s+\w+ing\b)))\b"
+    r"(?:(?!\b(?:never|not)\b)[^,.:;!?\n]){0,40}?\b(?:" + _ACK_ACTION_ALT + r")\b"
+)
+
+# Sign-off / conditional-offer / question-for-input: the model is offering
+# future help, reporting finished work, or asking the user — not announcing an
+# imminent action. Suppress even when an action word co-occurs.
+_ACK_OFFER_RE = re.compile(
+    r"\b(?:let me know|if you['’]?d\s+like|if you\s+want|if you['’]?d\s+prefer|"
+    r"would you like|feel free to|happy to help)\b"
+)
+
+
 def looks_like_codex_intermediate_ack(
     agent,
     user_message: Any,
@@ -2848,12 +2905,43 @@ def looks_like_codex_intermediate_ack(
     is ``true`` or a model-list), so general autonomous workflows ("I'll run a
     health check on the server", "I'll start the deployment") — which carry a
     future-ack and an action verb but no filesystem reference — are caught too.
-    The future-ack + short-content + no-prior-tools + action-verb requirements
-    always apply, which is what keeps conversational "I'll help you brainstorm"
-    replies from tripping it.
+
+    In opted-in ``all`` mode the fire condition is a GOVERNED announcement (a
+    first-person lead-in directly governing an action verb in the same clause,
+    :data:`_ACK_ANNOUNCE_RE`) or a colon-truncated ending carrying a future-ack
+    and an action verb. A shared sign-off/offer guard (:data:`_ACK_OFFER_RE`),
+    word-boundaried action verbs, and the ``let me``-not-``know`` future-ack keep
+    ordinary prose from tripping it. codex_only additionally requires a workspace
+    reference and a current-turn after-tool gate. Known residual (bounded by the
+    loop's max-2 continuations): in ``all`` mode a first-person lead governing an
+    everyday verb with a conversational object ("I'll review your essay") still
+    fires — the verb match cannot see the object; the mode is meant for
+    autonomous task sessions, and codex_only's workspace requirement avoids it.
     """
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
-        return False
+    # Prior-tool gate. NEVER scan the whole `messages` history: the store keeps a
+    # role=="tool" row for every past tool call, so a full-history scan dead-shorts
+    # the detector in any established session that has ever used a tool.
+    #
+    # codex_only mode keeps the original "a tool ran THIS turn -> don't continue"
+    # behavior (scoped to messages after the last user message).
+    #
+    # Opted-in "all" mode DROPS the after-tool gate entirely. The dominant
+    # local-model failure is "do some work, announce the next step, then stop"
+    # ("files are in place; let me launch the stack:") — which lands AFTER a tool
+    # call this turn, so gating on it leaves the task one step short of done. The
+    # loop's max-consecutive-continuation bound already prevents runaway (the
+    # earlier re-delegation loops were the model re-issuing tool calls, which this
+    # detector never fires on). So a first-response ack is caught in both modes,
+    # and a mid-task "let me finish it:" ack is caught only when opted in.
+    if require_workspace:
+        _turn_msgs = messages
+        for _i in range(len(messages) - 1, -1, -1):
+            _m = messages[_i]
+            if isinstance(_m, dict) and _m.get("role") == "user":
+                _turn_msgs = messages[_i + 1:]
+                break
+        if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in _turn_msgs):
+            return False
 
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text:
@@ -2861,33 +2949,19 @@ def looks_like_codex_intermediate_ack(
     if len(assistant_text) > 1200:
         return False
 
-    has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
-    )
-    if not has_future_ack:
+    # Sign-off / conditional-offer / question-for-input: the model is offering
+    # future help, reporting finished work, or asking the user for input — not
+    # announcing an imminent action. Suppress in every mode even when an action
+    # word co-occurs ("Let me know if you'd like me to create more examples.").
+    if _ACK_OFFER_RE.search(assistant_text):
         return False
 
-    action_markers = (
-        "look into",
-        "look at",
-        "inspect",
-        "scan",
-        "check",
-        "analyz",
-        "review",
-        "explore",
-        "read",
-        "open",
-        "run",
-        "test",
-        "fix",
-        "debug",
-        "search",
-        "find",
-        "walkthrough",
-        "report back",
-        "summarize",
-    )
+    has_future_ack = bool(_ACK_FUTURE_ACK_RE.search(assistant_text))
+    assistant_mentions_action = bool(_ACK_ACTION_RE.search(assistant_text))
+    # Truncation signal: a short reply cut off on a colon ("Going straight to
+    # execution now:"). Only used alongside a future-ack + action verb below.
+    looks_truncated = len(assistant_text) <= 300 and assistant_text.rstrip().endswith(":")
+
     workspace_markers = (
         "directory",
         "current directory",
@@ -2904,15 +2978,24 @@ def looks_like_codex_intermediate_ack(
         "path",
     )
 
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
-    if not assistant_mentions_action:
+    # Opted-in (all-api_mode) path. Fire on a GOVERNED announcement: a
+    # first-person lead-in directly governing an action verb in the same clause
+    # ("I'll deploy it", "let me set up the stack"), which excludes cross-clause
+    # coincidences ("I'll admit, building rapport"; "in the long run"). Also fire
+    # on a truncated colon ending that still carries a future-ack + action verb,
+    # for local phrasings that dodge the governed pattern.
+    if not require_workspace:
+        if _ACK_ANNOUNCE_RE.search(assistant_text):
+            return True
+        if looks_truncated and has_future_ack and assistant_mentions_action:
+            return True
         return False
 
-    # Opted-in (all-api_mode) path: a future-ack + action verb + no prior tool
-    # call is enough — the user asked us to keep going when the model only
-    # announces intent, regardless of whether a filesystem is involved.
-    if not require_workspace:
-        return True
+    # codex_only path: future-ack + action verb (+ workspace reference below).
+    if not has_future_ack:
+        return False
+    if not assistant_mentions_action:
+        return False
 
     # ``user_message`` is typed ``str`` but can arrive as an OpenAI-style
     # multi-part content list (``[{type:"text",...}, {type:"image_url",...}]``)

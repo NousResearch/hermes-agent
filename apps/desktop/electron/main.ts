@@ -57,6 +57,7 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { desktopPluginHome } from './desktop-plugin-home'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -66,7 +67,6 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
-import { desktopPluginHome } from './desktop-plugin-home'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'

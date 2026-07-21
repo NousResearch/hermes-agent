@@ -354,6 +354,22 @@ class TestWebhookVerify:
         assert response.status == 403
 
     @pytest.mark.asyncio
+    async def test_verify_rejects_non_ascii_token_without_raising(self):
+        """A non-ASCII verify_token (raw query param) must be rejected with
+        403, not crash the handler: hmac.compare_digest raises TypeError on a
+        str containing non-ASCII characters."""
+        adapter = _make_adapter(verify_token="shared-secret-123")
+        request = _verify_request({
+            "hub.mode": "subscribe",
+            "hub.verify_token": "ské-not-the-secret",
+            "hub.challenge": "abc-12345",
+        })
+
+        response = await adapter._handle_verify(request)
+
+        assert response.status == 403
+
+    @pytest.mark.asyncio
     async def test_verify_rejects_wrong_mode(self):
         adapter = _make_adapter(verify_token="shared-secret-123")
         request = _verify_request({

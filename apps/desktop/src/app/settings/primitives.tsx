@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
+import { triggerHaptic } from '@/lib/haptics'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -20,8 +22,10 @@ export function SettingsContent({ children, bare = false }: { children: ReactNod
   )
 }
 
-export function Pill({ tone = 'muted', children }: { tone?: 'muted' | 'primary'; children: ReactNode }) {
-  return <Badge variant={tone === 'primary' ? 'default' : 'muted'}>{children}</Badge>
+const PILL_VARIANT = { muted: 'muted', primary: 'default', warn: 'warn' } as const
+
+export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VARIANT; children: ReactNode }) {
+  return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
 }
 
 export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {
@@ -106,8 +110,50 @@ export function ListRow({
   )
 }
 
+// A labelled on/off row — the canonical device-pref switch (haptic baked in).
+export function ToggleRow({
+  checked,
+  description,
+  disabled,
+  label,
+  onChange
+}: {
+  checked: boolean
+  description?: string
+  disabled?: boolean
+  label: string
+  onChange: (on: boolean) => void
+}) {
+  return (
+    <ListRow
+      action={
+        <Switch
+          aria-label={label}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={on => {
+            triggerHaptic('selection')
+            onChange(on)
+          }}
+        />
+      }
+      description={description}
+      title={label}
+    />
+  )
+}
+
+// The settings panels render this as the sole child of the top-padded
+// OverlayMain (pt = titlebar + 1rem, no bottom pad — see settings/index.tsx).
+// Cancel that top pad so the loader centers in the whole card, not just the
+// band beneath it. Inline loaders (mid-panel) should use <PageLoader> directly.
 export function LoadingState({ label }: { label: string }) {
-  return <PageLoader label={label} />
+  return (
+    <PageLoader
+      className="-mt-[calc(var(--titlebar-height)+1rem)] h-[calc(100%+var(--titlebar-height)+1rem)]"
+      label={label}
+    />
+  )
 }
 
 // Canonical implementation lives in components/ui; re-exported so the many

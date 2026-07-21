@@ -28,17 +28,16 @@ import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
-  $attentionSessionIds,
   $connection,
   $currentCwd,
   $sessions,
-  $workingSessionIds,
   ensureDefaultWorkspaceCwd,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -156,9 +155,10 @@ export function useGatewayBoot({
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
         // as an opaque "Could not connect to Hermes gateway". resolveGatewayWsUrl
-        // mints a fresh ticket (or throws a reauth error in OAuth mode rather
-        // than connecting with a stale one). For local/token gateways the URL
-        // carries a long-lived token and the re-mint is a cheap no-op.
+        // mints a fresh ticket rather than connecting with a stale one. An
+        // explicit auth rejection asks for sign-in; transport failures stay in
+        // this reconnect loop. For local/token gateways the URL carries a
+        // long-lived token and the re-mint is a cheap no-op.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
@@ -167,6 +167,9 @@ export function useGatewayBoot({
         }
 
         reconnectAttempt = 0
+        // A respawned backend re-mints (recycles) runtime ids, so any tile's
+        // bound runtime id is now stale — drop them so each tile re-resumes.
+        resetTileRuntimeBindings()
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -282,10 +285,14 @@ export function useGatewayBoot({
           return
         }
 
+        // Same shape as boot(): profile first (session scope depends on it),
+        // then the independent fetches concurrently.
         await adoptPrimaryProfile()
-        await seedDefaultCwd()
-        await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
-        await callbacksRef.current.refreshSessions().catch(() => undefined)
+        await Promise.all([
+          seedDefaultCwd(),
+          callbacksRef.current.refreshHermesConfig().catch(() => undefined),
+          callbacksRef.current.refreshSessions().catch(() => undefined)
+        ])
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
@@ -358,7 +365,10 @@ export function useGatewayBoot({
     })
 
     const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
-    const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile }))
+
+    const offEvent = gateway.onEvent(event =>
+      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
+    )
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -445,9 +455,9 @@ export function useGatewayBoot({
         publish(conn)
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
-        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
-        // failure, throws a reauth error rather than connecting with a dead
-        // ticket (which would surface as an opaque "connection closed").
+        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
+        // connecting with a dead ticket. Auth rejection asks for sign-in;
+        // connectivity failures remain retryable.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
@@ -455,6 +465,11 @@ export function useGatewayBoot({
           return
         }
 
+        // Profile adoption must land first: refreshSessions scopes its fetch by
+        // $profileScope ← $activeGatewayProfile. The remaining three fetches
+        // (cwd seed, config, sessions) are independent REST calls — running
+        // them serially added their sum to time-to-populated-sidebar when only
+        // the max is needed.
         await adoptPrimaryProfile()
 
         setDesktopBootStep({
@@ -462,20 +477,25 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
-        await seedDefaultCwd()
 
-        await callbacksRef.current.refreshHermesConfig()
+        await Promise.all([
+          seedDefaultCwd(),
+          callbacksRef.current.refreshHermesConfig(),
+          // Session-list population is never boot-fatal. The gateway WS is
+          // already open by this point — a failed sidebar fetch (transient
+          // blip, or an endpoint the fallback couldn't cover) must leave the
+          // app usable with an empty sidebar (the reconnect/turn refreshes
+          // retry it), not brick boot behind the "Hermes couldn't start"
+          // overlay. Matches the reconnect + softSwitch call sites.
+          callbacksRef.current.refreshSessions().catch(() => {
+            setSessionsLoading(false)
+          })
+        ])
 
         if (cancelled) {
           return
         }
 
-        setDesktopBootStep({
-          phase: 'renderer.sessions',
-          message: translateNow('boot.steps.loadingSessions'),
-          progress: 99
-        })
-        await callbacksRef.current.refreshSessions()
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

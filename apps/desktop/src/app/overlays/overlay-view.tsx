@@ -1,8 +1,11 @@
-import { type ReactNode, useEffect } from 'react'
+import { type CSSProperties, type ReactNode, useEffect } from 'react'
 
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
+import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 
@@ -32,8 +35,10 @@ export function OverlayView({
   // stop propagation themselves, so opening (e.g.) the model picker inside
   // Settings still closes the picker first instead of the underlying overlay.
   useEffect(() => {
+    const releaseLayer = pushEscapeLayer(ESCAPE_PRIORITY.overlay)
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) {
+      if (event.key !== 'Escape' || event.defaultPrevented || !isTopEscapeLayer(ESCAPE_PRIORITY.overlay)) {
         return
       }
 
@@ -44,7 +49,10 @@ export function OverlayView({
 
     window.addEventListener('keydown', onKeyDown)
 
-    return () => window.removeEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      releaseLayer()
+    }
   }, [onClose])
 
   return (
@@ -64,6 +72,12 @@ export function OverlayView({
         }
       }}
       role="presentation"
+      // Window-level chrome: overlays always clear the real titlebar. The
+      // contrib shell zeroes --titlebar-height for CONTENT areas (panes sit
+      // below its in-flow title bar), and CSS vars inherit through the DOM —
+      // so a fixed overlay mounted inside a zone would read 0 and bleed to
+      // the edges. Re-pin the real height at the overlay root.
+      style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
     >
       <div
         className={cn(
@@ -78,15 +92,17 @@ export function OverlayView({
             </div>
           )}
 
-          <Button
-            aria-label={closeLabel}
-            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
-            onClick={closeOverlay}
-            size="icon-titlebar"
-            variant="ghost"
-          >
-            <Codicon name="close" size="1rem" />
-          </Button>
+          <Tip label={closeLabel}>
+            <Button
+              aria-label={closeLabel}
+              className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
+              onClick={closeOverlay}
+              size="icon-titlebar"
+              variant="ghost"
+            >
+              <Codicon name="close" size="1rem" />
+            </Button>
+          </Tip>
         </div>
 
         {/* No top padding here: the split-layout columns own their own

@@ -1,57 +1,41 @@
-import {
-  type AppendMessage,
-  AssistantRuntimeProvider,
-  ExportedMessageRepository,
-  type ThreadMessage
-} from '@assistant-ui/react'
+import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
+import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import {
-  coalesceToolOnlyAssistants,
-  createToolMergeCache,
-  quickModelOptions,
-  sessionTitle,
-  toRuntimeMessage
-} from '@/lib/chat-runtime'
+import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
-import type { ComposerAttachment } from '@/store/composer'
+import { migrateSessionDraft } from '@/store/composer'
+import { migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget } from '@/store/profile'
+import { $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
-  $activeSessionId,
-  $awaitingResponse,
-  $busy,
   $contextSuggestions,
-  $currentCwd,
-  $currentModel,
-  $currentProvider,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
   $introSeed,
-  $lastVisibleMessageIsUser,
-  $messages,
-  $messagesEmpty,
   $resumeExhaustedSessionId,
-  $selectedStoredSessionId,
   $sessions,
+  resolveComposerSessionKey,
+  sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
@@ -63,12 +47,16 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
-import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
-import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
+import { requestComposerInsert } from './composer/focus'
+import { droppedFileInlineRefs } from './composer/inline-refs'
+import { useComposerScope } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
-import { useFileDropZone } from './hooks/use-file-drop-zone'
+import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
+import { ProfileTag } from './profile-tag'
+import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
+import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
 
@@ -90,10 +78,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
-  onSubmit: (
-    text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean> | boolean
+  onSubmit: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
@@ -120,11 +105,17 @@ function ChatHeader({
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
+  const profiles = useStore($profiles)
 
   const activeStoredSession =
-    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+    (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+
+  // Which agent/persona owns this chat — glanceable in the header once a
+  // second profile exists, so the open session's ownership is never ambiguous
+  // (#66003). Single-profile users see the unchanged header.
+  const showProfileTag = profiles.length > 1 && Boolean(activeStoredSession)
 
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
@@ -145,12 +136,13 @@ function ChatHeader({
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
       <div
-        className={titlebarHeaderTitleClass}
+        className={cn(titlebarHeaderTitleClass, showProfileTag && 'flex items-center')}
         style={{
           maxWidth:
             'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
         }}
       >
+        {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
@@ -160,14 +152,7 @@ function ChatHeader({
           sideOffset={8}
           title={title}
         >
-          <Button
-            className="pointer-events-auto flex h-6 min-w-0 max-w-full gap-1 overflow-hidden border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
-            type="button"
-            variant="ghost"
-          >
-            <h2 className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{title}</h2>
-            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
-          </Button>
+          <TitleMenuTrigger>{title}</TitleMenuTrigger>
         </SessionActionsMenu>
       </div>
     </header>
@@ -207,45 +192,9 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const storeMessages = useStore($messages)
+  const storeMessages = useStore(useSessionView().$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
-  const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
-  const toolMergeCacheRef = useRef(createToolMergeCache())
-
-  const runtimeMessageRepository = useMemo(() => {
-    const items: { message: ThreadMessage; parentId: string | null }[] = []
-    const branchParentByGroup = new Map<string, string | null>()
-    let visibleParentId: string | null = null
-    let headId: string | null = null
-
-    for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
-      let parentId = visibleParentId
-
-      if (message.role === 'assistant' && message.branchGroupId) {
-        if (!branchParentByGroup.has(message.branchGroupId)) {
-          branchParentByGroup.set(message.branchGroupId, visibleParentId)
-        }
-
-        parentId = branchParentByGroup.get(message.branchGroupId) ?? null
-      }
-
-      const cachedMessage = runtimeMessageCacheRef.current.get(message)
-      const runtimeMessage = cachedMessage ?? toRuntimeMessage(message)
-
-      if (!cachedMessage) {
-        runtimeMessageCacheRef.current.set(message, runtimeMessage)
-      }
-
-      items.push({ message: runtimeMessage, parentId })
-
-      if (!message.hidden) {
-        visibleParentId = message.id
-        headId = message.id
-      }
-    }
-
-    return ExportedMessageRepository.fromBranchableArray(items, { headId })
-  }, [messages])
+  const runtimeMessageRepository = useRuntimeMessageRepository(messages)
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -293,13 +242,24 @@ export function ChatView({
 }: ChatViewProps) {
   const location = useLocation()
   const { t } = useI18n()
-  const activeSessionId = useStore($activeSessionId)
-  const awaitingResponse = useStore($awaitingResponse)
-  const busy = useStore($busy)
+  // The view this surface renders: the primary route-driven session (global
+  // atoms) or a tile's session slice — same component either way.
+  const view = useSessionView()
+  const composerScope = useComposerScope()
+  const isPrimary = view.kind === 'primary'
+  const activeSessionId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
+  // Dock anchor for a session drop onto this surface: the workspace pane for the
+  // primary, this tile's pane id for a tile. Read by the session-drop bridge.
+  const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
+  const awaitingResponse = useStore(view.$awaitingResponse)
+  const busy = useStore(view.$busy)
   const contextSuggestions = useStore($contextSuggestions)
-  const currentCwd = useStore($currentCwd)
-  const currentModel = useStore($currentModel)
-  const currentProvider = useStore($currentProvider)
+  // Per-session (SessionView) reads — a tile IS its session, so these come
+  // from the view slice, not the global atoms (which track the primary only).
+  const currentCwd = useStore(view.$cwd)
+  const currentModel = useStore(view.$model)
+  const currentProvider = useStore(view.$provider)
   // A pet anywhere (in-window or popped out) owns the hearts; composer only when none.
   const petActive = useStore($petActive)
   const petOverlayActive = useStore($petOverlayActive)
@@ -310,16 +270,38 @@ export function ChatView({
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
-  // PERF: ChatView must not subscribe to $messages — the atom is replaced on
-  // every streaming delta flush (~30×/s) and a subscription here re-renders
-  // the entire chat shell (header, chat bar, thread wrapper) per token. The
-  // runtime that DOES need the messages lives in ChatRuntimeBoundary below;
-  // this component only needs streaming-stable derivations.
-  const messagesEmpty = useStore($messagesEmpty)
-  const lastVisibleIsUser = useStore($lastVisibleMessageIsUser)
-  const selectedSessionId = useStore($selectedStoredSessionId)
+  // PERF: ChatView must not subscribe to the view's $messages — the atom is
+  // replaced on every streaming delta flush (~30×/s) and a subscription here
+  // re-renders the entire chat shell (header, chat bar, thread wrapper) per
+  // token. The runtime that DOES need the messages lives in
+  // ChatRuntimeBoundary below; this component only needs streaming-stable
+  // derivations.
+  const messagesEmpty = useStore(view.$messagesEmpty)
+  const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
+  const selectedSessionId = useStore(view.$storedId)
+  const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
-  const routedSessionId = routeSessionId(location.pathname)
+
+  // Durable composer/queue scope (lineage root) so auto-compression tip rotation
+  // does not wipe an in-progress draft or orphan /queue entries.
+  const queueSessionKey = useMemo(
+    () => resolveComposerSessionKey(selectedSessionId, sessions),
+    [selectedSessionId, sessions]
+  )
+
+  // When the tip row arrives after compression, migrate any tip-keyed stash onto
+  // the durable lineage key before the composer remounts onto that key.
+  useEffect(() => {
+    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+      return
+    }
+
+    migrateSessionDraft(selectedSessionId, queueSessionKey)
+    migrateQueuedPrompts(selectedSessionId, queueSessionKey)
+  }, [queueSessionKey, selectedSessionId])
+
+  // A tile IS its session — no route involved, never "mismatched".
+  const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)
 
   // The URL points at a session the store hasn't loaded yet (sidebar / cmd-K /
@@ -331,6 +313,7 @@ export function ChatView({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
+    isPrimary &&
     !isSecondaryWindow() &&
     freshDraftReady &&
     !isRoutedSessionView &&
@@ -349,7 +332,7 @@ export function ChatView({
   // Suppress the loader and show an explicit error + manual Retry instead of
   // spinning forever. Gated on the route matching so a stale latch from another
   // session can't blank the current one.
-  const resumeExhausted = isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
+  const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
 
   const loadingSession =
     !resumeExhausted && isRoutedSessionView && (routeSessionMismatch || (messagesEmpty && !activeSessionId))
@@ -420,23 +403,33 @@ export function ChatView({
       const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
 
       if (refs.length) {
-        requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
+        requestComposerInsert(refs.join(' '), { mode: 'inline', target: composerScope.target })
       }
 
       if (osDrops.length) {
         void onAttachDroppedItems(osDrops)
       }
     },
-    [currentCwd, onAttachDroppedItems]
+    [composerScope.target, currentCwd, onAttachDroppedItems]
   )
 
-  // Dropping a sidebar session inserts an @session link the agent can resolve
-  // via session_search (carries the source profile, so cross-profile works).
-  const onDropSession = useCallback((session: SessionDragPayload) => {
-    requestComposerInsertRefs([sessionInlineRef(session)], { target: 'main' })
-  }, [])
+  // Session drags are POINTER drags (session-drag.ts) — never native DnD.
+  // The drop zone below only handles files; session drops commit through the
+  // drag session itself, which routes a center/link drop to this surface's
+  // composer via `data-composer-target`.
+  const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
 
-  const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles, onDropSession })
+  // While a session drag targets one of this surface's EDGES or a tab strip,
+  // the zone overlay/caret owns the visual — the link overlay stands down.
+  // It shows for the whole drag on every chat surface otherwise (the drag
+  // session's global sentinel, not a per-surface hover chain).
+  // COMPUTED booleans, never the raw `$dropHint`: the hint churns on every
+  // pointer-crossing of every drag (pane drags included), and a re-render
+  // here is the WHOLE surface — thread, composer, header — per mounted tile.
+  const sessionDragging = useStore($sessionTileDragging)
+  const sessionEdgeHover = useStore($sessionTileEdgeHover)
+
+  const overlayKind: DragKind = dragKind === 'files' ? 'files' : sessionDragging && !sessionEdgeHover ? 'session' : null
 
   return (
     <div
@@ -444,17 +437,26 @@ export function ChatView({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-composer-target={composerScope.target}
+      data-session-anchor={sessionAnchor}
     >
       <Backdrop />
-      <ChatHeader
-        activeSessionId={activeSessionId}
-        isRoutedSessionView={isRoutedSessionView}
-        onDeleteSelectedSession={onDeleteSelectedSession}
-        onToggleSelectedPin={onToggleSelectedPin}
-        selectedSessionId={selectedSessionId}
-      />
+      {/* Tiles get their chrome from the layout zone (chip strip); the modal
+          prompt overlays stay active-session-scoped in the primary surface. */}
+      {isPrimary && (
+        <ChatHeader
+          activeSessionId={activeSessionId}
+          isRoutedSessionView={isRoutedSessionView}
+          onDeleteSelectedSession={onDeleteSelectedSession}
+          onToggleSelectedPin={onToggleSelectedPin}
+          selectedSessionId={selectedSessionId}
+        />
+      )}
 
-      <PromptOverlays />
+      {/* Mounted for the primary AND every tile, each scoped to its own session
+          so a tiled/background session's blocking prompt surfaces instead of
+          stalling to timeout. */}
+      <PromptOverlays sessionId={activeSessionId} />
 
       <ChatRuntimeBoundary
         busy={busy}
@@ -510,7 +512,9 @@ export function ChatView({
               }}
             />
           )}
-          <ChatDropOverlay kind={dragKind} />
+          {/* A session drag hovering an EDGE hands the visual to the zone
+              target; the link overlay shows only for the center region. */}
+          <ChatDropOverlay kind={overlayKind} />
           <ChatSwapOverlay profile={gatewaySwapTarget} />
         </div>
         {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
@@ -543,7 +547,7 @@ export function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={selectedSessionId}
+              queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
             />

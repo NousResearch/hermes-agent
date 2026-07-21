@@ -1754,6 +1754,10 @@ def resolve_provider(
 
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
+        # Bare "openai" → the generic OpenAI-compatible runtime. Mirrors the
+        # ALIASES table in providers.py; without it here, a config or request
+        # with provider "openai" is rejected as "Unknown provider 'openai'".
+        "openai": "openrouter",
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",

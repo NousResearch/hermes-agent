@@ -9,11 +9,14 @@ Run with:  python -m pytest tests/tools/test_file_read_guards.py -v
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from unittest.mock import patch, MagicMock
 
+from tools.file_operations import ShellFileOperations
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -23,6 +26,7 @@ from tools.file_tools import (
     _READ_DEDUP_STATUS_MESSAGE,
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
+    _file_ops_cache,
     notify_other_tool_call,
 )
 
@@ -57,6 +61,26 @@ def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
 def _make_safe_tempdir(prefix: str) -> str:
     """Create a temp dir outside macOS system-sensitive /private/var paths."""
     return tempfile.mkdtemp(prefix=prefix, dir=os.getcwd())
+
+
+class _LocalShellEnv:
+    """Small POSIX env stub for exercising real ShellFileOperations."""
+
+    def __init__(self, cwd):
+        self.cwd = cwd
+        self.cwd_owner = None
+
+    def execute(self, command, cwd="", timeout=None, stdin_data=None):
+        proc = subprocess.run(
+            ["/bin/sh", "-c", command],
+            cwd=cwd or self.cwd,
+            input=stdin_data,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+        return {"output": proc.stdout, "returncode": proc.returncode}
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +532,67 @@ class TestFileDedup(unittest.TestCase):
 
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="task_b"))
         self.assertNotEqual(r2.get("dedup"), True)
+
+
+class TestTaskAwareFileDedup(unittest.TestCase):
+    """Dedup tracking should follow the task's live terminal cwd."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        _file_ops_cache.clear()
+        self._old_cwd = os.getcwd()
+        self._tmpdir = _make_safe_tempdir("hermes-task-dedup-")
+        self._host_dir = os.path.join(self._tmpdir, "host")
+        self._live_dir = os.path.join(self._tmpdir, "live")
+        os.mkdir(self._host_dir)
+        os.mkdir(self._live_dir)
+        with open(os.path.join(self._host_dir, "same.txt"), "w", encoding="utf-8") as f:
+            f.write("host version\n")
+        with open(os.path.join(self._live_dir, "same.txt"), "w", encoding="utf-8") as f:
+            f.write("live v1\n")
+        os.chdir(self._host_dir)
+        self._task_id = "dedup-live-cwd-test"
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+        _read_tracker.clear()
+        _file_ops_cache.clear()
+        try:
+            os.unlink(os.path.join(self._host_dir, "same.txt"))
+            os.unlink(os.path.join(self._live_dir, "same.txt"))
+            os.rmdir(self._host_dir)
+            os.rmdir(self._live_dir)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @unittest.skipIf(sys.platform == "win32", "ShellFileOperations test helper uses POSIX /bin/sh")
+    def test_write_invalidates_dedup_using_task_live_cwd(self):
+        live_path = os.path.realpath(os.path.join(self._live_dir, "same.txt"))
+        host_path = os.path.realpath(os.path.join(self._host_dir, "same.txt"))
+        dedup_key = (live_path, 1, 500)
+        _file_ops_cache[self._task_id] = ShellFileOperations(_LocalShellEnv(self._live_dir))
+
+        first = json.loads(read_file_tool("same.txt", task_id=self._task_id))
+        self.assertIn("live v1", first.get("content", ""))
+        self.assertIn(dedup_key, _read_tracker[self._task_id]["dedup"])
+        self.assertNotIn(
+            (host_path, 1, 500),
+            _read_tracker[self._task_id]["dedup"],
+            "test must prove the read was tracked against the live task cwd",
+        )
+
+        write_result = json.loads(write_file_tool(
+            "same.txt",
+            "live v2\n",
+            task_id=self._task_id,
+        ))
+        self.assertNotIn("error", write_result)
+        self.assertNotIn(dedup_key, _read_tracker[self._task_id]["dedup"])
+
+        second = json.loads(read_file_tool("same.txt", task_id=self._task_id))
+        self.assertNotEqual(second.get("dedup"), True)
+        self.assertIn("live v2", second.get("content", ""))
 
 
 # ---------------------------------------------------------------------------

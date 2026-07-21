@@ -296,6 +296,14 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
+    def test_private_var_folders_temp_allowed(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/private/var/folders/ab/cd/T/pytest-file.txt") is None
+
+    def test_var_folders_temp_allowed(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path("/var/folders/ab/cd/T/pytest-file.txt") is None
+
 
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.

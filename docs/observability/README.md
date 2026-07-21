@@ -222,6 +222,20 @@ and `child_goal`.
 Observers can use these hooks to model nested trajectories while keeping child
 agent execution linked to the parent turn that spawned it.
 
+### Curator Lifecycle
+
+| Hook | When it fires |
+| --- | --- |
+| `post_curator_run` | After a curator pass writes its per-run report directory. |
+
+Fields are `run_dir`, `run_json_path`, and `report_md_path`: filesystem paths
+to the completed report (`run.json` is the machine-readable record). Governance
+layers can react to curator output (profile routing, archival overrides, audit
+logging) without polling `logs/curator/`.
+
+`post_curator_run` is observer-only. Return values are ignored, and hook
+failures never affect the curator pass itself.
+
 ## Payload Safety
 
 Observer payloads are designed for telemetry consumers, not raw object access.

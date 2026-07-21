@@ -623,7 +623,7 @@ def _strip_invalid_image_keys(text: str) -> str:
     if "![" not in text:
         return text
     return _IMAGE_RE.sub(
-        lambda m: m.group(0) if m.group(2).startswith("img_") else "",
+        lambda m: m.group(0) if m.group(2).strip().startswith("img_") else "",
         text,
     )
 
@@ -637,10 +637,12 @@ def _optimize_markdown_style(text: str, card_version: int = 2) -> str:
       2. Downgrade H1->H4 and H2~H6->H5 (Feishu post renders ``####``/``#####``
          as proper headings but mangled ``#`` ones).
       3. If ``card_version >= 2``, add ``<br>`` markers around tables and
-         consecutive headings, then re-inject code blocks with their own
-         surrounding ``<br>`` so the post renderer treats them as separate
+         consecutive headings so the post renderer treats them as separate
          visual units.
-      4. Collapse 3+ consecutive newlines to 2.
+      4. Collapse 3+ consecutive newlines to 2 and strip non-Feishu image
+         keys (these must run before code blocks are restored).
+      5. Re-inject code blocks LAST so their contents are never mutated by
+         the steps above. For ``card_version >= 2`` they get ``<br>`` padding.
     """
     if not text:
         return text
@@ -651,8 +653,9 @@ def _optimize_markdown_style(text: str, card_version: int = 2) -> str:
 
     def _park_fence(match):
         idx = len(code_blocks)
-        code_blocks.append(match.group(0))
         prefix = match.group(1) or ""
+        # Store without the leading prefix so re-injection does not duplicate it
+        code_blocks.append(match.group(0)[len(prefix):])
         return f"{prefix}{_FENCE_PLACEHOLDER_PREFIX}{idx}__{idx}"
 
     r = fence_re.sub(_park_fence, text)
@@ -716,25 +719,21 @@ def _optimize_markdown_style(text: str, card_version: int = 2) -> str:
             r"\1\2\3",
             r,
         )
-        # 3f. Re-inject code blocks with ``<br>`` padding
-        for i in range(len(code_blocks)):
-            r = r.replace(
-                f"{_FENCE_PLACEHOLDER_PREFIX}{i}__{i}",
-                f"\n<br>\n{code_blocks[i]}\n<br>\n",
-            )
-    else:
-        for i in range(len(code_blocks)):
-            r = r.replace(
-                f"{_FENCE_PLACEHOLDER_PREFIX}{i}__{i}",
-                code_blocks[i],
-            )
-
     # 4. Collapse 3+ newlines to 2
     r = re.sub(r"\n{3,}", "\n\n", r)
     # Drop any leftover placeholders if the substitution somehow did not run
     r = re.sub(r"___HERMES_CB_\d+__\d+", "", r)
     # Drop any non-Feishu image references (URLs, paths)
     r = _strip_invalid_image_keys(r)
+    # 5. Re-inject code blocks LAST so the optimizer never mutates their
+    #    contents (newline collapsing / image-key stripping above leave them
+    #    untouched). Padding with ``<br>`` only for the wide-screen card.
+    for i in range(len(code_blocks)):
+        placeholder = f"{_FENCE_PLACEHOLDER_PREFIX}{i}__{i}"
+        if card_version >= 2:
+            r = r.replace(placeholder, f"\n<br>\n{code_blocks[i]}\n<br>\n")
+        else:
+            r = r.replace(placeholder, code_blocks[i])
     return r
 
 

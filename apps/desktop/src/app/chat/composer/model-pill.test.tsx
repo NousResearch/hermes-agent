@@ -87,6 +87,7 @@ describe('ModelPill per-surface model label', () => {
 
     const tileView: SessionView = {
       kind: 'tile',
+      paneId: 'session-tile:stored-tile',
       $awaitingResponse: atom(false),
       $busy: atom(false),
       $cwd: atom(''),

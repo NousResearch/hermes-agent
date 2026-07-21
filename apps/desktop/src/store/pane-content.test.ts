@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
-import { $dismissedPanes, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
+import { $activeTreeGroup, $dismissedPanes, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
 
 import {
+  $focusedPaneContent,
+  $focusedPaneId,
+  $focusedStoredSessionId,
   $visibleSessionIds,
   clearPaneContent,
   setPaneContent,
@@ -12,6 +15,7 @@ import {
 afterEach(() => {
   clearPaneContent()
   $layoutTree.set(null)
+  $activeTreeGroup.set(null)
   $hiddenTreePanes.set(new Set())
   $dismissedPanes.set(new Set())
 })
@@ -48,5 +52,19 @@ describe('$visibleSessionIds', () => {
     ]))
 
     expect($visibleSessionIds.get()).toEqual(['session-a'])
+  })
+
+  it('resolves the focused pane and its chat session from the active tree group', () => {
+    setPaneContent('main', { kind: 'chat', storedSessionId: 'session-a' })
+    setPaneContent('session-tile:b', { kind: 'chat', storedSessionId: 'session-b' })
+    $layoutTree.set(split('row', [
+      group(['main'], { id: 'main-group' }),
+      group(['session-tile:b'], { id: 'tile-group' }),
+    ]))
+    $activeTreeGroup.set('tile-group')
+
+    expect($focusedPaneId.get()).toBe('session-tile:b')
+    expect($focusedPaneContent.get()).toEqual({ kind: 'chat', storedSessionId: 'session-b' })
+    expect($focusedStoredSessionId.get()).toBe('session-b')
   })
 })

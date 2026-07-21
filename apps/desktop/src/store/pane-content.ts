@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
-import { visiblePaneIds } from '@/components/pane-shell/tree/model'
-import { $dismissedPanes, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
+import { findGroup, findGroupOfPane, visiblePaneIds } from '@/components/pane-shell/tree/model'
+import { $activeTreeGroup, $dismissedPanes, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
 
 export type PaneContent =
   | { kind: 'chat'; storedSessionId: string | null }
@@ -34,6 +34,31 @@ export function clearPaneContent(paneId?: string) {
   const { [paneId]: _removed, ...rest } = current
   $paneContentById.set(rest)
 }
+
+export const $focusedPaneId = computed(
+  [$activeTreeGroup, $layoutTree],
+  (groupId, tree) => {
+    if (!tree) {
+      return null
+    }
+
+    if (groupId) {
+      return findGroup(tree, groupId)?.active ?? null
+    }
+
+    return findGroupOfPane(tree, 'workspace')?.active ?? null
+  }
+)
+
+export const $focusedPaneContent = computed(
+  [$focusedPaneId, $paneContentById],
+  (paneId, contentById) => (paneId ? contentById[paneId] ?? null : null)
+)
+
+export const $focusedStoredSessionId = computed(
+  $focusedPaneContent,
+  content => (content?.kind === 'chat' ? content.storedSessionId : null)
+)
 
 /** Stored session ids in panes actually visible on screen. Hidden tabs,
  * minimized groups, chrome-hidden panes, dismissed panes, and page panes do

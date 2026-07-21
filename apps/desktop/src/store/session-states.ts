@@ -20,7 +20,11 @@ import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
-import { $visibleSessionIds, setPaneContent } from '@/store/pane-content'
+import {
+  $focusedStoredSessionId as $focusedPaneStoredSessionId,
+  $visibleSessionIds,
+  setPaneContent
+} from '@/store/pane-content'
 import {
   $activeTreeGroup,
   $layoutTree,
@@ -641,28 +645,14 @@ export function reopenLastClosedTile(): void {
 }
 
 // ---------------------------------------------------------------------------
-// The FOCUSED session — one derivation, not another hand-maintained
-// "$activeSession" sibling. The layout's interaction tracker ($activeTreeGroup:
-// last click/focus, the same source ⌘W uses) resolves to a zone; its active
-// pane names the session: a `session-tile:<storedId>` pane IS that session,
-// anything else falls back to the route-driven primary. Chrome that should
-// follow the user between tiles (titlebar session title, statusbar context /
-// timer / model) reads these instead of the primary-only atoms.
+// Focused runtime projection. Pane content owns focused session identity;
+// session state resolves its live runtime + cache slice.
 // ---------------------------------------------------------------------------
 
-/** Stored id of the focused session (the interacted zone's tile, else the
- *  primary's selection). Null on a fresh draft. */
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId],
-  (groupId, tree, selected) => {
-    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
-
-    return active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
-  }
-)
+export const $focusedStoredSessionId = $focusedPaneStoredSessionId
 
 /** Live runtime id of the focused session (a tile's bound runtime, else the
- *  primary's active session). */
+ * primary's active session). */
 export const $focusedRuntimeId = computed(
   [$focusedStoredSessionId, $selectedStoredSessionId, $activeSessionId, $sessionTiles],
   (focused, selected, primaryRuntime, tiles) => {

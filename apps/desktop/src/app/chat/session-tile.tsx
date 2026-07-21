@@ -84,6 +84,7 @@ function buildTileView(storedSessionId: string): SessionView {
 
   return {
     kind: 'tile',
+    paneId: `session-tile:${storedSessionId}`,
     $awaitingResponse: computed($state, state => Boolean(state?.awaitingResponse)),
     $busy: computed($state, state => Boolean(state?.busy)),
     $cwd: computed($state, state => state?.cwd ?? ''),

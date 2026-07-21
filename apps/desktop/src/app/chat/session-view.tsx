@@ -30,6 +30,8 @@ import {
  */
 export interface SessionView {
   kind: 'primary' | 'tile'
+  /** Layout-tree pane that renders this chat surface. */
+  paneId: string
   $runtimeId: ReadableAtom<string | null>
   $storedId: ReadableAtom<string | null>
   $messages: ReadableAtom<ChatMessage[]>
@@ -46,6 +48,7 @@ export interface SessionView {
 
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
+  paneId: 'workspace',
   $awaitingResponse,
   $busy,
   $cwd: $currentCwd,

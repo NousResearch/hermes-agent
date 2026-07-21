@@ -249,9 +249,9 @@ export function ChatView({
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
-  // Dock anchor for a session drop onto this surface: the workspace pane for the
-  // primary, this tile's pane id for a tile. Read by the session-drop bridge.
-  const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
+  // Dock anchor for a session drop onto this surface. The view owns the pane id
+  // directly, so main and tiles follow the same pane-targeted path.
+  const sessionAnchor = view.paneId
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
   const contextSuggestions = useStore($contextSuggestions)

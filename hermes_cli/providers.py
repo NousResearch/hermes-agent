@@ -145,11 +145,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
+        extra_env_vars=("OPENCODE_ZEN_API_KEY",),
         base_url_env_var="OPENCODE_ZEN_BASE_URL",
     ),
     "opencode-go": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
+        extra_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilo": HermesOverlay(
@@ -161,6 +163,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
+    ),
+    "gemini": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        base_url_env_var="GEMINI_BASE_URL",
     ),
     "novita": HermesOverlay(
         transport="openai_chat",

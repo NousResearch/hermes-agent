@@ -3186,6 +3186,10 @@ def run_job(
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            if job.get("api_key"):
+                runtime_kwargs["explicit_api_key"] = os.path.expandvars(
+                    job.get("api_key", "")
+                )
             runtime = resolve_runtime_provider(**runtime_kwargs)
             primary_provider_for_drift = (
                 str(runtime.get("provider") or "").strip().lower()

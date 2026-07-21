@@ -48,6 +48,7 @@ jobs:
         --lockfile=uv.lock
         --lockfile=package-lock.json
         --lockfile=website/package-lock.json
+      results-file-name: osv-results.sarif
       fail-on-vuln: false
 
   emit-status:
@@ -64,61 +65,16 @@ jobs:
       - name: Download SARIF result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: osv-results
+          name: OSV Scanner SARIF file
           path: /tmp/osv-results
         continue-on-error: true
 
       - name: Emit review_status
         id: emit
+        env:
+          SCAN_RESULT: ${{ needs.scan.result }}
         run: |
-          set -euo pipefail
-          STATUS="[]"
-
-          if [ -f /tmp/osv-results/osv-results.sarif ]; then
-            # Count vulnerabilities from the SARIF file
-            VULN_COUNT=$(python3 -c "
-          import json, sys
-          try:
-              with open('/tmp/osv-results/osv-results.sarif') as f:
-                  data = json.load(f)
-              count = 0
-              vulns = []
-              for run in data.get('runs', []):
-                  for result in run.get('results', []):
-                      count += 1
-                      rule_id = result.get('ruleId', 'unknown')
-                      message = result.get('message', {}).get('text', '')
-                      loc = result.get('locations', [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
-                      vulns.append(f'- {rule_id} in {loc}: {message}')
-              print(count)
-              if vulns:
-                  print('\n'.join(vulns[:20]), file=sys.stderr)
-          except Exception:
-              print(0)
-          ")
-
-            VULN_DETAIL=""
-            if [ "$VULN_COUNT" -gt 0 ] 2>/dev/null; then
-              VULN_PLURAL=$([ "$VULN_COUNT" -eq 1 ] && echo "y" || echo "ies")
-              VULN_DETAIL=$(python3 -c "
-          import json, sys
-          try:
-              with open('/tmp/osv-results/osv-results.sarif') as f:
-                  data = json.load(f)
-              vulns = []
-              for run in data.get('runs', []):
-                  for result in run.get('results', []):
-                      rule_id = result.get('ruleId', 'unknown')
-                      loc = result.get('locations', [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
-                      vulns.append(f'- {rule_id} in {loc}')
-              print(json.dumps('\n'.join(vulns[:20])))
-          except Exception:
-              print(json.dumps(''))
-          ")
-              STATUS="[{\"source\":\"osv scan\",\"results\":[{\"kind\":\"warning\",\"title\":\"OSV vulnerability scan\",\"summary\":\"${VULN_COUNT} known vulnerabilit${VULN_PLURAL} found in pinned dependencies.\",\"detail\":${VULN_DETAIL},\"how_to_fix\":\"Review the findings in the [Security tab](../../security/code-scanning). Update the affected dependencies if a patched version is available.\"}]}]"
-            else
-              STATUS="[]"
-            fi
-          fi
-
-          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+          python3 scripts/ci/osv_review_status.py \
+            --scan-result "$SCAN_RESULT" \
+            --sarif /tmp/osv-results/osv-results.sarif \
+            --output "$GITHUB_OUTPUT"

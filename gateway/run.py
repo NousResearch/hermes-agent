@@ -6692,6 +6692,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    async def _confirm_final_delivery(self, session_key: str) -> None:
+        """Clear restart recovery only after the platform ACKs the final reply.
+
+        A successful agent result is not yet a delivered turn: the response is
+        still only a local Python value until ``BasePlatformAdapter`` records a
+        delivery obligation and receives ``SendResult.success``. Keeping
+        ``resume_pending`` through that boundary lets a replacement gateway
+        recover either the turn or its durable obligation after a restart.
+        """
+        if not session_key:
+            return
+        try:
+            await self.async_session_store.clear_resume_pending(session_key)
+        except Exception as exc:
+            logger.debug(
+                "clear_resume_pending after final delivery failed for %s: %s",
+                session_key,
+                exc,
+            )
+
     async def _launch_detached_restart_command(self) -> None:
         import shutil
         import subprocess
@@ -7212,14 +7232,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # this catches every other SIGTERM source (e.g. a raw `terminal(
         # "launchctl kickstart ai.hermes.gateway")`).
         if candidates:
-            try:
-                from gateway import restart_loop_guard as _rlg
+            # This method runs at startup AND again when a late platform
+            # reconnects. The breaker counts restart-interrupted BOOTS, not
+            # scheduling passes; recording both calls made one boot look like
+            # two restarts and suppressed the very reconnect recovery this
+            # pass exists to provide. Cache the verdict for this runner boot.
+            if not getattr(self, "_auto_resume_breaker_checked", False):
+                self._auto_resume_breaker_checked = True
+                try:
+                    from gateway import restart_loop_guard as _rlg
 
-                _max_restarts, _window = self._restart_loop_guard_config()
-                if _rlg.check_and_record(_max_restarts, _window):
-                    return 0
-            except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
-                logger.debug("Restart-loop guard check skipped: %s", exc)
+                    _max_restarts, _window = self._restart_loop_guard_config()
+                    self._auto_resume_breaker_tripped = _rlg.check_and_record(
+                        _max_restarts, _window
+                    )
+                except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
+                    self._auto_resume_breaker_tripped = False
+                    logger.debug("Restart-loop guard check skipped: %s", exc)
+            if getattr(self, "_auto_resume_breaker_tripped", False):
+                return 0
 
         now = datetime.now()
         scheduled = 0
@@ -13071,19 +13102,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # This ensures the counter only accumulates across CONSECUTIVE
             # restarts where the session was active (never completed).
             #
-            # Also clear the resume_pending flag (set by drain-timeout
-            # shutdown) — the turn ran to completion, so recovery
-            # succeeded and subsequent messages should no longer receive
-            # the restart-interruption system note.
+            # A completed model turn breaks the stuck-agent loop counter, but
+            # ``resume_pending`` remains until the platform ACKs the final
+            # response. Clearing it here created a crash window where the
+            # answer existed only in this stack frame: no recovery marker and
+            # no delivery obligation yet. Streaming and intentional-silence
+            # turns have no later BasePlatformAdapter text send, so they
+            # confirm here; ordinary replies confirm in the adapter after ACK.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 self._clear_restart_failure_count(session_key)
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
+                if agent_result.get("already_sent") or _intentional_silence:
+                    await self._confirm_final_delivery(session_key)
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.

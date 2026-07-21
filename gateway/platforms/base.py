@@ -5309,6 +5309,23 @@ class BasePlatformAdapter(ABC):
                                 "delivery ledger update failed", exc_info=True
                             )
 
+                    # The model turn is not a completed restart recovery until
+                    # the platform has ACKed its final response. GatewayRunner
+                    # deliberately keeps ``resume_pending`` set while the text
+                    # is only a local return value; clear it here, after the
+                    # durable obligation exists and SendResult confirms success.
+                    if getattr(result, "success", False):
+                        _delivery_runner = getattr(
+                            delivery_adapter, "gateway_runner", None
+                        ) or getattr(self, "gateway_runner", None)
+                        _confirm_delivery = getattr(
+                            _delivery_runner, "_confirm_final_delivery", None
+                        )
+                        if callable(_confirm_delivery):
+                            _confirmation = _confirm_delivery(session_key)
+                            if inspect.isawaitable(_confirmation):
+                                await _confirmation
+
                     # Schedule auto-deletion on the adapter that owns the new
                     # message ID, which may be the reconnect replacement.
                     if (

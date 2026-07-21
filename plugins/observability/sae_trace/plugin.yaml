@@ -1,0 +1,9 @@
+name: sae_trace
+version: "0.1.0"
+description: "Optional SAE feature-trace observability for Hermes — correlates each agent turn with the same-inference SAE activation records emitted by an SAE-hooked local OpenAI-compatible server. Opt in with `hermes plugins enable observability/sae_trace`; set HERMES_SAE_TRACE_FILE to the server's sidecar JSONL."
+author: "Caleb DeLeeuw (@SolshineCode)"
+requires_env:
+  - HERMES_SAE_TRACE_FILE
+hooks:
+  - pre_api_request
+  - post_api_request

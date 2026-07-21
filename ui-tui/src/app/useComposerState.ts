@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { useStdin, withInkSuspended } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
@@ -97,6 +97,26 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
+export function mergeBufferedInputLine(
+  inputBuf: string[],
+  current: string
+): null | { input: { cursor: number; value: string }; inputBuf: string[] } {
+  if (!inputBuf.length) {
+    return null
+  }
+
+  const nextInputBuf = inputBuf.slice(0, -1)
+  const tail = inputBuf[inputBuf.length - 1] ?? ''
+
+  return {
+    input: {
+      cursor: tail.length,
+      value: `${tail}${current}`
+    },
+    inputBuf: nextInputBuf
+  }
+}
+
 export function useComposerState({
   gw,
   onClipboardPaste,
@@ -104,8 +124,9 @@ export function useComposerState({
   submitRef
 }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInput] = useState('')
-  const [inputBuf, setInputBuf] = useState<string[]>([])
+  const [inputBuf, setInputBufState] = useState<string[]>([])
   const [pasteSnips, setPasteSnips] = useState<PasteSnippet[]>([])
+  const inputBufRef = useRef<string[]>([])
   const isBlocked = useStore($isBlocked)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
 
@@ -125,6 +146,13 @@ export function useComposerState({
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
 
+  const setInputBuf = useCallback((next: string[] | ((prev: string[]) => string[])) => {
+    const resolved = typeof next === 'function' ? next(inputBufRef.current) : next
+
+    inputBufRef.current = resolved
+    setInputBufState(resolved)
+  }, [])
+
   const clearIn = useCallback(() => {
     setInput('')
     setInputBuf([])
@@ -132,7 +160,22 @@ export function useComposerState({
     setQueueEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
-  }, [historyDraftRef, setQueueEdit, setHistoryIdx])
+  }, [historyDraftRef, setInputBuf, setQueueEdit, setHistoryIdx])
+
+  const mergeContinuationBackspace = useCallback(
+    (current: string): null | { cursor: number; value: string } => {
+      const merged = mergeBufferedInputLine(inputBufRef.current, current)
+
+      if (!merged) {
+        return null
+      }
+
+      setInputBuf(merged.inputBuf)
+
+      return merged.input
+    },
+    [setInputBuf]
+  )
 
   const handleResolvedPaste = useCallback(
     async ({
@@ -297,7 +340,7 @@ export function useComposerState({
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [input, inputBuf, submitRef])
+  }, [input, inputBuf, setInputBuf, submitRef])
 
   const actions = useMemo(
     () => ({
@@ -305,6 +348,7 @@ export function useComposerState({
       dequeue,
       enqueue,
       handleTextPaste,
+      mergeContinuationBackspace,
       openEditor,
       pushHistory,
       removeQueue: removeQ,
@@ -322,12 +366,14 @@ export function useComposerState({
       dequeue,
       enqueue,
       handleTextPaste,
+      mergeContinuationBackspace,
       openEditor,
       pushHistory,
       removeQ,
       replaceQ,
       setCompIdx,
       setHistoryIdx,
+      setInputBuf,
       setQueueEdit,
       syncQueue
     ]

@@ -136,9 +136,10 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     createBackendSessionForSend: async () => runtimeIdRef.current,
     getRoutedStoredSessionId: () => storedIdRef.current,
     getRuntimeIdForStoredSession: storedId => (storedId === storedIdRef.current ? runtimeIdRef.current : null),
-    // A tile IS its session — no route to abandon, so the create-abort guard's
-    // token is a stable constant (the guard never trips for a tile).
+    // A tile IS its session — no route or foreground selection to abandon, so
+    // both context guards are stable constants (they never trip for a tile).
     getRouteToken: () => runtimeId,
+    getSelectionGeneration: () => 0,
     requestGateway,
     // Tile ids are always bound before this hook mounts, so routed recovery is
     // unreachable here; keep the shared submit contract explicit.

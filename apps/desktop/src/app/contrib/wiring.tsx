@@ -166,8 +166,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   routedSessionIdRef.current = routedSessionId
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
-  routeTokenRef.current = routeToken
+  const selectionGenerationRef = useRef(0)
+
+  if (routeTokenRef.current !== routeToken) {
+    routeTokenRef.current = routeToken
+    selectionGenerationRef.current += 1
+  }
+
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+  const getSelectionGeneration = useCallback(() => selectionGenerationRef.current, [])
 
   const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
 
@@ -548,6 +555,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    getSelectionGeneration,
     handleSkinCommand,
     openMemoryGraph: openStarmap,
     refreshSessions,

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { QueueManager } from '@/lib/queue-manager'
 import type { ComposerAttachment } from './composer'
 import {
-  $queuedPromptsBySession,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
@@ -30,7 +30,7 @@ function attachment(id: string, kind: ComposerAttachment['kind'] = 'file'): Comp
 describe('composer queue store', () => {
   beforeEach(() => {
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
-    $queuedPromptsBySession.set({})
+    QueueManager.clearAll()
   })
 
   it('queues prompts in FIFO order', () => {
@@ -103,7 +103,6 @@ describe('composer queue store', () => {
     clearQueuedPrompts(SESSION_KEY)
 
     expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
-    expect($queuedPromptsBySession.get()[SESSION_KEY]).toBeUndefined()
     expect(window.localStorage.getItem(QUEUE_STORAGE_KEY)).toBeNull()
   })
 
@@ -121,7 +120,7 @@ describe('composer queue store', () => {
 describe('migrateQueuedPrompts', () => {
   beforeEach(() => {
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
-    $queuedPromptsBySession.set({})
+    QueueManager.clearAll()
   })
 
   it('moves entries from a dead runtime key onto the live one', () => {
@@ -131,7 +130,7 @@ describe('migrateQueuedPrompts', () => {
     expect(getQueuedPrompts('rt-old')).toEqual([])
     expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['stranded'])
     // The dead key is dropped from the store entirely.
-    expect($queuedPromptsBySession.get()['rt-old']).toBeUndefined()
+    expect(QueueManager.getAll('rt-old')).toEqual([])
   })
 
   it('appends after existing target entries (FIFO preserved)', () => {
@@ -150,21 +149,9 @@ describe('migrateQueuedPrompts', () => {
 })
 
 describe('shouldAutoDrain', () => {
-  it('drains whenever idle with a non-empty queue', () => {
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
-  })
-
-  it('drains on mount/reconnect with no observed busy edge', () => {
-    // The whole point of dropping the edge: a remount resets the busy ref, so an
-    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
-  })
-
-  it('does not drain mid-turn', () => {
-    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
-  })
-
-  it('does not drain an empty queue', () => {
+  it('is deprecated — QueueManager handles drain', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(false)
     expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
+    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
   })
 })

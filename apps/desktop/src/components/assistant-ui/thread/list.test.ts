@@ -7,7 +7,7 @@ import {
   isVirtualizedGroup,
   LIVE_TAIL_GROUPS,
   MAX_INITIAL_GROUPS,
-  type MessageGroup,
+  type MessageGroup
 } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState

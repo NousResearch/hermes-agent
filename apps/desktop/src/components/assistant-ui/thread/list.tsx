@@ -27,16 +27,8 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
-import {
-  isPreviewableTarget,
-  type ToolPart,
-  toolPreviewTargetForPart
-} from '../tool/fallback-model'
-import {
-  toolPartPageKey,
-  ToolTurnPaginationProvider,
-  type TurnToolRef
-} from '../tool/turn-pagination'
+import { isPreviewableTarget, type ToolPart, toolPreviewTargetForPart } from '../tool/fallback-model'
+import { toolPartPageKey, ToolTurnPaginationProvider, type TurnToolRef } from '../tool/turn-pagination'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -290,7 +282,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // that, append-only streaming may keep a bounded newest suffix. Once the user
   // asks for history, its oldest visible group is stable across later appends.
   const hasGroups = groups.length > 0
-  const [historyState, setHistoryState] = useState({ expanded: false, oldestVisibleId: null as string | null, sessionKey })
+
+  const [historyState, setHistoryState] = useState({
+    expanded: false,
+    oldestVisibleId: null as string | null,
+    sessionKey
+  })
+
   const [hadGroups, setHadGroups] = useState(hasGroups)
   const focusAfterRevealRef = useRef<string | null>(null)
   const focusFrameRef = useRef<number | null>(null)
@@ -314,7 +312,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     ? groups.findIndex(group => group.id === normalizedHistoryState.oldestVisibleId)
     : -1
 
-  const hiddenCount = stableBoundaryIndex >= 0 ? stableBoundaryIndex : firstVisibleGroupIndex(groups, FIRST_PAINT_BUDGET)
+  const hiddenCount =
+    stableBoundaryIndex >= 0 ? stableBoundaryIndex : firstVisibleGroupIndex(groups, FIRST_PAINT_BUDGET)
+
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)

@@ -1,6 +1,15 @@
 'use client'
 
-import { createContext, type FC, type PropsWithChildren, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  type FC,
+  type PropsWithChildren,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState
+} from 'react'
 
 export const TOOL_TURN_PAGE_SIZE = 20
 
@@ -29,7 +38,11 @@ export function toolPartPageKey(messageId: string, partIndex: number, toolCallId
   return `${messageId}:${toolCallId || `part-${partIndex}`}`
 }
 
-export function firstVisibleToolIndex(tools: readonly TurnToolRef[], oldestVisibleKey: string | null, expanded: boolean): number {
+export function firstVisibleToolIndex(
+  tools: readonly TurnToolRef[],
+  oldestVisibleKey: string | null,
+  expanded: boolean
+): number {
   if (expanded && oldestVisibleKey) {
     const stableIndex = tools.findIndex(tool => tool.key === oldestVisibleKey)
 
@@ -41,9 +54,11 @@ export function firstVisibleToolIndex(tools: readonly TurnToolRef[], oldestVisib
   return Math.max(0, tools.length - TOOL_TURN_PAGE_SIZE)
 }
 
-export const ToolTurnPaginationProvider: FC<
-  PropsWithChildren<{ tools: readonly TurnToolRef[]; turnKey: string }>
-> = ({ children, tools, turnKey }) => {
+export const ToolTurnPaginationProvider: FC<PropsWithChildren<{ tools: readonly TurnToolRef[]; turnKey: string }>> = ({
+  children,
+  tools,
+  turnKey
+}) => {
   const [state, setState] = useState<ToolTurnPaginationState>({
     expanded: false,
     oldestVisibleKey: null,
@@ -62,7 +77,7 @@ export const ToolTurnPaginationProvider: FC<
   const firstVisible = firstVisibleToolIndex(tools, currentState.oldestVisibleKey, currentState.expanded)
   const hiddenCount = firstVisible
   const visibleKeys = new Set(tools.slice(firstVisible).map(tool => tool.key))
-  const pagerKey = hiddenCount > 0 ? tools[firstVisible]?.key ?? null : null
+  const pagerKey = hiddenCount > 0 ? (tools[firstVisible]?.key ?? null) : null
 
   const revealEarlier = useCallback(() => {
     setState(current => {

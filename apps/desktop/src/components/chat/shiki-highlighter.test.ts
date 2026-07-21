@@ -2,10 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { chunkByLines, exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
 import { tokenizeShikiCode } from '@/components/chat/shiki-worker'
-import {
-  getShikiWorkerClientSnapshotForTests,
-  startShikiHighlight
-} from '@/components/chat/shiki-worker-client'
+import { getShikiWorkerClientSnapshotForTests, startShikiHighlight } from '@/components/chat/shiki-worker-client'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -46,6 +43,34 @@ describe('chunkByLines', () => {
 })
 
 describe('Shiki worker client lifecycle', () => {
+  it('normalizes constructor failures without exposing their message', async () => {
+    const constructorCause = new Error('secret-bearing constructor detail')
+
+    class ThrowingWorker {
+      constructor() {
+        throw constructorCause
+      }
+    }
+
+    vi.stubGlobal('Worker', ThrowingWorker)
+    const job = startShikiHighlight('const a = 1', 'ts')
+    const error = await job.promise.catch(reason => reason)
+
+    expect(error).toMatchObject({
+      cause: constructorCause,
+      message: 'Shiki worker construction failed',
+      name: 'ShikiWorkerRetryableError',
+      retryable: true
+    })
+    expect(error.message).not.toContain(constructorCause.message)
+    expect(getShikiWorkerClientSnapshotForTests()).toEqual({
+      activeGeneration: null,
+      activeLeases: 0,
+      pending: 0
+    })
+    expect(() => job.dispose()).not.toThrow()
+  })
+
   it('shares one worker and terminates it after the final consumer disposes', async () => {
     class TestWorker {
       static instances: TestWorker[] = []

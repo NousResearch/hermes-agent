@@ -100,6 +100,36 @@ def extract_media_tags_broken(result_messages):
     return media_tags, has_voice_directive
 
 
+class TestMediaDeliveryExtensions:
+    """Tests for the shared outbound media-delivery allowlist."""
+
+    def test_ics_media_tag_is_extracted_for_document_delivery(self):
+        """Calendar invites should upload instead of rendering MEDIA: text."""
+        from gateway.platforms.base import BasePlatformAdapter
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "Here is the calendar invite.\nMEDIA:/tmp/event.ics"
+        )
+
+        assert media == [("/tmp/event.ics", False)]
+        assert "MEDIA:" not in cleaned
+        assert "event.ics" not in cleaned
+
+    def test_ics_bare_path_is_allowed_for_document_delivery(self, tmp_path):
+        """Bare local .ics paths should use the same delivery allowlist."""
+        from gateway.platforms.base import BasePlatformAdapter
+
+        invite_path = tmp_path / "event.ics"
+        invite_path.write_text("BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(
+            f"The invite is at {invite_path}"
+        )
+
+        assert files == [str(invite_path)]
+        assert "event.ics" not in cleaned
+
+
 class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
 

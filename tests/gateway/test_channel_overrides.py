@@ -143,7 +143,7 @@ class TestResolveModelForChannel:
     def test_falls_back_to_global_when_no_override(self, monkeypatch):
         monkeypatch.setattr(
             "gateway.run._resolve_gateway_model",
-            lambda _cfg=None: "global-model/default",
+            lambda _cfg=None, platform=None: "global-model/default",
         )
         config = GatewayConfig(
             platforms={

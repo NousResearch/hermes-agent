@@ -19562,24 +19562,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
-            _progress_len_fn = (
-                adapter.message_len_fn
-                if isinstance(adapter, BasePlatformAdapter)
-                else len
-            )
+            try:
+                _progress_len_fn = (
+                    adapter.message_len_fn
+                    if isinstance(adapter, BasePlatformAdapter)
+                    else len
+                )
+            except Exception:
+                _progress_len_fn = len
             try:
                 _raw_progress_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
             except Exception:
                 _raw_progress_limit = 4000
-            # Leave a little room for platform quirks / formatting.  For tiny
-            # test adapters keep the limit usable instead of clamping to 500+.
+            # Tool progress is an auxiliary edited status bubble. Never let it
+            # reach platform chunking/overflow paths: Telegram edit overflow can
+            # send fresh continuation messages, which turns cumulative progress
+            # into visible standalone tool-log bubbles. Keep recent tail context
+            # instead of sending extra progress bubbles.
+            _progress_reserve = 128 if _raw_progress_limit > 512 else max(16, _raw_progress_limit // 8)
+            _progress_budget = min(
+                _raw_progress_limit - _progress_reserve,
+                int(_raw_progress_limit * 0.8),
+                3200,
+            )
             _PROGRESS_TEXT_LIMIT = max(
                 1,
-                _raw_progress_limit - (64 if _raw_progress_limit > 128 else 0),
+                min(_raw_progress_limit, max(64, _progress_budget)),
             )
 
             # Detect whether the adapter's edit_message accepts metadata so
-            # overflow edits preserve Telegram topic/thread routing (#27487).
+            # edits preserve Telegram topic/thread routing (#27487).
             _edit_accepts_metadata = False
             if _progress_metadata:
                 try:
@@ -19609,20 +19621,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _progress_text(lines: list) -> str:
                 return "\n".join(str(line) for line in lines)
 
-            def _split_progress_groups(lines: list) -> list[list]:
-                """Partition progress lines into platform-sized editable bubbles."""
-                groups: list[list] = []
-                current: list = []
-                for line in lines:
-                    candidate = current + [line]
-                    if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
-                        groups.append(current)
-                        current = [line]
-                    else:
-                        current = candidate
-                if current:
-                    groups.append(current)
-                return groups
+            def _progress_text_len(text: str) -> int:
+                try:
+                    return int(_progress_len_fn(text))
+                except Exception:
+                    return len(text)
+
+            def _render_progress_text(lines: list) -> str:
+                if not lines:
+                    return ""
+                full_text = _progress_text(lines)
+                if _progress_text_len(full_text) <= _PROGRESS_TEXT_LIMIT:
+                    return full_text
+
+                kept: list = []
+                for line in reversed(lines):
+                    candidate_lines = [line] + kept
+                    omitted = len(lines) - len(candidate_lines)
+                    prefix = f"… {omitted} earlier tool updates omitted\n" if omitted else ""
+                    candidate = prefix + _progress_text(candidate_lines)
+                    if _progress_text_len(candidate) <= _PROGRESS_TEXT_LIMIT:
+                        kept = candidate_lines
+                        continue
+                    break
+
+                if kept:
+                    omitted = len(lines) - len(kept)
+                    prefix = f"… {omitted} earlier tool updates omitted\n" if omitted else ""
+                    return prefix + _progress_text(kept)
+
+                # Defensive fallback for a single pathological verbose line.
+                marker = "… progress line truncated\n"
+                tail = str(lines[-1])
+                while tail and _progress_text_len(marker + tail) > _PROGRESS_TEXT_LIMIT:
+                    tail = tail[1:]
+                return marker + tail
 
             def _track_progress_result(result) -> None:
                 if (
@@ -19641,42 +19674,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 _track_progress_result(result)
                 return result
-
-            async def _roll_progress_overflow_if_needed() -> bool:
-                """Start fresh editable progress bubbles before a bubble exceeds limit.
-
-                Returns True when it delivered/split the current buffer and the
-                caller should skip the normal send/edit path for this tick.
-                """
-                nonlocal progress_msg_id, progress_lines, can_edit
-                if not progress_lines or not can_edit:
-                    return False
-                groups = _split_progress_groups(progress_lines)
-                if len(groups) <= 1:
-                    return False
-
-                first_text = _progress_text(groups[0])
-                if progress_msg_id is not None:
-                    result = await _edit_progress_message(progress_msg_id, first_text)
-                    if not result.success:
-                        can_edit = False
-                        # Fall back to the existing non-edit behavior below.
-                        return False
-                else:
-                    result = await _send_progress_text(first_text)
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-
-                for group in groups[1:]:
-                    result = await _send_progress_text(_progress_text(group))
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-
-                # The newest continuation is now the only mutable bubble.  Keep
-                # just its lines so subsequent edits update it instead of
-                # replaying the full historical transcript into new messages.
-                progress_lines = groups[-1]
-                return True
 
             while True:
                 try:
@@ -19730,13 +19727,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         msg = raw
                         progress_lines.append(msg)
 
-                    if await _roll_progress_overflow_if_needed():
-                        _last_edit_ts = time.monotonic()
-                        await asyncio.sleep(0.3)
-                        if _run_still_current():
-                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
-                        continue
-
                     # Throttle edits: batch rapid tool updates into fewer
                     # API calls to avoid hitting Telegram flood control.
                     # (grammY auto-retry pattern: proactively rate-limit
@@ -19755,65 +19745,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text(progress_lines)
                         result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
-                            # Transient network errors (ConnectError, timeouts)
-                            # must not permanently disable progress-message
-                            # editing — the next cycle can catch up.  Only
-                            # permanent failures (flood control, message not
-                            # found, permissions) should set can_edit = False.
-                            if getattr(result, "retryable", False):
-                                logger.debug(
-                                    "[%s] Transient edit failure — keeping can_edit=True",
-                                    adapter.name,
-                                )
-                                continue
                             if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — backoff but keep editing.
-                                # Only disable edits for non-recoverable errors.
+                                # Flood control hit — pause progress edits for
+                                # this run. Do not fall back to fresh sends:
+                                # Telegram users experience that as tool-report
+                                # spam, and edit-capable adapters may recover on
+                                # the next turn.
                                 logger.info(
-                                    "[%s] Progress edit flood control, backing off",
+                                    "[%s] Progress edits paused due to flood control; suppressing standalone progress fallback",
                                     adapter.name,
                                 )
-                                _last_edit_ts = time.monotonic()
-                            else:
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
+                            else:
+                                # A transient edit failure is not proof that the
+                                # adapter is non-editing. Keep batching in the
+                                # original progress bubble and try again later
+                                # (or in the final drain) instead of creating a
+                                # new visible tool-progress message.
+                                logger.debug(
+                                    "[%s] Progress edit failed; keeping progress batched: %s",
+                                    adapter.name,
+                                    getattr(result, "error", "") or "unknown error",
+                                )
                     else:
+                        result = None
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            full_text = _render_progress_text(progress_lines)
+                            result = await _send_progress_text(full_text)
                         else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                            # Edits are temporarily disabled (for example after
+                            # Telegram flood control). Keep accumulating/silent
+                            # rather than sending each progress line as a new
+                            # standalone message.
+                            logger.debug(
+                                "[%s] Suppressing standalone tool-progress send while edits are paused",
+                                adapter.name,
                             )
-                        if result.success and result.message_id:
+                        if result is not None and result.success and result.message_id:
                             progress_msg_id = result.message_id
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(str(result.message_id))
+                        elif result is not None:
+                            # We attempted the initial visible progress send but
+                            # cannot edit it: either Telegram timed out after the
+                            # request may have landed, or the adapter reported
+                            # success without an editable message id. Retrying by
+                            # sending the accumulated progress text again creates
+                            # the duplicated standalone tool-report bubbles users
+                            # see in Telegram. Tool progress is auxiliary, so
+                            # fail closed for this run and keep later updates
+                            # silent instead of sending cumulative fallbacks.
+                            _err = getattr(result, "error", "") or "missing message id"
+                            logger.info(
+                                "[%s] Progress send returned no editable message id; suppressing standalone progress fallback: %s",
+                                adapter.name,
+                                _err,
+                            )
+                            can_edit = False
 
                     _last_edit_ts = time.monotonic()
 
@@ -19833,14 +19824,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                    await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
                                 # one for any tool lines that arrived after.
-                                await _roll_progress_overflow_if_needed()
                                 if can_edit and progress_lines and progress_msg_id:
-                                    _pending_text = _progress_text(progress_lines)
+                                    _pending_text = _render_progress_text(progress_lines)
                                     try:
                                         await _edit_progress_message(progress_msg_id, _pending_text)
                                     except Exception:
@@ -19851,14 +19840,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 repeat_count[0] = 0
                             else:
                                 progress_lines.append(raw)
-                                await _roll_progress_overflow_if_needed()
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
-                        await _roll_progress_overflow_if_needed()
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = _progress_text(progress_lines)
+                        full_text = _render_progress_text(progress_lines)
                         try:
                             await _edit_progress_message(progress_msg_id, full_text)
                         except Exception:

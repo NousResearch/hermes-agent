@@ -60,7 +60,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
 
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
-    """Adapter with a tiny platform limit to exercise progress rollover."""
+    """Adapter with a tiny platform limit to exercise progress clipping."""
 
     MAX_MESSAGE_LENGTH = 180
 
@@ -120,6 +120,81 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         raise AssertionError("non-editable adapters should not receive edit_message calls")
+
+
+class TransientEditFailureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.edit_attempts = 0
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edit_attempts += 1
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if self.edit_attempts == 1:
+            return SendResult(success=False, error="temporary edit failure")
+        return SendResult(success=True, message_id=message_id)
+
+
+class InitialProgressNoMessageIdAdapter(ProgressCaptureAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=None)
+
+
+class InitialProgressFailureAdapter(ProgressCaptureAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=False, error="Timed out", retryable=False)
+
+
+class OverflowingProgressEditAdapter(ProgressCaptureAdapter):
+    """Adapter that mimics Telegram edit overflow by sending continuations."""
+
+    MAX_MESSAGE_LENGTH = 180
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            self.sent.append(
+                {
+                    "chat_id": chat_id,
+                    "content": content[self.MAX_MESSAGE_LENGTH:],
+                    "reply_to": message_id,
+                    "metadata": {"overflow_continuation": True},
+                }
+            )
+            return SendResult(
+                success=True,
+                message_id="progress-overflow-1",
+                continuation_message_ids=("progress-overflow-1",),
+            )
+        return SendResult(success=True, message_id=message_id)
 
 
 class FakeAgent:
@@ -215,12 +290,53 @@ class ManyProgressLinesAgent:
         assert cb is not None
         cb("tool.started", "terminal", "first-short", {})
         # Let the progress task create the first editable bubble, then enqueue
-        # the rest quickly.  The cancellation drain must roll them into fresh
-        # editable bubbles instead of trying to edit the first one past limit.
+        # the rest quickly. The cancellation drain must clip the edited text
+        # before the adapter's platform limit instead of creating fresh bubbles.
         time.sleep(0.35)
         for idx in range(1, 8):
             cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ThreeStepProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "first command", {})
+            time.sleep(0.4)
+            cb("tool.started", "browser_navigate", "second command", {})
+            time.sleep(1.6)
+            cb("tool.started", "read_file", "third command", {})
+            time.sleep(0.6)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ManyStepProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "command 00 warmup", {})
+            time.sleep(0.45)
+            for idx in range(1, 18):
+                cb("tool.started", "terminal", f"command {idx:02d} with detailed preview", {})
+            time.sleep(0.2)
         return {
             "final_response": "done",
             "messages": [],
@@ -838,19 +954,18 @@ async def _run_with_agent(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch, tmp_path):
-    """Tool progress should start a second editable bubble before Telegram's limit.
+async def test_run_agent_clips_progress_before_platform_limit(monkeypatch, tmp_path):
+    """Tool progress should stay in one edited bubble before Telegram's limit.
 
-    Regression: once the first progress bubble grew past the platform limit,
-    the gateway kept trying to edit that same oversized full transcript.  The
-    Telegram adapter then split-and-sent a fresh continuation on every update,
-    causing a noisy trail of one-line messages instead of a new editable bubble.
+    Regression: once cumulative progress grew past the platform limit, the
+    adapter overflow path could send fresh continuation messages. Long progress
+    should be clipped to recent lines before it reaches that path.
     """
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         ManyProgressLinesAgent,
-        session_id="sess-progress-overflow-rollover",
+        session_id="sess-progress-overflow-clipped-small-limit",
         config_data={
             "display": {
                 "tool_progress": "all",
@@ -863,11 +978,95 @@ async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch
 
     assert result["final_response"] == "done"
     assert isinstance(adapter, SmallLimitProgressAdapter)
-    assert len(adapter.sent) >= 2, "expected a fresh progress bubble after the first filled"
+    assert len(adapter.sent) == 1
     assert adapter.oversized_sends == []
     assert adapter.oversized_edits == []
     all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
     assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in all_bubbles)
+    assert "earlier tool updates omitted" in adapter.edits[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_keeps_tool_progress_batched_after_transient_edit_failure(monkeypatch, tmp_path):
+    """A transient edit failure must not turn later tool progress into standalone sends."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStepProgressAgent,
+        session_id="sess-progress-transient-edit-failure",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=TransientEditFailureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert getattr(adapter, "edit_attempts", 0) >= 1
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "first command"'
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_later_progress_when_initial_send_has_no_message_id(monkeypatch, tmp_path):
+    """If the first progress send cannot be edited, do not resend accumulated lines."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStepProgressAgent,
+        session_id="sess-progress-initial-no-message-id",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=InitialProgressNoMessageIdAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "first command"'
+    ]
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_later_progress_when_initial_send_fails(monkeypatch, tmp_path):
+    """A failed initial progress send may have reached Telegram; never retry as cumulative bubbles."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStepProgressAgent,
+        session_id="sess-progress-initial-send-fails",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=InitialProgressFailureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "first command"'
+    ]
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_clips_long_tool_progress_before_adapter_overflow(monkeypatch, tmp_path):
+    """Long cumulative progress must stay one edited bubble, not Telegram overflow continuations."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ManyStepProgressAgent,
+        session_id="sess-progress-overflow-clipped",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=OverflowingProgressEditAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["content"] == '💻 terminal: "command 00 warmup"'
+    assert not any(
+        call.get("metadata", {}).get("overflow_continuation")
+        for call in adapter.sent
+    )
+    assert adapter.edits
+    max_progress_len = getattr(adapter, "MAX_MESSAGE_LENGTH")
+    assert all(len(call["content"]) <= max_progress_len for call in adapter.edits)
+    assert "earlier tool updates omitted" in adapter.edits[-1]["content"]
+    assert '💻 terminal: "command 17 with detailed preview"' in adapter.edits[-1]["content"]
 
 
 @pytest.mark.asyncio

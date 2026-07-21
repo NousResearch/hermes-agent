@@ -49,20 +49,41 @@ def run_git(cwd: str, *args: str) -> str:
         return ""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["git", "-C", cwd, *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_GIT_TIMEOUT,
-            check=False,
-            stdin=subprocess.DEVNULL,
             **_popen_kwargs,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
+    try:
+        stdout, _ = proc.communicate(timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        # Bounded post-kill cleanup instead of subprocess.run()'s unbounded
+        # communicate(): on Windows, killing the PATH-resolved git launcher
+        # can leave a suspended descendant git.exe holding duplicates of the
+        # captured stdout/stderr handles, so the pipes never reach EOF —
+        # run()'s cleanup then joins its reader threads forever. This call
+        # site sits on the Desktop agent-build path (_start_agent_build →
+        # _session_info → branch()), where the unbounded join turned an
+        # optional branch label into "agent initialization timed out"
+        # (issue #68609; same deadlock class as #66037). A bounded second
+        # communicate() abandons the pipes after a grace period; the
+        # orphaned daemonic reader threads cost nothing.
+        try:
+            proc.communicate(timeout=1)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        return ""
+    except Exception:
+        return ""
+    return stdout.strip() if proc.returncode == 0 else ""
 
 
 def branch(cwd: str) -> str:

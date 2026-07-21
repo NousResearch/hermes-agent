@@ -35,37 +35,153 @@ def _spawns(captured, *needles):
     ]
 
 
+def _is_branch_probe(cmd) -> bool:
+    """True only for the ``git -C <cwd> branch --show-current`` spawn under
+    test. Patching ``git_probe.subprocess.Popen`` is process-wide (shared
+    ``subprocess`` module), so unrelated daemon spawns must stay benign."""
+    return bool(cmd) and cmd[:2] == ["git", "-C"] and cmd[-2:] == ["branch", "--show-current"]
+
+
 def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
     from tui_gateway import git_probe
 
-    captured = []
+    spawns = []
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="main\n")
+    class _FakePopen:
+        """Fast-path stand-in: git returns within the budget."""
+
+        def __init__(self, cmd, **kwargs):
+            if _is_branch_probe(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("main\n", "")
+
+        def kill(self):  # pragma: no cover - never reached on the fast path
+            raise AssertionError("kill() must not run when git returns in time")
 
     monkeypatch.setattr(git_probe, "IS_WINDOWS", True)
     monkeypatch.setattr(git_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(git_probe.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _FakePopen)
 
     assert git_probe.run_git("C:/repo", "branch", "--show-current") == "main"
 
-    git_calls = _spawns(captured, "branch", "--show-current")
-    assert git_calls == [
-        (
-            ["git", "-C", "C:/repo", "branch", "--show-current"],
-            {
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": git_probe._GIT_TIMEOUT,
-                "check": False,
-                "stdin": subprocess.DEVNULL,
-                "creationflags": _CREATE_NO_WINDOW,
-            },
-        )
-    ]
+    git_calls = [(c, k) for c, k in spawns]
+    assert len(git_calls) == 1, git_calls
+    cmd, kwargs = git_calls[0]
+    assert cmd == ["git", "-C", "C:/repo", "branch", "--show-current"]
+    # The full spawn contract must survive the run()->Popen rewrite.
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
+def test_tui_gateway_git_probe_no_hide_flags_off_windows(monkeypatch):
+    from tui_gateway import git_probe
+
+    spawns = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            if _is_branch_probe(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("main\n", "")
+
+        def kill(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _FakePopen)
+
+    assert git_probe.run_git("/repo", "branch", "--show-current") == "main"
+    assert len(spawns) == 1, spawns
+    assert "creationflags" not in spawns[0][1]
+
+
+def test_tui_gateway_git_probe_nonzero_returncode_returns_empty(monkeypatch):
+    from tui_gateway import git_probe
+
+    class _FailPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = 1 if _is_branch_probe(cmd) else 0
+
+        def communicate(self, timeout=None):
+            return ("garbage-should-not-leak\n", "fatal: not a repo")
+
+        def kill(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _FailPopen)
+
+    assert git_probe.run_git("/repo", "branch", "--show-current") == ""
+
+
+def test_tui_gateway_git_probe_timeout_kills_and_returns_empty(monkeypatch):
+    """A hung git is killed and cleaned up with a *bounded* second
+    communicate(), and the probe returns "" — never subprocess.run()'s
+    unbounded post-kill reader-thread join, which on Windows deadlocks when
+    a suspended descendant git.exe retains the captured handles and blocks
+    Desktop agent initialization behind it (issue #68609)."""
+    from tui_gateway import git_probe
+
+    events = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_branch_probe(cmd)
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            events.append(f"comm:{timeout}")
+            if timeout == git_probe._GIT_TIMEOUT:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")  # bounded post-kill drain succeeds
+
+        def kill(self):
+            if self._probe:
+                events.append("kill")
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _HangingPopen)
+
+    assert git_probe.run_git("/repo", "branch", "--show-current") == ""
+    assert events == [f"comm:{git_probe._GIT_TIMEOUT}", "kill", "comm:1"]
+
+
+def test_tui_gateway_git_probe_timeout_cleanup_failure_is_swallowed(monkeypatch):
+    """If the bounded cleanup itself still times out (descendant keeps the
+    handles), run_git abandons the pipes and honours the empty-string
+    failure contract instead of hanging."""
+    from tui_gateway import git_probe
+
+    class _StuckPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_branch_probe(cmd)
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _StuckPopen)
+
+    assert git_probe.run_git("/repo", "branch", "--show-current") == ""
 
 
 def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):

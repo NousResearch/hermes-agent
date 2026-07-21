@@ -659,7 +659,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
-        from hermes_cli.config import is_provider_enabled
+        from hermes_cli._provider_enabled import is_provider_enabled
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue
@@ -1548,7 +1548,8 @@ def resolve_runtime_provider(
     #
     # Fail fast with a typed error so the fallback chain can advance to
     # the next provider instead of using a disabled one.
-    from hermes_cli.config import is_provider_enabled, load_config
+    from hermes_cli._provider_enabled import is_provider_enabled
+    from hermes_cli.config import load_config
     _full_cfg = load_config()
     _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
     if isinstance(_provs_cfg, dict):

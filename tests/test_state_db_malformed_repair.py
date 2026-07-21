@@ -333,6 +333,72 @@ def test_repair_noop_db_uses_already_healthy_shortcut(tmp_path):
     assert report["strategy"] == "already_healthy"
 
 
+def test_health_probe_detects_trigram_constructor_failure(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    real_connect = hermes_state.sqlite3.connect
+
+    class TrigramProbeFailureConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args, **kwargs):
+            if str(sql).startswith("SELECT * FROM messages_fts_trigram LIMIT 0"):
+                raise sqlite3.DatabaseError(
+                    "vtable constructor failed: messages_fts_trigram"
+                )
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def close(self):
+            self._conn.close()
+
+    def connect_with_broken_trigram(*args, **kwargs):
+        return TrigramProbeFailureConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(hermes_state.sqlite3, "connect", connect_with_broken_trigram)
+
+    reason = hermes_state._db_opens_cleanly(db_path)
+
+    assert reason == "vtable constructor failed: messages_fts_trigram"
+
+
+def test_repair_rebuilds_canonical_tables_when_trigram_constructor_fails(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    real_check = hermes_state._db_opens_cleanly
+    checks = {"n": 0}
+
+    def check_reports_constructor_failure_then_real(path):
+        checks["n"] += 1
+        if checks["n"] <= 3:
+            return "vtable constructor failed: messages_fts_trigram"
+        return real_check(path)
+
+    monkeypatch.setattr(
+        hermes_state,
+        "_db_opens_cleanly",
+        check_reports_constructor_failure_then_real,
+    )
+
+    report = repair_state_db_schema(db_path, backup=False)
+
+    assert report["repaired"] is True
+    assert report["strategy"] == "rebuild_canonical_tables"
+    db = SessionDB(db_path=db_path)
+    try:
+        assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+        assert db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 10
+        trigram_count = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_trigram"
+        ).fetchone()[0]
+        assert trigram_count == 10
+    finally:
+        db.close()
+
+
 def test_select_cached_agent_history_prefers_longer_live_transcript():
     """Gateway guard keeps the live transcript when persisted history lags."""
     from gateway.run import _select_cached_agent_history

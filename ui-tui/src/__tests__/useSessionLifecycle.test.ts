@@ -59,8 +59,10 @@ describe('live session activation in-flight state', () => {
 
   it('keeps the in-flight user prompt in history and hydrates partial assistant text', () => {
     const inflight = { assistant: 'partial answer', streaming: true, user: 'write a long answer' }
+    const messages = liveSessionInflightMessages(inflight)
 
-    expect(liveSessionInflightMessages(inflight)).toEqual([{ role: 'user', text: 'write a long answer' }])
+    expect(messages[0]).toMatchObject({ role: 'user', text: 'write a long answer' })
+    expect(messages[0]!.id).toMatch(/^msg-/)
 
     hydrateLiveSessionInflight(inflight)
 

@@ -1,8 +1,9 @@
 import { LONG_MSG } from '../config/limits.js'
+import { ensureMsgId } from '../lib/messages.js'
 import { buildToolTrailLine, fmtK } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
-export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
+export const introMsg = (info: SessionInfo): Msg => ensureMsgId({ info, kind: 'intro', role: 'system', text: '' })
 
 export const imageTokenMeta = (info?: ImageMeta | null) => {
   const { width, height, token_estimate: t } = info ?? {}
@@ -57,10 +58,10 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (role === 'assistant') {
-      out.push({ role, text, ...(pending.length && { tools: pending }) })
+      out.push(ensureMsgId({ role, text, ...(pending.length && { tools: pending }) }))
       pending = []
     } else if (role === 'user' || role === 'system') {
-      out.push({ role, text })
+      out.push(ensureMsgId({ role, text }))
       pending = []
     }
   }

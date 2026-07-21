@@ -114,6 +114,7 @@ export interface ClarifyReq {
 }
 
 export interface Msg {
+  id?: string
   info?: SessionInfo
   kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData

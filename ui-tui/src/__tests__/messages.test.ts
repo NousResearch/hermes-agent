@@ -4,6 +4,7 @@ import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
+import { liveSessionInflightMessages } from '../app/useSessionLifecycle.js'
 import { MessageLine } from '../components/messageLine.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 import { upsert } from '../lib/messages.js'
@@ -25,6 +26,25 @@ describe('toTranscriptMessages', () => {
       ['user', 'second prompt']
     ])
     expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
+  })
+
+  it('assigns stable ids to resumed transcript rows', () => {
+    const rows = [
+      { role: 'user', text: 'first prompt' },
+      { role: 'assistant', text: 'first answer' },
+      { role: 'user', text: 'second prompt' }
+    ]
+
+    const messages = toTranscriptMessages(rows)
+
+    expect(messages.every(msg => typeof msg.id === 'string' && msg.id.length > 0)).toBe(true)
+    expect(new Set(messages.map(msg => msg.id)).size).toBe(messages.length)
+  })
+})
+
+describe('liveSessionInflightMessages', () => {
+  it('assigns ids to inflight user rows', () => {
+    expect(liveSessionInflightMessages({ assistant: '', streaming: false, user: 'resume me' })[0]?.id).toMatch(/^msg-/)
   })
 })
 
@@ -78,11 +98,17 @@ describe('upsert', () => {
   })
 
   it('replaces when last role matches', () => {
-    expect(upsert([{ role: 'assistant', text: 'partial' }], 'assistant', 'full')[0]!.text).toBe('full')
+    const out = upsert([{ id: 'msg-keep', role: 'assistant', text: 'partial' }], 'assistant', 'full')
+
+    expect(out[0]!.text).toBe('full')
+    expect(out[0]!.id).toBe('msg-keep')
   })
 
   it('appends to empty', () => {
-    expect(upsert([], 'user', 'first')).toEqual([{ role: 'user', text: 'first' }])
+    const out = upsert([], 'user', 'first')
+
+    expect(out[0]).toMatchObject({ role: 'user', text: 'first' })
+    expect(out[0]!.id).toMatch(/^msg-/)
   })
 
   it('does not mutate', () => {

@@ -17,6 +17,7 @@ import type {
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
+import { ensureMsgId } from '../lib/messages.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
@@ -55,7 +56,7 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
 export const liveSessionInflightMessages = (inflight?: null | SessionInflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()
 
-  return user ? [{ role: 'user', text: user }] : []
+  return user ? [ensureMsgId({ role: 'user', text: user })] : []
 }
 
 export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn) => {

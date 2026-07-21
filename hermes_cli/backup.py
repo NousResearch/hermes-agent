@@ -999,8 +999,12 @@ def restore_quick_snapshot(
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("Corrupt snapshot manifest %s: %s", manifest_path, exc)
+        return False
 
     restored = 0
     for rel in meta.get("files", {}):

@@ -1,3 +1,5 @@
+import { driveChargeSettlement, type SettlementOutcome } from '@hermes/shared/charge-settlement'
+
 import type {
   BillingChargeResponse,
   BillingChargeStatusResponse,
@@ -9,10 +11,6 @@ import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { BillingChargeOutcome, BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
-
-// Poll cadence (plan §5, frozen): 2s interval, 5-minute cap.
-const POLL_INTERVAL_MS = 2000
-const POLL_CAP_MS = 5 * 60 * 1000
 
 const UNCONFIRMED_CHARGE_MESSAGE =
   '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
@@ -39,9 +37,9 @@ const renderBillingError = (
   switch (env.error) {
     case 'insufficient_scope':
       // Reached by non-charge mutations (e.g. auto-reload config) that need
-      // terminal billing enabled. The resumable step-up lives on the buy/charge
+      // Remote Spending allowed. The resumable step-up lives on the buy/charge
       // path; point the user there rather than leaking the raw scope name.
-      sys('This needs terminal billing enabled. Start a top-up to enable it, then retry.')
+      sys('This needs Remote Spending allowed. Start a top-up to allow it, then retry.')
 
       break
     case 'remote_spending_revoked': {
@@ -51,8 +49,8 @@ const renderBillingError = (
 
       const who =
         env.actor === 'admin'
-          ? 'An admin turned off terminal billing for this terminal.'
-          : 'You turned off terminal billing for this terminal.'
+          ? 'An admin stopped remote spending for this terminal.'
+          : 'You stopped remote spending for this terminal.'
 
       sys(`${who} Reconnect to restore — run /portal to re-authorize this terminal.`)
 
@@ -69,9 +67,11 @@ const renderBillingError = (
     case 'cli_billing_disabled':
 
     case 'remote_spending_disabled':
-      // Account-wide switch is OFF (dual-emitted error/code). An admin must flip
-      // it on the portal; this is NOT a per-terminal revoke.
-      sys('Terminal billing is off for this account — an admin must enable it on the portal.')
+      // Account-wide switch is OFF (dual-emitted error/code). A billing admin can
+      // turn it on from the portal's Hermes Agent page; this is NOT a per-terminal stop.
+      sys(
+        "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page."
+      )
 
       break
 
@@ -174,97 +174,82 @@ const requestRemoteSpending = (ctx: SlashRunCtx): Promise<boolean> =>
 
 /** Poll a charge to a terminal state (settled/failed/timeout). Non-blocking. */
 const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: string | null): void => {
-  const start = Date.now()
+  const renderOutcome = (outcome: SettlementOutcome): void => {
+    switch (outcome.kind) {
+      case 'settled':
+        sys(`✅ ${outcome.status.amount_usd ? `$${outcome.status.amount_usd}` : 'Credits'} added.`)
 
-  // The 5-min cap, honored on EVERY non-terminal path (pending AND throttled)
-  // so a sustained 429/503 can't keep the poll alive forever.
-  const timedOut = (): boolean => {
-    if (Date.now() - start < POLL_CAP_MS) {
-      return false
-    }
+        return
 
-    sys(
-      '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' + 'Check /topup or the portal shortly.'
-    )
+      case 'failed':
+        renderChargeFailed(sys, outcome.status.reason, portalUrl)
 
-    if (portalUrl) {
-      sys(`Portal: ${portalUrl}`)
-    }
+        return
 
-    return true
-  }
+      case 'refused':
+        sys(`🔴 Could not check the charge: ${outcome.status.message || outcome.status.error || 'error'}`)
 
-  const tick = (): void => {
-    if (ctx.stale()) {
-      return
-    }
+        return
 
-    ctx.gateway
-      .rpc<BillingChargeStatusResponse>('billing.charge_status', { charge_id: chargeId })
-      .then(
-        ctx.guarded<BillingChargeStatusResponse>(r => {
-          if (!r.ok) {
-            // 429/503 while polling = retry-after, NOT a failure. Back off + continue.
-            if (
-              r.error === 'rate_limited' ||
-              r.error === 'temporarily_unavailable' ||
-              r.error === 'stripe_unavailable'
-            ) {
-              if (timedOut()) {
-                return
-              }
+      case 'ambiguous':
+        if (outcome.status) {
+          renderBillingError(sys, ctx, outcome.status)
+          sys(UNCONFIRMED_CHARGE_MESSAGE)
 
-              const wait = (r.retry_after ?? 5) * 1000
-              setTimeout(tick, Math.min(wait, 30000))
+          return
+        }
 
-              return
-            }
-
-            // CF-7 rule 4: a post-revoke 403 (or session loss) while polling means
-            // the prior charge's outcome is AMBIGUOUS — it may have settled. Do not
-            // call it failed; surface the revoke + tell the user to verify balance.
-            if (r.error === 'remote_spending_revoked' || r.error === 'session_revoked') {
-              renderBillingError(sys, ctx, r)
-              sys(UNCONFIRMED_CHARGE_MESSAGE)
-
-              return
-            }
-
-            sys(`🔴 Could not check the charge: ${r.message || r.error || 'error'}`)
-
-            return
-          }
-
-          if (r.status === 'settled') {
-            sys(`✅ ${r.amount_usd ? `$${r.amount_usd}` : 'Credits'} added.`)
-
-            return
-          }
-
-          if (r.status === 'failed') {
-            renderChargeFailed(sys, r.reason, portalUrl)
-
-            return
-          }
-
-          // pending → keep polling until the 5-min cap, then call it a timeout.
-          if (timedOut()) {
-            return
-          }
-
-          setTimeout(tick, POLL_INTERVAL_MS)
-        })
-      )
-      .catch(e => {
-        ctx.guardedErr(e)
+        if ('cause' in outcome) {
+          ctx.guardedErr(outcome.cause)
+        }
 
         if (!ctx.stale()) {
           sys(UNCONFIRMED_CHARGE_MESSAGE)
         }
-      })
+
+        return
+
+      case 'timed_out':
+        sys(
+          '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' +
+            'Check /topup or the portal shortly.'
+        )
+
+        if (portalUrl) {
+          sys(`Portal: ${portalUrl}`)
+        }
+
+        return
+
+      case 'cancelled':
+        return
+    }
   }
 
-  tick()
+  void driveChargeSettlement({
+    fetchStatus: async () => {
+      const status = await ctx.gateway.rpc<BillingChargeStatusResponse>('billing.charge_status', {
+        charge_id: chargeId
+      })
+
+      if (!status) {
+        throw new Error('billing.charge_status returned no response')
+      }
+
+      return status
+    },
+    isCancelled: () => ctx.stale(),
+    now: () => Date.now(),
+    sleep: ms => new Promise(resolve => setTimeout(resolve, ms))
+  }).then(outcome => {
+    if (outcome.kind === 'ambiguous' && !outcome.status) {
+      renderOutcome(outcome)
+
+      return
+    }
+
+    ctx.guarded<SettlementOutcome>(renderOutcome)(outcome)
+  })
 }
 
 const renderChargeFailed = (sys: Sys, reason?: string | null, portalUrl?: string | null): void => {

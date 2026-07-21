@@ -446,7 +446,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
             or job_id
             or "cron job"
         )
-        name = label_source[:50].strip() or "cron job"
+        name = label_source.strip() or "cron job"
     normalized["name"] = name
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
 
@@ -1216,7 +1216,7 @@ def create_job(
 
     job = {
         "id": job_id,
-        "name": name or label_source[:50].strip(),
+        "name": name or label_source.strip(),
         "prompt": prompt_text,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,

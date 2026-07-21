@@ -622,6 +622,28 @@ class TestExtractMedia:
         finally:
             del DINGTALK_TYPE_MAPPING["audio"]
 
+    def test_mixed_image_and_document_rich_text_prefers_document(self):
+        """Mixed rich-text image+file payloads must stay DOCUMENT so
+        document-context injection still runs for the file sibling."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [
+                {"type": "picture", "downloadCode": "dl_img_123"},
+                {"type": "file", "downloadCode": "dl_doc_456"},
+            ]
+        )
+        msg.message_type = "richText"
+
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+
+        assert msg_type == MessageType.DOCUMENT
+        assert urls == ["dl_img_123", "dl_doc_456"]
+        assert mtypes == ["image", "application/octet-stream"]
+
 
 # ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)

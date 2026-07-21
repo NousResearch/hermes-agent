@@ -23,6 +23,9 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
@@ -431,12 +434,14 @@ test('resolveTestWsUrl (oauth, mint ok) builds a ?ticket= URL', async () => {
   assert.equal(url, 'wss://gw.example.com/api/ws?ticket=tkt-9')
 })
 
-test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validation', async () => {
+test('resolveTestWsUrl (oauth, auth rejected) requests sign-in and does not skip WS validation', async () => {
+  const cause = Object.assign(new Error('ticket mint failed'), { statusCode: 401 })
+
   await assert.rejects(
     () =>
       resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
         mintTicket: async () => {
-          throw new Error('401 ticket mint failed')
+          throw cause
         }
       }),
     (err: any) => {
@@ -450,6 +455,66 @@ test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validatio
       return true
     }
   )
+})
+
+test('resolveTestWsUrl (oauth, transport failure) remains a retryable connection error', async () => {
+  const cause = new Error('socket timed out')
+
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw cause
+        }
+      }),
+    (err: any) => {
+      assert.match(err.message, /could not mint a WebSocket ticket/i)
+      assert.equal(err.needsOauthLogin, undefined)
+      assert.equal(err.cause, cause)
+
+      return true
+    }
+  )
+})
+
+test('gateway ticket failures classify only explicit auth rejection statuses as reauth', () => {
+  assert.equal(isGatewayAuthRejection({ statusCode: 401 }), true)
+  assert.equal(isGatewayAuthRejection({ statusCode: 403 }), true)
+  assert.equal(isGatewayAuthRejection({ needsOauthLogin: true }), true)
+  assert.equal(isGatewayAuthRejection({ statusCode: 500 }), false)
+  assert.equal(isGatewayAuthRejection(new Error('network timeout')), false)
+
+  const serverFailure = gatewayTicketFailure(new Error('network timeout'), 'sign in', 'retry connection') as any
+  assert.equal(serverFailure.message, 'retry connection')
+  assert.equal(serverFailure.needsOauthLogin, undefined)
+})
+
+test('gateway WS URL IPC result serializes success and the auth-vs-transport matrix', async () => {
+  assert.deepEqual(await gatewayWsUrlIpcResult(async () => 'wss://gateway.example.com/api/ws?ticket=fresh'), {
+    ok: true,
+    wsUrl: 'wss://gateway.example.com/api/ws?ticket=fresh'
+  })
+
+  for (const statusCode of [401, 403]) {
+    const error = Object.assign(new Error(`${statusCode}: rejected`), { statusCode })
+
+    assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
+      error: `${statusCode}: rejected`,
+      needsOauthLogin: true,
+      ok: false
+    })
+  }
+
+  for (const error of [
+    Object.assign(new Error('500: unavailable'), { statusCode: 500 }),
+    new Error('Timed out connecting to Hermes backend after 8000ms'),
+    Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+  ]) {
+    assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
+      error: error.message,
+      ok: false
+    })
+  }
 })
 
 test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {

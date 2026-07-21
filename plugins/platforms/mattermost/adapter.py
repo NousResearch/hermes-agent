@@ -4,16 +4,25 @@ Connects to a self-hosted (or cloud) Mattermost instance via its REST API
 (v4) and WebSocket for real-time events.  No external Mattermost library
 required — uses aiohttp which is already a Hermes dependency.
 
+Interactive button callbacks:
+    Mattermost interactive buttons POST to a local HTTP callback server
+    started by this adapter on MATTERMOST_CALLBACK_PORT (default 18065).
+    The callback server binds to MATTERMOST_CALLBACK_HOST (default 127.0.0.1).
+
 Environment variables:
-    MATTERMOST_URL              Server URL (e.g. https://mm.example.com)
-    MATTERMOST_TOKEN            Bot token or personal-access token
-    MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
-    MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_URL                  Server URL (e.g. https://mm.example.com)
+    MATTERMOST_TOKEN                Bot token or personal-access token
+    MATTERMOST_ALLOWED_USERS        Comma-separated user IDs
+    MATTERMOST_HOME_CHANNEL         Channel ID for cron/notification delivery
+    MATTERMOST_CALLBACK_HOST        Host to bind the callback server (default: 127.0.0.1)
+    MATTERMOST_CALLBACK_PORT        Port for the callback server (default: 18065)
+    MATTERMOST_ALLOW_ALL_USERS      Set to true to bypass the allowed-users check
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -97,6 +106,25 @@ class MattermostAdapter(BasePlatformAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
+
+        # Interactive button callback server.
+        self._callback_host: str = (
+            config.extra.get("callback_host", "")
+            or os.getenv("MATTERMOST_CALLBACK_HOST", "127.0.0.1")
+        )
+        self._callback_port: int = int(
+            config.extra.get("callback_port")
+            or os.getenv("MATTERMOST_CALLBACK_PORT", "18065")
+        )
+        self._callback_app: Any = None       # aiohttp.web.Application
+        self._callback_runner: Any = None     # aiohttp.web.AppRunner
+        self._callback_site: Any = None       # aiohttp.web.TCPSite
+
+        # Approval / confirm state (maps approval_id → session_key).
+        self._approval_state: Dict[int, str] = {}
+        self._approval_counter = itertools.count(1)
+        self._confirm_state: Dict[str, str] = {}
+        self._update_prompt_state: Dict[str, str] = {}
 
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
@@ -300,6 +328,9 @@ class MattermostAdapter(BasePlatformAdapter):
             self._base_url,
         )
 
+        # Start interactive button callback server.
+        await self._start_callback_server()
+
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
@@ -325,6 +356,9 @@ class MattermostAdapter(BasePlatformAdapter):
 
         if self._session and not self._session.closed:
             await self._session.close()
+
+        # Shut down callback HTTP server.
+        await self._stop_callback_server()
 
         logger.info("Mattermost: disconnected")
 
@@ -694,6 +728,361 @@ class MattermostAdapter(BasePlatformAdapter):
                     chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
                 await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+
+    # ------------------------------------------------------------------
+    # Interactive button callback HTTP server
+    # ------------------------------------------------------------------
+
+    async def _start_callback_server(self) -> None:
+        """Start a small aiohttp HTTP server for button-click callbacks."""
+        from aiohttp import web
+
+        self._callback_app = web.Application()
+        self._callback_app.router.add_post(
+            "/approval", self._handle_approval_callback
+        )
+        self._callback_app.router.add_post(
+            "/confirm", self._handle_confirm_callback
+        )
+        self._callback_app.router.add_post(
+            "/update-prompt", self._handle_update_prompt_callback
+        )
+
+        self._callback_runner = web.AppRunner(self._callback_app)
+        await self._callback_runner.setup()
+        self._callback_site = web.TCPSite(
+            self._callback_runner, self._callback_host, self._callback_port
+        )
+        await self._callback_site.start()
+        logger.info(
+            "Mattermost: callback server listening on http://%s:%d",
+            self._callback_host,
+            self._callback_port,
+        )
+
+    async def _stop_callback_server(self) -> None:
+        """Shut down the callback HTTP server."""
+        if self._callback_runner:
+            await self._callback_runner.cleanup()
+            self._callback_runner = None
+            self._callback_app = None
+            self._callback_site = None
+
+    def _check_allowed_user(self, body: dict) -> Tuple[bool, Optional["web.Response"]]:
+        """Reject unauthorized users from clicking interactive buttons.
+
+        Button clicks bypass the normal message auth flow in gateway/run.py,
+        so we must check here as well, matching the gate used by other platforms.
+        """
+        from aiohttp import web
+
+        allowed_csv = os.getenv("MATTERMOST_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return True, None
+
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        if "*" in allowed_ids:
+            return True, None
+
+        user_id = body.get("user_id", "")
+        if user_id and user_id in allowed_ids:
+            return True, None
+
+        user_name = body.get("user_name", user_id or "unknown")
+        logger.warning(
+            "Mattermost: Unauthorized button click by %s (%s) — ignoring",
+            user_name, user_id,
+        )
+        return False, web.json_response(
+            {"error": "unauthorized", "message": "User not in MATTERMOST_ALLOWED_USERS"},
+            status=403,
+        )
+
+    async def _handle_approval_callback(self, request) -> Any:
+        """Handle POST from Mattermost interactive approval buttons."""
+        from aiohttp import web
+        from tools.approval import resolve_gateway_approval
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json"}, status=400)
+
+        # Authorization check.
+        ok, err_resp = self._check_allowed_user(body)
+        if not ok:
+            return err_resp
+
+        context = body.get("context", {})
+        approval_id_str = context.get("approval_id", "")
+        choice = context.get("choice", "deny")
+
+        try:
+            approval_id = int(approval_id_str)
+        except (ValueError, TypeError):
+            return web.json_response({"error": "invalid approval_id"}, status=400)
+
+        session_key = self._approval_state.pop(approval_id, None)
+        if not session_key:
+            return web.json_response({"error": "unknown approval_id"}, status=404)
+
+        resolve_all = choice in ("session", "always")
+        resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+
+        label_map = {
+            "once": "Approved (once)",
+            "session": "Approved (session)",
+            "always": "Approved (always)",
+            "deny": "Denied",
+        }
+        label = label_map.get(choice, choice)
+
+        # Update the original post to disable buttons.
+        post_id = context.get("post_id", "")
+        if post_id:
+            await self._api_put(
+                f"posts/{post_id}/patch",
+                {"message": f"**{label}** - {body.get('text', '')[:200]}", "props": {}},
+            )
+
+        return web.json_response({
+            "update": {"message": f"**{label}**", "props": {}},
+            "ephemeral_text": f"{label}",
+        })
+
+    async def _handle_confirm_callback(self, request) -> Any:
+        """Handle POST from Mattermost interactive confirm buttons."""
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json"}, status=400)
+
+        # Authorization check.
+        ok, err_resp = self._check_allowed_user(body)
+        if not ok:
+            return err_resp
+
+        context = body.get("context", {})
+        confirm_id = context.get("confirm_id", "")
+        choice = context.get("choice", "cancel")
+
+        # Store result for gateway polling.
+        self._confirm_state[f"__result__{confirm_id}"] = choice
+
+        label_map = {"once": "Approved", "always": "Always Approve", "cancel": "Cancelled"}
+        label = label_map.get(choice, choice)
+
+        post_id = context.get("post_id", "")
+        if post_id:
+            await self._api_put(
+                f"posts/{post_id}/patch",
+                {"message": f"**{label}**", "props": {}},
+            )
+
+        return web.json_response({
+            "update": {"message": f"**{label}**", "props": {}},
+            "ephemeral_text": f"{label}",
+        })
+
+    async def _handle_update_prompt_callback(self, request) -> Any:
+        """Handle POST from Mattermost interactive update-prompt buttons."""
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json"}, status=400)
+
+        # Authorization check.
+        ok, err_resp = self._check_allowed_user(body)
+        if not ok:
+            return err_resp
+
+        context = body.get("context", {})
+        prompt_key = context.get("prompt_key", "")
+        choice = context.get("choice", "no")
+
+        self._update_prompt_state[f"__result__{prompt_key}"] = choice
+
+        label = "Yes" if choice == "yes" else "No"
+
+        post_id = context.get("post_id", "")
+        if post_id:
+            await self._api_put(
+                f"posts/{post_id}/patch",
+                {"message": f"**{label}**", "props": {}},
+            )
+
+        return web.json_response({
+            "update": {"message": f"**{label}**", "props": {}},
+            "ephemeral_text": f"{label}",
+        })
+
+    # ------------------------------------------------------------------
+    # Interactive button message methods
+    # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive button approval prompt with 4 options."""
+        if not self._callback_app:
+            return SendResult(success=False, error="Callback server not started")
+
+        try:
+            approval_id = next(self._approval_counter)
+            self._approval_state[approval_id] = session_key
+            cb_url = f"http://{self._callback_host}:{self._callback_port}/approval"
+            cmd_preview = command[:1000] + "..." if len(command) > 1000 else command
+
+            attachment = {
+                "fallback": "Command approval required",
+                "color": "#FFA500",
+                "pretext": "⚠️ **Command Approval Required**",
+                "text": f"```\n{cmd_preview}\n```\n*Reason: {description}*",
+                "actions": [
+                    {"id": "once", "name": "✅ Allow Once", "integration": {
+                        "url": cb_url, "context": {"approval_id": approval_id, "choice": "once", "post_id": ""}}},
+                    {"id": "session", "name": "📋 Allow Session", "integration": {
+                        "url": cb_url, "context": {"approval_id": approval_id, "choice": "session", "post_id": ""}}},
+                    {"id": "always", "name": "🔓 Always Allow", "integration": {
+                        "url": cb_url, "context": {"approval_id": approval_id, "choice": "always", "post_id": ""}}},
+                    {"id": "deny", "name": "❌ Deny", "style": "danger", "integration": {
+                        "url": cb_url, "context": {"approval_id": approval_id, "choice": "deny", "post_id": ""}}},
+                ],
+            }
+
+            payload: Dict[str, Any] = {
+                "channel_id": chat_id,
+                "message": "",
+                "props": {"attachments": [attachment]},
+            }
+
+            data = await self._api_post("posts", payload)
+            if not data or "id" not in data:
+                self._approval_state.pop(approval_id, None)
+                return SendResult(success=False, error="Failed to create post")
+
+            # Retroactively set post_id in all action contexts.
+            post_id = data["id"]
+            for act in attachment["actions"]:
+                act["integration"]["context"]["post_id"] = post_id
+            await self._api_put(f"posts/{post_id}", {
+                "id": post_id, "channel_id": chat_id,
+                "message": "", "props": {"attachments": [attachment]},
+            })
+
+            return SendResult(success=True, message_id=post_id)
+        except Exception as e:
+            logger.warning("Mattermost: send_exec_approval failed: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a three-button slash-command confirmation prompt."""
+        if not self._callback_app:
+            return SendResult(success=False, error="Callback server not started")
+
+        try:
+            self._confirm_state[confirm_id] = session_key
+            cb_url = f"http://{self._callback_host}:{self._callback_port}/confirm"
+
+            attachment = {
+                "fallback": title or "Confirm",
+                "color": "#FFA500",
+                "pretext": f"**{title or 'Confirm'}**",
+                "text": message,
+                "actions": [
+                    {"id": "once", "name": "✅ Approve Once", "integration": {
+                        "url": cb_url, "context": {"confirm_id": confirm_id, "choice": "once", "post_id": ""}}},
+                    {"id": "always", "name": "🔓 Always Approve", "integration": {
+                        "url": cb_url, "context": {"confirm_id": confirm_id, "choice": "always", "post_id": ""}}},
+                    {"id": "cancel", "name": "❌ Cancel", "style": "danger", "integration": {
+                        "url": cb_url, "context": {"confirm_id": confirm_id, "choice": "cancel", "post_id": ""}}},
+                ],
+            }
+
+            payload: Dict[str, Any] = {
+                "channel_id": chat_id,
+                "message": "",
+                "props": {"attachments": [attachment]},
+            }
+
+            data = await self._api_post("posts", payload)
+            if not data or "id" not in data:
+                return SendResult(success=False, error="Failed to create post")
+
+            post_id = data["id"]
+            for act in attachment["actions"]:
+                act["integration"]["context"]["post_id"] = post_id
+            await self._api_put(f"posts/{post_id}", {
+                "id": post_id, "channel_id": chat_id,
+                "message": "", "props": {"attachments": [attachment]},
+            })
+
+            return SendResult(success=True, message_id=post_id)
+        except Exception as e:
+            logger.warning("Mattermost: send_slash_confirm failed: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_update_prompt(
+        self, chat_id: str, prompt: str, default: str = "",
+        session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Yes/No button prompt for update decisions."""
+        if not self._callback_app:
+            return SendResult(success=False, error="Callback server not started")
+
+        try:
+            import uuid
+            prompt_key = str(uuid.uuid4())[:8]
+            self._update_prompt_state[prompt_key] = session_key
+            cb_url = f"http://{self._callback_host}:{self._callback_port}/update-prompt"
+
+            default_hint = f"\n\n*Default: {default}*" if default else ""
+
+            attachment = {
+                "fallback": "Update needs your input",
+                "color": "#3AA3E3",
+                "pretext": "⚕ **Update Needs Your Input**",
+                "text": prompt + default_hint,
+                "actions": [
+                    {"id": "yes", "name": "✅ Yes", "integration": {
+                        "url": cb_url, "context": {"prompt_key": prompt_key, "choice": "yes", "post_id": ""}}},
+                    {"id": "no", "name": "❌ No", "style": "danger", "integration": {
+                        "url": cb_url, "context": {"prompt_key": prompt_key, "choice": "no", "post_id": ""}}},
+                ],
+            }
+
+            payload: Dict[str, Any] = {
+                "channel_id": chat_id,
+                "message": "",
+                "props": {"attachments": [attachment]},
+            }
+
+            data = await self._api_post("posts", payload)
+            if not data or "id" not in data:
+                return SendResult(success=False, error="Failed to create post")
+
+            post_id = data["id"]
+            for act in attachment["actions"]:
+                act["integration"]["context"]["post_id"] = post_id
+            await self._api_put(f"posts/{post_id}", {
+                "id": post_id, "channel_id": chat_id,
+                "message": "", "props": {"attachments": [attachment]},
+            })
+
+            return SendResult(success=True, message_id=post_id)
+        except Exception as e:
+            logger.warning("Mattermost: send_update_prompt failed: %s", e)
+            return SendResult(success=False, error=str(e))
 
     # ------------------------------------------------------------------
     # WebSocket

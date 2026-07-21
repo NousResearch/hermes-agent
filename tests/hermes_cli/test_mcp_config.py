@@ -1049,3 +1049,90 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+class TestPlaywrightMcpPreset:
+    """Regression coverage for the platform-aware @playwright/mcp preset
+    (issue history: PR #19768 hard-coded a single /opt/google/chrome/chrome
+    path and misclassified PATH/macOS/Windows installs as absent; this
+    reuses hermes_cli.browser_connect.get_chrome_debug_candidates(), the
+    same resolver CDP-attach uses, instead of a bespoke check)."""
+
+    def test_codex_preset_preserved_alongside_playwright(self):
+        from hermes_cli.mcp_config import _MCP_PRESETS
+        assert "codex" in _MCP_PRESETS
+        assert _MCP_PRESETS["codex"]["command"] == "codex"
+        assert "playwright" in _MCP_PRESETS
+
+    def test_playwright_preset_uses_npx_command(self):
+        from hermes_cli.mcp_config import _MCP_PRESETS
+        preset = _MCP_PRESETS["playwright"]
+        assert preset["command"] == "npx"
+        assert preset["args"][:3] == ["-y", "@playwright/mcp@latest", "--headless"]
+
+    def test_no_sandbox_added_on_linux_root(self, monkeypatch):
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+        monkeypatch.setattr(mcp_config.os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: ["/usr/bin/google-chrome"],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--no-sandbox" in args
+
+    def test_no_sandbox_not_added_on_macos(self, monkeypatch):
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--no-sandbox" not in args
+
+    def test_no_sandbox_not_added_for_non_root_linux(self, monkeypatch):
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+        monkeypatch.setattr(mcp_config.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: ["/usr/bin/google-chrome"],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--no-sandbox" not in args
+
+    def test_browser_chromium_fallback_when_no_system_browser_found(self, monkeypatch):
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+        monkeypatch.setattr(mcp_config.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: [],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--browser=chromium" in args
+
+    def test_no_chromium_fallback_when_system_browser_found(self, monkeypatch):
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+        monkeypatch.setattr(mcp_config.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: ["/usr/bin/google-chrome"],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--browser=chromium" not in args
+
+    def test_macos_app_bundle_counts_as_system_browser(self, monkeypatch):
+        """The platform-aware resolver (unlike a bare shutil.which() name
+        list) must find a macOS .app bundle install."""
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--browser=chromium" not in args
+

@@ -140,6 +140,116 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
+# Substrings that mark a cron failure as a *transient* infrastructure blip —
+# the kind that self-recovers on the next scheduled run and carries no signal
+# for the operator (provider stalls, idle-kills, rate limits, transient network
+# errors). These are distinct from a real defect (bad script, auth misconfig,
+# a bug in the job's prompt) which recurs every fire and DOES warrant an alert.
+# Matched case-insensitively as substrings of the failure text.
+_CRON_TRANSIENT_FAILURE_MARKERS = (
+    "idle for",            # cron inactivity watchdog killed a stalled first API call
+    "readtimeout",
+    "read timeout",
+    "timed out",
+    "timeout",
+    "rate limit",
+    "usage limit",
+    "429",
+    "502",
+    "503",
+    "504",
+    "overloaded",
+    "temporarily unavailable",
+    "service unavailable",
+    "connection reset",
+    "connection aborted",
+    "connection error",
+    "connectionerror",
+    "remote end closed",
+    "econnreset",
+    "fallback chain was exhausted",
+    "all retries exhausted",
+    "provider timeout",
+)
+
+
+def _is_transient_cron_failure(error: str | None) -> bool:
+    """True when a cron failure looks like a self-recovering infrastructure blip.
+
+    Used to decide whether a *recurring* job's failure should page the operator.
+    A one-off provider stall / idle-kill / rate-limit on a job whose previous run
+    succeeded is noise: the next tick recovers on its own. A genuine defect (bad
+    script path, auth error, a bug in the prompt) is NOT transient — it recurs on
+    every fire — and is surfaced via the consecutive-failure escalation instead.
+    """
+    if not error:
+        return False
+    lower = str(error).lower()
+    return any(marker in lower for marker in _CRON_TRANSIENT_FAILURE_MARKERS)
+
+
+def _suppress_transient_cron_failure_alert(job: dict, error: str | None,
+                                           cfg: Optional[dict] = None) -> bool:
+    """Whether a failed *recurring* cron run should suppress its chat alert.
+
+    Design (issue: ambient/watchdog jobs paging on self-recovering blips):
+    a job whose contract is "silence is the default" (ambient sense engine,
+    watchdog pollers) must not fire a chat alert every time a provider stalls
+    for one tick. We suppress the alert when ALL of:
+
+      1. The global/per-job knob is enabled (default ON — the historically
+         noisy behaviour was never intentional for recurring jobs).
+      2. The schedule is recurring (cron/interval). One-shot jobs always alert
+         on failure — there is no "next run" to recover, so the user must know.
+      3. The failure is transient (``_is_transient_cron_failure``).
+      4. The PREVIOUS run of this job succeeded (``last_status`` == "ok" or is
+         unset/new). This is the escalation gate: a first transient failure is
+         swallowed, but a SECOND consecutive failure — where last_status is
+         already "error" — pages through, because a blip that does not
+         self-recover is a real outage.
+
+    Output is still saved to the cron output dir and logs in every case; only
+    the chat delivery of the failure summary is suppressed.
+
+    Knob precedence (first decisive value wins):
+      1. Per-job ``alert_on_transient_failure`` (bool) — lets one critical job
+         opt back into always-alerting without flipping global behaviour.
+      2. Global ``cron.suppress_transient_failure_alerts`` (bool) in config.yaml.
+      3. True (default: suppress the noise).
+    """
+    schedule_kind = (job.get("schedule", {}) or {}).get("kind")
+    if schedule_kind not in {"cron", "interval"}:
+        return False  # one-shot / unknown: always alert on failure
+
+    # Script-only watchdogs must always page when they fail. Their timeout or
+    # exit-error text can contain transient markers, but the watchdog contract
+    # requires alerting regardless of suppression settings.
+    if job.get("no_agent"):
+        return False
+
+    if not _is_transient_cron_failure(error):
+        return False  # real defect: alert
+
+    # Escalation gate: only suppress the FIRST failure. If the previous run was
+    # already an error, the blip is not self-recovering — page through.
+    prev_status = job.get("last_status")
+    if prev_status not in (None, "ok"):
+        return False
+
+    # Knob resolution (default ON — suppress).
+    per_job = job.get("alert_on_transient_failure")
+    if isinstance(per_job, bool):
+        return not per_job  # alert_on_transient_failure=True => do NOT suppress
+    try:
+        if cfg is None:
+            cfg = load_config() or {}
+        return bool(
+            (cfg.get("cron", {}) or {}).get("suppress_transient_failure_alerts", True)
+        )
+    except Exception:
+        return True
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -3832,6 +3942,21 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # tolerance the cron contract relies on.
             if should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            # Transient-failure alert suppression — a recurring job whose contract is
+            # "silence is the default" (ambient sense engine, watchdog pollers) must
+            # not page the operator every time a provider stalls for one tick. When
+            # the failure is transient AND the previous run succeeded, swallow the
+            # chat alert (output is still saved). A SECOND consecutive failure pages
+            # through via the escalation gate inside the helper. Real defects (bad
+            # script, auth error) are never transient and always alert.
+            if should_deliver and not success and _suppress_transient_cron_failure_alert(job, error):
+                logger.info(
+                    "Job '%s': transient failure after a successful run — suppressing "
+                    "chat alert (output saved). Error: %s",
+                    job["id"], (error or "")[:200],
+                )
                 should_deliver = False
 
             if should_deliver:

@@ -2836,6 +2836,18 @@ DEFAULT_CONFIG = {
         # mid-loop, never mutating the cached system prompt). Only the origin
         # chat is ever touched — fan-out / broadcast targets are never mirrored.
         "mirror_delivery": False,
+        # Suppress the chat alert when a RECURRING job fails on a transient,
+        # self-recovering infrastructure blip (provider stall, idle-kill, rate
+        # limit, transient network error) AND its previous run succeeded. These
+        # jobs (ambient sense engine, watchdog pollers) are "silence by default"
+        # and paging on a one-tick blip is pure noise — the next scheduled run
+        # recovers on its own. A SECOND consecutive failure escalates and pages
+        # through, so a real (non-recovering) outage is never hidden. One-shot
+        # jobs always alert on failure. Output is saved to the cron output dir in
+        # every case; only the chat delivery of the failure summary is dropped.
+        # Per-job `alert_on_transient_failure: true` opts a critical job back
+        # into always-alerting without flipping this global default.
+        "suppress_transient_failure_alerts": True,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).

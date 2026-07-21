@@ -11587,10 +11587,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
         video_paths: list[str] = []
+        image_paths: list[str] = []
+        audio_paths: list[str] = []
 
         if event.media_urls:
-            image_paths = []
-            audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 # Classify images per-attachment: trust this attachment's own
@@ -11609,93 +11609,114 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                     video_paths.append(path)
 
-            if image_paths:
-                # Decide routing: native (attach pixels) vs text (vision_analyze
-                # pre-run + prepend description).  See agent/image_routing.py.
-                # Offload to a worker thread: the decision does blocking network
-                # I/O — a models.dev fetch on cache miss, and the Ollama
-                # ``/api/show`` capability probe for local servers — whose
-                # request timeout would otherwise stall the whole gateway event
-                # loop (every session) while a single image is routed.
-                _img_mode = await asyncio.to_thread(
-                    self._decide_image_input_mode,
-                    source=source,
-                    session_key=session_key,
+        # Scan message text for local image paths and HTTP image URLs that
+        # the user typed as plain text (e.g. "/tmp/screenshot.png").  This
+        # mirrors the CLI/kanban-worker path in cli.py:15906 and ensures
+        # gateway sessions auto-detect image references the same way.
+        # Paths already found via event.media_urls are skipped to avoid
+        # double-processing.
+        try:
+            from agent.image_routing import extract_image_refs
+            _text_paths, _text_urls = extract_image_refs(message_text)
+            _existing = {str(p) for p in image_paths}
+            for _p in _text_paths:
+                if str(_p) not in _existing:
+                    _existing.add(str(_p))
+                    image_paths.append(_p)
+            for _u in _text_urls:
+                if _u not in _existing:
+                    _existing.add(_u)
+                    image_paths.append(_u)
+        except Exception:
+            logger.debug("image_refs: text scan failed", exc_info=True)
+
+        if image_paths:
+            # Decide routing: native (attach pixels) vs text (vision_analyze
+            # pre-run + prepend description).  See agent/image_routing.py.
+            # Offload to a worker thread: the decision does blocking network
+            # I/O — a models.dev fetch on cache miss, and the Ollama
+            # ``/api/show`` capability probe for local servers — whose
+            # request timeout would otherwise stall the whole gateway event
+            # loop (every session) while a single image is routed.
+            _img_mode = await asyncio.to_thread(
+                self._decide_image_input_mode,
+                source=source,
+                session_key=session_key,
+            )
+            if _img_mode == "native":
+                # Defer attachment to the run_conversation call site.
+                pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
+                if pending_native is None:
+                    pending_native = {}
+                    self._pending_native_image_paths_by_session = pending_native
+                pending_native[session_key] = list(image_paths)
+                logger.info(
+                    "Image routing: native (model supports vision). %d image(s) will be attached inline.",
+                    len(image_paths),
                 )
-                if _img_mode == "native":
-                    # Defer attachment to the run_conversation call site.
-                    pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
-                    if pending_native is None:
-                        pending_native = {}
-                        self._pending_native_image_paths_by_session = pending_native
-                    pending_native[session_key] = list(image_paths)
-                    logger.info(
-                        "Image routing: native (model supports vision). %d image(s) will be attached inline.",
-                        len(image_paths),
-                    )
-                else:
-                    logger.info(
-                        "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
-                        _img_mode, len(image_paths),
-                    )
-                    # Vision enrichment runs before AIAgent.run_conversation(),
-                    # so bind this session's resolved runtime explicitly rather
-                    # than consulting process-global compatibility mirrors.
-                    vision_runtime = None
-                    try:
-                        turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
-                            source=source,
-                            session_key=session_key,
-                        )
-                        vision_runtime = dict(runtime_kwargs or {})
-                        vision_runtime["model"] = turn_model
-                    except Exception:
-                        logger.debug(
-                            "vision enrichment: session runtime resolution failed",
-                            exc_info=True,
-                        )
-
-                    from agent.auxiliary_client import scoped_runtime_main
-
-                    with scoped_runtime_main(vision_runtime):
-                        message_text = await self._enrich_message_with_vision(
-                            message_text,
-                            image_paths,
-                        )
-
-            if audio_paths:
-                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-                    message_text,
-                    audio_paths,
+            else:
+                logger.info(
+                    "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
+                    _img_mode, len(image_paths),
                 )
-                # Echo each successful transcript back to the user immediately
-                # when configured. Lets users verify STT quality in real-time,
-                # while allowing quiet STT for users who only want the agent to
-                # receive the transcription.
-                if _successful_transcripts and self._should_echo_stt_transcripts():
-                    _echo_adapter = self._adapter_for_source(source)
-                    _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
-                # NOTE: Previously, when transcription failed (e.g. no STT
-                # provider configured), the gateway also emitted a hardcoded
-                # English notice via `_stt_adapter.send()`. That bypassed the
-                # LLM and produced two replies — one pre-canned English clip
-                # (which TTS then spoke aloud, in the wrong language) and one
-                # correct, localized LLM reply from the enriched message text.
-                # The enrichment step now leaves a single neutral marker in the
-                # prompt, so the LLM produces one coherent reply in the user's
-                # language. The hardcoded send has therefore been removed.
+                # Vision enrichment runs before AIAgent.run_conversation(),
+                # so bind this session's resolved runtime explicitly rather
+                # than consulting process-global compatibility mirrors.
+                vision_runtime = None
+                try:
+                    turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        source=source,
+                        session_key=session_key,
+                    )
+                    vision_runtime = dict(runtime_kwargs or {})
+                    vision_runtime["model"] = turn_model
+                except Exception:
+                    logger.debug(
+                        "vision enrichment: session runtime resolution failed",
+                        exc_info=True,
+                    )
+
+                from agent.auxiliary_client import scoped_runtime_main
+
+                with scoped_runtime_main(vision_runtime):
+                    message_text = await self._enrich_message_with_vision(
+                        message_text,
+                        image_paths,
+                    )
+
+        if audio_paths:
+            message_text, _successful_transcripts = await self._enrich_message_with_transcription(
+                message_text,
+                audio_paths,
+            )
+            # Echo each successful transcript back to the user immediately
+            # when configured. Lets users verify STT quality in real-time,
+            # while allowing quiet STT for users who only want the agent to
+            # receive the transcription.
+            if _successful_transcripts and self._should_echo_stt_transcripts():
+                _echo_adapter = self._adapter_for_source(source)
+                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                if _echo_adapter:
+                    for _tx in _successful_transcripts:
+                        try:
+                            await _echo_adapter.send(
+                                source.chat_id,
+                                f'🎙️ "{_tx}"',
+                                metadata=_echo_meta,
+                            )
+                        except Exception as _echo_exc:
+                            logger.debug(
+                                "Transcript echo failed (non-fatal): %s", _echo_exc,
+                            )
+            # NOTE: Previously, when transcription failed (e.g. no STT
+            # provider configured), the gateway also emitted a hardcoded
+            # English notice via `_stt_adapter.send()`. That bypassed the
+            # LLM and produced two replies — one pre-canned English clip
+            # (which TTS then spoke aloud, in the wrong language) and one
+            # correct, localized LLM reply from the enriched message text.
+            # The enrichment step now leaves a single neutral marker in the
+            # prompt, so the LLM produces one coherent reply in the user's
+            # language. The hardcoded send has therefore been removed.
 
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path

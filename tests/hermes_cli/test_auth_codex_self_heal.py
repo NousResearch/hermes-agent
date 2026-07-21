@@ -10,7 +10,9 @@ surfacing a hard 401 — but ONLY for relogin-required failures, never for trans
 ones (e.g. 429 quota, where the stored token is still valid).
 """
 
+import base64
 import json
+import time
 
 import pytest
 
@@ -18,6 +20,17 @@ import hermes_cli.auth as auth
 from hermes_cli.auth import AuthError, _refresh_codex_auth_tokens, resolve_codex_runtime_credentials
 
 STALE = {"access_token": "stale-access", "refresh_token": "stale-refresh"}
+
+
+def _jwt_access_token(exp_offset_seconds: int = 3600) -> str:
+    """Structurally valid JWT — Codex CLI imports require a decodable exp claim."""
+    payload = {"exp": int(time.time()) + exp_offset_seconds}
+    encoded = (
+        base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8"))
+        .rstrip(b"=")
+        .decode("utf-8")
+    )
+    return f"header.{encoded}.signature"
 
 
 def test_self_heals_on_stale_refresh_token(monkeypatch):
@@ -162,9 +175,12 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
             },
         },
     }))
+    # Real Codex CLI access tokens are JWTs; the import guard requires a
+    # decodable exp claim, so the fixture must be structurally valid.
+    fresh_access = _jwt_access_token()
     (codex_home / "auth.json").write_text(json.dumps({
         "tokens": {
-            "access_token": "fresh-access",
+            "access_token": fresh_access,
             "refresh_token": "fresh-refresh",
         },
     }))
@@ -173,11 +189,11 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
 
     resolved = resolve_codex_runtime_credentials()
 
-    assert resolved["api_key"] == "fresh-access"
+    assert resolved["api_key"] == fresh_access
     assert resolved["source"] == "hermes-auth-store"
     stored = json.loads((hermes_home / "auth.json").read_text())
     tokens = stored["providers"]["openai-codex"]["tokens"]
-    assert tokens["access_token"] == "fresh-access"
+    assert tokens["access_token"] == fresh_access
     assert tokens["refresh_token"] == "fresh-refresh"
 
 

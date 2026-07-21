@@ -1091,6 +1091,26 @@ try {
   }));
 }
 await phone.waitForSelector(".widget-agent");
+// mobile: every page tab is reachable within the viewport (no off-screen tabs)
+const phoneTabs = await phone.evaluate(() => {
+  const tabs = [...document.querySelectorAll("#pagetabs .pagetab")];
+  const vw = window.innerWidth;
+  return {
+    total: tabs.length,
+    visible: tabs.filter((t) => { const r = t.getBoundingClientRect(); return r.left >= -1 && r.right <= vw + 1; }).length,
+  };
+});
+check("mobile: all page tabs fit on screen", phoneTabs.total >= 7 && phoneTabs.visible === phoneTabs.total);
+// mobile: widget cards stack without overlapping
+const phoneOverlaps = await phone.evaluate(() => {
+  const cards = [...document.querySelectorAll(".grid .widget")];
+  let hits = 0;
+  for (let i = 0; i < cards.length - 1; i++) {
+    if (cards[i].getBoundingClientRect().bottom > cards[i + 1].getBoundingClientRect().top + 2) hits++;
+  }
+  return hits;
+});
+check("mobile: widgets do not overlap", phoneOverlaps === 0);
 await shot(phone, "07-mobile");
 await deviceB.close();
 

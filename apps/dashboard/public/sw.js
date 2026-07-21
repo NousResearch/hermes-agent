@@ -1,11 +1,12 @@
 // HERMES//HUB service worker: instant loads + a usable shell when offline.
 //
-// Static shell  → cache-first, refreshed in the background (stale-while-revalidate)
+// Static shell  → network-first with cache fallback, so an online load always
+//                 gets the latest build (installed PWAs can't hard-refresh)
 // GET /api/*    → network-first with cache fallback, so the last known data
 //                 (news, weather, worldstate…) still renders with no signal
 // POST /api/*   → network only (agent, sync writes never come from cache)
 
-const VERSION = "hub-v55";
+const VERSION = "hub-v56";
 const SHELL = [
   "/",
   "/css/dashboard.css",

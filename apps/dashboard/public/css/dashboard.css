@@ -366,8 +366,16 @@ a { color: inherit; }
 }
 
 @media (max-width: 760px) {
-  .grid { padding: 12px; gap: 10px; }
-  .size-s, .size-m, .size-l, .size-xl { grid-column: span 12; }
+  /* Single column: drop CSS grid entirely and stack cards in a flex column.
+     This neutralises the JS masonry row-span (grid-row only applies in a grid
+     container), so a widget whose content grows after measurement can never
+     overflow into the next card — the cause of the overlapping mobile layout. */
+  .grid {
+    display: flex; flex-direction: column; align-items: stretch;
+    padding: 12px; gap: 10px;
+  }
+  .widget { width: 100%; }
+  .size-s, .size-m, .size-l, .size-xl { grid-column: auto; }
   .brand-tag { display: none; }
   .topbar { flex-wrap: wrap; gap: 8px; }
   .brand { flex: 1; min-width: 0; }         /* brand + actions share the top row */
@@ -2191,15 +2199,21 @@ a.trk-title:hover { color: var(--accent); }
   .pagetabs {
     position: fixed; left: 0; right: 0; bottom: 0; top: auto;
     z-index: 30; margin: 0; max-width: none;
-    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-    gap: 8px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    gap: 4px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
     background: color-mix(in srgb, var(--surface) 94%, transparent);
     backdrop-filter: blur(12px);
     border-top: 1px solid var(--hairline); border-bottom: none;
     scrollbar-width: none;
   }
   .pagetabs::-webkit-scrollbar { display: none; }
-  .pagetab { flex: 0 0 auto; padding: 9px 16px; }   /* bigger touch target */
+  /* All tabs share the width evenly so every page is visible without scrolling
+     (7 destinations fit on a standard phone). Compact but ≥40px tall for touch. */
+  .pagetab {
+    flex: 1 1 0; min-width: 0; justify-content: center;
+    padding: 9px 6px; font-size: 11px; letter-spacing: 0.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   /* clear the fixed bottom nav so no content hides behind it */
   .grid { padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
   .toast-host { bottom: calc(72px + env(safe-area-inset-bottom)); right: 12px; left: 12px; }

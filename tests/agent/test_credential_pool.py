@@ -146,6 +146,174 @@ def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
     assert second.id == "cred-2"
 
 
+def test_round_robin_skips_low_5h_usage_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-low",
+                        "label": "low-5h",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "tok-low",
+                        "usage_remaining_pct": 9.0,
+                        "usage_window": "5h",
+                        "usage_checked_at": time.time(),
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "tok-ok",
+                        "usage_remaining_pct": 20.0,
+                        "usage_window": "5h",
+                        "usage_checked_at": time.time(),
+                    },
+                ]
+            },
+        },
+    )
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text("credential_pool_strategies:\n  openai-codex: round_robin\n")
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "cred-ok"
+
+
+def test_round_robin_skips_low_weekly_usage_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-low-weekly",
+                        "label": "low-weekly",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "tok-low",
+                        "usage_remaining_pct": 4.9,
+                        "usage_window": "weekly",
+                        "usage_checked_at": time.time(),
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "tok-ok",
+                        "usage_remaining_pct": 5.0,
+                        "usage_window": "weekly",
+                        "usage_checked_at": time.time(),
+                    },
+                ]
+            },
+        },
+    )
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text("credential_pool_strategies:\n  openai-codex: round_robin\n")
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "cred-ok"
+
+
+def test_stale_usage_metadata_does_not_suppress_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-stale",
+                        "label": "stale-low",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "tok-stale",
+                        "usage_remaining_pct": 1.0,
+                        "usage_window": "5h",
+                        "usage_checked_at": time.time() - 600,
+                    },
+                    {
+                        "id": "cred-next",
+                        "label": "next",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "tok-next",
+                    },
+                ]
+            },
+        },
+    )
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text("credential_pool_strategies:\n  openai-codex: round_robin\n")
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "cred-stale"
+
+
+def test_update_usage_persists_usage_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "tok-1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.update_usage("cred-1", remaining_pct=8.0, window="5h") is True
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["usage_remaining_pct"] == 8.0
+    assert persisted["usage_window"] == "5h"
+    assert persisted["usage_checked_at"] > 0
+
+
 def test_random_strategy_uses_random_choice(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

@@ -207,3 +207,30 @@ class TestAgentIntegration:
         # None should not crash
         result = parse_rate_limit_headers({})
         assert result is None
+
+    def test_long_window_headers_update_pool_usage(self):
+        """Codex-style 5h/weekly headers update current credential metadata."""
+        from types import SimpleNamespace
+        from run_agent import AIAgent
+
+        calls = []
+
+        class Pool:
+            def current(self):
+                return SimpleNamespace(id="cred-1")
+
+            def update_usage(self, credential_id, *, remaining_pct, window):
+                calls.append((credential_id, remaining_pct, window))
+                return True
+
+        agent = SimpleNamespace(credential_pool=Pool())
+        headers = {
+            "x-ratelimit-limit-requests-5h": "100",
+            "x-ratelimit-remaining-requests-5h": "9",
+            "x-ratelimit-limit-requests-weekly": "1000",
+            "x-ratelimit-remaining-requests-weekly": "40",
+        }
+
+        AIAgent._update_pool_entry_usage_from_headers(agent, headers)
+
+        assert calls == [("cred-1", 4.0, "weekly")]

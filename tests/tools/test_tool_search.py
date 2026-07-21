@@ -705,3 +705,84 @@ class TestDescriptionOnly:
         mark_description_only_tool("do_duplicate")  # should not raise
         assert is_description_only_tool("do_duplicate")
 
+    # ------------------------------------------------------------------
+    # Lazy MCP registration: description_only marking persists correctly
+    # ------------------------------------------------------------------
+
+    def test_lazy_mcp_registration_marking_persists(self):
+        """When an MCP server is registered lazily (after agent init), its
+        tools are correctly marked as description_only and classified
+        as deferrable."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            is_description_only_tool,
+            is_deferrable_tool_name,
+            classify_tools,
+        )
+        # Simulate a lazy MCP server being registered later.
+        lazy_tool_name = "mcp__lazy_server__search_docs"
+        self._register(lazy_tool_name, "mcp-lazy-server")
+
+        # Mark it as description_only (as _register_server_tools does).
+        mark_description_only_tool(lazy_tool_name)
+
+        # Verify marking stuck.
+        assert is_description_only_tool(lazy_tool_name)
+        # Verify it is deferrable.
+        assert is_deferrable_tool_name(lazy_tool_name)
+
+        # Verify classify_tools puts it in the deferrable bucket.
+        defs = [
+            _td("terminal", "Run shell commands"),
+            _td(lazy_tool_name, "Search documentation"),
+        ]
+        visible, deferrable = classify_tools(defs)
+        deferrable_names = {(td.get("function") or {}).get("name") for td in deferrable}
+        assert lazy_tool_name in deferrable_names
+        assert "terminal" not in deferrable_names
+
+    # ------------------------------------------------------------------
+    # Bridge dispatch: tool_search finds and tool_call invokes description_only tools
+    # ------------------------------------------------------------------
+
+    def test_bridge_dispatch_finds_description_only_tool(self):
+        """tool_search returns description_only tools in the catalog and
+        tool_describe returns their full schema."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            dispatch_tool_search,
+            dispatch_tool_describe,
+            ToolSearchConfig,
+        )
+
+        do_tool = "do_bridge_dispatch_test"
+        self._register(do_tool, "mcp-bridge-test")
+        mark_description_only_tool(do_tool)
+
+        # Build a defs list that simulates post-classification output:
+        # the description_only tool is in the deferrable set.
+        defs = [
+            _td("terminal", "Run shell commands"),
+            _td(do_tool, "Bridge dispatch test tool", {"param": {"type": "string"}}),
+        ]
+
+        # tool_search should find it.
+        result = dispatch_tool_search(
+            {"query": "bridge dispatch"},
+            current_tool_defs=defs,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        parsed = json.loads(result)
+        assert "matches" in parsed
+        match_names = [m["name"] for m in parsed["matches"]]
+        assert do_tool in match_names
+
+        # tool_describe should return its full schema.
+        desc_result = dispatch_tool_describe(
+            {"name": do_tool},
+            current_tool_defs=defs,
+        )
+        desc_parsed = json.loads(desc_result)
+        assert desc_parsed.get("name") == do_tool
+        assert "parameters" in desc_parsed
+

@@ -335,7 +335,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             from tools.tool_search import get_description_only_tool_names, load_config as _load_ts_cfg
             _ts_cfg = _load_ts_cfg()
             if _ts_cfg.enabled != "off":
-                _do_names = get_description_only_tool_names() & agent.valid_tool_names
+                # Use pre-assembly tool names so the inventory includes
+                # description_only tools that were deferred behind the bridge.
+                # ``agent.valid_tool_names`` is the post-assembly visible set
+                # (bridge tools only); ``_pre_assembly_tool_names`` is the full
+                # set of tools granted to this session.
+                _pre_names = getattr(agent, '_pre_assembly_tool_names', None)
+                _do_names = get_description_only_tool_names() & (_pre_names if _pre_names is not None else agent.valid_tool_names)
                 if _do_names:
                     from tools.registry import registry
                     _do_lines = []

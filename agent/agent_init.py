@@ -1196,6 +1196,17 @@ def init_agent(
     agent.valid_tool_names = set()
     if agent.tools:
         agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+        # Capture pre-assembly tool names for the description_only inventory in
+        # the system prompt.  ``agent.valid_tool_names`` reflects the
+        # post-tool_search-assembly visible list (description_only tools are
+        # deferred behind bridge tools), but the system prompt's MCP tool
+        # inventory must list every tool the session was granted — not just
+        # the ones that happen to be visible after assembly.
+        try:
+            import model_tools
+            agent._pre_assembly_tool_names = set(model_tools._last_resolved_tool_names)
+        except Exception:
+            agent._pre_assembly_tool_names = set()
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")

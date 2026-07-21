@@ -62,7 +62,35 @@ export default function register(sdk) {
 
 `sdk` contents: `defineWidgetApp`, `openWidget`, `updateWidget`, `isCtrl`,
 `React`, `h` (createElement — no JSX in .mjs), components `Box`, `Text`,
-`Dialog`, `Overlay`, `WidgetGrid`, `GridAreas`.
+`Dialog`, `Overlay`, `WidgetGrid`, `GridAreas`, and loaders `Shimmer`,
+`ShimmerRows`, `useShimmerPhase` — use `ShimmerRows` for loading phases
+instead of a bare "loading…" line.
+
+Expand/collapse: `sdk.Accordion` — the same primitive the session panel's
+tool/skill sections use. `h(Accordion, { t, title: 'details', count: 3,
+defaultOpen: false }, body)` toggles on CLICK (works in ambient widgets,
+which receive no keys); modal apps may pass `open` + `onToggle` to drive it
+from reducer state instead.
+
+Stable sizing (cards must NEVER resize while ticking):
+
+- Give `Dialog` an explicit `width`; charts already return exactly the
+  `width` you ask for (short series pad-left while history warms up).
+- Pad dynamic numbers: `String(v).padStart(6)` — `51 ms` → `112 ms` must
+  not change the line length.
+- Keep row counts constant per phase; swap content, not structure.
+
+Charts (pure string builders — color the result with theme tones):
+
+- `sdk.sparkline(series, width?)` → `▂▃▅▇█▆` one-row trend
+- `sdk.sparkRows(series, width, rows)` → multi-row column chart (top line
+  first) — the mission-control panel look; taller cells gain resolution
+- `sdk.gauge(ratio, width)` → `█████░░░` fill bar for a 0..1 value
+- `sdk.hbars(values, width)` → horizontal bar chart, one bar per value,
+  eighth-block tips, scaled to the max
+
+Keep a rolling series in component state (push per tick, cap ~120 samples)
+and render `sparkRows` for dashboard panels, `sparkline` for one-liners.
 
 Contract essentials:
 

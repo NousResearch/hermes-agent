@@ -11,9 +11,11 @@
  * See `sdk/apps/` for the reference apps (`/grid-test`, `/dialog-test`).
  */
 
+// Theme + chrome primitives
+export { Accordion } from '../components/accordion.js'
+export { Shimmer, ShimmerRows, shimmerSegments, useShimmerPhase } from '../components/loaders.js'
 // Layout components + overlay primitives
 export { Dialog, Overlay, type OverlayZone } from '../components/overlay.js'
-// Theme + chrome primitives
 export { OverlayHint, windowItems } from '../components/overlayControls.js'
 export {
   ActionRow,
@@ -26,6 +28,7 @@ export {
 
 export { GridAreas, WidgetGrid } from '../components/widgetGrid.js'
 
+export { gauge, hbars, sparkline, sparkRows } from '../lib/charts.js'
 export { contrastRatio, liftForContrast, mix, relativeLuminance } from '../lib/color.js'
 // Layout engine
 export {

@@ -12,11 +12,13 @@ import {
   beginPreviewServerRestart,
   clearSessionPreviewRegistry,
   closeActiveRightRailTab,
+  decodeFilePreviewTabs,
   dismissPreviewTarget,
   getSessionPreviewRecord,
   type PreviewTarget,
   progressPreviewServerRestart,
-  setCurrentSessionPreviewTarget
+  setCurrentSessionPreviewTarget,
+  syncFilePreviewTabsForSession
 } from './preview'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
@@ -134,5 +136,69 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  it('drops file preview tabs from other sessions when the routed session changes', () => {
+    const file = previewTarget('/work/file.html')
+
+    setCurrentSessionPreviewTarget(file, 'manual')
+
+    expect($filePreviewTabs.get()).toHaveLength(1)
+    expect($filePreviewTabs.get()[0]?.sessionId).toBe('session-1')
+    expect($rightRailActiveTabId.get()).toBe(`file:${file.url}`)
+
+    // Routing to a conversation that does not contain the attachment must
+    // dismiss the leaked file tab and fall back to the live preview tab.
+    syncFilePreviewTabsForSession('session-2')
+
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
+  })
+
+  it('keeps file preview tabs when re-syncing the same session', () => {
+    const file = previewTarget('/work/file.html')
+
+    setCurrentSessionPreviewTarget(file, 'manual')
+
+    // The routing effect re-runs on every registry update within the same
+    // session, so syncing the unchanged session must be a no-op.
+    syncFilePreviewTabsForSession('session-1')
+
+    expect($filePreviewTabs.get()).toHaveLength(1)
+    expect($rightRailActiveTabId.get()).toBe(`file:${file.url}`)
+  })
+
+  it('filters file tabs by the session id it is given', () => {
+    const file = previewTarget('/work/file.html')
+
+    setCurrentSessionPreviewTarget(file, 'manual')
+    expect($filePreviewTabs.get()[0]?.sessionId).toBe('session-1')
+
+    // The function scopes purely by its argument — the caller (the routing
+    // effect) is responsible for passing the session it is routing to. Syncing
+    // against a non-matching id drops the tab.
+    syncFilePreviewTabsForSession('session-1')
+    expect($filePreviewTabs.get()).toHaveLength(1)
+
+    syncFilePreviewTabsForSession('other-session')
+    expect($filePreviewTabs.get()).toEqual([])
+  })
+
+  it('drops legacy and blank-session persisted file tabs on decode', () => {
+    const scoped = {
+      id: 'file:///work/new.html',
+      sessionId: 'session-1',
+      target: previewTarget('/work/new.html')
+    }
+
+    // A pre-scoping row carries no sessionId, and a blank sessionId is just as
+    // unattributable — neither can be scoped to a conversation, so decode must
+    // reject both rather than surface an unscoped tab.
+    const legacy = { id: 'file:///work/old.html', target: previewTarget('/work/old.html') }
+    const blank = { id: 'file:///work/blank.html', sessionId: '', target: previewTarget('/work/blank.html') }
+
+    const decoded = decodeFilePreviewTabs(JSON.stringify([scoped, legacy, blank]))
+
+    expect(decoded).toEqual([scoped])
   })
 })

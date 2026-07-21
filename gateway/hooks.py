@@ -29,7 +29,9 @@ Context dict passed to ``agent:start`` / ``agent:end`` handlers:
   message      -- inbound message text (truncated to 500 chars)
 
 ``agent:end`` adds:
-  response     -- agent response text (truncated to 500 chars)
+  response       -- agent response text (truncated to 500 chars)
+  full_response  -- full agent response text (no truncation)
+  full_message   -- full inbound message text (no truncation)
 
 Handlers posting a follow-up into the same Telegram forum-topic should
 include ``message_thread_id=int(thread_id)`` when ``chat_type == "forum"``

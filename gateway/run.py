@@ -13203,9 +13203,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
+            # full_response / full_message provide untruncated text for hooks
+            # that need the complete content (logging, memory persistence, etc.)
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "full_response": response or "",
+                "full_message": message_text,
             })
             
             # Check for pending process watchers (check_interval on background processes)

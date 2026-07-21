@@ -9,6 +9,7 @@ import logging
 import threading
 
 from tools.registry import registry, tool_error, tool_result
+from tools.feishu_client import build_client_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,15 @@ def set_client(client):
 
 
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return a lark client for the current thread, or app credentials fallback."""
+    client = getattr(_local, "client", None)
+    if client is not None:
+        return client
+
+    client = build_client_from_env(logger)
+    if client is not None:
+        _local.client = client
+    return client
 
 
 # ---------------------------------------------------------------------------

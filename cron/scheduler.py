@@ -756,19 +756,24 @@ def _maybe_mirror_cron_delivery(
         )
 
 
-def _deliver_to_webui_session(job: dict, session_id: str, content: str) -> Optional[str]:
-    """Persist a cron delivery into a local WebUI/Hermes session.
+def _deliver_to_local_session(
+    job: dict,
+    platform_name: str,
+    session_id: str,
+    content: str,
+) -> Optional[str]:
+    """Persist a cron delivery into a local WebUI/Desktop session.
 
-    WebUI has no gateway adapter to push through — the session's own
-    ``SessionDB`` row *is* the delivery surface. Appends a labelled USER-role
+    Local GUI surfaces have no messaging adapter to push through — the
+    ``SessionDB`` row *is* their durable delivery surface. Appends a labelled USER-role
     message (same alternation rationale as ``_maybe_mirror_cron_delivery``: a
     cron delivery is not the agent speaking, and a user-role turn merges
     safely on every provider instead of landing assistant→assistant). The
-    browser picks it up on next reload/poll; no live-push in this phase.
+    client picks it up on its transcript poll or next reload.
 
     A target may name a compression parent — the session that existed before
     context compression forked a continuation child (see
-    ``resolve_resume_session_id``). The WebUI reads through that redirect, so
+    ``resolve_resume_session_id``). Local clients read through that redirect, so
     appending to the parent would land the cron message somewhere the active
     conversation never looks. Resolve the live continuation tip before
     appending, same as the WebUI/gateway resume path does.
@@ -788,8 +793,15 @@ def _deliver_to_webui_session(job: dict, session_id: str, content: str) -> Optio
             sid = (resolve(session_id) if callable(resolve) else None) or session_id
             resolve_resume = getattr(db, "resolve_resume_session_id", None)
             sid = (resolve_resume(sid) if callable(resolve_resume) else None) or sid
-            if not db.get_session(sid):
-                return f"webui session '{session_id}' not found"
+            session = db.get_session(sid)
+            if not session:
+                return f"{platform_name} session '{session_id}' not found"
+            source = str(session.get("source") or "").strip().lower()
+            if source != platform_name:
+                return (
+                    f"{platform_name} session '{session_id}' has source "
+                    f"'{source or 'unknown'}'"
+                )
             label = job.get("name") or job.get("id") or "cron"
             db.append_message(
                 sid,
@@ -797,12 +809,15 @@ def _deliver_to_webui_session(job: dict, session_id: str, content: str) -> Optio
                 f"[Cron delivery: {label}]\n{text}",
                 observed=True,
             )
-            logger.info("Job '%s': delivered to webui session %s", job.get("id", "?"), sid)
+            logger.info(
+                "Job '%s': delivered to %s session %s",
+                job.get("id", "?"), platform_name, sid,
+            )
             return None
         finally:
             db.close()
     except Exception as e:
-        msg = f"webui delivery to {session_id} failed: {e}"
+        msg = f"{platform_name} delivery to {session_id} failed: {e}"
         logger.warning("Job '%s': %s", job.get("id", "?"), msg)
         return msg
 
@@ -1184,23 +1199,29 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
-# WebUI delivery is a local session-store surface, not a gateway platform
-# adapter — it must never reach `gateway.config.Platform(...)`. These targets
-# are tagged `kind=_WEBUI_TARGET_KIND` so `_deliver_result` can split them out
-# before the gateway delivery loop.
-_WEBUI_PLATFORM = "webui"
-_WEBUI_TARGET_KIND = "webui_session"
+# WebUI and Desktop are local session-store surfaces, not gateway platforms.
+# They must never reach ``gateway.config.Platform(...)``. Tag their targets so
+# ``_deliver_result`` can split them out before the messaging-adapter loop.
+_LOCAL_SESSION_PLATFORMS = frozenset({"desktop", "webui"})
+_LOCAL_SESSION_TARGET_KIND = "local_session"
 
 
-def _is_webui_origin(origin: Optional[dict]) -> bool:
-    return bool(origin) and str(origin.get("platform", "")).lower() == _WEBUI_PLATFORM
+def _local_session_platform(origin: Optional[dict]) -> Optional[str]:
+    if not origin:
+        return None
+    platform_name = str(origin.get("platform", "")).strip().lower()
+    return platform_name if platform_name in _LOCAL_SESSION_PLATFORMS else None
 
 
-def _webui_delivery_target(session_id: str, thread_id: Optional[str] = None) -> dict:
+def _local_session_delivery_target(
+    platform_name: str,
+    session_id: str,
+    thread_id: Optional[str] = None,
+) -> dict:
     sid = str(session_id)
     return {
-        "kind": _WEBUI_TARGET_KIND,
-        "platform": _WEBUI_PLATFORM,
+        "kind": _LOCAL_SESSION_TARGET_KIND,
+        "platform": platform_name,
         "chat_id": sid,
         "session_id": sid,
         "thread_id": thread_id,
@@ -1215,13 +1236,24 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if deliver_value == "local":
         return None
 
-    if deliver_value.lower().startswith(f"{_WEBUI_PLATFORM}:"):
-        session_id = deliver_value.split(":", 1)[1].strip()
-        return _webui_delivery_target(session_id) if session_id else None
+    explicit_platform, separator, explicit_session_id = deliver_value.partition(":")
+    explicit_platform = explicit_platform.strip().lower()
+    if separator and explicit_platform in _LOCAL_SESSION_PLATFORMS:
+        session_id = explicit_session_id.strip()
+        return (
+            _local_session_delivery_target(explicit_platform, session_id)
+            if session_id
+            else None
+        )
 
     if deliver_value == "origin":
-        if origin and _is_webui_origin(origin):
-            return _webui_delivery_target(origin["chat_id"], origin.get("thread_id"))
+        local_platform = _local_session_platform(origin)
+        if origin and local_platform:
+            return _local_session_delivery_target(
+                local_platform,
+                origin["chat_id"],
+                origin.get("thread_id"),
+            )
         if origin:
             return {
                 "platform": origin["platform"],
@@ -1600,16 +1632,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
 
-    # WebUI targets are a local session-store surface, not a gateway platform
-    # — split them out before touching gateway config at all, so a WebUI-only
+    # Local-session targets are not gateway platforms. Split them out before
+    # touching gateway config, so a Desktop/WebUI-only
     # delivery never depends on (or fails because of) gateway setup.
-    webui_targets = [t for t in targets if t.get("kind") == _WEBUI_TARGET_KIND]
-    gateway_targets = [t for t in targets if t.get("kind") != _WEBUI_TARGET_KIND]
+    local_targets = [t for t in targets if t.get("kind") == _LOCAL_SESSION_TARGET_KIND]
+    gateway_targets = [t for t in targets if t.get("kind") != _LOCAL_SESSION_TARGET_KIND]
 
     delivery_errors = []
 
-    for target in webui_targets:
-        err = _deliver_to_webui_session(job, target.get("session_id") or target["chat_id"], content)
+    for target in local_targets:
+        err = _deliver_to_local_session(
+            job,
+            target["platform"],
+            target.get("session_id") or target["chat_id"],
+            content,
+        )
         if err:
             delivery_errors.append(err)
 

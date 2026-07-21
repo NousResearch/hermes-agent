@@ -109,6 +109,100 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_desktop_session_context_exposes_durable_cron_origin(tmp_path):
+    """Desktop's live UI id is not its durable delivery address.
+
+    Cron must capture the stored conversation id for both ``chat_id`` and
+    ``session_id`` so a result survives window restarts and never falls back to
+    a configured Telegram home channel.
+    """
+    from gateway.session_context import get_session_env
+
+    sid = "runtime-window-7"
+    session_key = "stored-conversation-42"
+    server._sessions[sid] = {
+        "session_key": session_key,
+        "source": "desktop",
+        "cwd": str(tmp_path),
+    }
+
+    tokens = server._set_session_context(session_key, ui_session_id=sid)
+    try:
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "desktop"
+        assert get_session_env("HERMES_SESSION_SOURCE") == "desktop"
+        assert get_session_env("HERMES_SESSION_CHAT_ID") == session_key
+        assert get_session_env("HERMES_SESSION_ID") == session_key
+        assert get_session_env("HERMES_UI_SESSION_ID") == sid
+    finally:
+        server._clear_session_context(tokens)
+        server._sessions.pop(sid, None)
+
+
+def test_tui_session_context_keeps_identity_without_claiming_delivery_origin(tmp_path):
+    from gateway.session_context import get_session_env
+
+    sid = "runtime-tui"
+    session_key = "stored-tui"
+    server._sessions[sid] = {
+        "session_key": session_key,
+        "source": "tui",
+        "cwd": str(tmp_path),
+    }
+
+    tokens = server._set_session_context(session_key, ui_session_id=sid)
+    try:
+        assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+        assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
+        assert get_session_env("HERMES_SESSION_ID") == session_key
+    finally:
+        server._clear_session_context(tokens)
+        server._sessions.pop(sid, None)
+
+
+def test_live_desktop_merges_missing_observed_delivery_once(monkeypatch):
+    import contextlib
+
+    observed = {
+        "role": "user",
+        "content": "[Cron delivery: overnight]\nAll checks passed.",
+        "observed": True,
+        "timestamp": 123.0,
+    }
+
+    class FakeDb:
+        def get_session(self, session_id):
+            return {"id": session_id, "source": "desktop"}
+
+        def get_messages_as_conversation(self, _session_id):
+            return [
+                {"role": "user", "content": "Run this overnight"},
+                {"role": "assistant", "content": "Scheduled."},
+                observed,
+            ]
+
+    session = {
+        "session_key": "stored-desktop",
+        "source": "desktop",
+        "history": [
+            {"role": "user", "content": "Run this overnight"},
+            {"role": "assistant", "content": "Scheduled."},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 2,
+    }
+    monkeypatch.setattr(
+        server,
+        "_session_db",
+        lambda _session: contextlib.nullcontext(FakeDb()),
+    )
+
+    assert server._merge_observed_session_messages(session) == 1
+    assert session["history"][-1] == observed
+    assert session["history_version"] == 3
+    assert server._merge_observed_session_messages(session) == 0
+    assert session["history"].count(observed) == 1
+
+
 def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     class DbContext:
         def __init__(self, db):

@@ -4984,11 +4984,9 @@ class TestSetCronSessionTitle:
         assert _set_cron_session_title(MagicMock(), "", "X") is None
 
 
-class TestWebuiDeliveryTargetResolution:
-    """WebUI delivery is a local session-store surface, not a gateway platform
-    adapter — it must resolve to a ``webui_session``-kind target and never
-    flow into ``gateway.config.Platform("webui")`` (which raised
-    ``unknown platform 'webui'``, #45360)."""
+class TestLocalSessionDeliveryTargetResolution:
+    """GUI delivery resolves to a local session target, never a gateway
+    platform adapter (``unknown platform 'webui'`` in #45360)."""
 
     def test_webui_origin_resolves_to_webui_session_target(self):
         from cron.scheduler import _resolve_delivery_targets
@@ -5000,7 +4998,7 @@ class TestWebuiDeliveryTargetResolution:
         }
         assert _resolve_delivery_targets(job) == [
             {
-                "kind": "webui_session",
+                "kind": "local_session",
                 "platform": "webui",
                 "chat_id": "abc123",
                 "session_id": "abc123",
@@ -5014,10 +5012,28 @@ class TestWebuiDeliveryTargetResolution:
         job = {"id": "j", "deliver": "webui:sess-42"}
         assert _resolve_delivery_targets(job) == [
             {
-                "kind": "webui_session",
+                "kind": "local_session",
                 "platform": "webui",
                 "chat_id": "sess-42",
                 "session_id": "sess-42",
+                "thread_id": None,
+            }
+        ]
+
+    def test_desktop_origin_uses_durable_session_id(self):
+        from cron.scheduler import _resolve_delivery_targets
+
+        job = {
+            "id": "j",
+            "deliver": "origin",
+            "origin": {"platform": "desktop", "chat_id": "desktop-session-7"},
+        }
+        assert _resolve_delivery_targets(job) == [
+            {
+                "kind": "local_session",
+                "platform": "desktop",
+                "chat_id": "desktop-session-7",
+                "session_id": "desktop-session-7",
                 "thread_id": None,
             }
         ]
@@ -5038,7 +5054,7 @@ class TestWebuiDeliveryTargetResolution:
         }
         assert _resolve_delivery_targets(job) == [
             {
-                "kind": "webui_session",
+                "kind": "local_session",
                 "platform": "webui",
                 "chat_id": "abc123",
                 "session_id": "abc123",
@@ -5054,12 +5070,12 @@ class TestWebuiDeliveryDispatch:
 
     def test_webui_only_delivery_does_not_load_gateway_config(self):
         job = {"id": "j", "deliver": "webui:sess-1"}
-        with patch("cron.scheduler._deliver_to_webui_session", return_value=None) as m_deliver, \
+        with patch("cron.scheduler._deliver_to_local_session", return_value=None) as m_deliver, \
              patch("gateway.config.load_gateway_config") as m_gw_cfg:
             result = _deliver_result(job, "hello")
 
         assert result is None
-        m_deliver.assert_called_once_with(job, "sess-1", "hello")
+        m_deliver.assert_called_once_with(job, "webui", "sess-1", "hello")
         m_gw_cfg.assert_not_called()
 
     def test_webui_delivery_never_constructs_gateway_platform(self):
@@ -5069,7 +5085,7 @@ class TestWebuiDeliveryDispatch:
              patch("hermes_state.SessionDB") as mock_db_cls:
             mock_db = MagicMock()
             mock_db.resolve_session_id.return_value = "sess-1"
-            mock_db.get_session.return_value = {"id": "sess-1"}
+            mock_db.get_session.return_value = {"id": "sess-1", "source": "webui"}
             mock_db_cls.return_value = mock_db
 
             result = _deliver_result(job, "hello")
@@ -5091,19 +5107,19 @@ class TestWebuiDeliveryDispatch:
             "deliver": "webui:sess-1,telegram:123",
         }
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg) as m_gw_cfg, \
-             patch("cron.scheduler._deliver_to_webui_session", return_value=None) as m_webui, \
+             patch("cron.scheduler._deliver_to_local_session", return_value=None) as m_webui, \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             result = _deliver_result(job, "hello")
 
         assert result is None
-        m_webui.assert_called_once_with(job, "sess-1", "hello")
+        m_webui.assert_called_once_with(job, "webui", "sess-1", "hello")
         m_gw_cfg.assert_called_once()
         send_mock.assert_called_once()
 
     def test_webui_delivery_error_is_aggregated(self):
         job = {"id": "j", "deliver": "webui:missing-session"}
         with patch(
-            "cron.scheduler._deliver_to_webui_session",
+            "cron.scheduler._deliver_to_local_session",
             return_value="webui session 'missing-session' not found",
         ):
             result = _deliver_result(job, "hello")
@@ -5111,21 +5127,40 @@ class TestWebuiDeliveryDispatch:
         assert result is not None
         assert "missing-session" in result
 
+    def test_desktop_only_delivery_does_not_fall_back_to_home_channel(self):
+        job = {
+            "id": "j",
+            "deliver": "origin",
+            "origin": {"platform": "desktop", "chat_id": "desktop-session-7"},
+        }
+        with patch(
+            "cron.scheduler._deliver_to_local_session", return_value=None
+        ) as deliver_local, patch("gateway.config.load_gateway_config") as gateway_config:
+            result = _deliver_result(job, "overnight report")
 
-class TestDeliverToWebuiSession:
-    """Unit tests for the SessionDB-backed WebUI delivery helper."""
+        assert result is None
+        deliver_local.assert_called_once_with(
+            job, "desktop", "desktop-session-7", "overnight report"
+        )
+        gateway_config.assert_not_called()
+
+
+class TestDeliverToLocalSession:
+    """Unit tests for the SessionDB-backed local delivery helper."""
 
     def test_appends_labelled_observed_user_message(self):
-        from cron.scheduler import _deliver_to_webui_session
+        from cron.scheduler import _deliver_to_local_session
 
         mock_db = MagicMock()
         mock_db.resolve_session_id.return_value = "sess-1"
         mock_db.resolve_resume_session_id.return_value = "sess-1"
-        mock_db.get_session.return_value = {"id": "sess-1"}
+        mock_db.get_session.return_value = {"id": "sess-1", "source": "webui"}
 
         with patch("hermes_state.SessionDB", return_value=mock_db):
             job = {"id": "job-1", "name": "daily-report"}
-            result = _deliver_to_webui_session(job, "sess-1", "Here is the report.")
+            result = _deliver_to_local_session(
+                job, "webui", "sess-1", "Here is the report."
+            )
 
         assert result is None
         mock_db.append_message.assert_called_once_with(
@@ -5137,25 +5172,49 @@ class TestDeliverToWebuiSession:
         mock_db.close.assert_called_once()
 
     def test_missing_session_returns_error_and_does_not_append(self):
-        from cron.scheduler import _deliver_to_webui_session
+        from cron.scheduler import _deliver_to_local_session
 
         mock_db = MagicMock()
         mock_db.resolve_session_id.return_value = None
         mock_db.get_session.return_value = None
 
         with patch("hermes_state.SessionDB", return_value=mock_db):
-            result = _deliver_to_webui_session({"id": "job-1"}, "does-not-exist", "text")
+            result = _deliver_to_local_session(
+                {"id": "job-1"}, "webui", "does-not-exist", "text"
+            )
 
         assert result is not None
         assert "does-not-exist" in result
         mock_db.append_message.assert_not_called()
         mock_db.close.assert_called_once()
 
+    def test_rejects_cross_surface_session_id(self):
+        from cron.scheduler import _deliver_to_local_session
+
+        mock_db = MagicMock()
+        mock_db.resolve_session_id.return_value = "telegram-session"
+        mock_db.resolve_resume_session_id.return_value = "telegram-session"
+        mock_db.get_session.return_value = {
+            "id": "telegram-session",
+            "source": "telegram",
+        }
+
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            result = _deliver_to_local_session(
+                {"id": "job-1"}, "desktop", "telegram-session", "text"
+            )
+
+        assert result is not None
+        assert "source 'telegram'" in result
+        mock_db.append_message.assert_not_called()
+
     def test_empty_content_is_a_noop(self):
-        from cron.scheduler import _deliver_to_webui_session
+        from cron.scheduler import _deliver_to_local_session
 
         with patch("hermes_state.SessionDB") as mock_db_cls:
-            result = _deliver_to_webui_session({"id": "job-1"}, "sess-1", "   ")
+            result = _deliver_to_local_session(
+                {"id": "job-1"}, "webui", "sess-1", "   "
+            )
 
         assert result is None
         mock_db_cls.assert_not_called()
@@ -5175,7 +5234,7 @@ class TestDeliverToWebuiSession:
         import time
 
         from hermes_state import SessionDB
-        from cron.scheduler import _deliver_to_webui_session
+        from cron.scheduler import _deliver_to_local_session
 
         db_path = tmp_path / "state.db"
         db = SessionDB(db_path)
@@ -5207,11 +5266,11 @@ class TestDeliverToWebuiSession:
 
             with patch("hermes_state.SessionDB", return_value=db):
                 job = {"id": "job-1", "name": "daily-report"}
-                result = _deliver_to_webui_session(
-                    job, "parent-session", "Here is the report."
+                result = _deliver_to_local_session(
+                    job, "webui", "parent-session", "Here is the report."
                 )
         finally:
-            # _deliver_to_webui_session already closed the connection via its
+            # _deliver_to_local_session already closed the connection via its
             # own finally block; guard against double-close if it raised
             # before reaching that point.
             if db._conn is not None:

@@ -9842,7 +9842,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
         except Exception as e:
-            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+            logger.warning("Platform registry lookup for '%s' failed: %s", platform.value, e)
         # Fall through to built-in adapters below
 
         if platform == Platform.WHATSAPP_CLOUD:

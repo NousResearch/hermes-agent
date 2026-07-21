@@ -12,11 +12,11 @@
 //!   4. Worker iterates stages, calling `install.ps1 -Stage NAME -NonInteractive -Json`.
 //!   5. On success → `complete`. On any stage failure → `failed`. On cancel → `failed`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
@@ -163,17 +163,18 @@ pub async fn get_bootstrap_status(
 /// (e.g. when Stage-Desktop was skipped) so the frontend can present
 /// actionable failure UI rather than silently doing nothing.
 #[tauri::command]
-pub async fn launch_hermes_desktop(
-    app: AppHandle,
-    install_root: String,
-) -> Result<(), String> {
+pub async fn launch_hermes_desktop(app: AppHandle, install_root: String) -> Result<(), String> {
     let install_root = PathBuf::from(install_root);
     let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
         format!(
             "Couldn't find a built Hermes desktop at {}. The desktop build step \
              may have been skipped or failed. Run `hermes desktop` from a \
              terminal to build and launch it.",
-            install_root.join("apps").join("desktop").join("release").display()
+            install_root
+                .join("apps")
+                .join("desktop")
+                .join("release")
+                .display()
         )
     })?;
 
@@ -191,12 +192,8 @@ pub async fn launch_hermes_desktop(
         cmd.creation_flags(0x0000_0008);
     }
 
-    cmd.spawn().map_err(|e| {
-        format!(
-            "failed to launch {}: {e}",
-            exe_path.display()
-        )
-    })?;
+    cmd.spawn()
+        .map_err(|e| format!("failed to launch {}: {e}", exe_path.display()))?;
 
     // Give Windows ~150ms to actually start the new process before we exit.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -258,6 +255,108 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
     install_root.join(".hermes-bootstrap-complete").exists()
         && resolve_hermes_desktop_exe(install_root).is_some()
+}
+
+fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
+    if let Some(commit) = pin
+        .commit
+        .as_ref()
+        .filter(|commit| !commit.trim().is_empty())
+    {
+        return Some(commit.clone());
+    }
+
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(install_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit.is_empty() {
+        None
+    } else {
+        Some(commit)
+    }
+}
+
+fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<serde_json::Value> {
+    use std::io::Write;
+
+    let marker_path = crate::paths::likely_bootstrap_marker(install_root);
+    if let Some(parent) = marker_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "could not create bootstrap marker directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let completed_at_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let marker = serde_json::json!({
+        "schemaVersion": 1,
+        "pinnedCommit": resolve_marker_commit(install_root, pin),
+        "pinnedBranch": pin.branch.clone(),
+        "completedAtUnix": completed_at_unix,
+    });
+    let body = serde_json::to_vec_pretty(&marker)?;
+    let mut body_with_newline = body;
+    body_with_newline.push(b'\n');
+
+    // Atomic publish (temp sibling + flush + rename), matching Electron's
+    // writeFileAtomic(). hermes_is_installed() only checks existence, so a
+    // partial direct write would incorrectly enable the launcher fast path.
+    let tmp_path = install_root.join(".hermes-bootstrap-complete.tmp");
+    {
+        let mut file = std::fs::File::create(&tmp_path).with_context(|| {
+            format!(
+                "could not create temp bootstrap marker {}",
+                tmp_path.display()
+            )
+        })?;
+        file.write_all(&body_with_newline).with_context(|| {
+            format!(
+                "could not write temp bootstrap marker {}",
+                tmp_path.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "could not flush temp bootstrap marker {}",
+                tmp_path.display()
+            )
+        })?;
+    }
+    // Windows rename fails if the destination already exists; drop any prior
+    // marker first so a re-run can still publish a fresh payload.
+    if marker_path.exists() {
+        std::fs::remove_file(&marker_path).with_context(|| {
+            format!(
+                "could not replace existing bootstrap marker {}",
+                marker_path.display()
+            )
+        })?;
+    }
+    if let Err(err) = std::fs::rename(&tmp_path, &marker_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).with_context(|| {
+            format!(
+                "could not publish bootstrap marker {} → {}",
+                tmp_path.display(),
+                marker_path.display()
+            )
+        });
+    }
+
+    tracing::info!(path = %marker_path.display(), "bootstrap marker written");
+    Ok(marker)
 }
 
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
@@ -348,8 +447,12 @@ async fn run_bootstrap(
     let kind = ScriptKind::for_current_os();
 
     let pin = Pin {
-        commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
-        branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
+        commit: args
+            .commit
+            .or_else(|| option_env_string("BUILD_PIN_COMMIT")),
+        branch: args
+            .branch
+            .or_else(|| option_env_string("BUILD_PIN_BRANCH")),
     };
 
     tracing::info!(
@@ -443,20 +546,21 @@ async fn run_bootstrap(
         return Err(anyhow!(err));
     }
 
-    let manifest: Manifest = powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
-        let err = format!(
-            "install.ps1 -Manifest produced no parseable JSON payload\n{}",
-            truncate(&manifest_result.stdout, 4000)
-        );
-        emit_event(
-            &app,
-            BootstrapEvent::Failed {
-                stage: None,
-                error: err.clone(),
-            },
-        );
-        anyhow!(err)
-    })?;
+    let manifest: Manifest =
+        powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
+            let err = format!(
+                "install.ps1 -Manifest produced no parseable JSON payload\n{}",
+                truncate(&manifest_result.stdout, 4000)
+            );
+            emit_event(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: err.clone(),
+                },
+            );
+            anyhow!(err)
+        })?;
 
     emit_event(
         &app,
@@ -643,6 +747,22 @@ async fn run_bootstrap(
         .clone()
         .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
     let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
+    // Marker publish is terminal for this run: a write failure must emit Failed
+    // so the UI leaves the progress state (it does not poll get_bootstrap_status).
+    let marker = match write_bootstrap_complete_marker(&install_root, &pin) {
+        Ok(marker) => marker,
+        Err(err) => {
+            let msg = format!("write bootstrap marker failed: {err:#}");
+            emit_event(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+    };
 
     // Copy ourselves to HERMES_HOME/hermes-setup.exe so the desktop app can
     // re-invoke us with `--update` and shortcuts have a stable target. This is
@@ -650,7 +770,10 @@ async fn run_bootstrap(
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
     if let Err(err) = crate::paths::copy_self_to_hermes_home() {
-        tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
+        tracing::warn!(
+            ?err,
+            "failed to copy installer into HERMES_HOME (non-fatal)"
+        );
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
@@ -660,10 +783,7 @@ async fn run_bootstrap(
         &app,
         BootstrapEvent::Complete {
             install_root: install_root.to_string_lossy().into_owned(),
-            marker: Some(serde_json::json!({
-                "pinnedCommit": pin.commit,
-                "pinnedBranch": pin.branch,
-            })),
+            marker: Some(marker),
         },
     );
 
@@ -821,8 +941,8 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::path::Path;
+    use std::path::PathBuf;
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
@@ -902,5 +1022,127 @@ mod tests {
             "no resolved app when nothing has been built"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_uses_desktop_compatible_schema() {
+        let root = unique_tmp_dir("marker-schema");
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+
+        let marker =
+            write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+        let marker_path = root.join(".hermes-bootstrap-complete");
+        let from_disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+
+        assert_eq!(marker, from_disk);
+        assert_eq!(from_disk["schemaVersion"], 1);
+        assert_eq!(from_disk["pinnedCommit"], "abcdef1234567890");
+        assert_eq!(from_disk["pinnedBranch"], "main");
+        assert!(
+            from_disk["completedAtUnix"].as_u64().is_some(),
+            "marker should include forensic completion time"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hermes_is_installed_requires_bootstrap_marker_and_built_desktop() {
+        let root = unique_tmp_dir("marker-required");
+        make_release_tree(&root);
+
+        assert!(
+            !hermes_is_installed(&root),
+            "a built desktop alone should not satisfy the installer fast path"
+        );
+
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+        write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+
+        assert!(
+            hermes_is_installed(&root),
+            "marker plus built desktop should satisfy the installer fast path"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_is_published_atomically() {
+        let root = unique_tmp_dir("marker-atomic");
+        make_release_tree(&root);
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+
+        write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+
+        let marker_path = root.join(".hermes-bootstrap-complete");
+        let tmp_path = root.join(".hermes-bootstrap-complete.tmp");
+        assert!(
+            marker_path.is_file(),
+            "final marker must exist after atomic publish"
+        );
+        assert!(
+            !tmp_path.exists(),
+            "temp sibling must not remain after atomic publish"
+        );
+        assert!(
+            hermes_is_installed(&root),
+            "atomically published marker must enable the installer fast path"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hermes_is_installed_treats_marker_existence_as_sufficient() {
+        // Documents why write_bootstrap_complete_marker must publish atomically:
+        // the launcher predicate only checks existence, so a partial/corrupt
+        // final marker would still enable the fast path.
+        let root = unique_tmp_dir("marker-existence-only");
+        make_release_tree(&root);
+        std::fs::write(root.join(".hermes-bootstrap-complete"), b"").unwrap();
+
+        assert!(
+            hermes_is_installed(&root),
+            "empty/partial marker content still counts as installed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn marker_write_failure_leaves_no_final_marker() {
+        // install_root is a regular file → create_dir_all on its path fails
+        // before any marker bytes are published under the final name.
+        let base = unique_tmp_dir("marker-fail");
+        let not_a_dir = base.join("not-a-dir");
+        std::fs::write(&not_a_dir, b"not a directory").unwrap();
+        let pin = Pin {
+            commit: Some("abcdef1234567890".to_string()),
+            branch: Some("main".to_string()),
+        };
+
+        let err = write_bootstrap_complete_marker(&not_a_dir, &pin)
+            .expect_err("marker write against a non-directory root must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("bootstrap marker"),
+            "error should mention the marker path: {msg}"
+        );
+        assert!(
+            !not_a_dir.join(".hermes-bootstrap-complete").exists(),
+            "failed write must not leave a final marker that enables the fast path"
+        );
+        assert!(
+            !not_a_dir.join(".hermes-bootstrap-complete.tmp").exists(),
+            "failed write must not leave a temp marker sibling either"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

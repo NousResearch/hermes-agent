@@ -12,8 +12,8 @@
 //! other component: the installer wrote the install to one dir and the
 //! desktop looked for it in another, so first launch never found the backend.
 //!
-//! IMPORTANT: this must match exactly. Drift here means install.ps1
-//! writes to one place and the installer reads from another, breaking
+//! IMPORTANT: this must match exactly. Drift here means the install scripts,
+//! desktop app, and installer disagree about the active install root, breaking
 //! the bootstrap-complete check.
 
 use std::path::{Path, PathBuf};
@@ -110,7 +110,10 @@ pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
         _ => src == dest,
     };
     if same {
-        tracing::info!(?dest, "installer already at destination; skipping self-copy");
+        tracing::info!(
+            ?dest,
+            "installer already at destination; skipping self-copy"
+        );
         return Ok(());
     }
 
@@ -149,8 +152,8 @@ fn repair_macos_installer_helper(path: &Path) {
 #[cfg(not(target_os = "macos"))]
 fn repair_macos_installer_helper(_path: &Path) {}
 
-/// Where install.ps1 writes the bootstrap-complete marker (existence-only file
-/// the Electron app also checks). Per main.ts:
+/// Where the bootstrap-complete marker lives (existence-only for the Rust
+/// installer fast path; JSON schema-checked by the Electron app). Per main.ts:
 ///   const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
 /// We don't always know ACTIVE_HERMES_ROOT until install.ps1 reports it, so
 /// this is a probe helper, not a definitive path.

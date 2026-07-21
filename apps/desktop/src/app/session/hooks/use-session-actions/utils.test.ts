@@ -327,6 +327,81 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  it('drops committed optimistic user rows after compression shifts their ordinal', () => {
+    // Context compression rewrote history: the authoritative transcript now has
+    // fewer user rows than the local view, so every committed optimistic row
+    // matches the wrong role ordinal. Only content-based matching recognizes
+    // them as committed and keeps them from re-stacking at the tail.
+    const previous = [
+      msg('user-q1', 'user', 'question one'),
+      msg('a1', 'assistant', 'answer one'),
+      msg('user-q2', 'user', 'question two'),
+      msg('a2', 'assistant', 'answer two'),
+      msg('user-q3', 'user', 'question three'),
+      msg('a3', 'assistant', 'answer three')
+    ]
+
+    // Authoritative transcript: q1 was compressed away, so the user ordinals no
+    // longer line up with the local view.
+    const next = [
+      msg('sum', 'assistant', '[summary of earlier turns]'),
+      msg('q2-stored', 'user', 'question two'),
+      msg('a2-stored', 'assistant', 'answer two'),
+      msg('q3-stored', 'user', 'question three'),
+      msg('a3-stored', 'assistant', 'answer three')
+    ]
+
+    // Every optimistic user row is committed by content, so nothing is
+    // resurrected at the tail.
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('keeps only the in-flight tail turn while dropping compressed history', () => {
+    const previous = [
+      msg('user-q1', 'user', 'question one'),
+      msg('a1', 'assistant', 'answer one'),
+      msg('user-q2', 'user', 'question two'),
+      msg('a2', 'assistant', 'answer two'),
+      // genuine in-flight turn the server projection has not caught up to
+      msg('user-inflight', 'user', 'brand new question'),
+      msg('assistant-stream-1', 'assistant', 'partial', { pending: true })
+    ]
+
+    const next = [
+      msg('sum', 'assistant', '[summary]'),
+      msg('q2-stored', 'user', 'question two'),
+      msg('a2-stored', 'assistant', 'answer two')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      'sum',
+      'q2-stored',
+      'a2-stored',
+      'user-inflight',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('drains an already-polluted cache instead of re-preserving on every pass', () => {
+    // The warm-resume path re-runs this merge over its own output. A previously
+    // polluted view (orphan user rows tail-appended) must reconcile back to the
+    // authoritative transcript rather than re-appending the orphans forever.
+    const authoritative = [
+      msg('q1-stored', 'user', 'question one'),
+      msg('a1-stored', 'assistant', 'answer one'),
+      msg('q2-stored', 'user', 'question two'),
+      msg('a2-stored', 'assistant', 'answer two')
+    ]
+
+    const polluted = [
+      ...authoritative,
+      msg('user-q1', 'user', 'question one'),
+      msg('user-q2', 'user', 'question two')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, polluted)).toBe(authoritative)
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

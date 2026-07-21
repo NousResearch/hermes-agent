@@ -231,9 +231,19 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * dropping either makes an accepted turn appear to vanish during transport
  * churn.
  *
- * Authoritative rows use different ids, so match by role ordinal. A matching
- * user row is considered committed only when its visible text also matches;
- * any authoritative assistant at the same ordinal supersedes the local stream.
+ * Only the single newest optimistic user turn is eligible for preservation —
+ * the one turn a lagging server projection can genuinely be behind on. Bare
+ * role-ordinal matching resurrected a whole window of history instead: context
+ * compression (the one sanctioned operation that rewrites history) leaves the
+ * authoritative list with *fewer* user rows than the local view, so every
+ * committed optimistic row matched the wrong ordinal, failed its text check,
+ * and got re-appended at the tail — forever, because each warm-resume pass
+ * re-runs this merge over its own polluted output (the orphan rows are cached,
+ * not just painted). Bounding to the last optimistic user row, and matching it
+ * as committed by content anywhere in the authoritative transcript (not by
+ * ordinal), keeps preservation to the genuinely in-flight tail and drains an
+ * already-polluted cache on the next pass. A pending assistant is superseded by
+ * any authoritative assistant at the same ordinal.
  */
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
@@ -245,16 +255,28 @@ export function preserveLocalPendingTurnMessages(
 
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
+  const authoritativeUserText = new Set<string>()
 
   for (const message of nextMessages) {
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+
+    if (message.role === 'user') {
+      authoritativeUserText.add(chatMessageText(message).trim())
+    }
   }
 
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
   const preserved: ChatMessage[] = []
+
+  // The genuinely in-flight user turn is the newest one; any earlier optimistic
+  // user row is stale history that compression may have dropped from the
+  // authoritative list entirely, so it must never be resurrected.
+  const lastOptimisticUser = [...previousMessages]
+    .reverse()
+    .find(message => message.role === 'user' && message.id.startsWith('user-'))
 
   for (const message of previousMessages) {
     const ordinal = previousRoleCounts.get(message.role) ?? 0
@@ -269,16 +291,23 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    if (isOptimisticUser) {
+      // Preserve only the newest optimistic user turn, and only until the
+      // authoritative transcript carries its text (matched by content, wherever
+      // compression shifted its ordinal to).
+      if (message !== lastOptimisticUser || authoritativeUserText.has(chatMessageText(message).trim())) {
+        continue
+      }
+
+      preserved.push(message)
+
+      continue
+    }
+
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
     if (authoritative) {
-      if (isPendingAssistant) {
-        continue
-      }
-
-      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
-        continue
-      }
+      continue
     }
 
     preserved.push(message)

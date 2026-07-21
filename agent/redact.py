@@ -113,7 +113,10 @@ _PREFIX_PATTERNS = [
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+
+
+
+# Generic ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
 # an all-caps key is almost never prose/code.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
@@ -604,6 +607,7 @@ def redact_sensitive_text(
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
+
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
         if "=" in text:
@@ -752,6 +756,65 @@ def redact_sensitive_text(
 # fixtures, ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
+# Commands that read file contents to stdout. When the target is a ``.env``
+# file, the output is a credential dump — the same as ``printenv`` — so the
+# ENV-assignment pass must run (code_file=False). Per AGENTS.md, ``.env`` is
+# for secrets only; behavioral settings belong in config.yaml, so running
+# the generic ENV redactor on ``.env`` content is the correct behavior.
+_FILE_READ_COMMANDS = frozenset({
+    "cat", "head", "tail", "type", "bat", "less", "more", "nl",
+    "zcat", "tac", "view", "batcat",
+})
+
+# Basenames that are treated as ``.env`` files for redaction purposes.
+# Matches the list in ``agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES``
+# so the two defenses stay aligned: if file_tools blocks a read, and the
+# agent falls back to ``cat``, the terminal redactor still catches it.
+_ENV_FILE_BASENAMES = frozenset({
+    ".env", ".env.local", ".env.development", ".env.production",
+    ".env.test", ".env.staging", ".envrc",
+})
+
+# Filename suffixes that look like ``.env`` but are NOT secret-bearing
+# (templates, examples). These are explicitly excluded so the agent can
+# read template files without redaction interfering.
+_ENV_FILE_EXCLUDE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def _command_reads_env_file(command: str) -> bool:
+    """Return True if ``command`` reads a ``.env`` file to stdout.
+
+    Detects file-read commands (``cat``, ``head``, ``tail``, etc.) where any
+    argument ends with a ``.env``-style basename and is NOT a template
+    (``.env.example``, ``.env.sample``). Handles pipelines and sequences.
+    """
+    if not command:
+        return False
+    segments = re.split(r"[|;&]+", command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        # Use plain split() instead of shlex.split — shlex treats backslashes
+        # as escape chars, which mangles Windows paths (``C:\Users\...\.env``).
+        # We only need the command name and filename, so shell quoting is not
+        # a concern here.
+        tokens = seg.split()
+        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
+            continue
+        # Check all arguments (skip flags like -n, -A, etc.)
+        for arg in tokens[1:]:
+            if arg.startswith("-"):
+                continue
+            # Strip any leading path to get the basename. Handle both / and \.
+            basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            # Exclude templates/examples.
+            if any(basename.endswith(suf) for suf in _ENV_FILE_EXCLUDE_SUFFIXES):
+                continue
+            if basename in _ENV_FILE_BASENAMES:
+                return True
+    return False
+
 
 def is_env_dump_command(command: str | None) -> bool:
     """Return True if ``command`` dumps environment variables to stdout.
@@ -787,10 +850,14 @@ def redact_terminal_output(
     Single redaction policy for ALL terminal-output surfaces — foreground
     ``terminal`` results AND background ``process(action=poll/log/wait)``
     output — so they can't diverge. Picks ``code_file`` based on whether
-    ``command`` is an environment dump:
+    ``command`` is an environment dump or reads a ``.env`` file:
 
     - env-dump command (``env``/``printenv``/``set``/``export``/``declare``)
       → ``code_file=False`` so the ENV-assignment pass masks opaque tokens.
+    - file-read command targeting a ``.env`` file (``cat .env``,
+      ``head .env.local``, etc.) → ``code_file=False`` for the same reason.
+      Per AGENTS.md, ``.env`` files contain only secrets, so the generic
+      ENV redactor is the correct pass — no list of known var names needed.
     - anything else (or unknown command) → ``code_file=True`` to avoid
       false positives on source/config dumps.
 
@@ -799,7 +866,8 @@ def redact_terminal_output(
     """
     if not output:
         return output
-    code_file = not is_env_dump_command(command or "")
+    cmd = command or ""
+    code_file = not (is_env_dump_command(cmd) or _command_reads_env_file(cmd))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

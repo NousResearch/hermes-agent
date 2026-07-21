@@ -476,11 +476,10 @@ class CopilotACPClient:
             _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
             _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
 
-        response_text, reasoning_text = self._run_prompt(
-            prompt_text,
-            model=model,
-            timeout_seconds=_effective_timeout,
-        )
+        run_prompt_kwargs: dict[str, Any] = {"timeout_seconds": _effective_timeout}
+        if self.base_url.rstrip("/") == KIMI_ACP_MARKER_BASE_URL:
+            run_prompt_kwargs["model"] = model
+        response_text, reasoning_text = self._run_prompt(prompt_text, **run_prompt_kwargs)
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
@@ -552,7 +551,7 @@ class CopilotACPClient:
         self,
         prompt_text: str,
         *,
-        model: str | None,
+        model: str | None = None,
         timeout_seconds: float,
     ) -> tuple[str, str]:
         try:

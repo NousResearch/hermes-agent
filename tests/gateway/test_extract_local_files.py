@@ -82,12 +82,20 @@ class TestBasicDetection:
             assert paths[0] == f"/tmp/report{ext}"
 
     def test_spreadsheet_and_data_extensions(self):
-        """Spreadsheets and structured data ship as file uploads."""
-        for ext in (".xlsx", ".xls", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml"):
+        """Spreadsheets and non-sensitive structured data ship as file uploads."""
+        for ext in (".xlsx", ".xls", ".csv", ".tsv", ".json", ".xml"):
             text = f"Data at /tmp/data{ext} ready"
             paths, _ = _extract(text)
             assert len(paths) == 1, f"Failed for {ext}"
             assert paths[0] == f"/tmp/data{ext}"
+
+    def test_bare_yaml_paths_are_not_auto_attached(self):
+        """YAML is usually config; require explicit MEDIA: for upload."""
+        for ext in (".yaml", ".yml"):
+            text = f"Data at /tmp/data{ext} ready"
+            paths, cleaned = _extract(text)
+            assert paths == []
+            assert cleaned == text
 
     def test_presentation_extensions(self):
         """Presentations ship as file uploads."""
@@ -180,6 +188,55 @@ class TestIsfileGuard:
         assert paths == ["/tmp/real.png"]
         assert "/tmp/real.png" not in cleaned
         assert "/tmp/fake.jpg" in cleaned
+
+
+# ---------------------------------------------------------------------------
+# Sensitive path rejection
+# ---------------------------------------------------------------------------
+
+class TestSensitivePathRejection:
+
+    @pytest.mark.parametrize("path", [
+        "/Users/alice/.hermes/config.yaml",
+        "/Users/alice/.hermes/profiles/aegis/config.yaml",
+        "/Users/alice/.hermes/.env",
+        "/Users/alice/.hermes/auth.json",
+        "/Users/alice/project/config.yaml",
+        "/Users/alice/project/config.yml",
+        "/Users/alice/project/.env",
+        "/Users/alice/project/.env.local",
+        "/Users/alice/.ssh/id_rsa",
+        "/Users/alice/.ssh/id_ed25519",
+        "/Users/alice/certs/server.pem",
+        "/Users/alice/certs/server.key",
+        "/Users/alice/data/api-token.json",
+        "/Users/alice/data/passwords.txt",
+        "/Users/alice/data/service-secret.json",
+        "/Users/alice/data/credentials.json",
+    ])
+    def test_sensitive_bare_paths_are_not_attached_or_stripped(self, path):
+        text = f"The file is {path}"
+        paths, cleaned = _extract(text)
+        assert paths == []
+        assert cleaned == text
+
+    def test_safe_artifact_still_attaches_next_to_sensitive_path(self):
+        text = "Safe /tmp/report.pdf but do not send /Users/alice/.hermes/config.yaml"
+        paths, cleaned = _extract(text, existing_files={
+            "/tmp/report.pdf",
+            "/Users/alice/.hermes/config.yaml",
+        })
+        assert paths == ["/tmp/report.pdf"]
+        assert "/tmp/report.pdf" not in cleaned
+        assert "/Users/alice/.hermes/config.yaml" in cleaned
+
+
+class TestExplicitMediaTagStillWorks:
+
+    def test_explicit_media_tag_can_attach_yaml(self):
+        media, cleaned = BasePlatformAdapter.extract_media("Ship MEDIA:/tmp/generated.yaml now")
+        assert media == [("/tmp/generated.yaml", False)]
+        assert cleaned == "Ship  now"
 
 
 # ---------------------------------------------------------------------------

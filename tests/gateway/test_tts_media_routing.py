@@ -261,3 +261,73 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
 
     adapter.send_document.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_ignores_sensitive_bare_local_paths(tmp_path, monkeypatch):
+    event = _event(thread_id="topic-1")
+    safe_pdf = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    root = safe_pdf.parent
+    hermes_config = root / ".hermes" / "config.yaml"
+    hermes_config.parent.mkdir(parents=True, exist_ok=True)
+    hermes_config.write_text("agent: {}")
+    token_json = root / "api-token.json"
+    token_json.write_text('{"token":"redacted"}')
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="images")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"Safe {safe_pdf}; do not attach {hermes_config} or {token_json}",
+        event,
+        adapter,
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(safe_pdf),
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_voice.assert_not_awaited()
+    adapter.send_video.assert_not_awaited()
+    adapter.send_multiple_images.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_explicit_media_tag_can_attach_yaml(tmp_path, monkeypatch):
+    event = _event(thread_id="topic-1")
+    yaml_file = _allowed_media_path(tmp_path, monkeypatch, "generated.yaml")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="images")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"MEDIA:{yaml_file}",
+        event,
+        adapter,
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(yaml_file),
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_voice.assert_not_awaited()

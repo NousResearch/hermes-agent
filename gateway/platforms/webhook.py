@@ -11,7 +11,12 @@ Each route defines:
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
-  - deliver: where to send the response (github_comment, telegram, etc.)
+  - deliver: where to send the response.  Accepts any platform name
+    (telegram, discord, slack, …), "github_comment", "log", or "auto".
+    "auto" resolves at delivery time to the first connected platform
+    that has a home channel configured — useful when the webhook sender
+    doesn't know (or shouldn't hardcode) which chat platform the user
+    prefers.  Defaults to "log" if no platform qualifies.
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
   - deliver_only: if true, skip the agent — the rendered prompt IS the
     message that gets delivered.  Use for external push notifications
@@ -250,7 +255,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     raise ValueError(
                         f"[webhook] Route '{name}' has deliver_only=true but "
                         f"deliver is '{deliver}'. Direct delivery requires a "
-                        f"real target (telegram, discord, slack, github_comment, etc.)."
+                        f"real target (telegram, discord, slack, auto, "
+                        f"github_comment, etc.)."
                     )
 
         # client_max_size makes aiohttp enforce the cap on every read path,
@@ -338,6 +344,9 @@ class WebhookAdapter(BasePlatformAdapter):
         """
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
+
+        if deliver_type == "auto":
+            deliver_type = self._resolve_auto_platform()
 
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
@@ -1181,6 +1190,34 @@ class WebhookAdapter(BasePlatformAdapter):
     # Response delivery
     # ------------------------------------------------------------------
 
+    def _resolve_auto_platform(self) -> str:
+        """Pick the first connected platform that has a home channel.
+
+        Skips the webhook adapter itself to avoid self-delivery loops.
+        Returns the platform name (e.g. ``"telegram"``) or ``"log"`` if
+        no suitable platform is found.
+
+        Users who need a specific platform should use an explicit 
+        ``deliver: telegram`` (or ``discord``, ``slack``, etc.) instead of ``auto``.
+        """
+        if not self.gateway_runner:
+            return "log"
+        for platform in self.gateway_runner.adapters:
+            if platform == Platform.WEBHOOK:
+                continue
+            home = self.gateway_runner.config.get_home_channel(platform)
+            if home and home.chat_id:
+                logger.debug(
+                    "[webhook] auto-resolved delivery platform: %s",
+                    platform.value,
+                )
+                return platform.value
+        logger.warning(
+            "[webhook] deliver=auto but no connected platform has a home "
+            "channel — falling back to log"
+        )
+        return "log"
+
     async def _direct_deliver(
         self, content: str, delivery: dict
     ) -> SendResult:
@@ -1190,9 +1227,12 @@ class WebhookAdapter(BasePlatformAdapter):
         literal message body, and we dispatch to the same delivery helpers
         that the agent-mode ``send()`` flow uses.  All target types that
         work in agent mode work here — Telegram, Discord, Slack, GitHub
-        PR comments, etc.
+        PR comments, ``auto``, etc.
         """
         deliver_type = delivery.get("deliver", "log")
+
+        if deliver_type == "auto":
+            deliver_type = self._resolve_auto_platform()
 
         if deliver_type == "log":
             # Shouldn't reach here — startup validation rejects deliver_only

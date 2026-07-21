@@ -21,11 +21,10 @@ def _isolate_cleanup(monkeypatch):
     monkeypatch.setattr("agent.auxiliary_client.shutdown_cached_clients", lambda: None)
 
 
-def test_cleanup_closes_active_agent_once_after_memory_shutdown(monkeypatch):
+def test_cleanup_partial_active_agent_runs_remaining_phases_once(monkeypatch):
     calls = []
 
     class FakeAgent:
-        session_id = "agent-session"
         _memory_manager = None
         _session_messages = []
 
@@ -34,12 +33,18 @@ def test_cleanup_closes_active_agent_once_after_memory_shutdown(monkeypatch):
 
         def close(self):
             calls.append(("close", None))
+            raise RuntimeError("close failed")
 
     _isolate_cleanup(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "_notify_session_finalize",
+        lambda **kwargs: calls.append(("finalize", kwargs)),
+    )
     monkeypatch.setattr(cli, "_active_agent_ref", FakeAgent())
 
-    cli._run_cleanup(notify_session_finalize=False)
-    cli._run_cleanup(notify_session_finalize=False)
+    cli._run_cleanup()
+    cli._run_cleanup()
 
     assert calls == [("memory", []), ("close", None)]
 

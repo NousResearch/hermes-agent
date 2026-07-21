@@ -1205,8 +1205,10 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     if notify_session_finalize:
-        cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
-        if _should_emit_cleanup_session_finalize(cleanup_session_id):
+        cleanup_session_id = getattr(_active_agent_ref, "session_id", None)
+        if cleanup_session_id and _should_emit_cleanup_session_finalize(
+            cleanup_session_id
+        ):
             _notify_session_finalize(
                 session_id=cleanup_session_id,
                 platform="cli",

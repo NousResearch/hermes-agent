@@ -598,13 +598,14 @@ def test_delayed_older_edit_cannot_restore_reusable_receipt(tmp_path, monkeypatc
     """The root edit marker must stay monotonic across out-of-order writers."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
+    base = datetime.now(timezone.utc) - timedelta(seconds=10)
     clock_values = iter(
         (
-            "2030-01-01T00:00:02+00:00",  # verification event
-            "2030-01-01T00:00:02+00:00",  # receipt record
-            "2030-01-01T00:00:02+00:00",  # confirmation
-            "2030-01-01T00:00:04+00:00",  # newer edit
-            "2030-01-01T00:00:01+00:00",  # delayed older edit
+            base.isoformat(),  # verification event
+            base.isoformat(),  # receipt record
+            base.isoformat(),  # confirmation
+            (base + timedelta(seconds=2)).isoformat(),  # newer edit
+            (base - timedelta(seconds=1)).isoformat(),  # delayed older edit
         )
     )
     monkeypatch.setattr(
@@ -1139,7 +1140,7 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
         )
     )
 
-    assert result["files_modified"] == [str(target.resolve())]
+    assert result.get("files_modified") == [str(target.resolve())], result
     assert verification_status(session_id="conversation", cwd=tmp_path)["status"] == "stale"
     assert verification_status(session_id="turn", cwd=tmp_path)["status"] == "unverified"
 

@@ -146,7 +146,8 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=60,
     )
 
@@ -220,9 +221,47 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=60,
     )
+
+
+def test_runner_preserves_utf8_pytest_output(tmp_path: Path) -> None:
+    """A child pytest failure with UTF-8 text must not crash the runner."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    probe = tmp_path / "test_utf8_probe.py"
+    probe.write_text(
+        "def test_reports_unicode_failure():\n"
+        "    print('검증 출력: ✓')\n"
+        "    assert False, 'unicode failure'\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files",
+            str(probe),
+            "--file-retries",
+            "0",
+            "-j",
+            "1",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="strict",
+        timeout=60,
+    )
+
+    assert proc.returncode == 1, proc.stdout
+    assert "검증 출력: ✓" in proc.stdout
+    assert "UnicodeDecodeError" not in proc.stdout
 
 
 def test_bare_q_flag_passes_through(tmp_path: Path) -> None:
@@ -271,7 +310,7 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
         [sys.executable, str(runner), str(probe_dir), "-j", "1",
          "--file-timeout", "30", "-q"],
         cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, timeout=60,
+        encoding="utf-8", errors="strict", timeout=60,
     )
     assert proc.returncode == 0, proc.stdout
     # Discovery found the probe file (2 tests), proving the positional path
@@ -316,7 +355,8 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=60,
     )
 
@@ -352,7 +392,8 @@ def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> No
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=60,
     )
 

@@ -100,6 +100,11 @@ _DEFAULT_FILE_RETRIES = 1
 _DURATIONS_FILE = "test_durations.json"
 
 
+def _split_path_list(raw: str) -> List[str]:
+    """Split a runner path list without breaking Windows drive letters."""
+    return [item for item in raw.split(os.pathsep) if item.strip()]
+
+
 def _approximately_count_tests(
     files: List[Path], repo_root: Path
 ) -> dict[Path, int]:
@@ -315,6 +320,8 @@ def _run_one_file_once(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=os.environ,
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
@@ -659,8 +666,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--paths",
-        default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),
-        help="Colon-separated discovery roots (default: 'tests')",
+        default=os.environ.get("HERMES_TEST_PATHS", os.pathsep.join(_DEFAULT_ROOTS)),
+        help="Platform-separated discovery roots (default: 'tests')",
     )
     parser.add_argument(
         "--include-integration",
@@ -719,7 +726,7 @@ def main() -> int:
         "--files",
         metavar="LIST",
         help=(
-            "Explicit colon-separated list of test files to run. Bypasses "
+            "Explicit platform-separated list of test files to run. Bypasses "
             "discovery entirely — used by CI matrix jobs that receive their "
             "file list from the generate job."
         ),
@@ -816,7 +823,7 @@ def main() -> int:
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:
-        files = [repo_root / f for f in args.files.split(":") if f.strip()]
+        files = [repo_root / f for f in _split_path_list(args.files)]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -824,7 +831,7 @@ def main() -> int:
         if args.paths_positional:
             roots = [repo_root / p for p in args.paths_positional]
         else:
-            roots = [repo_root / p for p in args.paths.split(":") if p]
+            roots = [repo_root / p for p in _split_path_list(args.paths)]
 
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.
@@ -847,7 +854,7 @@ def main() -> int:
             "slice": [
                 {
                     "index": i + 1,
-                    "files": ":".join(_format_file(f, repo_root) for f in bucket),
+                    "files": os.pathsep.join(_format_file(f, repo_root) for f in bucket),
                 }
                 for i, bucket in enumerate(slices)
             ]

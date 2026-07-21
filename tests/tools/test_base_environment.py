@@ -4,9 +4,11 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import subprocess
+import sys
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+from tools.environments.base import BaseEnvironment, _BoundedOutputCollector, _popen_bash
 
 
 class _TestableEnv(BaseEnvironment):
@@ -55,6 +57,18 @@ class TestBoundedOutputCollector:
         assert len(rendered) <= 120
         assert rendered.endswith("[Command timed out after 1s]")
         assert "[OUTPUT TRUNCATED" in rendered
+
+
+class TestPopenBash:
+    def test_decodes_utf8_subprocess_output(self):
+        """The common process wrapper must not use the Windows ANSI codec."""
+        proc = _popen_bash(
+            [sys.executable, "-c", "print('검증 출력: ✓')"]
+        )
+        output, _ = proc.communicate(timeout=15)
+
+        assert proc.returncode == 0
+        assert "검증 출력: ✓" in output
 
 
 class TestWrapCommand:
@@ -254,7 +268,11 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
 
     def test_concurrent_writes_never_tear_the_snapshot(self, tmp_path):
+        import os
         import shutil
+        if os.name == "nt":
+            import pytest
+            pytest.skip("POSIX shell snapshot concurrency contract")
         if not shutil.which("bash"):
             import pytest
             pytest.skip("bash required")
@@ -292,7 +310,11 @@ class TestAtomicSnapshotConcurrencyBehavioral:
     def test_failed_export_does_not_destroy_good_snapshot(self, tmp_path):
         """If ``export -p`` fails, the ``&&``-chained mv must NOT clobber the
         existing good snapshot."""
+        import os
         import shutil
+        if os.name == "nt":
+            import pytest
+            pytest.skip("POSIX shell snapshot concurrency contract")
         if not shutil.which("bash"):
             import pytest
             pytest.skip("bash required")
@@ -321,6 +343,9 @@ class TestSnapshotFileModes:
         import shutil
         import stat
         import subprocess
+        if os.name == "nt":
+            import pytest
+            pytest.skip("POSIX file-mode contract")
         if not shutil.which("bash"):
             import pytest
             pytest.skip("bash required")

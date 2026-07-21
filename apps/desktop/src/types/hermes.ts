@@ -2,6 +2,9 @@ export interface ConfigFieldSchema {
   category?: string
   description?: string
   options?: unknown[]
+  /** When true, renders a SearchableSelect (Popover + cmdk) instead of the
+   *  closed `<Select>` dropdown. For large option lists like IANA timezones. */
+  searchable?: boolean
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
 }
 

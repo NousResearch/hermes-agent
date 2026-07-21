@@ -93,6 +93,13 @@ def _safe_parse_import_env(
     try:
         return converter(raw)
     except (TypeError, ValueError):
+        # Second attempt: float strings (e.g. "600.5") are valid for int params.
+        # int("600.5") raises ValueError; int(float("600.5")) returns 600.
+        if converter is int:
+            try:
+                return int(float(raw))
+            except (TypeError, ValueError):
+                pass
         logger.warning(
             "Invalid value for %s: %r (expected %s). Falling back to %r.",
             name,

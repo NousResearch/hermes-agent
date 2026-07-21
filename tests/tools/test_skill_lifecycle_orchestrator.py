@@ -98,6 +98,24 @@ def test_concurrent_lifecycle_runs_are_serialized_per_skill(tmp_path: Path) -> N
     assert all(result.status in {"passed", "stale"} for result in results)
 
 
+def test_lifecycle_fails_closed_when_whole_cycle_lock_is_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import tools.skill_sidecar_io as sidecar_io
+
+    skill_dir = _skill(tmp_path)
+    monkeypatch.setattr(sidecar_io, "_DIR_FD_SUPPORTED", False)
+
+    def execute(_request: SkillTestRequest) -> ExecutionResult:
+        pytest.fail("tests must not run without the whole-cycle lock")
+
+    result = run_skill_lifecycle(skill_dir, execute=execute)
+
+    assert result.status == "lock_error"
+    assert result.registered is False
+    assert result.test_attempts == 0
+
+
 def test_failure_triggers_refinement_and_revalidation(tmp_path: Path) -> None:
     skill_dir = _skill(tmp_path)
     executions = iter(

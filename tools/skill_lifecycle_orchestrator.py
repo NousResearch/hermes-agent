@@ -107,9 +107,9 @@ def run_skill_lifecycle(
     # across threads and cooperating processes. Digest/token locking already
     # protects a single evidence submission, but only a whole-cycle lock stops
     # two lifecycle runners (e.g. two background reviews) from interleaving a
-    # patch from one with a test run from the other. When the lock cannot be
-    # acquired (no dir_fd support), the cycle still runs — the per-submission
-    # locks remain the correctness floor.
+    # patch from one with a test run from the other. If secure whole-cycle
+    # locking is unavailable, fail closed rather than running an interleavable
+    # lifecycle.
     try:
         with sidecar_lock(skill_dir, LIFECYCLE_LOCK_FILE):
             return _run_skill_lifecycle_locked(
@@ -119,13 +119,13 @@ def run_skill_lifecycle(
                 max_refinements=max_refinements,
                 python_executable=python_executable,
             )
-    except OSError:
-        return _run_skill_lifecycle_locked(
-            skill_dir,
-            execute=execute,
-            refine=refine,
-            max_refinements=max_refinements,
-            python_executable=python_executable,
+    except OSError as exc:
+        return SkillLifecycleResult(
+            status="lock_error",
+            registered=False,
+            test_attempts=0,
+            refinement_attempts=0,
+            message=str(exc),
         )
 
 

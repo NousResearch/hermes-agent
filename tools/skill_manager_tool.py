@@ -852,34 +852,65 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
-    # Create the skill directory
+    # Publish autonomous lifecycle drafts atomically. Build under a hidden
+    # sibling directory, stamp the fail-closed draft record *before* SKILL.md can
+    # be observed, scan it, then rename into the final path in one operation.
+    # A parent-directory process lock prevents concurrent create races.
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write SKILL.md atomically
-    skill_md = skill_dir / "SKILL.md"
-    _atomic_write_text(skill_md, content)
-
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
-
-    # Autonomous lifecycle creation must never expose a skill between the
-    # SKILL.md write and its validation. Stamp a draft record (hidden by the
-    # discovery gate) so a background-review-created skill stays invisible until
-    # the lifecycle coordinator validates and registers it. User-directed
-    # foreground creates keep their existing immediately-usable behavior.
     try:
         from tools.skill_provenance import is_background_review
 
-        if is_background_review():
-            from tools.skill_validation import record_draft_validation
-
-            record_draft_validation(skill_dir)
+        background_draft = is_background_review()
     except Exception:
-        logger.debug("draft stamp skipped for %s", name, exc_info=True)
+        background_draft = False
+
+    if background_draft:
+        from tools.skill_sidecar_io import sidecar_lock
+        from tools.skill_validation import record_draft_validation
+
+        parent = skill_dir.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        draft_dir: Optional[Path] = None
+        try:
+            with sidecar_lock(parent, ".skill-create.lock"):
+                if skill_dir.exists() or _find_skill(name):
+                    return {
+                        "success": False,
+                        "error": f"A skill named '{name}' already exists.",
+                    }
+                draft_dir = Path(
+                    tempfile.mkdtemp(prefix=f".{name}.draft-", dir=str(parent))
+                )
+                # Stamp first: once SKILL.md appears, every scanner sees an
+                # undiscoverable draft rather than an unvalidated skill.
+                record_draft_validation(draft_dir)
+                _atomic_write_text(draft_dir / "SKILL.md", content)
+                scan_error = _security_scan_skill(draft_dir)
+                if scan_error:
+                    return {"success": False, "error": scan_error}
+                record_draft_validation(draft_dir)
+                os.rename(draft_dir, skill_dir)
+                draft_dir = None
+        except (OSError, ValueError) as exc:
+            return {
+                "success": False,
+                "error": f"Could not publish lifecycle draft safely: {exc}",
+            }
+        finally:
+            if draft_dir is not None:
+                shutil.rmtree(draft_dir, ignore_errors=True)
+        skill_md = skill_dir / "SKILL.md"
+    else:
+        # Foreground user-directed creation keeps the existing immediate
+        # publication behavior.
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_md = skill_dir / "SKILL.md"
+        _atomic_write_text(skill_md, content)
+
+        scan_error = _security_scan_skill(skill_dir)
+        if scan_error:
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            return {"success": False, "error": scan_error}
 
     _desc = ""
     try:

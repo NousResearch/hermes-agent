@@ -155,6 +155,41 @@ def test_created_code_skill_is_hidden_until_validated(tmp_path):
         assert validation_allows_discovery(skill_dir) is False
 
 
+def test_background_skill_draft_is_stamped_before_atomic_publication(
+    tmp_path, monkeypatch
+):
+    import tools.skill_validation as validation
+    from tools.skill_provenance import (
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    with isolated_skills(tmp_path) as skills_dir:
+        final_dir = skills_dir / "validated-skill"
+        observed = {}
+        real_record = validation.record_draft_validation
+
+        def record_before_publish(draft_dir):
+            draft_dir = Path(draft_dir)
+            observed["draft_dir"] = draft_dir
+            observed["final_visible"] = final_dir.exists()
+            assert draft_dir.name.startswith(".validated-skill.draft-")
+            real_record(draft_dir)
+
+        monkeypatch.setattr(validation, "record_draft_validation", record_before_publish)
+        token = set_current_write_origin("background_review")
+        try:
+            created = _create_skill("validated-skill", VALID_SKILL)
+        finally:
+            reset_current_write_origin(token)
+
+        assert created["success"] is True
+        assert observed["final_visible"] is False
+        assert final_dir.is_dir()
+        assert not observed["draft_dir"].exists()
+        assert validation.read_skill_validation(final_dir)["status"] == "draft"
+
+
 def test_draft_survives_intermediate_script_write(tmp_path):
     from tools.skill_validation import (
         read_skill_validation,

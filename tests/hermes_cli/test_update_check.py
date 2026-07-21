@@ -125,7 +125,7 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = banner._check_via_local_git(repo_dir)
 
-    assert result == 1
+    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
     assert ["git", "fetch", "origin", "--quiet"] not in calls
 
 
@@ -372,3 +372,52 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+def test_print_version_info_renders_no_count_sentinel(capsys):
+    """`hermes --version` must render UPDATE_AVAILABLE_NO_COUNT (-1) without a
+    fabricated commit count.
+
+    Regression guard for the SSH-official-remote path: `_check_via_local_git`
+    returns the -1 sentinel because `ls-remote` can only tell us tip SHAs, not
+    a real commit count. Previously the SSH branch returned a hard-coded `1`,
+    which the CLI banner rendered as "Update available: 1 commit behind" —
+    misleading and stable even when upstream had accumulated dozens of new
+    commits. This test locks in the correct rendering.
+    """
+    from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT
+    from hermes_cli.main import _print_version_info
+
+    with patch("hermes_cli.banner.check_for_updates", return_value=UPDATE_AVAILABLE_NO_COUNT), \
+         patch("hermes_cli.config.recommended_update_command", return_value="hermes update"):
+        _print_version_info(check_updates=True)
+
+    out = capsys.readouterr().out
+    assert "Update available" in out
+    assert "commit behind" not in out
+    assert "commits behind" not in out
+    assert "hermes update" in out
+
+
+def test_print_version_info_renders_exact_count(capsys):
+    """Real commit counts (from non-shallow git clones) still render precisely."""
+    from hermes_cli.main import _print_version_info
+
+    with patch("hermes_cli.banner.check_for_updates", return_value=3), \
+         patch("hermes_cli.config.recommended_update_command", return_value="hermes update"):
+        _print_version_info(check_updates=True)
+
+    out = capsys.readouterr().out
+    assert "3 commits behind" in out
+
+
+def test_print_version_info_up_to_date(capsys):
+    """behind == 0 renders "Up to date"."""
+    from hermes_cli.main import _print_version_info
+
+    with patch("hermes_cli.banner.check_for_updates", return_value=0):
+        _print_version_info(check_updates=True)
+
+    out = capsys.readouterr().out
+    assert "Up to date" in out
+    assert "Update available" not in out

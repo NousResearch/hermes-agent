@@ -196,10 +196,17 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
-        return checked
+        # ls-remote against the upstream URL only tells us tip SHAs — there
+        # is no local history to count commits against. Return the
+        # UPDATE_AVAILABLE_NO_COUNT sentinel so the banner and CLI renderers
+        # print "update available" instead of fabricating a "1 commit behind"
+        # message. The dashboard's REST /api/hermes/update/check already
+        # treats any nonzero behind as update_available=true (see
+        # hermes_cli/web_server.py::check_hermes_update), and the desktop
+        # store clamps behind<=0 to 0 and reads update_available separately
+        # (apps/desktop/src/store/updates.ts::mapBackendCheck), so no UI
+        # consumer depends on a fabricated count here.
+        return _check_via_rev(head_rev) if head_rev else None
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would

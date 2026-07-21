@@ -22644,6 +22644,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set up signal handlers
     def shutdown_signal_handler(received_signal=None):
         nonlocal _signal_initiated_shutdown
+        # Planned service-restart check: service-manager initiated restarts
+        # (e.g. ``systemctl restart``) send the same SIGTERM as a bare
+        # external kill. A planned-restart helper can mark the current PID
+        # before signalling, letting us log the precise operator intent
+        # without reusing the --replace takeover marker (which is
+        # semantically different and produces misleading operator logs).
+        planned_service_restart = False
+        try:
+            from gateway.status import consume_planned_service_restart_marker_for_self
+            planned_service_restart = consume_planned_service_restart_marker_for_self()
+        except Exception as e:
+            logger.debug("Planned service restart marker check failed: %s", e)
+
         # Planned --replace takeover check: when a sibling gateway is
         # taking over via --replace, it wrote a marker naming this PID
         # before sending SIGTERM. If present, treat the signal as a
@@ -22652,11 +22665,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # both services are enabled, e.g. hermes.service + hermes-
         # gateway.service from pre-rename installs).
         planned_takeover = False
-        try:
-            from gateway.status import consume_takeover_marker_for_self
-            planned_takeover = consume_takeover_marker_for_self()
-        except Exception as e:
-            logger.debug("Takeover marker check failed: %s", e)
+        if not planned_service_restart:
+            try:
+                from gateway.status import consume_takeover_marker_for_self
+                planned_takeover = consume_takeover_marker_for_self()
+            except Exception as e:
+                logger.debug("Takeover marker check failed: %s", e)
 
         # Planned stop check: service managers and `hermes gateway stop`
         # also send SIGTERM, which is indistinguishable from an unexpected
@@ -22665,7 +22679,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         planned_stop = False
         if received_signal == signal.SIGINT:
             planned_stop = True
-        elif not planned_takeover:
+        elif not planned_service_restart and not planned_takeover:
             try:
                 from gateway.status import consume_planned_stop_marker_for_self
                 planned_stop = consume_planned_stop_marker_for_self()
@@ -22689,7 +22703,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _shutdown_ctx = None
             logger.debug("snapshot_shutdown_context failed: %s", _e)
 
-        if planned_takeover:
+        if planned_service_restart:
+            # During a rolling deploy a restart helper may write BOTH the
+            # new service-restart marker and the legacy takeover marker, so
+            # the *previous* gateway binary (which does not yet understand
+            # the service-restart marker) can still exit cleanly via the
+            # takeover path. Once this binary has consumed the
+            # service-restart marker, drop the fallback takeover marker so
+            # it cannot affect a later unrelated signal within its TTL.
+            try:
+                from gateway.status import clear_takeover_marker
+                clear_takeover_marker()
+            except Exception as e:
+                logger.debug(
+                    "Takeover marker cleanup after service restart failed: %s", e
+                )
+            logger.info(
+                "Received %s as a planned service restart — exiting cleanly",
+                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
+            )
+        elif planned_takeover:
             logger.info(
                 "Received %s as a planned --replace takeover — exiting cleanly",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",

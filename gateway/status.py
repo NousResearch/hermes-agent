@@ -1262,6 +1262,8 @@ def release_all_scoped_locks(
 
 _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
+_PLANNED_SERVICE_RESTART_MARKER_FILENAME = ".gateway-planned-service-restart.json"
+_PLANNED_SERVICE_RESTART_MARKER_TTL_S = 60
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
 
@@ -1270,6 +1272,12 @@ def _get_takeover_marker_path() -> Path:
     """Return the path to the --replace takeover marker file."""
     home = _get_process_hermes_home()
     return home / _TAKEOVER_MARKER_FILENAME
+
+
+def _get_planned_service_restart_marker_path() -> Path:
+    """Return the path to the planned service-restart marker file."""
+    home = get_hermes_home()
+    return home / _PLANNED_SERVICE_RESTART_MARKER_FILENAME
 
 
 def _get_planned_stop_marker_path() -> Path:
@@ -1410,6 +1418,64 @@ def clear_takeover_marker() -> None:
     """Remove the takeover marker unconditionally. Safe to call repeatedly."""
     try:
         _get_takeover_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def write_planned_service_restart_marker(target_pid: int) -> bool:
+    """Record that ``target_pid`` is being restarted by a service manager.
+
+    A service-manager initiated restart (e.g. ``systemctl restart``) sends the
+    same SIGTERM as a bare external kill. The marker lets the target's signal
+    handler classify it as a planned service restart and log that precise
+    intent, instead of reusing the ``--replace`` takeover marker (which is
+    semantically different and would produce misleading operator logs) or being
+    misclassified as an unexpected kill.
+
+    Like the takeover marker, it captures the target's ``start_time`` so PID
+    reuse after the target exits cannot match a stale marker, and is bounded by
+    a short TTL. Returns True on successful write, False on any failure; the
+    caller should proceed with the restart regardless (the marker is a
+    best-effort signal, not a correctness requirement).
+    """
+    try:
+        target_start_time = _get_process_start_time(target_pid)
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": target_start_time,
+            "restarted_by_pid": os.getpid(),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_planned_service_restart_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_planned_service_restart_marker_for_self() -> bool:
+    """Return True when the current process is being service-restarted.
+
+    Returns True only when a valid (non-stale) marker names this PID +
+    start_time, indicating the current SIGTERM is a planned service restart
+    rather than an unexpected kill. Always unlinks the marker on match (and on
+    detected staleness) so a subsequent unrelated signal is not misclassified.
+    """
+    return _consume_pid_marker_for_self(
+        _get_planned_service_restart_marker_path(),
+        pid_field="target_pid",
+        start_time_field="target_start_time",
+        ttl_s=_PLANNED_SERVICE_RESTART_MARKER_TTL_S,
+    )
+
+
+def clear_planned_service_restart_marker() -> None:
+    """Remove the planned service-restart marker unconditionally.
+
+    Safe to call repeatedly; useful for clearing a leftover marker so it cannot
+    affect a later unrelated signal.
+    """
+    try:
+        _get_planned_service_restart_marker_path().unlink(missing_ok=True)
     except OSError:
         pass
 

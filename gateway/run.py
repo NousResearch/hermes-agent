@@ -20022,8 +20022,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
+                err_msg = str(exc)
+                err_lower = err_msg.lower()
+                if any(k in err_lower for k in ("auth", "credential", "api key", "token", "permission", "401", "403")):
+                    user_msg = f"⚠️ Provider authentication failed: {err_msg}"
+                elif any(k in err_lower for k in ("timeout", "timed out", "connection", "network", "dns", "unreachable")):
+                    user_msg = f"⚠️ Connection error: {err_msg}"
+                elif any(k in err_lower for k in ("model", "not found", "does not exist", "404")):
+                    user_msg = f"⚠️ Model not found: {err_msg}"
+                else:
+                    user_msg = f"⚠️ Failed to start agent: {err_msg}"
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": user_msg,
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],

@@ -399,6 +399,45 @@ class TestRestore:
         assert restore_result["success"] is True
         assert file_path.read_text() == "original\n"
 
+    def test_diff_rejects_checkpoint_from_other_project(self, mgr, tmp_path):
+        project_a = tmp_path / "project-a"
+        project_a.mkdir()
+        (project_a / "secret_logic.py").write_text("project A private logic\n")
+        project_b = tmp_path / "project-b"
+        project_b.mkdir()
+        (project_b / "app.py").write_text("project B app\n")
+
+        assert mgr.ensure_checkpoint(str(project_a), "project A") is True
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(project_b), "project B") is True
+        project_a_hash = mgr.list_checkpoints(str(project_a))[0]["hash"]
+
+        result = mgr.diff(str(project_b), project_a_hash)
+
+        assert result["success"] is False
+        assert "does not belong to this directory" in result["error"]
+
+    def test_restore_rejects_checkpoint_from_other_project(self, mgr, tmp_path):
+        project_a = tmp_path / "project-a"
+        project_a.mkdir()
+        (project_a / "secret_logic.py").write_text("project A private logic\n")
+        project_b = tmp_path / "project-b"
+        project_b.mkdir()
+        app_file = project_b / "app.py"
+        app_file.write_text("project B app\n")
+
+        assert mgr.ensure_checkpoint(str(project_a), "project A") is True
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(project_b), "project B") is True
+        project_a_hash = mgr.list_checkpoints(str(project_a))[0]["hash"]
+
+        result = mgr.restore(str(project_b), project_a_hash)
+
+        assert result["success"] is False
+        assert "does not belong to this directory" in result["error"]
+        assert app_file.read_text() == "project B app\n"
+        assert not (project_b / "secret_logic.py").exists()
+
 
 # =========================================================================
 # CheckpointManager — working dir resolution

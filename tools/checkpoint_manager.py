@@ -228,6 +228,29 @@ def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
 
 
+def _validate_project_checkpoint(
+    store: Path, working_dir: str, commit_hash: str,
+) -> Optional[str]:
+    """Return an error if ``commit_hash`` is not in this project's ref history."""
+    ref = _ref_name(_project_hash(working_dir))
+    ok_ref, _, _ = _run_git(
+        ["rev-parse", "--verify", ref + "^{commit}"],
+        store, working_dir,
+        allowed_returncodes={128},
+    )
+    if not ok_ref:
+        return "No checkpoints exist for this directory"
+
+    ok_member, _, _ = _run_git(
+        ["merge-base", "--is-ancestor", commit_hash, ref],
+        store, working_dir,
+        allowed_returncodes={1, 128},
+    )
+    if not ok_member:
+        return f"Checkpoint '{commit_hash}' does not belong to this directory"
+    return None
+
+
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
     return store / _PROJECTS_DIRNAME / f"{dir_hash}.json"
 
@@ -759,6 +782,10 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
 
+        project_err = _validate_project_checkpoint(store, abs_dir, commit_hash)
+        if project_err:
+            return {"success": False, "error": project_err}
+
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
@@ -815,6 +842,10 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
+
+        project_err = _validate_project_checkpoint(store, abs_dir, commit_hash)
+        if project_err:
+            return {"success": False, "error": project_err}
 
         # Take a pre-rollback snapshot so you can undo the undo.
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")

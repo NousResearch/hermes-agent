@@ -1071,12 +1071,45 @@ def _handle_create(args: dict, **kw) -> str:
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
-    assignee = args.get("assignee")
-    if not assignee:
-        return tool_error(
-            "assignee is required — name the profile that should execute this "
-            "task (the dispatcher will only spawn tasks with an assignee)"
-        )
+    # A missing/blank assignee no longer errors — workers filing follow-ups
+    # were reliably guessing plausible-but-nonexistent profile names just to
+    # satisfy the old "required" contract, orphaning those tasks in 'ready'.
+    # The fallback reuses the operator's routing semantics (the same chain
+    # the decomposer uses for unroutable children): kanban.default_assignee
+    # when it names an installed profile, else the active profile, else
+    # 'default'.
+    #
+    # Explicit assignees are preserved VERBATIM, including names that are
+    # not installed profiles: dispatch deliberately treats non-profile
+    # assignees as terminal/control-plane lanes that are never auto-spawned
+    # and are claimed directly (claim_task) by external sessions. Rewriting
+    # them here would reroute that work to the default Hermes profile. A
+    # non-profile name still logs a warning in case it was a typo'd profile
+    # rather than a deliberate lane.
+    assignee = _normalize_profile(args.get("assignee"))
+    if assignee is None:
+        try:
+            from hermes_cli.kanban_decompose import _resolve_default_assignee
+
+            assignee = _resolve_default_assignee(load_config() or {})
+        except Exception:
+            # Config/profiles machinery unavailable (test stubs, exotic
+            # envs) — 'default' is always a spawnable lane.
+            assignee = "default"
+    else:
+        try:
+            from hermes_cli.profiles import profile_exists as _profile_exists
+
+            if not _profile_exists(assignee):
+                logger.warning(
+                    "kanban_create: assignee %r is not an installed profile; "
+                    "keeping it as-is (the dispatcher treats non-profile "
+                    "assignees as externally claimed lanes and never "
+                    "auto-spawns them)",
+                    assignee,
+                )
+        except Exception:
+            pass
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -1737,10 +1770,18 @@ KANBAN_CREATE_SCHEMA = {
             "assignee": {
                 "type": "string",
                 "description": (
-                    "Profile name that should execute this task "
-                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                    "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "Optional — the profile that should execute this task. "
+                    "Leave it unset for follow-up work: the task is routed "
+                    "to the operator's default lane (kanban.default_assignee "
+                    "if configured, else the active profile), which is "
+                    "almost always what you want. An explicit name is kept "
+                    "verbatim: an installed profile is auto-dispatched, "
+                    "while any other name is treated as an external/"
+                    "control-plane lane that is never auto-spawned and must "
+                    "be claimed directly. So only set names you know exist — "
+                    "NEVER invent one ('researcher', 'reviewer', "
+                    "'prometheus-worker-7'): a guessed profile name strands "
+                    "the task in 'ready' forever."
                 ),
             },
             "body": {
@@ -1873,7 +1914,7 @@ KANBAN_CREATE_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": ["title", "assignee"],
+        "required": ["title"],
     },
 }
 

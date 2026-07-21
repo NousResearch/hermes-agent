@@ -101,6 +101,7 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+MAX_TASK_PRIORITY = (1 << 63) - 1
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -2804,6 +2805,36 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
+        return True
+
+
+def set_task_priority(
+    conn: sqlite3.Connection,
+    task_id: str,
+    priority: int,
+) -> bool:
+    """Set a task's non-negative integer dispatch priority.
+
+    Returns ``False`` when ``task_id`` does not exist.  Priority is a
+    dispatcher tiebreaker (higher values run first), so accepting floats,
+    booleans, or negative values would make ordering surprising across the
+    CLI, agent tool, and dashboard surfaces.
+    """
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise ValueError("priority must be an integer")
+    if priority < 0:
+        raise ValueError("priority must be >= 0")
+    if priority > MAX_TASK_PRIORITY:
+        raise ValueError(f"priority must be <= {MAX_TASK_PRIORITY}")
+
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET priority = ? WHERE id = ?",
+            (priority, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "reprioritized", {"priority": priority})
         return True
 
 

@@ -896,17 +896,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         # --- priority -----------------------------------------------------
         if payload.priority is not None:
-            with kanban_db.write_txn(conn):
-                conn.execute(
-                    "UPDATE tasks SET priority = ? WHERE id = ?",
-                    (int(payload.priority), task_id),
-                )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    (task_id, json.dumps({"priority": int(payload.priority)}),
-                     int(time.time())),
-                )
+            try:
+                ok = kanban_db.set_task_priority(conn, task_id, payload.priority)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not ok:
+                raise HTTPException(status_code=404, detail="task not found")
 
         # --- title / body -------------------------------------------------
         if payload.title is not None or payload.body is not None:
@@ -1235,17 +1230,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))
                 if payload.priority is not None:
-                    with kanban_db.write_txn(conn):
-                        conn.execute(
-                            "UPDATE tasks SET priority = ? WHERE id = ?",
-                            (int(payload.priority), tid),
-                        )
-                        conn.execute(
-                            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                            "VALUES (?, 'reprioritized', ?, ?)",
-                            (tid, json.dumps({"priority": int(payload.priority)}),
-                             int(time.time())),
-                        )
+                    if not kanban_db.set_task_priority(conn, tid, payload.priority):
+                        entry.update(ok=False, error="not found")
             except Exception as e:  # defensive — one bad id shouldn't kill the batch
                 entry.update(ok=False, error=str(e))
             results.append(entry)

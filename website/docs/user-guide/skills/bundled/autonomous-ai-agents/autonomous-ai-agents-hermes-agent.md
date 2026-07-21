@@ -709,14 +709,14 @@ orchestrator profiles can opt into the broader `kanban` toolset. Normal
 sessions still have zero `kanban_*` schema footprint unless configured.
 
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
-  `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
+  `show`, `assign`, `set-priority`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
   `log`, `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
   `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
   `kanban_link`; profiles that explicitly enable the `kanban` toolset
   outside a dispatcher-spawned task also get `kanban_list` and
-  `kanban_unblock` for board routing.
+  `kanban_unblock` and `kanban_set_priority` for board routing.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.

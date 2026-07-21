@@ -501,6 +501,35 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+def _handle_set_priority(args: dict, **kw) -> str:
+    """Update a task's dispatcher priority without changing its lifecycle."""
+    guard = _require_orchestrator_tool("kanban_set_priority")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid or not str(tid).strip():
+        return tool_error("task_id is required")
+    priority = args.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        return tool_error("priority must be an integer")
+    if priority < 0:
+        return tool_error("priority must be >= 0")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if not kb.set_task_priority(conn, str(tid).strip(), priority):
+                return tool_error(f"task {str(tid).strip()} not found")
+            return _ok(task_id=str(tid).strip(), priority=priority)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_set_priority: {e}")
+    except Exception as e:
+        logger.exception("kanban_set_priority failed")
+        return tool_error(f"kanban_set_priority: {e}")
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -1085,6 +1114,15 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
+    inherit_parent_priority, priority_bool_error = _parse_bool_arg(
+        args, "inherit_parent_priority"
+    )
+    if priority_bool_error:
+        return tool_error(priority_bool_error)
+    if inherit_parent_priority and priority is not None:
+        return tool_error(
+            "priority and inherit_parent_priority are mutually exclusive"
+        )
     # Resolve workspace. If the caller passed one explicitly, honor it.
     # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
     # inherits its own running task's workspace, so a worker editing a
@@ -1126,6 +1164,15 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            if inherit_parent_priority:
+                if len(parents) != 1:
+                    return tool_error(
+                        "inherit_parent_priority requires exactly one parent task"
+                    )
+                parent_task = kb.get_task(conn, str(parents[0]))
+                if parent_task is None:
+                    return tool_error(f"parent task {parents[0]} not found")
+                priority = parent_task.priority
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
             if _inherit_workspace:
@@ -1423,6 +1470,32 @@ KANBAN_LIST_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": [],
+    },
+}
+
+KANBAN_SET_PRIORITY_SCHEMA = {
+    "name": "kanban_set_priority",
+    "description": (
+        "Set an existing task's dispatcher priority. Higher non-negative "
+        "integer values are picked sooner when ready tasks share an assignee. "
+        "This changes scheduling order only; it does not change task status."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id whose priority should change.",
+            },
+            "priority": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807,
+                "description": "New non-negative dispatcher priority.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "priority"],
     },
 }
 
@@ -1776,6 +1849,16 @@ KANBAN_CREATE_SCHEMA = {
                     "when multiple ready tasks share an assignee."
                 ),
             },
+            "inherit_parent_priority": {
+                "type": "boolean",
+                "description": (
+                    "Copy priority from the single task in ``parents``. "
+                    "Use this for chained security re-review cards so an "
+                    "urgent builder chain stays urgent. Requires exactly one "
+                    "parent and cannot be combined with ``priority``. Defaults "
+                    "to false, preserving the normal priority-0 create default."
+                ),
+            },
             "workspace_kind": {
                 "type": "string",
                 "enum": ["scratch", "dir", "worktree"],
@@ -1937,6 +2020,15 @@ registry.register(
     handler=_handle_list,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="kanban_set_priority",
+    toolset="kanban",
+    schema=KANBAN_SET_PRIORITY_SCHEMA,
+    handler=_handle_set_priority,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="⬆",
 )
 
 registry.register(

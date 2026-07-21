@@ -574,7 +574,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 |------|---------|
 | `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
 
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list`, `kanban_unblock`, and `kanban_set_priority`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
 
 | Action | Purpose |
 |--------|---------|
@@ -589,6 +589,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `list` / `ls` | List tasks on the active board. Filter with `--mine`, `--assignee`, `--status`, `--tenant`, `--archived`, `--json`. |
 | `show <id>` | Show a task with comments and events. `--json` for machine output. |
 | `assign <id> <profile>` | Assign or reassign. Use `none` to unassign. Refused while task is running. |
+| `set-priority <id> <priority>` | Set a task's non-negative integer dispatch priority. Higher values are dispatched first among ready tasks for the same assignee. |
 | `link <parent> <child>` | Add a dependency. Cycle-detected. Both tasks must be on the same board. |
 | `unlink <parent> <child>` | Remove a dependency. |
 | `claim <id>` | Atomically claim a ready task. Prints resolved workspace path. |

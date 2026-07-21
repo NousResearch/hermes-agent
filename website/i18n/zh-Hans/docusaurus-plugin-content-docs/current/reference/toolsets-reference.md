@@ -67,7 +67,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `computer_use` | `computer_use` | 通过 cua-driver 进行后台 macOS 桌面控制——不抢占光标/焦点。适用于任何支持工具调用的模型。仅限 macOS；需要 `cua-driver` 在 `$PATH` 中。 |
 | `image_gen` | `image_generate` | 通过 FAL.ai 进行文本生成图像（支持可选的 OpenAI / xAI 后端）。 |
 | `video_gen` | `video_generate` | 通过插件注册的后端（xAI Grok-Imagine、FAL.ai Veo 3.1 / Pixverse v6 / Kling O3）进行文本生成视频和图像生成视频。传入 `image_url` 可对图像进行动画化；省略则为文本生成视频。 |
-| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | 多 agent 协调工具。为调度器生成的任务工作者（`HERMES_KANBAN_TASK`）以及显式启用 `kanban` 工具集的 profile 注册。工作者可标记任务完成、阻塞、心跳、评论以及创建/关联后续任务；编排器 profile 还额外获得看板路由工具，如 list/unblock。 |
+| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_set_priority`, `kanban_show`, `kanban_unblock` | 多 agent 协调工具。为调度器生成的任务工作者（`HERMES_KANBAN_TASK`）以及显式启用 `kanban` 工具集的 profile 注册。工作者可标记任务完成、阻塞、心跳、评论以及创建/关联后续任务；编排器 profile 还额外获得 list/unblock/set-priority 等看板路由工具。 |
 | `memory` | `memory` | 持久化跨会话记忆管理。 |
 | `messaging` | `send_message` | 在会话中向其他平台（Telegram、Discord 等）发送消息。 |
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search`（通过 `includes`） | 只读研究 + 媒体生成。无文件写入、无终端、无代码执行。 |

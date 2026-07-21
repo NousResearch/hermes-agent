@@ -1562,6 +1562,36 @@ def test_list_tasks_order_by(kanban_home):
         except ValueError as e:
             assert "order_by must be one of" in str(e)
 
+
+def test_set_task_priority_updates_readback_and_event(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="urgent later", priority=0)
+
+        assert kb.set_task_priority(conn, task_id, 10) is True
+        assert kb.get_task(conn, task_id).priority == 10
+
+        event = kb.list_events(conn, task_id)[-1]
+        assert event.kind == "reprioritized"
+        assert event.payload == {"priority": 10}
+
+
+@pytest.mark.parametrize(
+    "priority", [-1, True, 1.5, "10", kb.MAX_TASK_PRIORITY + 1]
+)
+def test_set_task_priority_rejects_invalid_values(kanban_home, priority):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="unchanged", priority=0)
+
+        with pytest.raises(ValueError, match="priority must"):
+            kb.set_task_priority(conn, task_id, priority)
+        assert kb.get_task(conn, task_id).priority == 0
+
+
+def test_set_task_priority_returns_false_for_unknown_task(kanban_home):
+    with kb.connect() as conn:
+        assert kb.set_task_priority(conn, "t_missing", 10) is False
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

@@ -251,6 +251,28 @@ def test_run_slash_assign_reassigns(kanban_home):
     assert "bob" in show
 
 
+def test_run_slash_set_priority_updates_readback(kanban_home):
+    out = kc.run_slash("create 'urgent card' --priority 0")
+    import re
+    task_id = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    updated = kc.run_slash(f"set-priority {task_id} 10")
+    assert f"Set priority for {task_id} to 10" in updated
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).priority == 10
+
+
+def test_run_slash_set_priority_rejects_negative_without_mutating(kanban_home):
+    out = kc.run_slash("create 'normal card' --priority 0")
+    import re
+    task_id = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    rejected = kc.run_slash(f"set-priority {task_id} -1")
+    assert "priority must be >= 0" in rejected
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).priority == 0
+
+
 def test_run_slash_link_unlink(kanban_home):
     a = kc.run_slash("create 'a'")
     b = kc.run_slash("create 'b'")

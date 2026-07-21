@@ -84,6 +84,36 @@ const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 // agent-turn ceiling (agent.gateway_timeout = 1800s) so the ack timeout only
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
+export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS = 600_000
+const AUDIO_SPEAK_TIMEOUT_MS_PER_CHAR = 35
+
+export function audioSpeakRequestTimeoutMs(text: string): number {
+  const estimated = Math.max(
+    AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(text || '').length * AUDIO_SPEAK_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
+
+export const AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS = 600_000
+// The transcribe payload is the base64 audio data URL itself, so its string
+// length tracks clip size. ~0.1ms/char keeps short clips at the floor while
+// letting multi-minute recordings scale toward the cap (a base64 char is
+// ~0.75 bytes, so at 128kbps ≈ 21k chars/s of audio this budgets ~2s of
+// timeout per 1s of audio before the cap clamps it).
+const AUDIO_TRANSCRIBE_TIMEOUT_MS_PER_CHAR = 0.1
+
+export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
+  const estimated = Math.max(
+    AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(dataUrl || '').length * AUDIO_TRANSCRIBE_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
 
 export type {
   ActionResponse,
@@ -394,7 +424,72 @@ export interface SidebarSessionsRequest {
   messagingExclude: string[]
 }
 
+// The batched /sidebar endpoint shipped later than the per-slice route, so a
+// newer desktop can meet an older backend that 404s it ("No such API
+// endpoint"). Endpoint-missing is a capability signal, not a transient
+// failure: remember it (per renderer lifetime — a runtime home change reloads
+// the window and re-probes) and serve every subsequent refresh straight from
+// the three proven per-slice calls instead of re-probing a known-dead route
+// once per turn/broadcast.
+let sidebarBatchEndpointMissing = false
+
+// Capability flags are per-backend facts. A hard re-home reloads the window
+// (module state resets naturally), but a soft gateway switch re-dials in
+// place — the next backend may well have the batched route, so the switch
+// paths call this to re-probe rather than leak the old backend's capability.
+export function resetSidebarBatchCapability() {
+  sidebarBatchEndpointMissing = false
+}
+
+// True only for "the route does not exist on this backend" shapes: the
+// backend catch-all ('404: {"detail":"No such API endpoint: ...}'), FastAPI's
+// bare 404 on headless serve (surfaces as '404: ...' directly or as
+// "Error invoking remote method 'hermes:api': Error: 404: ..." through the
+// IPC bridge), and the Electron JSON-guard ("endpoint is likely missing").
+// This GET has no path params, so a 404 status can only mean route-missing —
+// but transient failures (timeouts, 5xx, connection refused) must NOT match,
+// or one blip would silently degrade the fast path for the whole session.
+function isEndpointMissingError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+
+  return (
+    /no such api endpoint/i.test(message) ||
+    /endpoint is likely missing/i.test(message) ||
+    /(?:^\s*|error:\s*)404\b/i.test(message)
+  )
+}
+
+// Compatibility fallback: reassemble the three sidebar slices from the
+// per-slice endpoint, mirroring the batched route's semantics (min_messages=1,
+// archived excluded, recency order; recents scoped to the caller's profile,
+// cron + messaging cross-profile). Rides the same Electron remote-splice
+// interception as the pre-batching desktop, so remote profiles stay correct.
+async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
+  const [recents, cron, messaging] = await Promise.all([
+    listAllProfileSessions(req.recentsLimit, 1, 'exclude', 'recent', req.recentsProfile, {
+      excludeSources: req.recentsExclude
+    }),
+    listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', 'all', { source: 'cron' }),
+    listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', 'all', {
+      excludeSources: req.messagingExclude
+    })
+  ])
+
+  const errors = [...(recents.errors ?? []), ...(cron.errors ?? []), ...(messaging.errors ?? [])]
+
+  return {
+    recents: { profile_totals: recents.profile_totals, sessions: recents.sessions, total: recents.total },
+    cron: { sessions: cron.sessions },
+    messaging: { sessions: messaging.sessions },
+    ...(errors.length ? { errors } : {})
+  }
+}
+
 export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
+  if (sidebarBatchEndpointMissing) {
+    return listSidebarSessionsLegacy(req)
+  }
+
   const params = new URLSearchParams({
     recents_profile: req.recentsProfile,
     recents_limit: String(Math.max(1, req.recentsLimit)),
@@ -410,10 +505,23 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
     params.set('messaging_exclude', req.messagingExclude.join(','))
   }
 
-  const result = await window.hermesDesktop.api<SidebarSessionsResponse>({
-    path: `/api/profiles/sessions/sidebar?${params.toString()}`,
-    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
-  })
+  let result: SidebarSessionsResponse
+
+  try {
+    result = await window.hermesDesktop.api<SidebarSessionsResponse>({
+      path: `/api/profiles/sessions/sidebar?${params.toString()}`,
+      timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+    })
+  } catch (err) {
+    if (!isEndpointMissingError(err)) {
+      throw err
+    }
+
+    // Older backend without the batched route (desktop/runtime version skew).
+    sidebarBatchEndpointMissing = true
+
+    return listSidebarSessionsLegacy(req)
+  }
 
   return {
     recents: { ...result.recents, sessions: result.recents?.sessions ?? [] },
@@ -1268,7 +1376,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    // Transcription blocks until provider STT, file handling, and response
+    // encoding finish. Remote providers and long clips regularly exceed the
+    // default 15s Electron backend timeout.
+    timeoutMs: audioTranscribeRequestTimeoutMs(dataUrl)
   })
 }
 
@@ -1276,7 +1388,11 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    // TTS blocks until provider synthesis, file read, and base64 encoding
+    // finish. Remote providers and large messages regularly exceed the
+    // default 15s Electron backend timeout.
+    timeoutMs: audioSpeakRequestTimeoutMs(text)
   })
 }
 

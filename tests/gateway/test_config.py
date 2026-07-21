@@ -662,6 +662,213 @@ class TestLoadGatewayConfig:
         assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
         assert extra["websocket_max_latency_seconds"] == 30
 
+    def test_session_reset_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.session_reset`` (nested form) must reach default_reset_policy,
+        mirroring the gateway.multiplex_profiles precedent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  session_reset:\n    mode: idle\n    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "idle"
+        assert config.default_reset_policy.idle_minutes == 30
+
+    def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  quick_commands:\n    limits:\n      type: exec\n      command: echo ok\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_stt_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """Asserts False (not the True default) so the test fails if the
+        nested gateway.stt value never reaches from_dict() and silently
+        falls back to the class default instead."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  stt:\n    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.stt_enabled is False
+
+    def test_stt_echo_transcripts_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  stt_echo_transcripts: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.stt_echo_transcripts is False
+
+    def test_group_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  group_sessions_per_user: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.group_sessions_per_user is False
+
+    def test_thread_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  thread_sessions_per_user: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.thread_sessions_per_user is True
+
+    def test_reset_triggers_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  reset_triggers:\n    - /new\n    - /clear\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.reset_triggers == ["/new", "/clear"]
+
+    def test_always_log_local_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  always_log_local: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is False
+
+    def test_filter_silence_narration_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  filter_silence_narration: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.filter_silence_narration is False
+
+    def test_unauthorized_dm_behavior_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  unauthorized_dm_behavior: ignore\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.unauthorized_dm_behavior == "ignore"
+
+    def test_top_level_still_wins_over_nested_gateway_section(self, tmp_path, monkeypatch):
+        """Top-level keys keep precedence over the nested gateway.* fallback
+        for every key this fix touches (matches the existing
+        gateway.streaming/write_sessions_json precedence contract)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "always_log_local: true\n"
+            "gateway:\n"
+            "  always_log_local: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is True
+
+    def test_present_empty_top_level_session_reset_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence: a present (even empty) top-level
+        session_reset must NOT be replaced by gateway.session_reset —
+        the fallback fires only when the top-level key is absent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset: {}\n"
+            "gateway:\n"
+            "  session_reset:\n"
+            "    mode: idle\n"
+            "    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested value must not leak through the present top-level key.
+        assert config.default_reset_policy.mode != "idle"
+
+    def test_present_top_level_stt_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for stt: a present top-level stt (even
+        mistyped/non-dict) must not be replaced by gateway.stt."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "stt: {}\n"
+            "gateway:\n"
+            "  stt:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # gateway.stt.enabled=false must NOT win over the present top-level stt.
+        assert config.stt_enabled is True
+
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
         start_gateway()'s connect loop actually dials the connector. Registering
@@ -926,6 +1133,164 @@ class TestLoadGatewayConfig:
             "123456789012345678",
         ]
         assert os.environ.get("DISCORD_ALLOWED_USERS") == "123456789012345678"
+
+    def test_bridges_nested_gateway_platforms_dingtalk_allowed_users_to_env(self, tmp_path, monkeypatch):
+        """gateway.platforms.dingtalk.extra.allowed_users must reach
+        DINGTALK_ALLOWED_USERS — it's the documented config.yaml alternative
+        to the env var (website/docs/user-guide/messaging/dingtalk.md), the
+        adapter reads it from PlatformConfig.extra, but gateway auth
+        (_is_user_authorized) only consults the env var.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      enabled: true\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - user-id-1\n"
+            "          - user-id-2\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DINGTALK].extra["allowed_users"] == [
+            "user-id-1",
+            "user-id-2",
+        ]
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "user-id-1,user-id-2"
+
+    def test_bridges_platforms_dingtalk_extra_allowed_users_to_env(self, tmp_path, monkeypatch):
+        """platforms.dingtalk.extra.allowed_users should reach DINGTALK_ALLOWED_USERS too."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  dingtalk:\n"
+            "    extra:\n"
+            "      allowed_users:\n"
+            "        - manager1234\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DINGTALK].extra["allowed_users"] == [
+            "manager1234",
+        ]
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "manager1234"
+
+    def test_dingtalk_allowed_users_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - config-user\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_ALLOWED_USERS", "env-user")
+
+        load_gateway_config()
+
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "env-user"
+
+    def test_top_level_dingtalk_allowed_users_wins_over_nested_extra(self, tmp_path, monkeypatch):
+        """The legacy top-level dingtalk: block keeps precedence over the
+        nested platform extra when both define an allowlist."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "dingtalk:\n"
+            "  allowed_users:\n"
+            "    - top-level-user\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - nested-user\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "top-level-user"
+
+    def test_nested_dingtalk_allowlist_authorizes_listed_user_only(self, tmp_path, monkeypatch):
+        """E2E for the documented setup: a nested-only allowlist must
+        authorize the listed user at the gateway and still deny others.
+
+        Before the bridge existed, the listed user passed the adapter's
+        _is_user_allowed() but _is_user_authorized() fell through to
+        default-deny because DINGTALK_ALLOWED_USERS was never populated.
+        """
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      enabled: true\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - user-id-1\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for var in (
+            "DINGTALK_ALLOWED_USERS",
+            "DINGTALK_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        config = load_gateway_config()
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        runner.config = config
+
+        def _dm_source(user_id):
+            return SessionSource(
+                platform=Platform.DINGTALK,
+                chat_id="dm-1",
+                chat_type="dm",
+                user_id=user_id,
+                user_name="someone",
+            )
+
+        assert runner._is_user_authorized(_dm_source("user-id-1")) is True
+        assert runner._is_user_authorized(_dm_source("intruder")) is False
 
     def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

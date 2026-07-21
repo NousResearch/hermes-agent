@@ -143,9 +143,16 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Wait for GitHub Release to exist
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         # release.py creates the GitHub Release after pushing the tag,
         # but this workflow starts from the tag push — wait for it.
         run: |
@@ -171,7 +178,7 @@ jobs:
       - name: Attach signed artifacts to GitHub Release
         if: env.skip_sign != 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         # release.py already created the GitHub Release — just upload
         # the Sigstore signatures alongside the existing assets.
         run: >-

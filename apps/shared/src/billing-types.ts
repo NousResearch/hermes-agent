@@ -1,12 +1,12 @@
 /**
- * Shared terminal-billing wire contracts.
+ * Shared Remote Spending wire contracts.
  *
  * These shapes round-trip between the Python tui_gateway and TypeScript clients
  * such as the TUI and desktop app. Keep rendering state, client logic, and the
  * gateway event union out of this runtime-free module.
  */
 
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
 /** One serialized usage bar (mirrors server `_serialize_usage_bar`). */
 export interface UsageBarData {

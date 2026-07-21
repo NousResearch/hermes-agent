@@ -18284,6 +18284,15 @@ def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0)
     return None
 
 
+def _parse_theme_hex_color(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    color = value.strip()
+    if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", color):
+        return color
+    return None
+
+
 _THEME_DEFAULT_TYPOGRAPHY: Dict[str, str] = {
     "fontSans": 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     "fontMono": 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
@@ -18463,6 +18472,13 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         "layout": layout,
         "layoutVariant": layout_variant,
     }
+    terminal_background = _parse_theme_hex_color(
+        data.get("terminalBackground")
+        or palette_src.get("terminalBackground")
+        or colors_src.get("terminalBackground")
+    )
+    if terminal_background:
+        result["terminalBackground"] = terminal_background
     if color_overrides:
         result["colorOverrides"] = color_overrides
     if assets_out:

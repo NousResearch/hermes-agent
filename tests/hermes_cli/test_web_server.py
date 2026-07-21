@@ -7501,6 +7501,24 @@ class TestNormaliseThemeDefinition:
         })
         assert r["palette"]["background"]["alpha"] == 1.0
 
+    @pytest.mark.parametrize(
+        "theme_data",
+        [
+            {"terminalBackground": "#ffffff"},
+            {"palette": {"terminalBackground": "#f8fafc"}},
+            {"colors": {"terminalBackground": "#fff"}},
+        ],
+    )
+    def test_terminal_background_passthrough(self, theme_data):
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({"name": "light-chat", **theme_data})
+        expected = (
+            theme_data.get("terminalBackground")
+            or theme_data.get("palette", {}).get("terminalBackground")
+            or theme_data.get("colors", {}).get("terminalBackground")
+        )
+        assert result["terminalBackground"] == expected
+
 
 class TestDiscoverUserThemes:
     """Tests for _discover_user_themes() — scans ~/.hermes/dashboard-themes/."""

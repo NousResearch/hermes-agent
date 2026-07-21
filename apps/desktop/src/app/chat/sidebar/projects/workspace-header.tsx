@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { copyPath, revealPath } from '@/store/projects'
@@ -118,21 +119,31 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
-export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onStarted: (path: string) => void }) {
+export function StartWorkButton({
+  label,
+  repoPath,
+  onStarted
+}: {
+  label?: string
+  repoPath: string
+  onStarted: (path: string) => void
+}) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const [open, setOpen] = useState(false)
 
   return (
     <>
-      <button
-        aria-label={p.startWork}
-        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
-        onClick={() => setOpen(true)}
-        type="button"
-      >
-        <Codicon name="git-branch" size="0.75rem" />
-      </button>
+      <Tip label={label ?? p.startWork}>
+        <button
+          aria-label={label ?? p.startWork}
+          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 group-hover/workspace:opacity-100 focus-visible:opacity-100"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
+          <Codicon name="git-branch" size="0.75rem" />
+        </button>
+      </Tip>
       <WorktreeDialog onOpenChange={setOpen} onStarted={onStarted} open={open} repoPath={repoPath} />
     </>
   )

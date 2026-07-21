@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -26,6 +26,8 @@ interface BranchActionCopy {
   branchSwitchHome: string
 }
 
+export type WorktreeDialogMode = 'create' | 'convert'
+
 const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
   if (branch.checkedOut) {
     return copy.branchOpenExisting
@@ -43,6 +45,8 @@ export interface WorktreeDialogProps {
   open: boolean
   /** Called when the user requests the dialog to close (cancel, Esc, backdrop). */
   onOpenChange: (open: boolean) => void
+  /** Open the dialog in create or convert mode. */
+  initialMode?: WorktreeDialogMode
   /** Pre-select a base branch when opening (from "branch off from X" menus). */
   initialBase?: string
 }
@@ -57,43 +61,87 @@ export interface WorktreeDialogProps {
  * The caller owns the open state so both the sidebar button and the global
  * hotkey can trigger the same dialog instance.
  */
-export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initialBase }: WorktreeDialogProps) {
+export function WorktreeDialog({
+  initialBase,
+  initialMode = 'create',
+  onOpenChange,
+  onStarted,
+  open,
+  repoPath
+}: WorktreeDialogProps) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <OpenWorktreeDialog
+      initialBase={initialBase}
+      initialMode={initialMode}
+      key={`${repoPath}\0${initialMode}\0${initialBase ?? ''}`}
+      onOpenChange={onOpenChange}
+      onStarted={onStarted}
+      repoPath={repoPath}
+    />
+  )
+}
+
+function OpenWorktreeDialog({
+  initialBase,
+  initialMode,
+  onOpenChange,
+  onStarted,
+  repoPath
+}: Omit<WorktreeDialogProps, 'open'> & { initialMode: WorktreeDialogMode }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
+  const [convertMode, setConvertMode] = useState<WorktreeDialogMode>(initialMode)
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
-  const [selectedBase, setSelectedBase] = useState('')
-
-  // Reset to a fresh state each time the dialog opens, applying any pre-selected
-  // base branch from the caller (e.g. "branch off from main" in the coding row's
-  // dropdown menu). When `initialBase` changes while open (shouldn't happen in
-  // practice), the effect re-syncs.
-  useEffect(() => {
-    if (open) {
-      setName('')
-      setConvertMode(false)
-      setSelectedBase(initialBase ?? '')
-    }
-  }, [open, initialBase])
+  const [selectedBase, setSelectedBase] = useState(initialMode === 'convert' ? '' : (initialBase ?? ''))
+  const branchLoadGenerationRef = useRef(0)
 
   const loadBranches = useCallback(async () => {
     if (!repoPath) {
       return
     }
 
+    const generation = ++branchLoadGenerationRef.current
     setBranchesLoading(true)
 
     try {
-      setBranches(await listRepoBranches(repoPath))
+      const nextBranches = await listRepoBranches(repoPath)
+
+      if (generation === branchLoadGenerationRef.current) {
+        setBranches(nextBranches)
+      }
     } catch {
-      setBranches([])
+      if (generation === branchLoadGenerationRef.current) {
+        setBranches([])
+      }
     } finally {
-      setBranchesLoading(false)
+      if (generation === branchLoadGenerationRef.current) {
+        setBranchesLoading(false)
+      }
     }
   }, [repoPath])
+
+  // The open session mounts with the requested mode, so its first committed
+  // content and autofocus target already match the caller's intent. Invalidate
+  // any outstanding branch request when this session closes or is replaced.
+  useEffect(() => {
+    if (initialMode === 'convert') {
+      void loadBranches()
+    }
+  }, [initialMode, loadBranches])
+
+  useEffect(
+    () => () => {
+      branchLoadGenerationRef.current += 1
+    },
+    []
+  )
 
   const submit = async () => {
     const branch = name.trim()
@@ -150,19 +198,19 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
   }
 
   const enterConvert = () => {
-    setConvertMode(true)
+    setConvertMode('convert')
     void loadBranches()
   }
 
   return (
-    <Dialog onOpenChange={next => !pending && onOpenChange(next)} open={open}>
+    <Dialog onOpenChange={next => !pending && onOpenChange(next)} open>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-          <DialogDescription>{convertMode ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
+          <DialogTitle>{convertMode === 'convert' ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
+          <DialogDescription>{convertMode === 'convert' ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
         </DialogHeader>
 
-        {convertMode ? (
+        {convertMode === 'convert' ? (
           <Command
             className="rounded-md border border-(--ui-stroke-tertiary)"
             filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
@@ -215,12 +263,12 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
           </>
         )}
 
-        {convertMode ? (
+        {convertMode === 'convert' ? (
           <DialogFooter className="sm:justify-start">
             <Button
               className="px-0 text-(--ui-text-secondary) hover:text-foreground"
               disabled={pending}
-              onClick={() => setConvertMode(false)}
+              onClick={() => setConvertMode('create')}
               type="button"
               variant="link"
             >

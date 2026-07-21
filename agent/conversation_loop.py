@@ -5191,6 +5191,25 @@ def run_conversation(
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
                 
+                # Re-emit the assistant's text content after tool output.
+                # The streamed text was already printed before tools ran,
+                # and tool output often scrolls it out of the viewport.
+                # Reprinting it here ensures short answers placed before
+                # tool calls remain visible.  Skip housekeeping-only turns
+                # — their text was already shown via _vprint at line 5007.
+                # Skip quiet/suppress modes — the re-emit is only useful
+                # for interactive CLI where the user is watching.
+                if (
+                    turn_content
+                    and agent._has_content_after_think_block(turn_content)
+                    and not _all_housekeeping
+                    and not agent.quiet_mode
+                    and not getattr(agent, "suppress_status_output", False)
+                ):
+                    _clean = agent._strip_think_blocks(turn_content).strip()
+                    if _clean:
+                        agent._safe_print(f"\n💬 {_clean}")
+                
                 # Continue loop for next response
                 continue
             

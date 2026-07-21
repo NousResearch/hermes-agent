@@ -41,7 +41,13 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _find_shell,
+    _prepend_shell_init,
+    _resolve_safe_cwd,
+    _resolve_shell_init_files,
+    _sanitize_subprocess_env,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -671,6 +677,24 @@ class ProcessRegistry:
             except (psutil.AccessDenied, OSError):
                 pass
 
+    @staticmethod
+    def _background_shell_command(command: str) -> str:
+        """Return the shell script used for local background processes.
+
+        Foreground local terminal calls create a login-shell snapshot after
+        sourcing the configured terminal shell-init files (defaulting to the
+        user's profile/bashrc files). Background jobs bypass LocalEnvironment's
+        snapshot and spawn directly through ProcessRegistry, so source the same
+        files here before running the requested command. This keeps PATH
+        additions for CLIs installed by the user's shell startup available in
+        both foreground and background terminal modes.
+        """
+        cmd = f"set +m; {command}"
+        init_files = _resolve_shell_init_files()
+        if init_files:
+            cmd = _prepend_shell_init(cmd, init_files)
+        return cmd
+
     # ----- Spawn -----
 
     @staticmethod
@@ -724,8 +748,9 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                pty_command = self._background_shell_command(command)
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, "-lic", pty_command],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -766,10 +791,11 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        bg_command = self._background_shell_command(command)
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lic", bg_command],
             text=True,
             cwd=session.cwd,
             env=bg_env,

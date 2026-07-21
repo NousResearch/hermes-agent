@@ -657,6 +657,32 @@ class TestPruning:
 # =========================================================================
 
 class TestSpawnEnvSanitization:
+    def test_spawn_local_sources_terminal_shell_init_files(self, registry, tmp_path):
+        """Background jobs must see the same shell-init PATH additions as foreground terminal calls.
+
+        Foreground LocalEnvironment captures ~/.profile/~/.bashrc into a session snapshot before
+        executing commands. Local background jobs bypass that snapshot and spawn directly through
+        ProcessRegistry, so they must explicitly source the same init files; otherwise tools added
+        by user shell startup (gh, npm, dotnet shims, etc.) are missing only in background mode.
+        """
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tool = bin_dir / "hermes-bg-path-tool"
+        tool.write_text("#!/usr/bin/env bash\nprintf 'BACKGROUND_PATH_OK\\n'\n", encoding="utf-8")
+        tool.chmod(0o755)
+
+        init_file = tmp_path / "shell-init.sh"
+        init_file.write_text(f'export PATH="{bin_dir}:$PATH"\n', encoding="utf-8")
+
+        with patch("tools.process_registry._resolve_shell_init_files", return_value=[str(init_file)]), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("hermes-bg-path-tool", cwd=str(tmp_path))
+            result = registry.wait(session.id, timeout=5)
+
+        assert result["status"] == "exited"
+        assert result["exit_code"] == 0
+        assert "BACKGROUND_PATH_OK" in result["output"]
+
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
 

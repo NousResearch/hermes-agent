@@ -147,15 +147,21 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
-          {group.items.map(item => (
-            <StatusItemRow
-              item={item}
-              key={item.id}
-              onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
-              onOpen={() => openSubagent(item)}
-              onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
-            />
-          ))}
+          {group.items.map(item => {
+            // Foreign (cross-session) processes are shown read-only: no stop or
+            // dismiss action, so one Desktop session cannot terminate or hide
+            // another's process.
+            const canManage = item.owned !== false
+            return (
+              <StatusItemRow
+                item={item}
+                key={item.id}
+                onDismiss={sessionId && canManage ? id => dismissBackgroundProcess(sessionId, id) : undefined}
+                onOpen={() => openSubagent(item)}
+                onStop={sessionId && canManage ? id => void stopBackgroundProcess(sessionId, id) : undefined}
+              />
+            )
+          })}
         </StatusSection>
       )
     })

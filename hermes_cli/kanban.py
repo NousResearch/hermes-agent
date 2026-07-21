@@ -445,6 +445,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
 
+    # --- set-priority ---
+    p_set_priority = sub.add_parser(
+        "set-priority",
+        help="Set a task's non-negative dispatcher priority",
+    )
+    p_set_priority.add_argument("task_id")
+    p_set_priority.add_argument("priority", type=int)
+
     # --- reclaim / reassign (recovery) ---
     p_reclaim = sub.add_parser(
         "reclaim",
@@ -964,6 +972,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "ls":       _cmd_list,
             "show":     _cmd_show,
             "assign":   _cmd_assign,
+            "set-priority": _cmd_set_priority,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1647,6 +1656,16 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    return 0
+
+
+def _cmd_set_priority(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        ok = kb.set_task_priority(conn, args.task_id, args.priority)
+    if not ok:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    print(f"Set priority for {args.task_id} to {args.priority}")
     return 0
 
 
@@ -2903,6 +2922,7 @@ Common subcommands:
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
+  `set-priority <id> <n>`  Set non-negative dispatch priority
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
   `context <id>`        Full worker-context dump

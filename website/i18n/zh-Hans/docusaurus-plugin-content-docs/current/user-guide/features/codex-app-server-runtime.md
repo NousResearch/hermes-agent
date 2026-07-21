@@ -93,7 +93,7 @@ Codex 运行时 worker 内可用的功能：
 通过 MCP 回调同样可用的功能：
 - **`kanban_complete` / `kanban_block` / `kanban_comment` / `kanban_heartbeat`** — worker 交接工具。这些工具从环境变量中读取 `HERMES_KANBAN_TASK`（由分发器设置），正确进行访问控制，并写入由 `HERMES_KANBAN_DB` 固定的每个看板 SQLite 数据库。若回调中没有这些工具，此运行时上的 worker 可以完成任务但无法汇报，会一直挂起直到分发器超时。
 - **`kanban_show` / `kanban_list`** — 只读看板查询，供 worker 检查自身上下文。
-- **`kanban_create` / `kanban_unblock` / `kanban_link`** — 仅限编排器的操作。供运行在 Codex 运行时上、需要分发新任务的编排器 agent 使用。
+- **`kanban_create` / `kanban_unblock` / `kanban_link` / `kanban_set_priority`** — 仅限编排器的操作。供运行在 Codex 运行时上、需要分发和重新设置任务优先级的编排器 agent 使用。
 
 Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访问控制——该变量会传播到 Codex 子进程（Codex 继承环境变量），再从那里传播到生成的 `hermes-tools` MCP server 子进程。因此工具能看到正确的任务 id 并正确进行访问控制。对于 Codex app-server worker，当 `HERMES_KANBAN_TASK` 存在时，Hermes 还会传入精细的 app-server 沙箱覆盖配置：保持 `workspace-write` 沙箱，将**看板数据库目录以及分发器固定的所有 Kanban 路径**作为额外可写根目录添加（`HERMES_KANBAN_WORKSPACES_ROOT`、`HERMES_KANBAN_WORKSPACE`、旧版 `HERMES_KANBAN_ROOT`——去重，数据库目录优先），并默认禁用网络。这避免了脆弱的 `:danger-no-sandbox` 变通方案，同时允许 `kanban_complete` / `kanban_block` 更新看板数据库，**并且**允许 worker 在数据库目录之外的工作区挂载点下写入报告/产物（例如独立驱动器上的 `/media/.../kanban-workspaces/...`——[issue #27941](https://github.com/NousResearch/hermes-agent/issues/27941)）。
 

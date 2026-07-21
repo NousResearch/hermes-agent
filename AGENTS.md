@@ -1094,7 +1094,7 @@ kanban task.
 
 - **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
-  `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
+  `set-priority`, `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
   `block`, `unblock`, `archive`, `tail`, plus less-commonly-used `watch`,
   `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-*`,
   `dispatch`, `daemon`, `gc`.
@@ -1103,7 +1103,8 @@ kanban task.
   `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_attach`,
   `kanban_attach_url`, `kanban_attachments`; profiles that explicitly
   enable the `kanban` toolset outside a dispatcher-spawned task also get
-  `kanban_list` and `kanban_unblock` for board routing.
+  `kanban_list`, `kanban_unblock`, and `kanban_set_priority` for board
+  routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via

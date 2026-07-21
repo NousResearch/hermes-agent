@@ -117,7 +117,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `kanban` 工具集
 
-在以下情况下注册：(a) agent 由 kanban 调度器生成（设置了 `HERMES_KANBAN_TASK` 环境变量），或 (b) 在显式启用 `kanban` 工具集的 profile 中运行。任务范围的 worker 使用生命周期工具处理其分配的任务；编排器 profile 还额外获得 `kanban_list` 和 `kanban_unblock` 等看板路由工具。完整工作流见 [Kanban 多 Agent](/user-guide/features/kanban)。
+在以下情况下注册：(a) agent 由 kanban 调度器生成（设置了 `HERMES_KANBAN_TASK` 环境变量），或 (b) 在显式启用 `kanban` 工具集的 profile 中运行。任务范围的 worker 使用生命周期工具处理其分配的任务；编排器 profile 还额外获得 `kanban_list`、`kanban_unblock` 和 `kanban_set_priority` 等看板路由工具。完整工作流见 [Kanban 多 Agent](/user-guide/features/kanban)。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -130,6 +130,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `kanban_create` | 从当前任务派生子任务。由编排器和生成后续任务的 worker 使用。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |
 | `kanban_link` | 用父 → 子依赖边链接任务。 | `HERMES_KANBAN_TASK` 或 `kanban` 工具集 |
 | `kanban_unblock` | 将被阻塞的任务恢复为 `ready` 状态。仅限编排器；对调度器生成的任务 worker 隐藏。 | 含 `kanban` 工具集的 profile |
+| `kanban_set_priority` | 设置现有任务的非负整数调度优先级，而不改变状态。仅限编排器；对调度器生成的任务 worker 隐藏。 | 含 `kanban` 工具集的 profile |
 
 ## `memory` 工具集
 

@@ -112,9 +112,10 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_set_priority",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_set_priority'}}"
     )
 
 
@@ -138,7 +139,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
-        "kanban_unblock",
+        "kanban_unblock", "kanban_set_priority",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -290,6 +291,59 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
+
+
+def test_set_priority_updates_existing_card_and_reads_back(monkeypatch, worker_env):
+    """An orchestrator can raise a priority-0 card to 10 through the tool."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_set_priority({
+        "task_id": worker_env,
+        "priority": 10,
+    }))
+    assert out == {"ok": True, "task_id": worker_env, "priority": 10}
+    shown = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert shown["task"]["priority"] == 10
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, worker_env).priority == 10
+
+
+@pytest.mark.parametrize("priority", [-1, True, 1.5, "10"])
+def test_set_priority_rejects_invalid_values(
+    monkeypatch, worker_env, priority,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_set_priority({
+        "task_id": worker_env,
+        "priority": priority,
+    }))
+    assert "priority must" in out.get("error", "")
+
+
+def test_set_priority_is_orchestrator_only(worker_env):
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_set_priority({
+        "task_id": worker_env,
+        "priority": 10,
+    }))
+    assert "orchestrator-only" in out.get("error", "")
+
+
+def test_set_priority_rejects_unknown_task(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_set_priority({
+        "task_id": "t_missing",
+        "priority": 10,
+    }))
+    assert "not found" in out.get("error", "")
 
 
 def test_complete_happy_path(worker_env):
@@ -1008,6 +1062,87 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_security_rereview_inherits_builder_priority(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        assert kb.set_task_priority(conn, worker_env, 10)
+
+    out = json.loads(kt._handle_create({
+        "title": "Security re-review: auth changes",
+        "assignee": "security-reviewer",
+        "parents": [worker_env],
+        "inherit_parent_priority": True,
+    }))
+    assert out["ok"] is True
+
+    with kb.connect() as conn:
+        rereview = kb.get_task(conn, out["task_id"])
+        assert rereview.priority == 10
+
+
+def test_create_generic_child_keeps_priority_zero_default(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        assert kb.set_task_priority(conn, worker_env, 10)
+
+    out = json.loads(kt._handle_create({
+        "title": "ordinary follow-up",
+        "assignee": "peer",
+        "parents": [worker_env],
+    }))
+    assert out["ok"] is True
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, out["task_id"])
+        assert child.priority == 0
+
+
+@pytest.mark.parametrize(
+    "args,error",
+    [
+        (
+            {"parents": [], "inherit_parent_priority": True},
+            "requires exactly one parent",
+        ),
+        (
+            {"parents": ["t_a", "t_b"], "inherit_parent_priority": True},
+            "requires exactly one parent",
+        ),
+        (
+            {"parents": ["t_missing"], "inherit_parent_priority": True},
+            "parent task t_missing not found",
+        ),
+        (
+            {
+                "parents": ["t_parent"],
+                "priority": 10,
+                "inherit_parent_priority": True,
+            },
+            "mutually exclusive",
+        ),
+        (
+            {"parents": ["t_parent"], "inherit_parent_priority": "sometimes"},
+            "must be a boolean",
+        ),
+    ],
+)
+def test_create_rejects_invalid_parent_priority_inheritance(
+    worker_env, args, error,
+):
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_create({
+        "title": "Security re-review",
+        "assignee": "security-reviewer",
+        **args,
+    }))
+    assert error in out.get("error", "")
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen
@@ -1493,6 +1628,8 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "Security re-review cards" in prompt
+    assert "inherit_parent_priority=true" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
@@ -1504,9 +1641,10 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     The ceiling guards against unbounded growth, not against any growth.
     The block absorbed the load-bearing worker/orchestrator reference
     details (workspace kinds, deliverable artifacts, created-card claims,
-    profile discovery) when the standalone kanban-worker / kanban-orchestrator
-    skills were removed and folded into this always-injected guidance, so the
-    ceiling is sized to fit that content with a little headroom.
+    profile discovery, and priority-preserving security re-review handoffs)
+    when the standalone kanban-worker / kanban-orchestrator skills were removed
+    and folded into this always-injected guidance, so the ceiling is sized to
+    fit that content with a little headroom.
     """
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
@@ -1516,7 +1654,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from agent.prompt_builder import KANBAN_GUIDANCE
-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
+    assert 1_500 < len(KANBAN_GUIDANCE) < 6_000, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
     )
 
@@ -1813,6 +1951,24 @@ def multi_board_env(monkeypatch, tmp_path):
     }
 
 
+def test_board_param_routes_set_priority_to_alt_board(multi_board_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    task_id = multi_board_env["alt_seed"]
+    out = json.loads(kt._handle_set_priority({
+        "task_id": task_id,
+        "priority": 10,
+        "board": "alt",
+    }))
+    assert out["ok"] is True
+
+    with kb.connect() as default_conn:
+        assert kb.get_task(default_conn, task_id) is None
+    with kb.connect(board="alt") as alt_conn:
+        assert kb.get_task(alt_conn, task_id).priority == 10
+
+
 def test_board_param_routes_create_to_alt_board(multi_board_env):
     """kanban_create with ``board="alt"`` must write into the alt board's DB,
     not the default one."""
@@ -2076,6 +2232,7 @@ def test_board_param_in_all_schemas():
     schemas = [
         kt.KANBAN_SHOW_SCHEMA,
         kt.KANBAN_LIST_SCHEMA,
+        kt.KANBAN_SET_PRIORITY_SCHEMA,
         kt.KANBAN_COMPLETE_SCHEMA,
         kt.KANBAN_BLOCK_SCHEMA,
         kt.KANBAN_HEARTBEAT_SCHEMA,

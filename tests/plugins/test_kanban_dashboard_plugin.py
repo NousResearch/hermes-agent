@@ -620,6 +620,22 @@ def test_patch_priority_and_edit(client):
     assert data["title"] == "renamed"
 
 
+def test_patch_priority_rejects_negative_and_preserves_card(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "priority": 0}
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"priority": -1},
+    )
+    assert response.status_code == 400
+    unchanged = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}"
+    ).json()["task"]
+    assert unchanged["priority"] == 0
+
+
 def test_patch_invalid_status(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(
@@ -1316,6 +1332,28 @@ def test_bulk_partial_failure_doesnt_abort_siblings(client):
     for tid in (a["id"], c2["id"]):
         t = client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]
         assert t["priority"] == 7
+
+
+def test_bulk_priority_rejects_negative_and_preserves_cards(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "priority": 0}
+    ).json()["task"]
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [task["id"]], "priority": -1},
+    )
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {
+            "id": task["id"],
+            "ok": False,
+            "error": "priority must be >= 0",
+        }
+    ]
+    unchanged = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}"
+    ).json()["task"]
+    assert unchanged["priority"] == 0
 
 
 def test_bulk_empty_ids_400(client):

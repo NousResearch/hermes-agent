@@ -3659,6 +3659,24 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    # OpenRouter credit balance for the TUI status bar. Served by a shared
+    # background probe so this session.info emit never blocks on the network,
+    # and scoped per account. Mirrors the classic CLI status bar. (#57321)
+    try:
+        _or_provider = getattr(agent, "provider", None)
+        if _or_provider and str(_or_provider).strip() == "openrouter":
+            from agent.openrouter_credits import get_shared_probe
+
+            _or_credits = get_shared_probe().snapshot(
+                _or_provider,
+                getattr(agent, "base_url", None),
+                getattr(agent, "api_key", None),
+            )
+            if _or_credits.get("balance") is not None:
+                usage["or_credits_balance"] = _or_credits["balance"]
+                usage["or_credits_label"] = _or_credits["label"]
+    except Exception:
+        pass
     return usage
 
 

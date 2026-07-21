@@ -188,6 +188,8 @@ export interface Usage {
   cost_usd?: number
   dev_credits_spent_micros?: number
   input: number
+  or_credits_balance?: number
+  or_credits_label?: string
   output: number
   reasoning?: number
   total: number

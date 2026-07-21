@@ -7658,6 +7658,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
+
+        # Pre-flight provider credential check (#36277): detect missing
+        # API keys early and emit a clear, actionable error instead of
+        # silently running (and failing on every message).
+        _provider_ok = False
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            _rt = resolve_runtime_provider()
+            _provider_ok = bool((_rt or {}).get("api_key", "").strip())
+        except Exception as _pe:
+            logger.debug("Provider pre-flight check failed: %s", _pe)
+        if not _provider_ok:
+            _msg = (
+                "No valid model provider credentials detected. "
+                "Set an API key (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY) "
+                "in ~/.hermes/.env or run 'hermes setup' before starting "
+                "the gateway."
+            )
+            # Print to stderr so it's visible even when log level swallows
+            # the logger.warning below (e.g. Docker stdout-only capture).
+            print(f"ERROR: {_msg}", file=sys.stderr)
+            logger.warning(_msg)
         
         # Initialize and connect each configured platform
         _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))

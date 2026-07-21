@@ -238,3 +238,4 @@ scripts/windows/watchdog-go/dist/
 
 # Go build artifacts
 *.exe
+nul

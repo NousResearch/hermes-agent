@@ -512,21 +512,18 @@ function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
       return
     }
 
-    // On Free there is no subscription to mutate — starting one lives on the
-    // portal (card capture + checkout). Route the chosen plan there.
-    if (isFree) {
-      if (s.portal_url) {
-        void ctx.openManageLink()
-        ctx.sys(`Opening the portal — finish starting ${tier.name} there, then re-run /subscription.`)
-      } else {
-        ctx.sys('🔴 No portal URL available — start your subscription on the Nous portal.')
-      }
+    busyRef.current = true
 
+    // On Free there is no subscription to mutate — starting one lives on the
+    // portal (card capture + checkout). openManageLink narrates the handoff
+    // (and the missing-URL failure) itself.
+    if (isFree) {
+      void ctx.openManageLink()
       onClose()
+
       return
     }
 
-    busyRef.current = true
     void previewAndRoute(ctx, tier.tier_id, onPatch)
   }
 

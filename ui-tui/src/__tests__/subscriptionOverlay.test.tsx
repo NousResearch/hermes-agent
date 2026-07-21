@@ -400,7 +400,7 @@ describe('SubscriptionOverlay — picker', () => {
     expect(out).toContain('Enter opens the portal')
   })
 
-  it('free: picking a plan opens the portal instead of previewing', async () => {
+  it('free: picking a plan opens the portal instead of previewing, once even on double-Enter', async () => {
     const openManageLink = vi.fn(() => Promise.resolve(true))
     const preview = vi.fn(() => Promise.resolve(null))
     const sys = vi.fn()
@@ -412,11 +412,14 @@ describe('SubscriptionOverlay — picker', () => {
     )
 
     inputHarness.handler?.('', { return: true }) // first row = Plus
+    inputHarness.handler?.('', { return: true }) // double-press must not re-fire
     await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
     mounted.cleanup()
 
+    expect(openManageLink).toHaveBeenCalledTimes(1)
     expect(preview).not.toHaveBeenCalled()
-    expect(sys).toHaveBeenCalledWith(expect.stringContaining('finish starting Plus'))
+    // openManageLink narrates the handoff itself — the picker adds nothing.
+    expect(sys).not.toHaveBeenCalled()
   })
 })
 

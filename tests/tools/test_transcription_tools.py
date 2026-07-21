@@ -1570,8 +1570,9 @@ class TestTranscribeXAI:
         assert "HTTP 400" in result["error"]
         assert "Invalid audio format" in result["error"]
 
-    def test_retries_403_with_refreshed_oauth_credentials(
-        self, sample_ogg, mock_xai_http_module
+    @pytest.mark.parametrize("rejected_status", [401, 403])
+    def test_retries_auth_rejection_with_refreshed_oauth_credentials(
+        self, sample_ogg, mock_xai_http_module, rejected_status
     ):
         mock_xai_http_module.resolve_xai_http_credentials.side_effect = [
             {
@@ -1587,7 +1588,7 @@ class TestTranscribeXAI:
         ]
 
         rejected = MagicMock()
-        rejected.status_code = 403
+        rejected.status_code = rejected_status
         rejected.json.return_value = {
             "error": {"message": "OAuth2 access token could not be validated"}
         }

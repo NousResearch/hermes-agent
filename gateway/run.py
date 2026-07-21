@@ -2046,15 +2046,15 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 _UNSET = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(requested: Optional[str] = None) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
-
+    
     Provider is read from ``config.yaml`` ``model.provider`` (the single
     source of truth). ``resolve_runtime_provider()`` falls through to env
     var lookups internally for legacy compatibility, but the gateway does
     not consult environment variables for behavioral config — config.yaml
     is authoritative.
-
+    
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
     before giving up.
@@ -2067,7 +2067,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     try:
-        runtime = resolve_runtime_provider()
+        runtime = resolve_runtime_provider(requested=requested)
+
     except AuthError as auth_exc:
         # Distinguish a transient rate-limit/quota cap (credentials are fine,
         # re-auth cannot help) from a genuine auth failure (expired/revoked
@@ -2642,20 +2643,25 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
-
+def _resolve_gateway_model(config: dict | None = None) -> tuple[str, str]:
+    """Read model and provider from config.yaml — single source of truth.
+    
+    Returns (model, provider).
+    
     Without this, temporary AIAgent instances (e.g. /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
+    model = ""
+    provider = ""
     if isinstance(model_cfg, str):
-        return model_cfg
+        model = model_cfg
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+        model = model_cfg.get("default") or model_cfg.get("model") or ""
+        provider = model_cfg.get("provider") or ""
+    return model, provider
 
 
 def _channel_override_lookup_keys(
@@ -4152,7 +4158,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 resolved_session_key = None
 
-        model = _resolve_gateway_model(user_config)
+        model, provider = _resolve_gateway_model(user_config)
         if resolved_session_key:
             self._rehydrate_session_model_override(resolved_session_key)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
@@ -4190,7 +4196,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs = _resolve_runtime_agent_kwargs(requested=provider)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -13356,13 +13362,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if is_context_overflow_failure:
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
-                tool_defs = agent_result.get("tools", [])
+                model, provider = _resolve_gateway_model()
                 await self.async_session_store.append_to_transcript(
                     session_entry.session_id,
                     {
                         "role": "session_meta",
                         "tools": tool_defs or [],
-                        "model": _resolve_gateway_model(),
+                        "model": model,
+                        "provider": provider,
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
                     }
@@ -13717,13 +13724,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        model, provider = _resolve_gateway_model()
         config_context_length = None
-        provider = None
+        provider_resolved = provider
         base_url = None
         api_key = None
         custom_provs = None
         data = None
+
 
         try:
             data = _load_gateway_config()
@@ -13783,8 +13791,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Resolve runtime credentials for probing
         try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
+            runtime = _resolve_runtime_agent_kwargs(requested=provider_resolved)
+            provider = provider_resolved or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")
         except Exception:

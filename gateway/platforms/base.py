@@ -4378,11 +4378,17 @@ class BasePlatformAdapter(ABC):
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
-        # Non-network / post-retry formatting failure: try plain text as fallback
+        # Non-network / post-retry formatting failure: try plain text as fallback.
+        # Pass the FULL response, not a slice: every platform's send() chunks long
+        # content internally via truncate_message(), so a hard cut here would
+        # silently drop the tail of any reply longer than the slice — the user
+        # would receive a partial answer with no indication the rest was lost.
+        # Handing send() the whole string lets its own chunker split it across
+        # multiple plain-text messages instead.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=f"(Response formatting failed, plain text:)\n\n{content}",
             reply_to=reply_to,
             metadata=metadata,
         )

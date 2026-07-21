@@ -272,6 +272,33 @@ class TestSendWithRetryFallback:
         assert "plain text" in adapter._send_calls[1][1].lower()
 
     @pytest.mark.asyncio
+    async def test_long_content_not_truncated_in_fallback(self):
+        """A formatting failure must not silently drop the tail of a long reply.
+
+        Each platform's send() chunks long content internally (truncate_message),
+        so the plain-text fallback must hand it the FULL response. A hard slice
+        here would lose everything past the cut with no indication to the user —
+        a data-loss bug that only surfaces when a long reply trips a formatting
+        error, which is exactly when this fallback runs.
+        """
+        adapter = _StubAdapter()
+        long_body = "A" * 9000  # well beyond any single-message limit
+        adapter._send_results = [
+            SendResult(success=False, error="Bad Request: can't parse entities"),
+            SendResult(success=True, message_id="fallback_ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry(
+                "chat1", long_body, max_retries=2, base_delay=0
+            )
+        assert result.success
+        fallback_content = adapter._send_calls[-1][1]
+        assert "plain text" in fallback_content.lower()
+        # The entire original body must reach send() intact — the per-platform
+        # chunker (not a slice in _send_with_retry) is responsible for splitting.
+        assert long_body in fallback_content
+
+    @pytest.mark.asyncio
     async def test_fallback_failure_logged_but_not_raised(self):
         adapter = _StubAdapter()
         adapter._send_results = [

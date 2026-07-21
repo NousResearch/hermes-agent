@@ -754,7 +754,52 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    
+    "minimal": {
+        "name": "minimal",
+        "description": "Minimal — no emojis or special characters",
+        "colors": {
+            "banner_border": "#555555",
+            "banner_title": "#E0E0E0",
+            "banner_accent": "#AAAAAA",
+            "banner_dim": "#444444",
+            "banner_text": "#C0C0C0",
+            "ui_accent": "#AAAAAA",
+            "ui_label": "#888888",
+            "ui_ok": "#888888",
+            "ui_error": "#CCCCCC",
+            "ui_warn": "#999999",
+            "prompt": "#C0C0C0",
+            "input_rule": "#444444",
+            "response_border": "#AAAAAA",
+            "status_bar_bg": "#1F1F1F",
+            "status_bar_text": "#C0C0C0",
+            "status_bar_strong": "#E0E0E0",
+            "status_bar_dim": "#777777",
+            "status_bar_good": "#B5B5B5",
+            "status_bar_warn": "#AAAAAA",
+            "status_bar_bad": "#D0D0D0",
+            "status_bar_critical": "#F0F0F0",
+            "session_label": "#888888",
+            "session_border": "#555555",
+        },
+        "spinner": {
+            "waiting_faces": ["(...)", "(...)"],
+            "thinking_faces": ["(...)", "(...)"],
+            "thinking_verbs": ["thinking", "processing", "working"],
+            "wings": [],
+        },
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye!",
+            "response_label": " Hermes ",
+            "prompt_symbol": "> ",
+            "help_header": "Available Commands",
+        },
+        "tool_prefix": "|",
     },
+},
 }
 
 

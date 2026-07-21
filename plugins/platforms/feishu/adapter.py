@@ -255,7 +255,11 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
-_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+_FEISHU_REPLY_FALLBACK_CODES = frozenset({
+    230011,    # reply target withdrawn/missing
+    231003,    # reply target not found
+    99992402,  # field validation failed (e.g. stale reply_to_message_id after gateway restart)
+})
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -2393,11 +2397,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
             data = getattr(response, "data", None)
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
+            raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id,
                 "name": str(getattr(data, "name", None) or chat_id),
                 "type": self._map_chat_type(raw_chat_type),
                 "raw_type": raw_chat_type or None,
+                "chat_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
             return dict(info)
@@ -3323,13 +3329,23 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+        resolved_chat_type = self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type)
+
+        # Preserve thread_id ONLY for topic/forum chats (话题群) so each
+        # Feishu topic gets its own session and replies land inside the topic.
+        # Regular group chats (chat_mode != "topic") must NOT use thread_id
+        # for routing — ordinary group messages carry a thread_id/root_id but
+        # routing via receive_id_type="thread_id" would create unwanted topic
+        # replies instead of plain group messages.  DMs never use thread_id.
+        thread_id_for_source = thread_id if resolved_chat_type == "forum" else None
+
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=resolved_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=thread_id,
+            thread_id=thread_id_for_source,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
@@ -4076,6 +4092,12 @@ class FeishuAdapter(BasePlatformAdapter):
         resolved = str(chat_info.get("type") or "").strip().lower()
         if resolved in {"group", "forum"}:
             return resolved
+        # Feishu topic chats return chat_type="private" (mapped to "dm" by
+        # _map_chat_type) but chat_mode="topic".  Detect this and promote to
+        # "forum" so thread_id is preserved in the session key.
+        chat_mode = str(chat_info.get("chat_mode") or "").strip().lower()
+        if chat_mode in {"topic", "thread", "forum"}:
+            return "forum"
         if event_chat_type == "p2p":
             return "dm"
         return "group"
@@ -4681,8 +4703,12 @@ class FeishuAdapter(BasePlatformAdapter):
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
         # the main chat.
+        # Exception: interactive cards cannot be sent with receive_id_type="thread_id"
+        # (Feishu returns 99992402 field validation failed). For interactive cards,
+        # fall through to chat_id routing so they land in the chat (still visible
+        # in the topic context since the topic is part of the chat).
         _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
+        if _thread_id and msg_type != "interactive":
             body = self._build_create_message_body(
                 receive_id=_thread_id,
                 msg_type=msg_type,
@@ -4842,6 +4868,7 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
+        _downgraded_post = False  # guard against infinite post→text retry
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(
@@ -4880,6 +4907,50 @@ class FeishuAdapter(BasePlatformAdapter):
                             reply_to=None,
                             metadata=metadata,
                         )
+                # Handle 99992402 (field validation failed) when thread_id
+                # routing was used without a reply anchor (auto-resume path).
+                # For "post" msg_type: downgrade to "text" and retry — Feishu
+                # accepts text via thread_id more reliably than post.
+                # For omt_ (forum topic) IDs: suppress chat_id fallback to
+                # avoid creating unwanted new topics.
+                elif (
+                    not active_reply_to
+                    and not self._response_succeeded(response)
+                    and (metadata or {}).get("thread_id")
+                    and getattr(response, "code", None) in _FEISHU_REPLY_FALLBACK_CODES
+                ):
+                    thread_id = (metadata or {}).get("thread_id")
+                    code = getattr(response, "code", None)
+                    if msg_type == "post" and not _downgraded_post:
+                        logger.warning(
+                            "[Feishu] thread_id create failed (code %s) for post in thread %s; "
+                            "downgrading to text and retrying",
+                            code, thread_id,
+                        )
+                        msg_type = "text"
+                        payload = json.dumps({"text": payload}, ensure_ascii=False)
+                        _downgraded_post = True
+                        continue  # retry with text in next loop iteration
+                    if str(thread_id).startswith("omt_"):
+                        logger.warning(
+                            "[Feishu] thread_id routing failed (code %s) for forum topic %s; "
+                            "suppressing chat_id fallback to prevent unwanted new topic creation",
+                            code, thread_id,
+                        )
+                        return response
+                    logger.warning(
+                        "[Feishu] thread_id routing failed (code %s) for thread %s; "
+                        "falling back to chat_id routing for chat %s",
+                        code, thread_id, chat_id,
+                    )
+                    fallback_metadata = {k: v for k, v in (metadata or {}).items() if k != "thread_id"}
+                    response = await self._send_raw_message(
+                        chat_id=chat_id,
+                        msg_type=msg_type,
+                        payload=payload,
+                        reply_to=None,
+                        metadata=fallback_metadata or None,
+                    )
                 return response
             except Exception as exc:
                 last_error = exc

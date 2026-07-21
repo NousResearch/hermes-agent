@@ -731,3 +731,122 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Credential pool exhaustion gate (#15298)
+# =============================================================================
+
+class TestCredentialPoolExhaustionGate:
+    """_restore_primary_runtime() should defer when the credential pool
+    for the primary provider reports all credentials exhausted."""
+
+    def _activate_fallback(self, agent):
+        """Helper: activate fallback and clear the rate-limit timer."""
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                    return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        assert agent._fallback_activated is True
+        agent._rate_limited_until = 0
+
+    def test_restore_blocked_when_pool_exhausted(self):
+        """If the pool exists, matches the primary provider, and has no
+        available credentials, restoration must be skipped."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter",
+                            "model": "anthropic/claude-sonnet-4"},
+            provider="custom",
+        )
+        self._activate_fallback(agent)
+
+        pool = MagicMock()
+        pool.provider = "custom"
+        pool.has_available.return_value = False
+        agent._credential_pool = pool
+
+        result = agent._restore_primary_runtime()
+        assert result is False
+        assert agent._fallback_activated is True  # still on fallback
+
+    def test_restore_blocked_for_named_custom_pool_exhaustion(self):
+        """Custom providers compare against custom:<name>, not generic custom."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter",
+                            "model": "anthropic/claude-sonnet-4"},
+            provider="custom",
+            base_url="https://named-custom.example/v1",
+        )
+        self._activate_fallback(agent)
+
+        pool = MagicMock()
+        pool.provider = "custom:named-custom"
+        pool.has_available.return_value = False
+        agent._credential_pool = pool
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:named-custom",
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is False
+        assert agent._fallback_activated is True  # still on fallback
+
+    def test_restore_proceeds_when_pool_has_available(self):
+        """Once the pool reports available credentials, restoration proceeds."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter",
+                            "model": "anthropic/claude-sonnet-4"},
+            provider="custom",
+        )
+        self._activate_fallback(agent)
+
+        pool = MagicMock()
+        pool.provider = "custom"
+        pool.has_available.return_value = True
+        agent._credential_pool = pool
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._fallback_activated is False
+
+    def test_restore_proceeds_when_pool_provider_differs(self):
+        """If the credential pool is for a different provider than the primary,
+        the exhaustion check should not block restoration."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter",
+                            "model": "anthropic/claude-sonnet-4"},
+            provider="custom",
+        )
+        self._activate_fallback(agent)
+
+        # Pool for a different provider — should not block
+        pool = MagicMock()
+        pool.provider = "other-provider"
+        pool.has_available.return_value = False
+        agent._credential_pool = pool
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._fallback_activated is False
+
+    def test_restore_proceeds_when_no_pool(self):
+        """Without a credential pool, restoration is unaffected."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter",
+                            "model": "anthropic/claude-sonnet-4"},
+            provider="custom",
+        )
+        self._activate_fallback(agent)
+        agent._credential_pool = None
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._fallback_activated is False

@@ -57,6 +57,7 @@ Or in-session:
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
 | `coding` | composite (`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision`) | Coding-focused bundle for software work: file editing, terminal, search, web docs, skills, browser, delegate, and code execution. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
+| `custom` | (user-defined) | User-authored tools discovered from `~/.hermes/tools/*.yaml` — one file per tool (`name`, `description`, `parameters`, shell `command`). Registered by the bundled `yaml_tools` plugin. Parameter values are passed to the command as environment variables, so model-supplied values cannot inject shell. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
 | `discord` | `discord` | Core Discord text/embed/DM actions (gateway-only). Active on the `hermes-discord` toolset. |

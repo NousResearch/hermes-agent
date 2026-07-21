@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree } from '@/components/pane-shell/tree/store'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
@@ -26,6 +28,7 @@ describe('session status transitions', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $layoutTree.set(null)
     $activeSessionId.set(null)
   })
 
@@ -35,6 +38,7 @@ describe('session status transitions', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $layoutTree.set(null)
     $activeSessionId.set(null)
   })
 
@@ -77,8 +81,9 @@ describe('session status transitions', () => {
     expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
   })
 
-  it('does NOT mark unread when the finishing session is the active one', () => {
+  it('does NOT mark unread when the finishing session is visible in a pane', () => {
     $selectedStoredSessionId.set('s1')
+    $layoutTree.set(group(['workspace'], { id: 'workspace-group' }))
     const working = state({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
 
@@ -130,6 +135,7 @@ describe('session watchdog', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $layoutTree.set(null)
     $activeSessionId.set(null)
   })
 
@@ -139,6 +145,7 @@ describe('session watchdog', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $layoutTree.set(null)
     $activeSessionId.set(null)
   })
 

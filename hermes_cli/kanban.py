@@ -618,13 +618,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "handoff",
         help=(
             "Atomic review handoff: create/reuse the Athena gate for a "
-            "deliverable AND sticky-block the source in one verb"
+            "deliverable and move the source to non-dispatchable Review"
         ),
     )
     p_handoff.add_argument("task_id")
     p_handoff.add_argument(
         "--review", required=True, dest="review_ref",
-        help="What the gate must review: PR URL, PR#N, commit hash or artifact path",
+        help=(
+            "Review reference: PR URL, PR#N, commit hash or artifact path; "
+            "H-Omar explicitly routes the source after Athena's verdict"
+        ),
     )
     p_handoff.add_argument(
         "reason", nargs="*",
@@ -2189,7 +2192,8 @@ def _cmd_handoff(args: argparse.Namespace) -> int:
             return 2
     print(
         f"Handoff {args.task_id}: gate {gate_id} (oa-athena) — source "
-        f"moved to Review 'review-required: {args.review_ref}'"
+        f"moved to Review for {args.review_ref}; H-Omar routes it after "
+        "Athena's verdict"
     )
     return 0
 

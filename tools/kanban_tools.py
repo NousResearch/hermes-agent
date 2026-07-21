@@ -679,7 +679,7 @@ def _handle_complete(args: dict, **kw) -> str:
 
 
 def _handle_handoff(args: dict, **kw) -> str:
-    """Atomic review handoff: gate + sticky review-required block (C4)."""
+    """Atomic review handoff: Athena gate + non-dispatchable Review lane."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -1620,12 +1620,12 @@ KANBAN_HANDOFF_SCHEMA = {
     "description": (
         "Hand your finished deliverable to review in ONE atomic call: "
         "creates (or reuses) the Athena review gate for ``review`` and "
-        "sticky-blocks this task as 'review-required' so it never "
-        "returns to ready before the verdict. USE THIS instead of "
-        "kanban_block when your work is DONE but needs a non-author "
-        "review (PR opened, artifact produced) — picking a block kind "
-        "by hand caused week-long stuck cards. ``review`` must point at "
-        "something concrete: PR URL, PR#N, commit hash or artifact path."
+        "moves this task to the non-dispatchable Review lane. Athena's "
+        "verdict is evidence only; H-Omar explicitly chooses the next "
+        "source transition. USE THIS instead of kanban_block when your "
+        "work is DONE but needs a non-author review (PR opened, artifact "
+        "produced). ``review`` must point at something concrete: PR URL, "
+        "PR#N, commit hash or artifact path."
     ),
     "parameters": {
         "type": "object",

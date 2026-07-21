@@ -224,12 +224,18 @@ def test_run_slash_block_unblock_cycle(kanban_home):
 
 
 def test_run_slash_review_migration_preview_and_operator_decision(kanban_home):
+    help_text = kc.run_slash("handoff --help")
+    assert "Review" in help_text
+    assert "H-Omar" in help_text
+    assert "sticky-block" not in help_text
+
     created = kc.run_slash("create 'review source' --assignee alice")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", created).group(1)
 
     handoff = kc.run_slash(f"handoff {tid} --review repo#91")
     assert "moved to Review" in handoff
+    assert "H-Omar" in handoff
     assert "Review decision" in kc.run_slash(f"review-decision {tid} go-ready")
 
     legacy = kc.run_slash("create 'legacy review' --assignee bob")

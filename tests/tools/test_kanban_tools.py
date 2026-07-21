@@ -148,6 +148,18 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 # Handler happy paths
 # ---------------------------------------------------------------------------
 
+
+def test_handoff_schema_describes_review_lane_and_homar_arbitration():
+    """The worker-facing contract must match the Review lane kernel behavior."""
+    from tools.kanban_tools import KANBAN_HANDOFF_SCHEMA
+
+    description = KANBAN_HANDOFF_SCHEMA["description"]
+
+    assert "Review" in description
+    assert "H-Omar" in description
+    assert "sticky-block" not in description
+
+
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set

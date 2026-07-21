@@ -363,6 +363,15 @@ const sidebars: SidebarsConfig = {
               items: [
                 {
                   type: 'category',
+                  label: 'agent-safety',
+                  key: 'skills-optional-agent-safety',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/agent-safety/agent-safety-credibility-action-gate',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'autonomous-ai-agents',
                   key: 'skills-optional-autonomous-ai-agents',
                   collapsed: true,

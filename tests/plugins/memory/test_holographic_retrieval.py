@@ -163,6 +163,28 @@ class TestDimMismatchDoesNotCrash:
         finally:
             store.close()
 
+    def test_probe_corrupt_bank_with_no_fact_vectors_still_warns(self, tmp_path, caplog):
+        """A mismatched bank vector counted as skipped must not vanish
+        silently through probe()'s no-fact-rows early return (keyword
+        fallback) — the operator still needs the rebuild_all_vectors hint."""
+        import logging
+
+        db_path = tmp_path / "bank_only.db"
+        store = MemoryStore(str(db_path), hrr_dim=256)
+        store.add_fact("Peppi owns the deploy pipeline.", category="project")
+        # Strip the per-fact vectors so only the (mismatched) bank remains.
+        store._conn.execute("UPDATE facts SET hrr_vector = NULL")
+        store._conn.commit()
+        retriever = FactRetriever(store=store, hrr_dim=1024)
+        try:
+            with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic.retrieval"):
+                retriever.probe("peppi", category="project")
+            warnings = [r for r in caplog.records if "skipped" in r.message.lower()]
+            assert len(warnings) == 1
+            assert "rebuild_all_vectors" in warnings[0].message
+        finally:
+            store.close()
+
     def test_skip_warning_logged_once_per_operation(self, mismatched_dim_retriever, caplog):
         import logging
         from plugins.memory.holographic import retrieval as retrieval_mod

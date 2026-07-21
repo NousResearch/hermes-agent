@@ -727,6 +727,17 @@ class MemoryStore:
                 self._persist_hrr_dim(dim)
                 if self._entry is not None:
                     self._entry["hrr_dim"] = dim
+                # Dimension state is copied at construction time (store
+                # instances, FactRetriever), so handles that were alive
+                # before this migration keep the old value until reopened —
+                # make that visible instead of letting a stale sibling
+                # silently write mixed-dim vectors again (issue #68682).
+                logger.warning(
+                    "hrr_dim migrated to %d; store/retriever handles opened "
+                    "before this migration keep their previous dimension "
+                    "until reopened.",
+                    dim,
+                )
 
             return len(rows)
 

@@ -222,6 +222,9 @@ class FactRetriever:
         ).fetchall()
 
         if not rows:
+            # A corrupt bank vector counted above would otherwise vanish
+            # silently through this early return (issue #68682 review).
+            _warn_skipped("probe", skipped)
             # Final fallback: keyword search
             return self.search(entity, category=category, limit=limit)
 

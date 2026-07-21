@@ -538,7 +538,7 @@ def test_compute_host_real_turn_waits_for_chained_successor_before_settling(
 def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
     monkeypatch,
 ):
-    """No new child turn may claim the snapshot→turn.end serialization gap."""
+    """A successor waits for terminal serialization, then runs exactly once."""
     from tui_gateway import server
 
     out = io.StringIO()
@@ -555,21 +555,31 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
     emit_entered = threading.Event()
     release_emit = threading.Event()
     original_emit = host.emit
+    run_texts: list[str] = []
+    control_calls: list[str] = []
 
     def run_prompt(_rid, _sid, target, text):
         with target["history_lock"]:
-            target["history"] = [
-                {"role": "user", "content": text},
-                {"role": "assistant", "content": "done"},
-            ]
+            run_texts.append(text)
+            target["history"].extend(
+                [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": "done"},
+                ]
+            )
             target["history_version"] += 1
             target["running"] = False
 
     def blocking_emit(frame):
         if frame.get("type") == "turn.end" and frame.get("request_id") == "barrier-turn":
             assert session.get("_compute_host_terminal_pending") == "barrier-turn"
+            # Put the terminal frame on the wire first. The parent can process
+            # it and dispatch a queued successor before this emit call returns
+            # and the child reaches its barrier cleanup.
+            original_emit(frame)
             emit_entered.set()
             assert release_emit.wait(5)
+            return
         original_emit(frame)
 
     monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
@@ -578,7 +588,13 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
     monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
     monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
     monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(
+        server,
+        "_mirror_slash_side_effects",
+        lambda _sid, _session, command: control_calls.append(command),
+    )
     monkeypatch.setattr(host, "emit", blocking_emit)
+    server._sessions["barrier-sid"] = session
 
     first = threading.Thread(
         target=lambda: host._run_real_turn(
@@ -591,29 +607,53 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
         ),
         daemon=True,
     )
-    try:
-        first.start()
-        assert emit_entered.wait(5)
-        assert session["running"] is False
-        assert session["_compute_host_terminal_pending"] == "barrier-turn"
-
-        # A second parent request arriving before turn.end is written must see
-        # the terminal barrier as busy rather than starting from the stale idle
-        # snapshot.
-        host._run_real_turn(
+    overlap = threading.Thread(
+        target=lambda: host._run_real_turn(
             {
                 "sid": "barrier-sid",
                 "request_id": "overlap-turn",
                 "session_key": "barrier-key",
                 "text": "overlap",
             }
+        ),
+        daemon=True,
+    )
+    try:
+        first.start()
+        assert emit_entered.wait(5)
+        assert session["running"] is False
+        assert session["_compute_host_terminal_pending"] == "barrier-turn"
+
+        # An idle-gated history mutator must not invalidate the authoritative
+        # snapshot while its terminal frame is still being serialized.
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "barrier-sid",
+                "request_id": "compress-during-terminal",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
         )
-        overlap = _wait_for_frame(
+        control_error = _wait_for_frame(
             out,
-            lambda frame: frame.get("type") == "turn.error"
-            and frame.get("request_id") == "overlap-turn",
+            lambda frame: frame.get("type") == "control.error"
+            and frame.get("request_id") == "compress-during-terminal",
         )
-        assert overlap["message"] == "session busy"
+        assert control_error["message"] == "session busy"
+        assert control_calls == []
+
+        # The parent may dispatch an already accepted queued prompt immediately
+        # after reading turn.end, before the emitting worker clears the barrier.
+        # It must wait through that transient hand-off instead of being dropped.
+        overlap.start()
+        time.sleep(0.05)
+        assert overlap.is_alive()
+        assert not any(
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "overlap-turn"
+            for frame in _json_lines(out)
+        )
         assert session["history_version"] == 1
 
         release_emit.set()
@@ -623,12 +663,146 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
             and frame.get("request_id") == "barrier-turn",
         )
         assert end["history_version"] == 1
+        overlap_end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "overlap-turn",
+        )
+        assert overlap_end["history_version"] == 2
         first.join(5)
+        overlap.join(5)
         assert not first.is_alive()
+        assert not overlap.is_alive()
+        assert run_texts == ["hello", "overlap"]
         assert "_compute_host_terminal_pending" not in session
     finally:
         release_emit.set()
         first.join(5)
+        if overlap.ident is not None:
+            overlap.join(5)
+        server._sessions.pop("barrier-sid", None)
+        host.close()
+
+
+def test_compute_host_terminal_barrier_survives_turn_end_emit_failure(monkeypatch):
+    """The barrier spans replacement turn.error serialization after end fails."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=2, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "error-barrier-key",
+        "_run_thread": None,
+    }
+    error_emit_entered = threading.Event()
+    release_error_emit = threading.Event()
+    original_emit = host.emit
+    run_texts: list[str] = []
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            run_texts.append(text)
+            target["history"].extend(
+                [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": "done"},
+                ]
+            )
+            target["history_version"] += 1
+            target["running"] = False
+
+    def failing_terminal_emit(frame):
+        if frame.get("request_id") == "failing-end" and frame.get("type") in {
+            "turn.end",
+            "turn.error",
+        }:
+            assert session.get("_compute_host_terminal_pending") == "failing-end"
+            if frame.get("type") == "turn.end":
+                raise OSError("forced turn.end write failure")
+            # The replacement terminal frame is now readable by the parent, but
+            # the emitting worker has not returned to barrier cleanup yet.
+            original_emit(frame)
+            error_emit_entered.set()
+            assert release_error_emit.wait(5)
+            return
+        original_emit(frame)
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(host, "emit", failing_terminal_emit)
+    server._sessions["error-barrier-sid"] = session
+
+    first = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "error-barrier-sid",
+                "request_id": "failing-end",
+                "session_key": "error-barrier-key",
+                "text": "first",
+            }
+        ),
+        daemon=True,
+    )
+    successor = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "error-barrier-sid",
+                "request_id": "after-error",
+                "session_key": "error-barrier-key",
+                "text": "second",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        first.start()
+        assert error_emit_entered.wait(5)
+        assert session["_compute_host_terminal_pending"] == "failing-end"
+
+        successor.start()
+        time.sleep(0.05)
+        assert successor.is_alive()
+        assert run_texts == ["first"]
+        assert not any(
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "after-error"
+            for frame in _json_lines(out)
+        )
+
+        release_error_emit.set()
+        first_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "failing-end",
+        )
+        assert "forced turn.end write failure" in first_error["message"]
+        successor_end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "after-error",
+        )
+        assert successor_end["history_version"] == 2
+        first.join(5)
+        successor.join(5)
+        assert not first.is_alive()
+        assert not successor.is_alive()
+        assert run_texts == ["first", "second"]
+        assert "_compute_host_terminal_pending" not in session
+    finally:
+        release_error_emit.set()
+        first.join(5)
+        if successor.ident is not None:
+            successor.join(5)
+        server._sessions.pop("error-barrier-sid", None)
         host.close()
 
 

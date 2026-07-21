@@ -1108,6 +1108,12 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
 
+    def test_provider_returned_error_is_rate_limit(self):
+        """OpenRouter wraps downstream rate-limits as 'Provider returned error'."""
+        e = Exception("Provider returned error")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+
     def test_message_auth_pattern(self):
         e = Exception("invalid api key provided")
         result = classify_api_error(e)

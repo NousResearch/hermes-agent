@@ -159,6 +159,8 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # OpenRouter wraps downstream rate-limits without proper 429 status
+    "provider returned error",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate

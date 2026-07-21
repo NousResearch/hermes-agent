@@ -328,6 +328,11 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
+        # NOTE: "parallel" is Parallel.ai, a separate paid scraping service,
+        # NOT a Hermes feature that fans out requests to multiple backends
+        # concurrently. The name is misleading — it requires its own API key
+        # (PARALLEL_API_KEY). For Firecrawl+Tavily redundancy, pick one as
+        # extract_backend; the other can serve as fallback via search_backend.
         return _has_env("PARALLEL_API_KEY")
     if backend == "firecrawl":
         return check_firecrawl_api_key()
@@ -886,8 +891,11 @@ async def web_extract_tool(
                             "error": (
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to firecrawl "
+                                "(FIRECRAWL_API_KEY), tavily (TAVILY_API_KEY), "
+                                "exa (EXA_API_KEY), or parallel (PARALLEL_API_KEY "
+                                "— a separate paid service, not 'run both in "
+                                "parallel')."
                             ),
                         },
                         ensure_ascii=False,

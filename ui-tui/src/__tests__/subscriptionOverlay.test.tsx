@@ -393,8 +393,8 @@ describe('SubscriptionOverlay — picker', () => {
     const out = render(at('picker', freeWithCatalog()))
 
     expect(out).toContain('Choose a plan')
-    expect(out).toContain('Plus · $20/mo · 1000 credits/mo')
-    expect(out).toContain('Ultra · $40/mo · 3000 credits/mo')
+    expect(out).toContain('Plus · $20/mo · $1,000 credits/mo')
+    expect(out).toContain('Ultra · $40/mo · $3,000 credits/mo')
     expect(out).not.toContain('upgrade') // nothing to move from — it's a start
     expect(out).not.toContain('$0/mo')
     expect(out).toContain('Enter opens the portal')

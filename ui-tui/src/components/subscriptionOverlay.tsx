@@ -531,10 +531,11 @@ function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
   const rows: MenuRowSpec[] = choices.map(tier => {
     // From Free every option is a start — show what the plan includes;
-    // otherwise hint the direction of the move.
+    // otherwise hint the direction of the move. Monthly credits are dollars.
     let suffix: string
     if (isFree) {
-      suffix = tier.monthly_credits ? ` · ${tier.monthly_credits} credits/mo` : ''
+      const credits = Number(tier.monthly_credits)
+      suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
     } else {
       suffix = tier.tier_order > currentOrder ? ' · upgrade' : ' · downgrade'
     }

@@ -647,3 +647,47 @@ class TestReasoningPrimaryToStrictFallback:
         api_msg: dict = {"role": "assistant", "tool_calls": [{"id": "a"}]}
         mistral._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
+
+
+class TestIsKimiRuntime:
+    """Coverage for ``_is_kimi_runtime()`` — gates the chat_completions Kimi
+    defaults (max_tokens floor, reasoning_effort hint) used in
+    ``_build_api_kwargs``.
+
+    Distinct from ``_needs_kimi_tool_reasoning()``: this one MUST match
+    aggregator-routed Kimi K2.x slugs (synthetic.new, OpenRouter, Together,
+    …) so thinking-mode K2.x doesn't burn the entire token budget on hidden
+    reasoning and emit an empty visible response (#18742).
+    """
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            # Direct host routes
+            ("custom", "kimi-k2.5", "https://api.kimi.com/v1"),
+            ("custom", "kimi-k2.5", "https://api.moonshot.ai/v1"),
+            ("custom", "kimi-k2.5", "https://api.moonshot.cn/v1"),
+            # Aggregator routes — host doesn't match but slug does
+            ("custom", "hf:moonshotai/Kimi-K2.5", "https://api.synthetic.new/v1"),
+            ("openrouter", "moonshotai/kimi-k2.5", "https://openrouter.ai/api/v1"),
+            ("custom", "nous/moonshotai/kimi-k2-thinking", "https://nousresearch.com/v1"),
+            ("custom", "kimi-k2-thinking", "https://together.xyz/v1"),
+        ],
+    )
+    def test_kimi_runtime_signals(self, provider: str, model: str, base_url: str) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        assert agent._is_kimi_runtime() is True
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("openai", "gpt-5.4", "https://api.openai.com/v1"),
+            ("anthropic", "claude-sonnet-4.6", "https://api.anthropic.com/v1"),
+            ("custom", "deepseek-v4-flash", "https://api.deepseek.com/v1"),
+            ("custom", "qwen2.5-72b", "https://api.qwen.ai/v1"),
+            ("custom", "", ""),
+        ],
+    )
+    def test_non_kimi_runtimes(self, provider: str, model: str, base_url: str) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        assert agent._is_kimi_runtime() is False

@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Agent — Architecture Diagram</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #020617;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  .container {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 24px 20px;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #22d3ee, #34d399, #fbbf24);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.5px;
+  }
+  .header p {
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 4px;
+  }
+  .diagram-wrap {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 24px;
+    overflow-x: auto;
+  }
+  svg text { font-family: 'JetBrains Mono', monospace; }
+
+  /* Info Cards */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 16px;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: #334155; }
+  .card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-bottom: 10px;
+  }
+  .card-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .card li {
+    font-size: 10px;
+    color: #94a3b8;
+    padding: 3px 0;
+    padding-left: 14px;
+    position: relative;
+    line-height: 1.4;
+  }
+  .card li::before {
+    content: '›';
+    position: absolute;
+    left: 2px;
+    color: #475569;
+    font-weight: 700;
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 16px 0;
+    border-top: 1px solid #1e293b;
+    font-size: 10px;
+    color: #475569;
+    line-height: 1.6;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 20px;
+    padding: 12px;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: #94a3b8;
+  }
+  .legend-swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 2px solid;
+    flex-shrink: 0;
+  }
+  .legend-line {
+    width: 20px; height: 2px;
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 520px) {
+    .cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>Hermes Agent — System Architecture</h1>
+    <p>Two-zone topology: Host Machine (macOS) + Cloud Services &nbsp;|&nbsp; Local execution — no sandbox</p>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1380 1020" width="100%" height="auto">
+      <defs>
+        <!-- Grid pattern -->
+        <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+          <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e293b" stroke-width="0.3" opacity="0.5"/>
+        </pattern>
+        <!-- Arrowheads -->
+        <marker id="arrow-cyan" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
+        </marker>
+        <marker id="arrow-emerald" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/>
+        </marker>
+        <marker id="arrow-amber" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/>
+        </marker>
+        <marker id="arrow-orange" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#fb923c"/>
+        </marker>
+        <marker id="arrow-green" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#4ade80"/>
+        </marker>
+        <marker id="arrow-rose" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/>
+        </marker>
+        <!-- Glow filters -->
+        <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="2" result="blur"/>
+          <feFlood flood-color="#22d3ee" flood-opacity="0.15"/>
+          <feComposite in2="blur" operator="in"/>
+          <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="glow-emerald" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="2" result="blur"/>
+          <feFlood flood-color="#34d399" flood-opacity="0.15"/>
+          <feComposite in2="blur" operator="in"/>
+          <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="glow-amber" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="2" result="blur"/>
+          <feFlood flood-color="#fbbf24" flood-opacity="0.15"/>
+          <feComposite in2="blur" operator="in"/>
+          <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="glow-green" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feFlood flood-color="#4ade80" flood-opacity="0.2"/>
+          <feComposite in2="blur" operator="in"/>
+          <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+
+      <!-- Background + grid -->
+      <rect width="1380" height="1020" fill="#020617"/>
+      <rect width="1380" height="1020" fill="url(#grid)"/>
+
+      <!-- ============================================================ -->
+      <!-- ZONE 1: HOST MACHINE — Purple dashed boundary                -->
+      <!-- ============================================================ -->
+      <rect x="16" y="16" width="960" height="988" rx="14" ry="14"
+            fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="8,4" opacity="0.6"/>
+      <rect x="16" y="16" width="960" height="988" rx="14" ry="14"
+            fill="#a78bfa" opacity="0.02"/>
+      <!-- Zone label -->
+      <text x="36" y="42" fill="#a78bfa" font-size="13" font-weight="700">🖥 HOST MACHINE — Keith's Mac (macOS)</text>
+      <text x="36" y="58" fill="#7c3aed" font-size="9" opacity="0.7">~/.hermes/ — config, skills, memory, sessions, auth, logs</text>
+
+      <!-- ============================================================ -->
+      <!-- ZONE 2: CLOUD SERVICES — Amber dashed boundary               -->
+      <!-- ============================================================ -->
+      <rect x="994" y="16" width="372" height="988" rx="14" ry="14"
+            fill="none" stroke="#fbbf24" stroke-width="2" stroke-dasharray="8,4" opacity="0.5"/>
+      <rect x="994" y="16" width="372" height="988" rx="14" ry="14"
+            fill="#fbbf24" opacity="0.02"/>
+      <text x="1014" y="42" fill="#fbbf24" font-size="13" font-weight="700">☁ CLOUD SERVICES</text>
+      <text x="1014" y="58" fill="#d97706" font-size="9" opacity="0.7">APIs, managed infra, LLM providers</text>
+
+      <!-- ============================================================ -->
+      <!-- LAYER 1: USER INTERFACES (cyan borders)                      -->
+      <!-- ============================================================ -->
+
+      <!-- Platforms -->
+      <rect x="36" y="74" width="195" height="100" rx="8" fill="#020617" stroke="#22d3ee" stroke-width="1.5" filter="url(#glow-cyan)"/>
+      <text x="52" y="92" fill="#22d3ee" font-size="10" font-weight="600">Platforms</text>
+      <text x="52" y="107" fill="#94a3b8" font-size="8">Telegram, Discord, Slack</text>
+      <text x="52" y="119" fill="#94a3b8" font-size="8">WhatsApp, Signal, Matrix</text>
+      <text x="52" y="131" fill="#94a3b8" font-size="8">+ 10 more gateways</text>
+      <text x="52" y="166" fill="#475569" font-size="7" font-style="italic">gateway adapters</text>
+
+      <!-- CLI / TUI -->
+      <rect x="36" y="184" width="195" height="92" rx="8" fill="#020617" stroke="#22d3ee" stroke-width="1.5" filter="url(#glow-cyan)"/>
+      <text x="52" y="202" fill="#22d3ee" font-size="10" font-weight="600">CLI / TUI</text>
+      <text x="52" y="217" fill="#94a3b8" font-size="8">hermes chat</text>
+      <text x="52" y="229" fill="#94a3b8" font-size="8">prompt_toolkit</text>
+      <text x="52" y="241" fill="#94a3b8" font-size="8">Ink React TUI</text>
+      <text x="52" y="268" fill="#475569" font-size="7" font-style="italic">cli.py</text>
+
+      <!-- Schedulers -->
+      <rect x="36" y="286" width="195" height="92" rx="8" fill="#020617" stroke="#22d3ee" stroke-width="1.5" filter="url(#glow-cyan)"/>
+      <text x="52" y="304" fill="#22d3ee" font-size="10" font-weight="600">Schedulers</text>
+      <text x="52" y="319" fill="#94a3b8" font-size="8">Cron Scheduler</text>
+      <text x="52" y="331" fill="#94a3b8" font-size="8">Webhooks</text>
+      <text x="52" y="343" fill="#94a3b8" font-size="8">Kanban Dispatch</text>
+      <text x="52" y="370" fill="#475569" font-size="7" font-style="italic">cron/scheduler.py</text>
+
+      <!-- ============================================================ -->
+      <!-- LAYER 2: INPUT PROCESSING (emerald borders)                  -->
+      <!-- ============================================================ -->
+
+      <!-- Gateway Router -->
+      <rect x="270" y="74" width="200" height="100" rx="8" fill="#020617" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+      <text x="286" y="92" fill="#34d399" font-size="10" font-weight="600">Gateway Router</text>
+      <text x="286" y="107" fill="#94a3b8" font-size="8">Platform adapters</text>
+      <text x="286" y="119" fill="#94a3b8" font-size="8">STT transcription</text>
+      <text x="286" y="131" fill="#94a3b8" font-size="8">Session routing</text>
+      <text x="286" y="166" fill="#475569" font-size="7" font-style="italic">gateway/run.py</text>
+
+      <!-- CLI Router -->
+      <rect x="270" y="184" width="200" height="92" rx="8" fill="#020617" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+      <text x="286" y="202" fill="#34d399" font-size="10" font-weight="600">CLI Router</text>
+      <text x="286" y="217" fill="#94a3b8" font-size="8">Slash commands</text>
+      <text x="286" y="229" fill="#94a3b8" font-size="8">Session management</text>
+      <text x="286" y="241" fill="#94a3b8" font-size="8">Config dispatch</text>
+      <text x="286" y="268" fill="#475569" font-size="7" font-style="italic">hermes_cli/main.py</text>
+
+      <!-- Cron Engine -->
+      <rect x="270" y="286" width="200" height="92" rx="8" fill="#020617" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+      <text x="286" y="304" fill="#34d399" font-size="10" font-weight="600">Cron Engine</text>
+      <text x="286" y="319" fill="#94a3b8" font-size="8">Schedule parser</text>
+      <text x="286" y="331" fill="#94a3b8" font-size="8">Job execution</text>
+      <text x="286" y="343" fill="#94a3b8" font-size="8">Delivery routing</text>
+      <text x="286" y="370" fill="#475569" font-size="7" font-style="italic">cron/jobs.py</text>
+
+      <!-- ============================================================ -->
+      <!-- PERSISTENT STATE (rose border)                               -->
+      <!-- ============================================================ -->
+      <rect x="36" y="396" width="434" height="82" rx="8" fill="#020617" stroke="#fb7185" stroke-width="1.5"/>
+      <rect x="36" y="396" width="434" height="82" rx="8" fill="#fb7185" opacity="0.04"/>
+      <text x="52" y="416" fill="#fb7185" font-size="10" font-weight="600">Memory + Skills</text>
+      <text x="200" y="416" fill="#64748b" font-size="8">(persistent state)</text>
+      <text x="52" y="432" fill="#94a3b8" font-size="8">User profile + agent notes</text>
+      <text x="52" y="444" fill="#94a3b8" font-size="8">~/.hermes/skills/ (SKILL.md)</text>
+      <text x="52" y="456" fill="#94a3b8" font-size="8">state.db | config.yaml | .env</text>
+      <text x="52" y="470" fill="#475569" font-size="7" font-style="italic">memories/ + skills/</text>
+
+      <!-- ============================================================ -->
+      <!-- LAYER 3: CORE ENGINE                                         -->
+      <!-- ============================================================ -->
+
+      <!-- Prompt Builder -->
+      <rect x="36" y="496" width="210" height="106" rx="8" fill="#020617" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+      <text x="52" y="516" fill="#34d399" font-size="10" font-weight="600">Prompt Builder</text>
+      <text x="52" y="532" fill="#94a3b8" font-size="8">System prompt assembly</text>
+      <text x="52" y="544" fill="#94a3b8" font-size="8">Memory injection</text>
+      <text x="52" y="556" fill="#94a3b8" font-size="8">Skill matching</text>
+      <text x="52" y="568" fill="#94a3b8" font-size="8">Env hints</text>
+      <text x="52" y="594" fill="#475569" font-size="7" font-style="italic">prompt_builder.py</text>
+
+      <!-- Agent Loop (prominent) -->
+      <rect x="264" y="496" width="240" height="106" rx="8" fill="#020617" stroke="#34d399" stroke-width="2.5" filter="url(#glow-emerald)"/>
+      <rect x="264" y="496" width="240" height="106" rx="8" fill="#34d399" opacity="0.04"/>
+      <text x="284" y="516" fill="#34d399" font-size="11" font-weight="700">Agent Loop</text>
+      <text x="284" y="533" fill="#94a3b8" font-size="8">run_conversation()</text>
+      <text x="284" y="546" fill="#e2e8f0" font-size="8">LLM call → tool_calls?</text>
+      <text x="284" y="559" fill="#94a3b8" font-size="8">  yes → dispatch → loop</text>
+      <text x="284" y="572" fill="#94a3b8" font-size="8">  no → return response</text>
+      <text x="284" y="594" fill="#475569" font-size="7" font-style="italic">run_agent.py / AIAgent</text>
+
+      <!-- Context compression self-loop -->
+      <path d="M 460 520 C 480 510, 500 520, 500 540 C 500 560, 480 570, 460 560" 
+            fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="3,2" opacity="0.6" marker-end="url(#arrow-emerald)"/>
+      <text x="502" y="542" fill="#34d399" font-size="7" opacity="0.6">context</text>
+      <text x="502" y="552" fill="#34d399" font-size="7" opacity="0.6">compress</text>
+
+      <!-- Tool Dispatch Hub -->
+      <rect x="524" y="496" width="230" height="106" rx="8" fill="#020617" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+      <text x="540" y="516" fill="#34d399" font-size="10" font-weight="600">Tool Dispatch Hub</text>
+      <text x="540" y="532" fill="#94a3b8" font-size="8">handle_function_call()</text>
+      <text x="540" y="544" fill="#94a3b8" font-size="8">40+ tools</text>
+      <text x="540" y="556" fill="#94a3b8" font-size="8">20+ toolsets</text>
+      <text x="540" y="594" fill="#475569" font-size="7" font-style="italic">model_tools.py + registry.py</text>
+
+      <!-- ============================================================ -->
+      <!-- LOCAL TOOLS SECTION (green highlighted area)                  -->
+      <!-- ============================================================ -->
+      <rect x="36" y="620" width="718" height="200" rx="10" fill="#34d399" opacity="0.04"/>
+      <rect x="36" y="620" width="718" height="200" rx="10" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="6,3" opacity="0.5"/>
+      <text x="56" y="644" fill="#4ade80" font-size="11" font-weight="700">⚡ LOCAL EXECUTION — Direct macOS Access</text>
+      <text x="56" y="660" fill="#6ee7b7" font-size="8" opacity="0.8">terminal(), read_file(), write_file(), patch(), search_files(), execute_code() run directly on host</text>
+
+      <!-- terminal() -->
+      <rect x="52" y="674" width="218" height="94" rx="7" fill="#020617" stroke="#34d399" stroke-width="1.3"/>
+      <text x="68" y="694" fill="#4ade80" font-size="9.5" font-weight="600">terminal()</text>
+      <text x="68" y="710" fill="#94a3b8" font-size="7.5">Shell commands (zsh/bash)</text>
+      <text x="68" y="722" fill="#94a3b8" font-size="7.5">brew, git, npm, builds</text>
+      <text x="68" y="734" fill="#94a3b8" font-size="7.5">Background processes</text>
+      <text x="68" y="746" fill="#94a3b8" font-size="7.5">SSH to remote</text>
+      <text x="68" y="760" fill="#475569" font-size="7" font-style="italic">macOS / jblaze / persistent FS</text>
+
+      <!-- File Tools -->
+      <rect x="286" y="674" width="218" height="94" rx="7" fill="#020617" stroke="#34d399" stroke-width="1.3"/>
+      <text x="302" y="694" fill="#4ade80" font-size="9.5" font-weight="600">File Tools</text>
+      <text x="302" y="710" fill="#94a3b8" font-size="7.5">read_file() / write_file()</text>
+      <text x="302" y="722" fill="#94a3b8" font-size="7.5">patch() / search_files()</text>
+      <text x="302" y="734" fill="#94a3b8" font-size="7.5">Ripgrep-backed search</text>
+      <text x="302" y="760" fill="#475569" font-size="7" font-style="italic">Direct host filesystem access</text>
+
+      <!-- execute_code() -->
+      <rect x="520" y="674" width="218" height="94" rx="7" fill="#020617" stroke="#34d399" stroke-width="1.3"/>
+      <text x="536" y="694" fill="#4ade80" font-size="9.5" font-weight="600">execute_code()</text>
+      <text x="536" y="710" fill="#94a3b8" font-size="7.5">Python sandbox</text>
+      <text x="536" y="722" fill="#94a3b8" font-size="7.5">hermes_tools imports</text>
+      <text x="536" y="734" fill="#94a3b8" font-size="7.5">50 tool calls per script</text>
+      <text x="536" y="760" fill="#475569" font-size="7" font-style="italic">5-min timeout, 50KB cap</text>
+
+      <!-- ============================================================ -->
+      <!-- BENEFITS CALLOUT                                             -->
+      <!-- ============================================================ -->
+      <rect x="36" y="836" width="434" height="80" rx="8" fill="#020617" stroke="#4ade80" stroke-width="1.3"/>
+      <rect x="36" y="836" width="434" height="80" rx="8" fill="#4ade80" opacity="0.03"/>
+      <text x="56" y="856" fill="#4ade80" font-size="10" font-weight="700">✅ LOCAL EXECUTION — Full Power</text>
+      <text x="56" y="873" fill="#94a3b8" font-size="8">Files persist across sessions. Direct access to ~/projects,</text>
+      <text x="56" y="885" fill="#94a3b8" font-size="8">git repos, dev servers, databases.</text>
+      <text x="56" y="901" fill="#94a3b8" font-size="8">Can SSH to remote, run Docker, access localhost,</text>
+      <text x="56" y="913" fill="#94a3b8" font-size="8">manage deployments. Zero isolation overhead.</text>
+
+      <!-- ============================================================ -->
+      <!-- MCP SERVERS (gray border)                                    -->
+      <!-- ============================================================ -->
+      <rect x="776" y="496" width="180" height="106" rx="8" fill="#020617" stroke="#64748b" stroke-width="1.2"/>
+      <text x="792" y="516" fill="#94a3b8" font-size="10" font-weight="600">MCP Servers</text>
+      <text x="792" y="533" fill="#64748b" font-size="8">stdio / HTTP transport</text>
+      <text x="792" y="546" fill="#64748b" font-size="8">External tool extension</text>
+      <text x="792" y="559" fill="#64748b" font-size="8">Native MCP client</text>
+      <text x="792" y="594" fill="#475569" font-size="7" font-style="italic">config.yaml mcp_servers</text>
+
+      <!-- ============================================================ -->
+      <!-- CLOUD SERVICES — Components                                  -->
+      <!-- ============================================================ -->
+
+      <!-- LLM Providers -->
+      <rect x="1012" y="74" width="338" height="145" rx="8" fill="#020617" stroke="#fbbf24" stroke-width="1.5" filter="url(#glow-amber)"/>
+      <rect x="1012" y="74" width="338" height="145" rx="8" fill="#fbbf24" opacity="0.03"/>
+      <text x="1032" y="94" fill="#fbbf24" font-size="11" font-weight="700">LLM Providers</text>
+      <text x="1032" y="114" fill="#fbbf24" font-size="9">★ Currently: Nous Portal</text>
+      <text x="1032" y="130" fill="#e2e8f0" font-size="9" font-weight="600">claude-opus-4.6</text>
+      <text x="1032" y="147" fill="#94a3b8" font-size="8">OpenRouter / Anthropic</text>
+      <text x="1032" y="160" fill="#94a3b8" font-size="8">OpenAI / DeepSeek</text>
+      <text x="1032" y="173" fill="#94a3b8" font-size="8">Google / xAI / 20+ more</text>
+      <text x="1032" y="211" fill="#475569" font-size="7" font-style="italic">credential pools + rotation</text>
+
+      <!-- Subagents -->
+      <rect x="1012" y="240" width="338" height="95" rx="8" fill="#020617" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+      <text x="1032" y="260" fill="#34d399" font-size="10" font-weight="600">Subagents</text>
+      <text x="1032" y="278" fill="#94a3b8" font-size="8">delegate_task()</text>
+      <text x="1032" y="291" fill="#94a3b8" font-size="8">Isolated context + terminal</text>
+      <text x="1032" y="304" fill="#94a3b8" font-size="8">Up to 3 parallel</text>
+      <text x="1032" y="327" fill="#475569" font-size="7" font-style="italic">subagent sessions</text>
+
+      <!-- Browser -->
+      <rect x="1012" y="352" width="338" height="95" rx="8" fill="#020617" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="1032" y="372" fill="#fb923c" font-size="10" font-weight="600">Browser</text>
+      <text x="1032" y="390" fill="#94a3b8" font-size="8">Browserbase (cloud)</text>
+      <text x="1032" y="403" fill="#94a3b8" font-size="8">Camofox / CDP</text>
+      <text x="1032" y="439" fill="#475569" font-size="7" font-style="italic">Nous subscription managed</text>
+
+      <!-- Web Tools -->
+      <rect x="1012" y="464" width="338" height="95" rx="8" fill="#020617" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="1032" y="484" fill="#fb923c" font-size="10" font-weight="600">Web Tools</text>
+      <text x="1032" y="502" fill="#94a3b8" font-size="8">Firecrawl search + extract</text>
+      <text x="1032" y="515" fill="#94a3b8" font-size="8">web_search / web_extract</text>
+      <text x="1032" y="551" fill="#475569" font-size="7" font-style="italic">Nous subscription managed</text>
+
+      <!-- Image Gen -->
+      <rect x="1012" y="576" width="338" height="80" rx="8" fill="#020617" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="1032" y="596" fill="#fb923c" font-size="10" font-weight="600">Image Gen</text>
+      <text x="1032" y="614" fill="#94a3b8" font-size="8">FAL (Nous managed)</text>
+      <text x="1032" y="648" fill="#475569" font-size="7" font-style="italic">image_generate()</text>
+
+      <!-- ============================================================ -->
+      <!-- ARROWS — Data Flow                                           -->
+      <!-- ============================================================ -->
+
+      <!-- Cyan: User Interfaces → Input Processing -->
+      <line x1="231" y1="124" x2="268" y2="124" stroke="#22d3ee" stroke-width="1.3" marker-end="url(#arrow-cyan)" opacity="0.8"/>
+      <line x1="231" y1="230" x2="268" y2="230" stroke="#22d3ee" stroke-width="1.3" marker-end="url(#arrow-cyan)" opacity="0.8"/>
+      <line x1="231" y1="332" x2="268" y2="332" stroke="#22d3ee" stroke-width="1.3" marker-end="url(#arrow-cyan)" opacity="0.8"/>
+      <!-- labels on arrows -->
+      <text x="237" y="118" fill="#22d3ee" font-size="6.5" opacity="0.7">messages</text>
+      <text x="237" y="224" fill="#22d3ee" font-size="6.5" opacity="0.7">commands</text>
+      <text x="237" y="326" fill="#22d3ee" font-size="6.5" opacity="0.7">schedules</text>
+
+      <!-- Emerald: Input Processing → Prompt Builder -->
+      <path d="M 370 378 L 370 400 L 140 400 L 140 494" fill="none" stroke="#34d399" stroke-width="1.3" marker-end="url(#arrow-emerald)" opacity="0.7"/>
+      <text x="145" y="460" fill="#34d399" font-size="6.5" opacity="0.7">route</text>
+
+      <!-- Emerald: Prompt Builder → Agent Loop -->
+      <line x1="246" y1="549" x2="262" y2="549" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)" opacity="0.8"/>
+      <text x="248" y="542" fill="#34d399" font-size="6.5" opacity="0.7">sys+msgs</text>
+
+      <!-- Amber: Agent Loop ↔ LLM Providers -->
+      <path d="M 504 525 L 970 525 L 970 145 L 1010 145" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrow-amber)" opacity="0.7"/>
+      <text x="780" y="518" fill="#fbbf24" font-size="7" opacity="0.7">API call</text>
+      <!-- Return path -->
+      <path d="M 1010 170 L 980 170 L 980 555 L 504 555" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arrow-amber)" opacity="0.5"/>
+      <text x="780" y="565" fill="#fbbf24" font-size="7" opacity="0.5">stream back</text>
+
+      <!-- Emerald: Agent Loop → Tool Dispatch -->
+      <line x1="504" y1="549" x2="522" y2="549" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)" opacity="0.8"/>
+      <text x="506" y="570" fill="#34d399" font-size="6.5" opacity="0.7">tool_calls</text>
+
+      <!-- GREEN: Tool Dispatch → Local Tools (direct call!) -->
+      <line x1="580" y1="602" x2="580" y2="618" stroke="#4ade80" stroke-width="2" marker-end="url(#arrow-green)" opacity="0.9"/>
+      <line x1="640" y1="602" x2="640" y2="618" stroke="#4ade80" stroke-width="2" marker-end="url(#arrow-green)" opacity="0.9"/>
+      <text x="590" y="614" fill="#4ade80" font-size="7" font-weight="600" opacity="0.9">direct call</text>
+
+      <!-- Orange: Tool Dispatch → Cloud Tools -->
+      <path d="M 754 530 L 866 530 L 866 400 L 1010 400" fill="none" stroke="#fb923c" stroke-width="1.3" marker-end="url(#arrow-orange)" opacity="0.7"/>
+      <text x="873" y="394" fill="#fb923c" font-size="6.5" opacity="0.7">browser</text>
+      <path d="M 754 548 L 880 548 L 880 510 L 1010 510" fill="none" stroke="#fb923c" stroke-width="1.3" marker-end="url(#arrow-orange)" opacity="0.7"/>
+      <text x="887" y="504" fill="#fb923c" font-size="6.5" opacity="0.7">web</text>
+      <path d="M 754 566 L 894 566 L 894 616 L 1010 616" fill="none" stroke="#fb923c" stroke-width="1.3" marker-end="url(#arrow-orange)" opacity="0.7"/>
+      <text x="901" y="610" fill="#fb923c" font-size="6.5" opacity="0.7">image</text>
+
+      <!-- Rose dashed: Memory+Skills → Prompt Builder -->
+      <path d="M 140 478 L 140 494" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arrow-rose)" opacity="0.7"/>
+      <text x="145" y="490" fill="#fb7185" font-size="6.5" opacity="0.7">inject</text>
+
+      <!-- Emerald: Agent Loop → Subagents -->
+      <path d="M 430 496 L 430 470 L 960 470 L 960 285 L 1010 285" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-emerald)" opacity="0.6"/>
+      <text x="870" y="280" fill="#34d399" font-size="6.5" opacity="0.7">spawn</text>
+
+      <!-- MCP arrow from Tool Dispatch -->
+      <line x1="754" y1="549" x2="774" y2="549" stroke="#64748b" stroke-width="1" marker-end="url(#arrow-emerald)" opacity="0.5"/>
+
+      <!-- ============================================================ -->
+      <!-- NUMBERED FLOW MARKERS                                        -->
+      <!-- ============================================================ -->
+
+      <!-- 1: cyan — User input arrives -->
+      <circle cx="133" cy="68" r="11" fill="#22d3ee" opacity="0.9"/>
+      <text x="130" y="72" fill="#020617" font-size="10" font-weight="700">1</text>
+
+      <!-- 2: emerald — Routed to prompt builder -->
+      <circle cx="141" cy="490" r="11" fill="#34d399" opacity="0.9"/>
+      <text x="138" y="494" fill="#020617" font-size="10" font-weight="700">2</text>
+
+      <!-- 3: emerald — Full prompt → agent loop -->
+      <circle cx="256" cy="549" r="11" fill="#34d399" opacity="0.9"/>
+      <text x="253" y="553" fill="#020617" font-size="10" font-weight="700">3</text>
+
+      <!-- 4: amber — LLM API call -->
+      <circle cx="1006" cy="145" r="11" fill="#fbbf24" opacity="0.9"/>
+      <text x="1003" y="149" fill="#020617" font-size="10" font-weight="700">4</text>
+
+      <!-- 5: green — Local tool dispatch -->
+      <circle cx="580" cy="610" r="11" fill="#4ade80" opacity="0.9"/>
+      <text x="577" y="614" fill="#020617" font-size="10" font-weight="700">5</text>
+
+      <!-- 6: orange — Cloud tool dispatch -->
+      <circle cx="860" cy="530" r="11" fill="#fb923c" opacity="0.9"/>
+      <text x="857" y="534" fill="#020617" font-size="10" font-weight="700">6</text>
+
+      <!-- ============================================================ -->
+      <!-- LEGEND (bottom of SVG)                                       -->
+      <!-- ============================================================ -->
+      <rect x="36" y="936" width="920" height="68" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+      <text x="56" y="954" fill="#e2e8f0" font-size="9" font-weight="600">Data Flow</text>
+      <!-- Flow legend items -->
+      <circle cx="66" cy="968" r="7" fill="#22d3ee" opacity="0.9"/>
+      <text x="63" y="972" fill="#020617" font-size="7.5" font-weight="700">1</text>
+      <text x="78" y="972" fill="#94a3b8" font-size="7">User input</text>
+
+      <circle cx="160" cy="968" r="7" fill="#34d399" opacity="0.9"/>
+      <text x="157" y="972" fill="#020617" font-size="7.5" font-weight="700">2</text>
+      <text x="172" y="972" fill="#94a3b8" font-size="7">Route + inject</text>
+
+      <circle cx="270" cy="968" r="7" fill="#34d399" opacity="0.9"/>
+      <text x="267" y="972" fill="#020617" font-size="7.5" font-weight="700">3</text>
+      <text x="282" y="972" fill="#94a3b8" font-size="7">Agent loop</text>
+
+      <circle cx="368" cy="968" r="7" fill="#fbbf24" opacity="0.9"/>
+      <text x="365" y="972" fill="#020617" font-size="7.5" font-weight="700">4</text>
+      <text x="380" y="972" fill="#94a3b8" font-size="7">LLM API</text>
+
+      <circle cx="450" cy="968" r="7" fill="#4ade80" opacity="0.9"/>
+      <text x="447" y="972" fill="#020617" font-size="7.5" font-weight="700">5</text>
+      <text x="462" y="972" fill="#94a3b8" font-size="7">Local tools</text>
+
+      <circle cx="548" cy="968" r="7" fill="#fb923c" opacity="0.9"/>
+      <text x="545" y="972" fill="#020617" font-size="7.5" font-weight="700">6</text>
+      <text x="560" y="972" fill="#94a3b8" font-size="7">Cloud services</text>
+
+      <!-- Component key -->
+      <text x="668" y="954" fill="#e2e8f0" font-size="9" font-weight="600">Components</text>
+      <rect x="668" y="962" width="12" height="12" rx="2" fill="none" stroke="#22d3ee" stroke-width="1.5"/>
+      <text x="684" y="972" fill="#94a3b8" font-size="7">Interfaces</text>
+      <rect x="740" y="962" width="12" height="12" rx="2" fill="none" stroke="#34d399" stroke-width="1.5"/>
+      <text x="756" y="972" fill="#94a3b8" font-size="7">Engine</text>
+      <rect x="800" y="962" width="12" height="12" rx="2" fill="none" stroke="#fb7185" stroke-width="1.5"/>
+      <text x="816" y="972" fill="#94a3b8" font-size="7">State</text>
+      <rect x="852" y="962" width="12" height="12" rx="2" fill="none" stroke="#fbbf24" stroke-width="1.5"/>
+      <text x="868" y="972" fill="#94a3b8" font-size="7">LLM</text>
+      <rect x="896" y="962" width="12" height="12" rx="2" fill="none" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="912" y="972" fill="#94a3b8" font-size="7">Cloud</text>
+
+    </svg>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- INFO CARDS                                                    -->
+  <!-- ============================================================ -->
+  <div class="cards">
+
+    <div class="card">
+      <div class="card-title">
+        <span class="card-dot" style="background:#a78bfa"></span>
+        Host Machine (Keith's Mac)
+      </div>
+      <ul>
+        <li>Hermes process runs here (Python, macOS)</li>
+        <li>~/.hermes/ — config, skills, memory, sessions</li>
+        <li>Gateway, CLI, cron scheduler — all host-side</li>
+        <li>Agent loop + prompt builder execute locally</li>
+        <li>terminal/file/code tools run DIRECTLY here</li>
+        <li>Full access to filesystem, git, localhost, SSH</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span class="card-dot" style="background:#34d399"></span>
+        Local Execution (the upgrade)
+      </div>
+      <ul>
+        <li>terminal(), read_file(), write_file() run on macOS</li>
+        <li>patch(), search_files(), execute_code() run on macOS</li>
+        <li>Persistent filesystem — projects survive across sessions</li>
+        <li>Can access ~/projects, git repos, local dev servers</li>
+        <li>Can SSH to remote servers, run Docker, manage deploys</li>
+        <li>Replaced Modal sandbox — zero isolation overhead</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span class="card-dot" style="background:#fbbf24"></span>
+        Cloud Services
+      </div>
+      <ul>
+        <li>LLM: Nous Portal → Claude Opus 4.6 (current)</li>
+        <li>Browser: Browserbase (Nous managed)</li>
+        <li>Web: Firecrawl search + extract (Nous managed)</li>
+        <li>Image: FAL generation (Nous managed)</li>
+        <li>TTS: Edge TTS (currently active)</li>
+        <li>20+ LLM providers available with credential rotation</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span class="card-dot" style="background:#34d399"></span>
+        The Agent Loop
+      </div>
+      <ul>
+        <li>Runs on host — up to 90 turns per conversation</li>
+        <li>Each turn: build prompt → call LLM → check for tools</li>
+        <li>Tool calls dispatched LOCALLY or to cloud services</li>
+        <li>Results appended to context → next LLM call</li>
+        <li>Context compression triggers near token limit</li>
+        <li>Subagents: up to 3 parallel, each with own session</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- FOOTER                                                        -->
+  <!-- ============================================================ -->
+  <div class="footer">
+    Hermes Agent by Nous Research &bull; Chase's Architecture Map &bull; Terminal backend: Local (macOS) &bull; Model: anthropic/claude-opus-4.6 via Nous
+  </div>
+
+</div>
+</body>
+</html>

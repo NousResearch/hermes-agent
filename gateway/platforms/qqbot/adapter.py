@@ -224,6 +224,14 @@ class QQAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
+        # Heartbeat-ACK watchdog state. QQ replies to every op 1 heartbeat with
+        # an op 11 HEARTBEAT_ACK. We track the last ACK time so the heartbeat
+        # loop can detect a half-open ("zombie") connection — e.g. after the
+        # host sleeps/resumes and the TCP socket is silently dead — and force a
+        # reconnect instead of waiting for the server-side session timeout
+        # (~30 min, close code 4009).
+        self._last_heartbeat_ack: float = 0.0
+        self._heartbeat_pending: bool = False
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
@@ -711,21 +719,42 @@ class QQAdapter(BasePlatformAdapter):
                 raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
+        """Send periodic heartbeats and reconnect when ACKs stop arriving.
 
-        The interval is set from the Hello (op 10) event's heartbeat_interval.
-        QQ's default is ~41s; we send at 80% of the interval to stay safe.
+        QQ Gateway expects op 1 heartbeat with the latest seq and replies with
+        op 11 HEARTBEAT_ACK. Without an ACK watchdog, a half-open WebSocket can
+        look connected forever after host sleep/resume because receive() blocks
+        and writes may disappear into a dead TCP socket. If a previous heartbeat
+        is still unacknowledged after one full interval, close the socket so the
+        read loop enters the normal reconnect path.
         """
         try:
             while self._running:
                 await asyncio.sleep(self._heartbeat_interval)
                 if not self._ws or self._ws.closed:
+                    self._heartbeat_pending = False
                     continue
+
+                if self._heartbeat_pending:
+                    age = time.monotonic() - self._last_heartbeat_ack
+                    logger.warning(
+                        "[%s] Heartbeat ACK timeout after %.1fs; closing WebSocket to reconnect",
+                        self._log_tag,
+                        age,
+                    )
+                    await self._ws.close()
+                    self._heartbeat_pending = False
+                    continue
+
                 try:
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
+                    self._heartbeat_pending = True
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    logger.warning("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    self._heartbeat_pending = False
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
         except asyncio.CancelledError:
             pass
 
@@ -827,6 +856,8 @@ class QQAdapter(BasePlatformAdapter):
             interval_ms = d_data.get("heartbeat_interval", 30000)
             # Send heartbeats at 80% of the server interval to stay safe
             self._heartbeat_interval = interval_ms / 1000.0 * 0.8
+            self._last_heartbeat_ack = time.monotonic()
+            self._heartbeat_pending = False
             logger.debug(
                 "[%s] Hello received, heartbeat_interval=%dms (sending every %.1fs)",
                 self._log_tag,
@@ -863,6 +894,8 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 11 = Heartbeat ACK
         if op == 11:
+            self._last_heartbeat_ack = time.monotonic()
+            self._heartbeat_pending = False
             return
 
         # op 7 = Server Reconnect — server asks client to reconnect (e.g.

@@ -464,10 +464,17 @@ class TestDispatchPayload:
         # Should be 50000 / 1000 * 0.8 = 40.0
         assert adapter._heartbeat_interval == 40.0
 
-    def test_op11_heartbeat_ack(self):
+    def test_op11_heartbeat_ack(self, monkeypatch):
+        from gateway.platforms.qqbot import adapter as qq_adapter_module
+
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        # Should not raise
+        adapter._heartbeat_pending = True
+        monkeypatch.setattr(qq_adapter_module.time, "monotonic", lambda: 123.0)
+
         adapter._dispatch_payload({"op": 11, "t": "HEARTBEAT_ACK", "s": 42})
+
+        assert adapter._last_heartbeat_ack == 123.0
+        assert adapter._heartbeat_pending is False
 
     def test_seq_tracking(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
@@ -479,6 +486,77 @@ class TestDispatchPayload:
         adapter._dispatch_payload({"op": 0, "t": "READY", "s": 5, "d": {}})
         adapter._dispatch_payload({"op": 0, "t": "SOME_EVENT", "s": 10, "d": {}})
         assert adapter._last_seq == 10
+
+
+class TestHeartbeatWatchdog:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_sets_pending_until_ack(self, monkeypatch):
+        from gateway.platforms.qqbot import adapter as qq_adapter_module
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._last_seq = 42
+        adapter._heartbeat_interval = 0.01
+
+        class FakeWS:
+            closed = False
+
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, payload):
+                self.sent.append(payload)
+                adapter._running = False
+
+        async def no_sleep(_delay):
+            return None
+
+        fake_ws = FakeWS()
+        adapter._ws = fake_ws
+        monkeypatch.setattr(qq_adapter_module.asyncio, "sleep", no_sleep)
+
+        await adapter._heartbeat_loop()
+
+        assert fake_ws.sent == [{"op": 1, "d": 42}]
+        assert adapter._heartbeat_pending is True
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_closes_ws_when_previous_ack_missing(self, monkeypatch):
+        from gateway.platforms.qqbot import adapter as qq_adapter_module
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._heartbeat_interval = 0.01
+        adapter._last_heartbeat_ack = 100.0
+        adapter._heartbeat_pending = True
+
+        class FakeWS:
+            closed = False
+
+            def __init__(self):
+                self.closed_by_watchdog = False
+
+            async def close(self):
+                self.closed = True
+                self.closed_by_watchdog = True
+                adapter._running = False
+
+        async def no_sleep(_delay):
+            return None
+
+        fake_ws = FakeWS()
+        adapter._ws = fake_ws
+        monkeypatch.setattr(qq_adapter_module.asyncio, "sleep", no_sleep)
+        monkeypatch.setattr(qq_adapter_module.time, "monotonic", lambda: 130.0)
+
+        await adapter._heartbeat_loop()
+
+        assert fake_ws.closed_by_watchdog is True
+        assert adapter._heartbeat_pending is False
 
 
 # ---------------------------------------------------------------------------

@@ -653,6 +653,34 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     except Exception:
         _bskin = None
         _hero = HERMES_CADUCEUS
+
+    # When the skin sets hide_info, show only the logo — skip the info panel
+    _hide_info = getattr(_bskin, 'hide_info', False) if _bskin else False
+    if _hide_info:
+        agent_name = _skin_branding("agent_name", "Hermes Agent")
+        title_color = _skin_color("banner_title", "#FFD700")
+        border_color = _skin_color("banner_border", "#CD7F32")
+        console.print()
+        term_width = shutil.get_terminal_size().columns
+        if term_width >= 95:
+            _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+            console.print(_logo)
+            console.print()
+        model_short = model.split("/")[-1] if "/" in model else model
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
+        if len(model_short) > 28:
+            model_short = model_short[:25] + "..."
+        ctx_str = f" · {_format_context_length(context_length)} context" if context_length else ""
+        summary = f"[dim {dim}]{model_short}{ctx_str} · /help for commands[/]"
+        console.print(Panel(
+            summary,
+            title=f"[bold {title_color}]{format_banner_version_label()}[/]",
+            border_style=border_color,
+            padding=(0, 2),
+        ))
+        return
+
     left_lines = ["", _hero, ""]
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name. Show the preset and

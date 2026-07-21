@@ -91,6 +91,9 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       web_search: "🔮"        # Override web_search tool emoji
       # Any tool not listed here uses its registry default
 
+    # Hide info: suppress tools/skills/MCP info panel in the welcome banner
+    hide_info: true              # Default: false
+
 USAGE
 =====
 
@@ -156,6 +159,7 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    hide_info: bool = False  # When True, suppress the info panel (tools, skills, MCP) in the banner
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -836,6 +840,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
+        hide_info=bool(data.get("hide_info", False)),
     )
 
 

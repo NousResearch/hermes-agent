@@ -124,6 +124,21 @@ def test_proposal_can_only_be_claimed_once(tmp_path):
         )
 
 
+def test_only_latest_unapplied_proposal_remains_active(tmp_path):
+    store = _store(tmp_path)
+    first = store.create_proposal(
+        resource_type="timer", resource_id="tea", operation="update",
+        before={"name": "Tea"}, desired={"name": "Tea timer"}, now=NOW,
+    )
+    second = store.create_proposal(
+        resource_type="timer", resource_id="coffee", operation="update",
+        before={"name": "Coffee"}, desired={"name": "Coffee timer"}, now=NOW,
+    )
+
+    assert store.get_proposal(first["id"]) is None
+    assert store.get_proposal(second["id"])["status"] == "pending"
+
+
 def test_record_applied_creates_auditable_change_and_prunes_history(tmp_path):
     store = _store(tmp_path, history_limit=2)
     change_ids = []

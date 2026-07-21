@@ -96,14 +96,20 @@ def _handle_inspect(args: dict, **kw) -> str:
             resource_id = args.get("resource_id", "")
             return _json_result(_run_async(lambda: manager.get(resource_type, resource_id)))
         if action == "history":
-            return _json_result(store.list_history(args.get("limit")))
+            reconciled = _run_async(lambda: _reconcile_unfinished(manager, store))
+            return _json_result(
+                {
+                    "changes": store.list_history(args.get("limit")),
+                    "reconciliation": reconciled,
+                }
+            )
         return tool_error("action must be capabilities, list, get, or history")
     except Exception as exc:
         logger.error("ha_inspect_config error: %s", exc)
         return tool_error(f"Home Assistant configuration inspection failed: {exc}")
 
 
-def _strict_approval(message: str, operation: str) -> bool:
+def _strict_approval(message: str, operation: str) -> dict[str, Any]:
     return request_tool_approval(
         "ha_manage_config",
         message,
@@ -112,6 +118,62 @@ def _strict_approval(message: str, operation: str) -> bool:
         allow_headless=False,
         allow_permanent=False,
     )
+
+
+def _resource_id_from_result(
+    resource_type: str, result: Any, fallback: str
+) -> str:
+    if not isinstance(result, dict):
+        return fallback
+    keys = {
+        "group": ("entry_id",),
+        "area": ("area_id", "id"),
+        "entity": ("entity_id", "id"),
+        "device": ("device_id", "id"),
+    }.get(resource_type, ("id",))
+    return next((result[key] for key in keys if result.get(key)), fallback)
+
+
+def _desired_matches_current(desired: Any, current: Any) -> bool:
+    """Check desired fields as a subset of a richer Home Assistant response."""
+    if isinstance(desired, dict) and isinstance(current, dict):
+        return all(
+            key in current and _desired_matches_current(value, current[key])
+            for key, value in desired.items()
+        )
+    return desired == current
+
+
+async def _reconcile_unfinished(manager, store) -> list[dict[str, str]]:
+    outcomes = []
+    for change in store.list_unfinished():
+        try:
+            current = await manager.get(change["resource_type"], change["resource_id"])
+        except Exception:
+            outcomes.append({"change_id": change["id"], "status": "unreachable"})
+            continue
+        if change["status"] in {"applying", "apply_uncertain"}:
+            if _desired_matches_current(change["after"], current):
+                store.finalize_applied(change["id"], after=current)
+                status = "applied"
+            elif canonical_fingerprint(current) == canonical_fingerprint(change["before"]):
+                store.mark_apply_not_applied(change["id"])
+                status = "not_applied"
+            else:
+                store.mark_apply_uncertain(change["id"])
+                status = "manual_review"
+        else:
+            if canonical_fingerprint(current) == canonical_fingerprint(change["before"]):
+                store.record_rolled_back(change["id"])
+                status = "rolled_back"
+            elif canonical_fingerprint(current) == change["after_fingerprint"]:
+                store.mark_rollback_failed(change["id"])
+                status = "not_rolled_back"
+            else:
+                store.mark_rollback_uncertain(change["id"])
+                status = "manual_review"
+        outcomes.append({"change_id": change["id"], "status": status})
+    return outcomes
 
 
 def _handle_preview(args: dict, manager, store, ttl: int) -> str:
@@ -159,12 +221,20 @@ def _handle_apply(args: dict, manager, store) -> str:
         f"{proposal['resource_type']} {proposal['resource_id']}? "
         f"Changes: {json.dumps(_redact(structured_diff(proposal['before'], proposal['desired'])))}"
     )
-    if not _strict_approval(message, "apply"):
-        return tool_error("Home Assistant configuration change was not approved")
+    approval = _strict_approval(message, "apply")
+    if not approval.get("approved"):
+        return tool_error(
+            str(approval.get("message") or "Home Assistant configuration change was not approved")
+        )
     current = _run_async(
         lambda: manager.get(proposal["resource_type"], proposal["resource_id"])
     )
     store.claim_proposal(proposal_id, canonical_fingerprint(current))
+    attempt = store.begin_apply(
+        proposal_id,
+        created_by_hermes=proposal["operation"] == "create",
+        resource_id=proposal["resource_id"],
+    )
     try:
         applied_result = _run_async(
             lambda: manager.apply(
@@ -175,24 +245,19 @@ def _handle_apply(args: dict, manager, store) -> str:
             )
         )
     except Exception:
-        store.mark_proposal_failed(proposal_id)
+        store.mark_apply_uncertain(attempt["id"])
         raise
-    actual_resource_id = proposal["resource_id"]
-    if isinstance(applied_result, dict):
-        actual_resource_id = (
-            applied_result.get("id")
-            or applied_result.get("entry_id")
-            or actual_resource_id
-        )
+    actual_resource_id = _resource_id_from_result(
+        proposal["resource_type"], applied_result, proposal["resource_id"]
+    )
     after = _run_async(
         lambda: manager.get(proposal["resource_type"], actual_resource_id)
     )
     if after is None:
         after = applied_result
-    change = store.record_applied(
-        proposal_id,
+    change = store.finalize_applied(
+        attempt["id"],
         after=after,
-        created_by_hermes=proposal["operation"] == "create",
         resource_id=actual_resource_id,
     )
     return _json_result({"status": "applied", "change_id": change["id"], "after": after})
@@ -207,8 +272,9 @@ def _handle_rollback(args: dict, manager, store) -> str:
         f"Rollback Home Assistant change {change_id} for "
         f"{change['resource_type']} {change['resource_id']}?"
     )
-    if not _strict_approval(message, "rollback"):
-        return tool_error("Home Assistant rollback was not approved")
+    approval = _strict_approval(message, "rollback")
+    if not approval.get("approved"):
+        return tool_error(str(approval.get("message") or "Home Assistant rollback was not approved"))
     current = _run_async(
         lambda: manager.get(change["resource_type"], change["resource_id"])
     )
@@ -216,7 +282,7 @@ def _handle_rollback(args: dict, manager, store) -> str:
     try:
         result = _run_async(lambda: manager.rollback(change))
     except Exception:
-        store.mark_rollback_failed(change_id)
+        store.mark_rollback_uncertain(change_id)
         raise
     rolled_back = store.record_rolled_back(change_id)
     return _json_result(

@@ -138,7 +138,37 @@ class HomeAssistantResources:
                 raise
         if resource_type == GROUP_RESOURCE:
             entries = await self.list(resource_type)
-            return next((entry for entry in entries if entry.get("entry_id") == resource_id), None)
+            entry = next(
+                (item for item in entries if item.get("entry_id") == resource_id), None
+            )
+            if entry is None:
+                return None
+            flow = await self.client.rest(
+                "POST", "/api/config/config_entries/options/flow",
+                {"handler": resource_id},
+            )
+            flow_id = flow.get("flow_id")
+            try:
+                fields = flow.get("data_schema") or []
+                editable = {
+                    field["name"]: field["default"]
+                    for field in fields
+                    if isinstance(field, dict) and "name" in field and "default" in field
+                }
+                if "entities" not in editable or "hide_members" not in editable:
+                    raise ValueError(
+                        "Home Assistant did not expose editable group options; refusing unsafe snapshot"
+                    )
+                return {
+                    "entry_id": resource_id,
+                    "name": entry.get("title", ""),
+                    **editable,
+                }
+            finally:
+                if flow_id:
+                    await self.client.rest(
+                        "DELETE", f"/api/config/config_entries/options/flow/{flow_id}"
+                    )
         items = await self.list(resource_type)
         return next(
             (item for item in items if self._matches(resource_type, item, resource_id)), None

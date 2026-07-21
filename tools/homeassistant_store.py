@@ -193,6 +193,9 @@ class HomeAssistantChangeStore:
         proposal_id = uuid.uuid4().hex
         with self._connect() as conn:
             conn.execute(
+                "UPDATE proposals SET status = 'superseded' WHERE status = 'pending'"
+            )
+            conn.execute(
                 "INSERT INTO proposals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
                 (
                     proposal_id,
@@ -205,6 +208,11 @@ class HomeAssistantChangeStore:
                     _timestamp(created),
                     _timestamp(expires),
                 ),
+            )
+            conn.execute(
+                """DELETE FROM proposals
+                   WHERE status IN ('expired', 'stale', 'failed', 'superseded')
+                     AND id NOT IN (SELECT proposal_id FROM changes)"""
             )
         proposal = self.get_proposal(proposal_id)
         assert proposal is not None
@@ -263,6 +271,25 @@ class HomeAssistantChangeStore:
         resource_id: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
+        change = self.begin_apply(
+            proposal_id,
+            created_by_hermes=created_by_hermes,
+            resource_id=resource_id,
+            now=now,
+        )
+        return self.finalize_applied(
+            change["id"], after=after, resource_id=resource_id, now=now
+        )
+
+    def begin_apply(
+        self,
+        proposal_id: str,
+        *,
+        created_by_hermes: bool,
+        resource_id: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Persist rollback evidence before making the remote mutation."""
         applied_at = _as_utc(now or _utc_now())
         conn = self._connect()
         try:
@@ -272,9 +299,15 @@ class HomeAssistantChangeStore:
             if proposal is None or proposal["status"] != "applying":
                 conn.rollback()
                 raise ProposalUnavailable("proposal is not being applied")
+            existing = conn.execute(
+                "SELECT * FROM changes WHERE proposal_id = ?", (proposal_id,)
+            ).fetchone()
+            if existing is not None:
+                conn.rollback()
+                raise ProposalUnavailable("proposal already has a mutation attempt")
             change_id = uuid.uuid4().hex
             conn.execute(
-                "INSERT INTO changes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL)",
+                "INSERT INTO changes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'applying', NULL)",
                 (
                     change_id,
                     proposal_id,
@@ -282,18 +315,11 @@ class HomeAssistantChangeStore:
                     resource_id or proposal["resource_id"],
                     proposal["operation"],
                     _canonical_json(proposal["before"]),
-                    _canonical_json(after),
-                    canonical_fingerprint(after),
+                    _canonical_json(proposal["desired"]),
+                    canonical_fingerprint(proposal["desired"]),
                     _timestamp(applied_at),
                     int(created_by_hermes),
                 ),
-            )
-            conn.execute("UPDATE proposals SET status = 'applied' WHERE id = ?", (proposal_id,))
-            conn.execute(
-                """DELETE FROM changes WHERE id IN (
-                    SELECT id FROM changes ORDER BY applied_at DESC, rowid DESC LIMIT -1 OFFSET ?
-                )""",
-                (self.history_limit,),
             )
             conn.commit()
         finally:
@@ -301,6 +327,98 @@ class HomeAssistantChangeStore:
         change = self.get_change(change_id)
         assert change is not None
         return change
+
+    def finalize_applied(
+        self,
+        change_id: str,
+        *,
+        after: Any,
+        resource_id: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        applied_at = _as_utc(now or _utc_now())
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM changes WHERE id = ?", (change_id,)).fetchone()
+            change = self._change(row)
+            if change is None or change["status"] not in {"applying", "apply_uncertain"}:
+                conn.rollback()
+                raise ProposalUnavailable("change is not awaiting apply completion")
+            conn.execute(
+                """UPDATE changes SET resource_id = ?, after_json = ?,
+                   after_fingerprint = ?, applied_at = ?, status = 'applied'
+                   WHERE id = ?""",
+                (
+                    resource_id or change["resource_id"],
+                    _canonical_json(after),
+                    canonical_fingerprint(after),
+                    _timestamp(applied_at),
+                    change_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE proposals SET status = 'applied' WHERE id = ?",
+                (change["proposal_id"],),
+            )
+            conn.execute(
+                """DELETE FROM changes WHERE id IN (
+                    SELECT id FROM changes ORDER BY applied_at DESC, rowid DESC LIMIT -1 OFFSET ?
+                )""",
+                (self.history_limit,),
+            )
+            conn.execute(
+                """DELETE FROM proposals
+                   WHERE status != 'pending'
+                     AND id NOT IN (SELECT proposal_id FROM changes)"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        change = self.get_change(change_id)
+        assert change is not None
+        return change
+
+    def mark_apply_uncertain(self, change_id: str) -> None:
+        """Retain an interrupted apply for later state-based reconciliation."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE changes SET status = 'apply_uncertain' WHERE id = ? AND status = 'applying'",
+                (change_id,),
+            )
+
+    def mark_apply_not_applied(self, change_id: str) -> None:
+        """Close an attempt when the remote resource still matches its before state."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT proposal_id FROM changes WHERE id = ?", (change_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise ProposalUnavailable("change not found")
+            conn.execute(
+                """UPDATE changes SET status = 'failed'
+                   WHERE id = ? AND status IN ('applying', 'apply_uncertain')""",
+                (change_id,),
+            )
+            conn.execute(
+                "UPDATE proposals SET status = 'failed' WHERE id = ? AND status = 'applying'",
+                (row["proposal_id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_unfinished(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM changes
+                   WHERE status IN ('applying', 'apply_uncertain', 'rolling_back', 'rollback_uncertain')
+                   ORDER BY applied_at, rowid"""
+            ).fetchall()
+        return [self._change(row) for row in rows]
 
     def get_change(self, change_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -348,7 +466,7 @@ class HomeAssistantChangeStore:
         with self._connect() as conn:
             cursor = conn.execute(
                 """UPDATE changes SET status = 'rolled_back', rollback_at = ?
-                   WHERE id = ? AND status = 'rolling_back'""",
+                   WHERE id = ? AND status IN ('rolling_back', 'rollback_uncertain')""",
                 (_timestamp(rolled_back_at), change_id),
             )
             if cursor.rowcount != 1:
@@ -361,6 +479,14 @@ class HomeAssistantChangeStore:
         """Return a failed rollback claim to its applied, retryable state."""
         with self._connect() as conn:
             conn.execute(
-                "UPDATE changes SET status = 'applied' WHERE id = ? AND status = 'rolling_back'",
+                """UPDATE changes SET status = 'applied'
+                   WHERE id = ? AND status IN ('rolling_back', 'rollback_uncertain')""",
+                (change_id,),
+            )
+
+    def mark_rollback_uncertain(self, change_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE changes SET status = 'rollback_uncertain' WHERE id = ? AND status = 'rolling_back'",
                 (change_id,),
             )

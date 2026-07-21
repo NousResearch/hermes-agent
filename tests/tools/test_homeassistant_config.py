@@ -171,6 +171,44 @@ async def test_group_create_uses_config_entry_flow():
     assert client.rest.await_args_list[1].args[-1] == {"next_step_id": "light"}
 
 
+@pytest.mark.asyncio
+async def test_group_get_snapshots_editable_options_and_aborts_flow():
+    client = MagicMock()
+    client.websocket = AsyncMock(return_value=[
+        {"entry_id": "entry-1", "domain": "group", "title": "Downstairs"}
+    ])
+    client.rest = AsyncMock(side_effect=[
+        {
+            "flow_id": "options-1",
+            "data_schema": [
+                {"name": "entities", "default": ["light.kitchen"]},
+                {"name": "hide_members", "default": False},
+                {"name": "all", "default": True},
+            ],
+        },
+        None,
+    ])
+    resources = HomeAssistantResources(client)
+
+    result = await resources.get("group", "entry-1")
+
+    assert result == {
+        "entry_id": "entry-1", "name": "Downstairs",
+        "entities": ["light.kitchen"], "hide_members": False, "all": True,
+    }
+    assert client.rest.await_args_list[-1].args == (
+        "DELETE", "/api/config/config_entries/options/flow/options-1"
+    )
+
+
+def test_generated_area_id_is_used_for_audit_and_rollback_target():
+    from tools.homeassistant_config_tool import _resource_id_from_result
+
+    assert _resource_id_from_result(
+        "area", {"area_id": "01JAREA"}, "requested-name"
+    ) == "01JAREA"
+
+
 def test_preview_apply_and_rollback_handlers_enforce_strict_approval(tmp_path):
     from tools import homeassistant_config_tool as tool
     from tools.homeassistant_store import HomeAssistantChangeStore
@@ -188,7 +226,9 @@ def test_preview_apply_and_rollback_handlers_enforce_strict_approval(tmp_path):
 
     with (
         patch.object(tool, "_get_runtime", return_value=(manager, store, 900)),
-        patch.object(tool, "request_tool_approval", return_value=True) as approval,
+        patch.object(
+            tool, "request_tool_approval", return_value={"approved": True, "message": None}
+        ) as approval,
     ):
         preview = json.loads(tool._handle_manage({
             "action": "preview", "resource_type": "automation", "resource_id": "morning",
@@ -208,6 +248,105 @@ def test_preview_apply_and_rollback_handlers_enforce_strict_approval(tmp_path):
         assert call.kwargs["allow_yolo"] is False
         assert call.kwargs["allow_headless"] is False
         assert call.kwargs["allow_permanent"] is False
+
+
+@pytest.mark.parametrize("approval_result", [
+    {"approved": False, "message": "denied"},
+    {"approved": False, "message": "approval_required", "approval_id": "pending-1"},
+])
+def test_denied_or_deferred_apply_never_mutates_home_assistant(
+    tmp_path, approval_result
+):
+    from tools import homeassistant_config_tool as tool
+    from tools.homeassistant_store import HomeAssistantChangeStore
+
+    manager = MagicMock()
+    manager.get = AsyncMock(return_value={"alias": "Old"})
+    manager.apply = AsyncMock()
+    store = HomeAssistantChangeStore(tmp_path / "changes.sqlite3")
+    proposal = store.create_proposal(
+        resource_type="automation", resource_id="morning", operation="update",
+        before={"alias": "Old"}, desired={"alias": "New"},
+    )
+
+    with (
+        patch.object(tool, "_get_runtime", return_value=(manager, store, 900)),
+        patch.object(tool, "request_tool_approval", return_value=approval_result),
+    ):
+        result = json.loads(tool._handle_manage({
+            "action": "apply", "proposal_id": proposal["id"],
+        }))
+
+    assert result["error"] == approval_result["message"]
+    manager.get.assert_not_called()
+    manager.apply.assert_not_called()
+    assert store.get_proposal(proposal["id"])["status"] == "pending"
+
+
+def test_denied_rollback_never_mutates_home_assistant(tmp_path):
+    from tools import homeassistant_config_tool as tool
+    from tools.homeassistant_store import HomeAssistantChangeStore
+
+    manager = MagicMock()
+    manager.get = AsyncMock()
+    manager.rollback = AsyncMock()
+    store = HomeAssistantChangeStore(tmp_path / "changes.sqlite3")
+    proposal = store.create_proposal(
+        resource_type="automation", resource_id="morning", operation="update",
+        before={"alias": "Old"}, desired={"alias": "New"},
+    )
+    store.claim_proposal(proposal["id"], proposal["before_fingerprint"])
+    change = store.record_applied(
+        proposal["id"], after={"alias": "New"}, created_by_hermes=False,
+    )
+
+    with (
+        patch.object(tool, "_get_runtime", return_value=(manager, store, 900)),
+        patch.object(
+            tool, "request_tool_approval",
+            return_value={"approved": False, "message": "denied"},
+        ),
+    ):
+        result = json.loads(tool._handle_manage({
+            "action": "rollback", "change_id": change["id"],
+        }))
+
+    assert result["error"] == "denied"
+    manager.get.assert_not_called()
+    manager.rollback.assert_not_called()
+    assert store.get_change(change["id"])["status"] == "applied"
+
+
+def test_interrupted_apply_is_audited_and_reconciled_from_remote_state(tmp_path):
+    from tools import homeassistant_config_tool as tool
+    from tools.homeassistant_store import HomeAssistantChangeStore
+
+    manager = MagicMock()
+    manager.get = AsyncMock(side_effect=[{"alias": "Old"}, {"alias": "New"}])
+    manager.apply = AsyncMock(side_effect=RuntimeError("response lost"))
+    store = HomeAssistantChangeStore(tmp_path / "changes.sqlite3")
+    proposal = store.create_proposal(
+        resource_type="automation", resource_id="morning", operation="update",
+        before={"alias": "Old"}, desired={"alias": "New"},
+    )
+
+    with (
+        patch.object(tool, "_get_runtime", return_value=(manager, store, 900)),
+        patch.object(
+            tool, "request_tool_approval",
+            return_value={"approved": True, "message": None},
+        ),
+    ):
+        failed = json.loads(tool._handle_manage({
+            "action": "apply", "proposal_id": proposal["id"],
+        }))
+        history = json.loads(tool._handle_inspect({"action": "history"}))["result"]
+
+    assert "response lost" in failed["error"]
+    assert history["reconciliation"][0]["status"] == "applied"
+    assert history["changes"][0]["status"] == "applied"
+    assert history["changes"][0]["before"] == {"alias": "Old"}
+    assert history["changes"][0]["after"] == {"alias": "New"}
 
 
 def test_preview_redacts_secret_values_from_tool_output(tmp_path):

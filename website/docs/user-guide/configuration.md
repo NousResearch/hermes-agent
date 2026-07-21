@@ -50,6 +50,10 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 :::
 
+:::tip
+Want autocomplete in `config.yaml`? See [YAML Schema Autocomplete](#yaml-schema-autocomplete).
+:::
+
 ## Configuration Precedence
 
 Settings are resolved in this order (highest priority first):
@@ -111,6 +115,22 @@ updates:
 For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
 Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
+
+## YAML Schema Autocomplete
+
+Hermes now ships a JSON Schema for `~/.hermes/config.yaml` at:
+
+- `https://hermes-agent.nousresearch.com/schemas/hermes-config.schema.json`
+
+If your editor uses `yaml-language-server` (VS Code YAML, Zed YAML, many JetBrains setups), add this modeline at the top of your config file:
+
+```yaml
+# yaml-language-server: $schema=https://hermes-agent.nousresearch.com/schemas/hermes-config.schema.json
+```
+
+That enables field completion, hover docs, and type validation for Hermes config keys.
+
+If you prefer editor-side mapping instead of editing the file, bind `~/.hermes/config.yaml` to the same schema URL in your editor settings.
 
 ## Terminal Backend Configuration
 

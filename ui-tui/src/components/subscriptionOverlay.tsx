@@ -374,6 +374,11 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // Admin/owner on a personal paid plan can change it in-terminal; otherwise the
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
+  // On Free the catalog renders inline; picking a plan hands off to the portal,
+  // where starting a subscription needs card capture + checkout.
+  const freePlans = isFree
+    ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
+    : []
 
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
   const busyRef = useRef(false)
@@ -422,7 +427,31 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     }
   }
 
-  rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
+  for (const tier of freePlans) {
+    // NAS sends a bare decimal string; tolerate pre-grouped ("1,000") too.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+    const suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
+
+    rows.push({
+      label: `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`,
+      run: () => {
+        if (busyRef.current) {
+          return
+        }
+
+        busyRef.current = true
+        void ctx.openManageLink()
+        onClose()
+      }
+    })
+  }
+
+  // The inline plan rows are the subscribe path; only a catalog-less free state
+  // still needs the generic portal row.
+  if (!isFree || freePlans.length === 0) {
+    rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
+  }
+
   rows.push({ label: 'Close', run: onClose })
 
   const sel = useMenu(rows, onClose)

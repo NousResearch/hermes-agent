@@ -5485,6 +5485,10 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
+        # Save the raw (unsanitized) query for title search supplement
+        # and CJK paths. The sanitized form is safe for FTS5 MATCH but
+        # strips/preserves syntax that LIKE/trigram won't understand.
+        raw_query = query.strip()
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
@@ -5566,15 +5570,15 @@ class SessionDB:
         # bytes = 3 CJK chars), so we fall back to LIKE.
         is_cjk = self._contains_cjk(query)
         if is_cjk:
-            raw_query = query.strip('"').strip()
-            cjk_count = self._count_cjk(raw_query)
+            cjk_raw_query = query.strip('"').strip()
+            cjk_count = self._count_cjk(cjk_raw_query)
 
             # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
             # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
             # (>=3) but each individual token is only 2 chars — trigram returns 0.
             # Route to LIKE when any non-operator CJK token is <3 CJK chars.
             _tokens_for_check = [
-                t for t in raw_query.split()
+                t for t in cjk_raw_query.split()
                 if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
             ]
             _any_short_cjk = any(
@@ -5586,7 +5590,7 @@ class SessionDB:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
-                tokens = raw_query.split()
+                tokens = cjk_raw_query.split()
                 parts = []
                 for tok in tokens:
                     if tok.upper() in {"AND", "OR", "NOT"}:
@@ -5643,9 +5647,9 @@ class SessionDB:
                 # build one LIKE condition per non-operator token so each term
                 # is matched independently (#20494).
                 non_op_tokens = [
-                    t for t in raw_query.split()
+                    t for t in cjk_raw_query.split()
                     if t.upper() not in {"AND", "OR", "NOT"}
-                ] or [raw_query]
+                ] or [cjk_raw_query]
                 token_clauses = []
                 like_params: list = []
                 for tok in non_op_tokens:
@@ -5688,10 +5692,144 @@ class SessionDB:
                 try:
                     cursor = self._conn.execute(sql, params)
                 except sqlite3.OperationalError:
-                    # FTS5 query syntax error despite sanitization — return empty
-                    return []
+                    # FTS5 query syntax error despite sanitization.
+                    # Fall through to the title search supplement below
+                    # rather than returning early — the raw query terms
+                    # may still match session titles via LIKE.
+                    matches = []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
+
+        # ── Title search supplement ──────────────────────────────────
+        # Session titles are not in the FTS5 index (the triggers only
+        # cover messages.content/tool_name/tool_calls).  Run a separate
+        # LIKE pass over sessions.title so renamed sessions are findable
+        # by their title (#66242).
+        #
+        # Unlike the earlier resolve_session_by_title() path
+        # (4efec63a3) which required an EXACT title match, this uses
+        # substring matching so partial-title / keyword searches work.
+        #
+        # The title query carries the same source/role/active filters as
+        # the FTS5 query above.  Results respect offset/limit and are
+        # prepended to FTS5 matches (title hits outrank content hits).
+        if raw_query:
+            _FTS5_BOOLS = {"AND", "OR", "NOT"}
+            title_terms = [
+                t for t in re.sub(r"[^\w\s]", " ", raw_query).split()
+                if len(t) >= 2 and t.upper() not in _FTS5_BOOLS
+            ]
+            if title_terms:
+                existing_ids = {m.get("id") for m in matches if m.get("id") is not None}
+                with self._lock:
+                    # Build LIKE clauses — one per term, OR'd together.
+                    like_clauses: list = []
+                    like_params: list = []
+                    for term in title_terms[:5]:
+                        esc = (
+                            term.replace("\\", "\\\\")
+                            .replace("%", "\\%")
+                            .replace("_", "\\_")
+                        )
+                        like_clauses.append("s.title LIKE ? ESCAPE '\\'")
+                        like_params.append(f"%{esc}%")
+
+                    # Session-level source filters (mirror FTS5 query).
+                    session_where: list = [
+                        f"({' OR '.join(like_clauses)})",
+                        "s.title IS NOT NULL",
+                    ]
+                    if exclude_sources is not None:
+                        marks = ",".join("?" for _ in exclude_sources)
+                        session_where.append(f"s.source NOT IN ({marks})")
+                        like_params.extend(exclude_sources)
+                    if source_filter is not None:
+                        marks = ",".join("?" for _ in source_filter)
+                        session_where.append(f"s.source IN ({marks})")
+                        like_params.extend(source_filter)
+
+                    # Anchor-message sub-select filters.
+                    anchor_where: list = ["m2.session_id = s.id"]
+                    if not include_inactive:
+                        anchor_where.append(
+                            "(m2.active = 1 OR m2.compacted = 1)"
+                        )
+                    if role_filter:
+                        marks = ",".join("?" for _ in role_filter)
+                        anchor_where.append(f"m2.role IN ({marks})")
+                        # role_filter params are bound separately below;
+                        # they mirror the FTS5 role_filter params.
+
+                    title_sql = f"""
+                        SELECT s.id AS session_id,
+                               (SELECT m2.id FROM messages m2
+                                WHERE {' AND '.join(anchor_where)}
+                                ORDER BY m2.timestamp DESC
+                                LIMIT 1) AS msg_id
+                        FROM sessions s
+                        WHERE {' AND '.join(session_where)}
+                        ORDER BY s.started_at DESC
+                        LIMIT ? OFFSET ?
+                    """
+                    # Build final param list: role_filter params come
+                    # FIRST (they bind to the sub-select's m2.role IN (?,?)
+                    # which appears earliest in the SQL text), then LIKE
+                    # params, then source params, then limit/offset.
+                    final_params: list = []
+                    if role_filter:
+                        final_params.extend(role_filter)
+                    final_params.extend(like_params)
+                    final_params.extend([limit, offset])
+
+                    try:
+                        title_cursor = self._conn.execute(
+                            title_sql, final_params
+                        )
+                    except sqlite3.OperationalError:
+                        title_cursor = None
+
+                    title_matches: list = []
+                    if title_cursor is not None:
+                        for row in title_cursor.fetchall():
+                            msg_id = row["msg_id"]
+                            if msg_id is None or msg_id in existing_ids:
+                                continue
+                            try:
+                                msg_cursor = self._conn.execute(
+                                    """
+                                    SELECT m.id, m.session_id, m.role,
+                                           m.content, m.timestamp, m.tool_name,
+                                           s.source, s.model, s.started_at AS session_started
+                                    FROM messages m
+                                    JOIN sessions s ON s.id = m.session_id
+                                    WHERE m.id = ?
+                                    """,
+                                    (msg_id,),
+                                )
+                                msg_row = msg_cursor.fetchone()
+                            except sqlite3.OperationalError:
+                                continue
+                            if msg_row is None:
+                                continue
+                            match = dict(msg_row)
+                            decoded = self._decode_content(match.get("content") or "")
+                            if isinstance(decoded, list):
+                                text_parts = [
+                                    p.get("text", "") for p in decoded
+                                    if isinstance(p, dict) and p.get("type") == "text"
+                                ]
+                                match["snippet"] = " ".join(t for t in text_parts if t)[:120]
+                            elif isinstance(decoded, str):
+                                match["snippet"] = decoded[:120]
+                            else:
+                                match["snippet"] = ""
+                            title_matches.append(match)
+                            existing_ids.add(msg_id)
+
+                # Prepend title matches (higher relevance) and trim
+                # FTS5 matches to maintain the total ≤ limit.
+                if title_matches:
+                    matches = title_matches + matches[: max(0, limit - len(title_matches))]
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

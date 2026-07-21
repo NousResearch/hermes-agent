@@ -190,6 +190,11 @@ class TestDiscoveryShape:
         assert result["count"] == 0
 
     def test_query_can_match_session_title_without_message_hit(self, db):
+        """A query that matches only a session title (not message content) is found
+        via LIKE-based title search in search_messages().  The match is returned
+        through the normal discovery pipeline with anchored views and bookends.
+        matched_role reflects the actual matched message role, not a synthetic
+        "session_title"."""
         db.create_session("s_fingerprint", source="cli")
         db.set_session_title("s_fingerprint", "fingerprint-login")
         db.append_message("s_fingerprint", role="user", content="Let's configure PAM for biometric auth")
@@ -202,10 +207,29 @@ class TestDiscoveryShape:
         hit = result["results"][0]
         assert hit["session_id"] == "s_fingerprint"
         assert hit["title"] == "fingerprint-login"
-        assert hit["matched_role"] == "session_title"
-        assert "Session title matched" in hit["snippet"]
+        # matched_role comes from the most recent message, not a synthetic label
+        assert hit["matched_role"] in ("user", "assistant")
+
+    def test_title_like_substring_match(self, db):
+        """Partial title terms match via LIKE (substring), not just exact title match."""
+        db.create_session("s_sub", source="cli")
+        db.set_session_title("s_sub", "Building the Modpack Server")
+        db.append_message("s_sub", role="user", content="Let's start the modpack build.")
+        db.append_message("s_sub", role="assistant", content="Checking dependencies for modpack.")
+
+        # "Modpack" appears in the title but not via FTS5 of messages?  Actually
+        # it also appears in message content.  Search for just "Server" which
+        # is in the title only.
+        result = json.loads(session_search(query="Server", db=db))
+
+        assert result["success"] is True
+        assert result["count"] >= 1
+        hit = result["results"][0]
+        assert hit["session_id"] == "s_sub"
+        assert "Server" in (hit.get("title") or "")
 
     def test_title_query_strips_common_model_quoting(self, db):
+        """Backtick-quoted titles still match via LIKE after non-word-char stripping."""
         db.create_session("s_fingerprint", source="cli")
         db.set_session_title("s_fingerprint", "fingerprint-login")
         db.append_message("s_fingerprint", role="user", content="PAM auth setup")
@@ -214,7 +238,8 @@ class TestDiscoveryShape:
 
         assert result["success"] is True
         assert result["results"][0]["session_id"] == "s_fingerprint"
-        assert result["results"][0]["matched_role"] == "session_title"
+        # matched_role is the actual message role, not "session_title"
+        assert result["results"][0]["matched_role"] in ("user", "assistant")
 
     def test_title_match_respects_current_session_filter(self, db):
         db.create_session("s_current", source="cli")
@@ -230,6 +255,81 @@ class TestDiscoveryShape:
         assert result["success"] is True
         assert result["results"] == []
         assert result["count"] == 0
+
+    def test_title_match_hides_subagent_source(self, db):
+        """Title matches must not surface sessions from excluded sources (subagent)."""
+        db.create_session("s_sub", source="subagent")
+        db.set_session_title("s_sub", "find-me-title")
+        db.append_message("s_sub", role="user", content="subagent work")
+
+        db.create_session("s_cli", source="cli")
+        db.set_session_title("s_cli", "find-me-title-cli")
+        db.append_message("s_cli", role="user", content="cli work")
+
+        # _discover() passes exclude_sources=['subagent', 'tool']
+        result = json.loads(session_search(query="find-me-title", db=db))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_sub" not in sids, "subagent source should be excluded"
+        assert "s_cli" in sids
+
+    def test_title_match_respects_role_filter(self, db):
+        """Title anchor must not pick a message whose role is excluded."""
+        db.create_session("s_rf", source="cli")
+        db.set_session_title("s_rf", "tool-heavy-session")
+        db.append_message("s_rf", role="tool", content="tool output only", tool_name="x")
+        # No user/assistant messages — so default role_filter=['user','assistant']
+        # should find nothing
+
+        result = json.loads(session_search(query="tool-heavy", db=db))
+        assert result["count"] == 0
+
+        # With explicit tool role inclusion, should find it
+        result2 = json.loads(session_search(
+            query="tool-heavy", role_filter="tool", db=db
+        ))
+        assert result2["count"] >= 1
+        assert result2["results"][0]["session_id"] == "s_rf"
+
+    def test_title_match_hides_inactive_messages(self, db):
+        """Title search should not anchor on inactive (rewound) messages."""
+        db.create_session("s_inactive", source="cli")
+        db.set_session_title("s_inactive", "rewind-session")
+        msg_id = db.append_message("s_inactive", role="user", content="original message")
+
+        # Rewind the message
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id = ?", (msg_id,)
+            )
+
+        result = json.loads(session_search(query="rewind-session", db=db))
+        # The only message is inactive; title search should not return it
+        assert result["count"] == 0
+
+    def test_title_match_respects_offset_pagination(self, db):
+        """Title matches must respect pagination — offset skips early results.
+        Tested via search_messages() directly since session_search tool
+        does not expose offset."""
+        db.create_session("s_a", source="cli")
+        db.set_session_title("s_a", "paginate-alpha")
+        db.append_message("s_a", role="user", content="alpha content")
+        db.create_session("s_b", source="cli")
+        db.set_session_title("s_b", "paginate-beta")
+        db.append_message("s_b", role="user", content="beta content")
+
+        # Page 1: offset=0, limit=1
+        page1 = db.search_messages(query="paginate", limit=1, offset=0)
+        assert len(page1) == 1, f"expected 1, got {len(page1)}"
+
+        # Page 2: offset=1, limit=1
+        page2 = db.search_messages(query="paginate", limit=1, offset=1)
+        assert len(page2) == 1, f"expected 1, got {len(page2)}"
+
+        # Should get different sessions on each page
+        sids_page1 = {r["session_id"] for r in page1}
+        sids_page2 = {r["session_id"] for r in page2}
+        assert sids_page1 != sids_page2, "offset should paginate across title results"
 
     def test_limit_clamped_to_max_10(self, db):
         _seed_modpack_sessions(db)

@@ -424,78 +424,6 @@ def _scroll(
     return json.dumps(response, ensure_ascii=False)
 
 
-def _normalize_title_query(query: str) -> str:
-    """Strip common quoting the model may include around a remembered title."""
-    return query.strip().strip("`'\"")
-
-
-def _title_match_result(
-    db,
-    query: str,
-    current_lineage_root: Optional[str],
-) -> Optional[Dict[str, Any]]:
-    """Return a discovery-shaped result when the query matches a session title."""
-    title_query = _normalize_title_query(query)
-    if not title_query:
-        return None
-
-    try:
-        session_id = db.resolve_session_by_title(title_query)
-    except Exception:
-        logging.debug("resolve_session_by_title failed for %r", title_query, exc_info=True)
-        return None
-    if not session_id:
-        return None
-
-    lineage_root = _resolve_to_parent(db, session_id)
-    if current_lineage_root and lineage_root == current_lineage_root:
-        return None
-
-    try:
-        session_meta = db.get_session(lineage_root) or db.get_session(session_id) or {}
-    except Exception:
-        logging.debug("get_session failed for title match %s", session_id, exc_info=True)
-        session_meta = {}
-    if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
-        return None
-
-    try:
-        messages = db.get_messages(session_id)
-    except Exception:
-        logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
-        messages = []
-
-    anchor_id = messages[0].get("id") if messages else None
-    if anchor_id is not None:
-        try:
-            view = db.get_anchored_view(session_id, anchor_id, window=5, bookend=3)
-        except Exception:
-            logging.debug("get_anchored_view failed for title match %s/%s", session_id, anchor_id, exc_info=True)
-            view = {}
-    else:
-        view = {}
-
-    entry = {
-        "session_id": session_id,
-        "when": _format_timestamp(session_meta.get("started_at")),
-        "source": session_meta.get("source", "unknown"),
-        "model": session_meta.get("model") or "unknown",
-        "title": session_meta.get("title") or title_query,
-        "matched_role": "session_title",
-        "match_message_id": anchor_id,
-        "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
-        "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
-        "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
-        "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
-        "messages_before": view.get("messages_before", 0),
-        "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
-        "_lineage_root": lineage_root,
-    }
-    if lineage_root and lineage_root != session_id:
-        entry["parent_session_id"] = lineage_root
-    return entry
-
-
 def _discover(
     db,
     query: str,
@@ -507,7 +435,6 @@ def _discover(
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
 
     try:
         raw_results = db.search_messages(
@@ -530,7 +457,7 @@ def _discover(
     # within each class.
     raw_results = _order_for_recall(raw_results)
 
-    if not raw_results and not title_result:
+    if not raw_results:
         return json.dumps({
             "success": True,
             "mode": "discover",
@@ -545,12 +472,6 @@ def _discover(
     # window. parent_session_id is exposed separately when different.
     seen_sessions = {}
     results = []
-
-    if title_result:
-        title_lineage = title_result.pop("_lineage_root", None)
-        if title_lineage:
-            seen_sessions[title_lineage] = {"_title_only": True}
-        results.append(title_result)
 
     for r in raw_results:
         if len(seen_sessions) >= limit:
@@ -570,8 +491,6 @@ def _discover(
             break
 
     for lineage_root, match_info in seen_sessions.items():
-        if match_info.get("_title_only"):
-            continue
         hit_sid = match_info.get("session_id") or lineage_root
         msg_id = match_info.get("id")
         try:

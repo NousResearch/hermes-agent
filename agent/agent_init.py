@@ -1376,13 +1376,15 @@ def init_agent(
     # Resolving the ~835-token block once here avoids re-running the
     # membership test + reference on every system-prompt rebuild
     # (init + each context compression).
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE
-        if os.environ.get("HERMES_KANBAN_TASK")
-        and "kanban_show" in agent.valid_tool_names
-        else ""
-    )
+    from agent.prompt_builder import KANBAN_GUIDANCE, KANBAN_ORCHESTRATOR_GUIDANCE
+    if "kanban_show" not in agent.valid_tool_names:
+        agent._kanban_worker_guidance = ""
+    elif os.environ.get("HERMES_KANBAN_TASK"):
+        agent._kanban_worker_guidance = KANBAN_GUIDANCE
+    else:
+        # Kanban toolset without a dispatched task: board-routing guidance
+        # only — no worker lifecycle, no mandatory kanban_show() first step.
+        agent._kanban_worker_guidance = KANBAN_ORCHESTRATOR_GUIDANCE
 
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:

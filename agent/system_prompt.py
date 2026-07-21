@@ -32,6 +32,7 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
+    KANBAN_ORCHESTRATOR_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
@@ -236,13 +237,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance:
         tool_guidance.append(_kanban_guidance)
-    elif (
-        _kanban_guidance is None
-        and os.environ.get("HERMES_KANBAN_TASK")
-        and "kanban_show" in agent.valid_tool_names
-    ):
-        # Fallback for code paths that bypass agent_init (rare).
-        tool_guidance.append(KANBAN_GUIDANCE)
+    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
+        # Fallback for code paths that bypass agent_init (rare) — same
+        # three-way split as agent_init: worker protocol only for
+        # dispatcher-spawned processes, board-routing guidance otherwise.
+        tool_guidance.append(
+            KANBAN_GUIDANCE
+            if os.environ.get("HERMES_KANBAN_TASK")
+            else KANBAN_ORCHESTRATOR_GUIDANCE
+        )
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 

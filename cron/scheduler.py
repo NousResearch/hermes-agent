@@ -2309,19 +2309,36 @@ def _run_job_script_with_claim_heartbeat(
         heartbeat_thread.join(timeout=1.0)
 
 
-def _parse_wake_gate(script_output: str) -> bool:
-    """Parse the last non-empty stdout line of a cron job's pre-check script
-    as a wake gate.
+def _stdout_signals_no_work(script_output: str) -> bool:
+    """True when stdout begin-line is an OpenClaw-compatible ``NO_WORK`` gate.
 
-    The convention (ported from nanoclaw #1232): if the last stdout line is
-    JSON like ``{"wakeAgent": false}``, the agent is skipped entirely — no
-    LLM run, no delivery. Any other output (non-JSON, missing flag, gate
-    absent, or ``wakeAgent: true``) means wake the agent normally.
+    Shared wake-gate convention with OpenClaw ``job.precheck`` (openclaw#112371
+    / hermes#68809) so the same check script can gate a cron job on either
+    runtime.
+    """
+    if not script_output:
+        return False
+    return script_output.lstrip().startswith("NO_WORK")
+
+
+def _parse_wake_gate(script_output: str) -> bool:
+    """Parse a cron pre-check script's stdout as a wake gate.
+
+    Skip the agent (return False) when either:
+
+    * the stdout begin-line is an OpenClaw-compatible ``NO_WORK`` token
+      (hermes#68809), or
+    * the last non-empty line is JSON ``{"wakeAgent": false}`` (nanoclaw #1232).
+
+    Any other output (non-JSON, missing flag, gate absent, or
+    ``wakeAgent: true``) means wake the agent normally.
 
     Returns True if the agent should wake, False to skip.
     """
     if not script_output:
         return True
+    if _stdout_signals_no_work(script_output):
+        return False
     stripped_lines = [line for line in script_output.splitlines() if line.strip()]
     if not stripped_lines:
         return True

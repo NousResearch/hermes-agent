@@ -245,3 +245,38 @@ For critical system-health watchdogs that must fire *even when the gateway is do
 - [Scheduled Tasks (Cron) reference](/user-guide/features/cron) — full schedule syntax, lifecycle, delivery routing.
 - [Webhook Subscriptions](/user-guide/messaging/webhooks) — fire-and-forget HTTP entry points for external schedulers.
 - [Gateway Internals](/developer-guide/gateway-internals) — delivery-router internals.
+
+
+## Wake gate: skip the agent when there is no work
+
+Script-only jobs are already zero-token. For **LLM** cron jobs that attach a `script`, the script can act as a **wake gate** so the model only runs when there is real work. The agent is skipped (silent tick, no tokens) when either of these is true:
+
+- The **last non-empty stdout line** is JSON `{"wakeAgent": false}`.
+- The **stdout begin-line** is `NO_WORK` (optionally `NO_WORK: reason`).
+
+The `NO_WORK` begin-line token is intentionally identical to OpenClaw's `job.precheck` gate, so the **same check script runs on both runtimes** (hermes#68809 / openclaw#112371).
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/scripts/inbox-gate.sh
+count=$(curl -s "$INBOX_URL" | jq 'length')
+if [ "$count" -gt 0 ]; then
+  echo "WORK_NEEDED: $count unread"   # any non-gate output → wake agent
+else
+  echo "NO_WORK"                       # skip the agent entirely
+fi
+```
+
+Attach it to an LLM job (omit `no_agent`) so the gate decides per tick:
+
+```python
+cronjob(
+    action="create",
+    schedule="every 15m",
+    script="inbox-gate.sh",
+    prompt="Triage unread inbox items and draft replies.",
+    deliver="telegram",
+)
+```
+
+On a `NO_WORK` / `wakeAgent: false` tick the run is silent and no model call is made; any other output wakes the agent and (as before) is injected as `## Script Output` context.

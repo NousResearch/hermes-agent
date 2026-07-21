@@ -323,9 +323,18 @@ def _append_unconfigured_rows(
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    # Honor ``model_catalog.excluded_providers`` here too. Without this the
+    # unconfigured skeleton loop re-adds every canonical provider the operator
+    # excluded, so ``include_unconfigured`` pickers (the in-session TUI
+    # ``/model`` command) showed excluded providers even though ``hermes model``
+    # hid them. Exclude unconditionally to match ``list_authenticated_providers``,
+    # which drops an excluded provider even when it is the current one (#68816).
+    _excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if entry.slug.lower() in _excluded:
             continue
         if current_only and entry.slug.lower() != cur:
             continue

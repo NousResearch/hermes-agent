@@ -2070,6 +2070,17 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        # google-gemini-cli uses OAuth credentials stored in a separate
+        # google_oauth.json file (not the credential pool).  Check it
+        # directly so the /model picker and web UI can surface this
+        # provider when the user has an active OAuth session.
+        if not has_creds and hermes_slug == "google-gemini-cli":
+            try:
+                from agent.google_oauth import load_credentials
+                if load_credentials() is not None:
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Google OAuth creds check failed: %s", exc)
         if not has_creds:
             continue
 
@@ -2197,6 +2208,16 @@ def list_authenticated_providers(
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
+
+        # Special case: google-gemini-cli OAuth — credentials stored in
+        # google_oauth.json, not in the credential pool or auth store.
+        if not _cp_has_creds and _cp.slug == "google-gemini-cli":
+            try:
+                from agent.google_oauth import load_credentials
+                if load_credentials() is not None:
+                    _cp_has_creds = True
+            except Exception as exc:
+                logger.debug("Google OAuth creds check failed: %s", exc)
 
         if not _cp_has_creds:
             continue

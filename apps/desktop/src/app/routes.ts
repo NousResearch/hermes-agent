@@ -10,6 +10,7 @@ export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
+export const CANVASES_ROUTE = '/canvases'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
@@ -18,6 +19,7 @@ export const STARMAP_ROUTE = '/starmap'
 export type AppView =
   | 'agents'
   | 'artifacts'
+  | 'canvases'
   | 'chat'
   | 'command-center'
   | 'cron'
@@ -35,6 +37,7 @@ export type AppView =
 export type AppRouteId =
   | 'agents'
   | 'artifacts'
+  | 'canvases'
   | 'command-center'
   | 'cron'
   | 'messaging'
@@ -57,6 +60,7 @@ export const APP_ROUTES = [
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
+  { id: 'canvases', path: CANVASES_ROUTE, view: 'canvases' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 
 import {
+  deleteDesktopFile,
   desktopDefaultCwd,
   desktopFileDiff,
   desktopGitRoot,
@@ -42,6 +43,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path.startsWith('/api/git/file-diff?')) {
     return { diff: 'remote diff' }
+  }
+
+  if (path === '/api/files') {
+    return { ok: true }
   }
 
   throw new Error(`unexpected path ${path}`)
@@ -120,6 +125,29 @@ describe('desktop filesystem facade', () => {
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
+  it('uses an explicit Canvas profile for remote reads and deletion', async () => {
+    $connection.set({ mode: 'remote', profile: 'active-profile' } as never)
+
+    await readDesktopDir('/srv/secondary', 'secondary-profile')
+    await readDesktopFileText('/srv/secondary/report.canvas.json', 'secondary-profile')
+    await deleteDesktopFile('/srv/secondary/report.canvas.json', 'secondary-profile')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/list?path=%2Fsrv%2Fsecondary',
+      profile: 'secondary-profile'
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-text?path=%2Fsrv%2Fsecondary%2Freport.canvas.json',
+      profile: 'secondary-profile'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/srv/secondary/report.canvas.json' },
+      method: 'DELETE',
+      path: '/api/files',
+      profile: 'secondary-profile'
+    })
   })
 
   it('routes file diffs through backend git in remote mode', async () => {

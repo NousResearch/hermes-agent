@@ -4551,8 +4551,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         f"MCP server '{server_name}' is unreachable after "
                         f"{_server_error_counts[server_name]} consecutive "
                         f"failures. Auto-retry available in ~{remaining}s. "
-                        f"Do NOT retry this tool yet — use alternative "
-                        f"approaches or ask the user to check the MCP server."
+                        f"Do NOT retry this tool yet. Do NOT bypass this server "
+                        f"by using terminal, built-in file tools, or direct "
+                        f"filesystem operations to achieve the same goal — those "
+                        f"writes skip validation and corrupt state. Pause work "
+                        f"that depends on this server and report the outage in "
+                        f"your summary so the operator can intervene."
                     )
                 }, ensure_ascii=False)
             # Cooldown elapsed → fall through as a half-open probe.

@@ -116,9 +116,13 @@ def _apply_staleness_weight(
             continue
         try:
             vacation_end = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+            if vacation_end.tzinfo is None:
+                vacation_end = vacation_end.replace(tzinfo=timezone.utc)
             start_raw = period.get("start")
             if start_raw:
                 vacation_start = datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+                if vacation_start.tzinfo is None:
+                    vacation_start = vacation_start.replace(tzinfo=timezone.utc)
             else:
                 vacation_start = _epoch
             if vacation_start <= now <= vacation_end:
@@ -148,6 +152,8 @@ def _apply_staleness_weight(
                     ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
                 else:
                     ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
                 days_old = max(0.0, (effective_now - ts).total_seconds() / 86400)
                 if days_old <= grace_days:
                     decay_factor = 1.0

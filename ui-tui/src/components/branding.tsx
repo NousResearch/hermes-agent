@@ -8,6 +8,7 @@ import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
+import { Accordion } from './accordion.js'
 import { ShimmerRows } from './loaders.js'
 import { WidgetGrid } from './widgetGrid.js'
 
@@ -202,35 +203,6 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
   [7, 7],
   [10, 13]
 ]
-
-// ── Collapsible helpers ──────────────────────────────────────────────
-
-function CollapseToggle({
-  count,
-  open,
-  suffix,
-  t,
-  title,
-  onToggle
-}: {
-  count?: number
-  open: boolean
-  suffix?: string
-  t: Theme
-  title: string
-  onToggle: () => void
-}) {
-  return (
-    <Box onClick={onToggle}>
-      <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-      <Text bold color={t.color.accent}>
-        {title}
-      </Text>
-      {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : null}
-      {suffix ? <Text color={t.color.muted}> {suffix}</Text> : null}
-    </Box>
-  )
-}
 
 // ── SessionPanel ─────────────────────────────────────────────────────
 
@@ -431,49 +403,53 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
       {/* ── Tools (expanded by default) ── */}
       <Box flexDirection="column" marginTop={1}>
-        <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
-        {toolsOpen && toolsBody()}
+        <Accordion onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools">
+          {toolsBody()}
+        </Accordion>
       </Box>
 
       {/* ── Skills (collapsed by default) ── */}
       <Box flexDirection="column" marginTop={1}>
-        <CollapseToggle
+        <Accordion
           count={skillsTotal}
           onToggle={() => setSkillsOpen(v => !v)}
           open={skillsOpen}
           suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
           t={t}
           title="Available Skills"
-        />
-        {skillsOpen && skillsBody()}
+        >
+          {skillsBody()}
+        </Accordion>
       </Box>
 
       {/* ── System Prompt (collapsed by default) ── */}
       {sysPromptLen > 0 && (
         <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle
+          <Accordion
             onToggle={() => setSystemOpen(v => !v)}
             open={systemOpen}
             suffix={`— ${sysPromptLen.toLocaleString()} chars`}
             t={t}
             title="System Prompt"
-          />
-          {systemOpen && systemBody()}
+          >
+            {systemBody()}
+          </Accordion>
         </Box>
       )}
 
       {/* ── MCP Servers (collapsed by default) ── */}
       {mcpServers.length > 0 && (
         <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle
+          <Accordion
             count={mcpConnected}
             onToggle={() => setMcpOpen(v => !v)}
             open={mcpOpen}
             suffix="connected"
             t={t}
             title="MCP Servers"
-          />
-          {mcpOpen && mcpBody()}
+          >
+            {mcpBody()}
+          </Accordion>
         </Box>
       )}
 

@@ -1,6 +1,8 @@
 import { Box, Text } from '@hermes/ink'
 
+import { ShimmerRows } from '../../components/loaders.js'
 import { Dialog } from '../../components/overlay.js'
+import { mix } from '../../lib/color.js'
 import type { Theme } from '../../theme.js'
 import { updateWidget } from '../host.js'
 import { defineWidgetApp } from '../registry.js'
@@ -14,6 +16,14 @@ import { isCtrl } from '../types.js'
  */
 
 const USAGE = 'usage: /weather [location]   (blank = geolocate by IP)'
+
+// Skeleton mirrors the ready layout: art column + four stat lines.
+const LOADING_ROWS: readonly (readonly [number, number])[] = [
+  [13, 12],
+  [13, 16],
+  [13, 14],
+  [13, 11]
+]
 
 type Phase = { kind: 'error'; message: string } | { kind: 'loading' } | { kind: 'ready'; report: Report }
 
@@ -154,7 +164,13 @@ export const weatherApp = defineWidgetApp<WeatherState>({
 
     return (
       <Dialog title={title} width={Math.min(42, cols - 4)}>
-        {phase.kind === 'loading' && <Text color={t.color.muted}>fetching wttr.in…</Text>}
+        {phase.kind === 'loading' && (
+          <ShimmerRows
+            color={mix(t.color.muted, t.color.completionBg, 0.5)}
+            highlight={t.color.label}
+            rows={LOADING_ROWS}
+          />
+        )}
         {phase.kind === 'error' && <Text color={t.color.error}>{phase.message}</Text>}
         {phase.kind === 'ready' && <ReadyBody report={phase.report} t={t} />}
       </Dialog>

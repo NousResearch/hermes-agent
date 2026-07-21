@@ -2,6 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import { Dialog } from '../../components/overlay.js'
+import { sparkline } from '../../lib/charts.js'
 import type { Theme } from '../../theme.js'
 import { defineWidgetApp } from '../registry.js'
 import { isCtrl } from '../types.js'
@@ -13,20 +14,12 @@ import { isCtrl } from '../types.js'
  */
 
 const USAGE = 'usage: /ticker [symbol]'
-const BLOCKS = '▁▂▃▄▅▆▇█'
 const POINTS = 26
 const TICK_MS = 250
 const PIP = 0.0001
 
 export interface TickerState {
   symbol: string
-}
-
-const spark = (series: number[]): string => {
-  const min = Math.min(...series)
-  const span = Math.max(...series) - min || 1
-
-  return series.map(v => BLOCKS[Math.min(BLOCKS.length - 1, Math.floor(((v - min) / span) * BLOCKS.length))]).join('')
 }
 
 function Chart({ symbol, t }: { symbol: string; t: Theme }) {
@@ -67,7 +60,7 @@ function Chart({ symbol, t }: { symbol: string; t: Theme }) {
           {Math.abs(delta / PIP).toFixed(1)}p
         </Text>
       </Box>
-      <Text color={dir}>{spark(series)}</Text>
+      <Text color={dir}>{sparkline(series)}</Text>
     </Box>
   )
 }

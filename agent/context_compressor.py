@@ -885,6 +885,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._prellm_skip_count = 0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -925,6 +926,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._prellm_skip_count = 0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1212,6 +1214,7 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        self._prellm_skip_count = 0
         if runtime_changed:
             self._fallback_compression_streak = 0
             self._persist_fallback_compression_streak()
@@ -1406,6 +1409,7 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        self._prellm_skip_count: int = 0
         # Consecutive completed deterministic-fallback boundaries. Unlike the
         # real-usage effectiveness counter, ordinary fitting responses must not
         # reset this breaker; only a healthy completed summary does.
@@ -3472,11 +3476,51 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(
-            turns_to_summarize,
-            focus_topic=summary_focus_topic,
-            memory_context=memory_context,
-        )
+
+        # Pre-LLM feasibility check: if the middle section is too small to
+        # yield meaningful token savings, skip the expensive LLM summarization
+        # call and fall through to the deterministic message-dropping path
+        # (which is cheap and always applicable).  Without this guard a
+        # tool-heavy session where the protected tail already holds most of
+        # the tokens can burn 500+ seconds on a summary call that replaces a
+        # few lightweight messages, leaving the total token count essentially
+        # unchanged.
+        #
+        # Only fires after at least one prior real-usage ineffectiveness
+        # strike.  The check READS ``_ineffective_compression_count`` but
+        # never writes it: that strike counter is fed exclusively by real
+        # provider token counts (see the anti-thrashing verdict in
+        # _update_token_usage), and consumers latch at >= 2 to disable
+        # compression entirely.  Feasibility skips are tracked separately
+        # in ``_prellm_skip_count`` for observability.
+        #
+        # Skipped when ``force=True`` (manual /compress) so auth/error
+        # handling paths are always exercised on explicit user request.
+        feasibility_skip = False
+        if not force and self._ineffective_compression_count >= 1:
+            middle_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+            if middle_tokens < int(self.threshold_tokens * 0.1):
+                feasibility_skip = True
+                self._prellm_skip_count += 1
+                self._last_compression_savings_pct = 0.0
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression: middle section (%d tokens at indices "
+                        "%d-%d) is below 10%% of threshold (%d tokens) — "
+                        "skipping LLM summarization, proceeding with "
+                        "deterministic message dropping. prellm_skip_count=%d",
+                        middle_tokens, compress_start, compress_end,
+                        self.threshold_tokens, self._prellm_skip_count,
+                    )
+
+        if feasibility_skip:
+            summary = None  # No LLM call; Phase 4 inserts the deterministic fallback
+        else:
+            summary = self._generate_summary(
+                turns_to_summarize,
+                focus_topic=summary_focus_topic,
+                memory_context=memory_context,
+            )
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -3498,7 +3542,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # of these cases, rotating into a child session with a placeholder
         # summary degrades the conversation for zero benefit. Preserve it
         # unchanged until access is restored or connectivity recovers.
-        if not summary and (
+        if not summary and not feasibility_skip and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
             or self._last_summary_network_failure
@@ -3556,13 +3600,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         # content-free "N messages were removed" marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting deterministic fallback context summary")
+                if feasibility_skip:
+                    logger.info("Feasibility skip — inserting deterministic fallback context summary")
+                else:
+                    logger.warning("Summary generation failed — inserting deterministic fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
             summary = self._build_static_fallback_summary(
                 turns_to_summarize,
-                reason=self._last_summary_error,
+                # A stale error from an earlier real failure must not be
+                # embedded into a deliberate feasibility skip's fallback.
+                reason=None if feasibility_skip else self._last_summary_error,
             )
 
         _merge_summary_into_tail = False

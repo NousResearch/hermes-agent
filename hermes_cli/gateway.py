@@ -4987,7 +4987,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             traceback=_traceback.format_exc(),
         )
         print("\nGateway stopped.")
-        return
+        sys.exit(1)
     except SystemExit as e:
         _exit_diag(
             "asyncio.run.SystemExit",
@@ -5010,6 +5010,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         sys.exit(1)
     _exit_diag("gateway.exit_clean")
 
+    sys.exit(0)
 
 # =============================================================================
 # Gateway Setup (Interactive Messaging Platform Configuration)

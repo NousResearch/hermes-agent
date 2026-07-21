@@ -372,3 +372,242 @@ class TestXiaomiAgentInit:
         overlay = HERMES_OVERLAYS["xiaomi"]
         api_mode = TRANSPORT_TO_API_MODE[overlay.transport]
         assert api_mode == "chat_completions"
+
+
+# =============================================================================
+# Native web_search tool injection
+# =============================================================================
+
+
+class TestXiaomiWebSearch:
+    """Test MiMo native web_search tool injection via prepare_tools()."""
+
+    def _get_profile(self):
+        from providers import get_provider_profile
+        return get_provider_profile("xiaomi")
+
+    def _reset_cache(self):
+        """Reset the class-level web_search config cache between tests."""
+        from plugins.model_providers.xiaomi import XiaomiProfile
+        XiaomiProfile._ws_cache = XiaomiProfile._WS_UNSET
+
+    def test_profile_is_xiaomi_profile(self):
+        """xiaomi profile must be XiaomiProfile subclass."""
+        from plugins.model_providers.xiaomi import XiaomiProfile
+        profile = self._get_profile()
+        assert isinstance(profile, XiaomiProfile)
+
+    def test_prepare_tools_passthrough_when_disabled(self, monkeypatch):
+        """No web_search injected when config absent/disabled."""
+        self._reset_cache()
+        monkeypatch.setenv("HERMES_CONFIG", "/nonexistent")
+        profile = self._get_profile()
+        tools = [{"type": "function", "function": {"name": "terminal"}}]
+        result = profile.prepare_tools(tools, model="mimo-v2.5-pro")
+        assert result == tools
+        assert len(result) == 1
+
+    def test_prepare_tools_injects_web_search(self, monkeypatch):
+        """web_search injected when config providers.xiaomi.web_search=true."""
+        self._reset_cache()
+        cfg = {"providers": {"xiaomi": {"web_search": True}}}
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        tools = [{"type": "function", "function": {"name": "terminal"}}]
+        result = profile.prepare_tools(tools, model="mimo-v2.5-pro")
+        assert len(result) == 2
+        ws = result[1]
+        assert ws["type"] == "web_search"
+        assert ws["max_keyword"] == 3
+        assert ws["force_search"] is False
+        assert "user_location" not in ws  # no location when empty
+
+    def test_prepare_tools_custom_params(self, monkeypatch):
+        """Custom max_keyword, force, location from dict config."""
+        self._reset_cache()
+        cfg = {"providers": {"xiaomi": {"web_search": {
+            "max_keyword": 5,
+            "force": True,
+            "location": "China",
+        }}}}
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        tools = []
+        result = profile.prepare_tools(tools, model="mimo-v2-pro")
+        ws = result[0]
+        assert ws["max_keyword"] == 5
+        assert ws["force_search"] is True
+        assert ws["user_location"] == {"type": "approximate", "country": "China"}
+
+    def test_prepare_tools_no_duplicate(self, monkeypatch):
+        """Calling prepare_tools twice should not duplicate web_search."""
+        self._reset_cache()
+        cfg = {"providers": {"xiaomi": {"web_search": True}}}
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        tools = [{"type": "function", "function": {"name": "terminal"}}]
+        result = profile.prepare_tools(tools, model="mimo-v2.5-pro")
+        result2 = profile.prepare_tools(result, model="mimo-v2.5-pro")
+        assert len(result2) == 2  # still terminal + web_search, not 3
+
+    def test_prepare_tools_injects_from_empty_list(self, monkeypatch):
+        """Native search injects even when Hermes has no tools."""
+        self._reset_cache()
+        cfg = {"providers": {"xiaomi": {"web_search": True}}}
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        result = profile.prepare_tools([], model="mimo-v2.5-pro")
+        assert len(result) == 1
+        assert result[0]["type"] == "web_search"
+
+    def test_web_search_config_cached(self, monkeypatch):
+        """Config is read once and cached — subsequent calls return same value."""
+        self._reset_cache()
+        call_count = {"n": 0}
+        cfg = {"providers": {"xiaomi": {"web_search": True}}}
+
+        def counting_load():
+            call_count["n"] += 1
+            return cfg
+
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", counting_load)
+
+        profile = self._get_profile()
+        profile.prepare_tools([], model="mimo-v2.5-pro")
+        profile.prepare_tools([], model="mimo-v2.5-pro")
+        assert call_count["n"] == 1  # only one config read
+
+    def test_providers_xiaomi_does_not_shadow_builtin(self):
+        """providers.xiaomi with only web_search must not create a user-defined provider."""
+        from hermes_cli.providers import resolve_user_provider
+        # This mimics config.yaml: providers: {xiaomi: {web_search: true}}
+        user_config = {"xiaomi": {"web_search": True}}
+        result = resolve_user_provider("xiaomi", user_config)
+        assert result is None  # must NOT return a broken ProviderDef
+
+
+# =============================================================================
+# URL citation annotation flow
+# =============================================================================
+
+
+class TestUrlCitationAnnotations:
+    """Test that MiMo web_search url_citation annotations are captured and carried through."""
+
+    def test_normalize_response_captures_annotations(self):
+        """normalize_response should extract annotations from message into provider_data."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+        from types import SimpleNamespace
+
+        transport = ChatCompletionsTransport.__new__(ChatCompletionsTransport)
+
+        # Build a mock response that looks like MiMo's web_search output
+        annotation = SimpleNamespace(
+            type="url_citation",
+            url_citation=SimpleNamespace(
+                start_index=0,
+                end_index=10,
+                title="Example Article",
+                url="https://example.com/article",
+            ),
+        )
+        msg = SimpleNamespace(
+            content="Here is some info from the web.",
+            tool_calls=None,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            refusal=None,
+            annotations=[annotation],
+            model_extra=None,
+        )
+        choice = SimpleNamespace(message=msg, finish_reason="stop")
+        response = SimpleNamespace(choices=[choice], usage=None, model="mimo-v2.5-pro")
+
+        result = transport.normalize_response(response)
+
+        assert result.annotations is not None
+        assert len(result.annotations) == 1
+        annot = result.annotations[0]
+        assert annot["type"] == "url_citation"
+        assert annot["url_citation"]["url"] == "https://example.com/article"
+        assert annot["url_citation"]["title"] == "Example Article"
+
+    def test_normalize_response_annotations_from_model_extra(self):
+        """Annotations should also be picked up from model_extra (SDK quirk fallback)."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+        from types import SimpleNamespace
+
+        transport = ChatCompletionsTransport.__new__(ChatCompletionsTransport)
+
+        annotation = {"type": "url_citation", "url_citation": {"url": "https://x.com", "title": "X", "start_index": 0, "end_index": 1}}
+        msg = SimpleNamespace(
+            content="Test",
+            tool_calls=None,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            refusal=None,
+            annotations=None,
+            model_extra={"annotations": [annotation]},
+        )
+        choice = SimpleNamespace(message=msg, finish_reason="stop")
+        response = SimpleNamespace(choices=[choice], usage=None, model="mimo-v2.5-pro")
+
+        result = transport.normalize_response(response)
+
+        assert result.annotations is not None
+        assert len(result.annotations) == 1
+        assert result.annotations[0]["url_citation"]["url"] == "https://x.com"
+
+    def test_normalize_response_no_annotations(self):
+        """No annotations field should result in None, not an error."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+        from types import SimpleNamespace
+
+        transport = ChatCompletionsTransport.__new__(ChatCompletionsTransport)
+
+        msg = SimpleNamespace(
+            content="Hello",
+            tool_calls=None,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            refusal=None,
+            annotations=None,
+            model_extra=None,
+        )
+        choice = SimpleNamespace(message=msg, finish_reason="stop")
+        response = SimpleNamespace(choices=[choice], usage=None, model="mimo-v2.5-pro")
+
+        result = transport.normalize_response(response)
+        assert result.annotations is None
+
+    def test_normalized_response_annotations_property(self):
+        """NormalizedResponse.annotations reads from provider_data."""
+        from agent.transports.types import NormalizedResponse
+
+        nr = NormalizedResponse(
+            content="test",
+            tool_calls=None,
+            finish_reason="stop",
+            provider_data={"annotations": [{"type": "url_citation", "url_citation": {"url": "https://a.com"}}]},
+        )
+        assert nr.annotations is not None
+        assert len(nr.annotations) == 1
+
+    def test_normalized_response_annotations_none_when_no_provider_data(self):
+        """annotations property returns None when no provider_data."""
+        from agent.transports.types import NormalizedResponse
+
+        nr = NormalizedResponse(content="test", tool_calls=None, finish_reason="stop")
+        assert nr.annotations is None

@@ -116,6 +116,19 @@ class ProviderProfile:
         """
         return messages
 
+    def prepare_tools(
+        self, tools: list[dict[str, Any]], *, model: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Provider-specific tool list preprocessing.
+
+        Called AFTER standard tool assembly, BEFORE tools are set in
+        api_kwargs.  Use this to append provider-native tools (e.g.
+        Xiaomi MiMo's ``web_search``) or to sanitize schemas.
+
+        Default: pass-through.
+        """
+        return tools
+
     def build_extra_body(
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:

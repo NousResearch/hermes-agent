@@ -1165,15 +1165,24 @@ def is_container() -> bool:
                 return True
     except OSError:
         pass
-    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
+    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. Inside a
+    # container the ROOT mount ("/") is the runtime's overlay/snapshot, so it
+    # carries a containerd/crio/kubepods marker. Scan mountinfo as a last
+    # resort, but ONLY the root-mount line: a host that merely *runs*
+    # containers exposes each container's overlay lowerdir
+    # (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which
+    # previously produced a false positive that flipped subprocess HOME.
+    # See: NousResearch/hermes-agent#58135
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                # mountinfo field 5 (index 4) is the mount point.
+                fields = line.split()
+                if len(fields) < 5 or fields[4] != "/":
+                    continue
+                if any(marker in line for marker in ("kubepods", "containerd", "crio")):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False

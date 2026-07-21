@@ -1042,6 +1042,16 @@ class TestKimiMoonshotModelListIsolation:
         from hermes_cli.main import _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["kimi-coding"]) >= 1
 
+    def test_kimi_acp_exposes_all_cli_subscription_models_with_k3_default(self):
+        from hermes_cli.models import _PROVIDER_MODELS, get_default_model_for_provider
+
+        assert _PROVIDER_MODELS["kimi-acp"] == [
+            "k3",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+        ]
+        assert get_default_model_for_provider("kimi-acp") == "k3"
+
 
 # =============================================================================
 # Hugging Face provider model list tests

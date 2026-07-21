@@ -98,6 +98,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import shutil
 import sys
@@ -337,6 +338,16 @@ _MAX_BACKOFF_SECONDS = 60
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
+# Jitter applied to reconnect backoff sleeps. Without it, every server that
+# lost the same backend retries in lockstep (thundering herd) and log lines
+# from N servers land in synchronized bursts.
+_BACKOFF_JITTER = 0.2            # +/-20%
+
+
+def _jittered(seconds: float) -> float:
+    """Return ``seconds`` with +/-20% uniform jitter, floored at 0."""
+    return max(0.0, seconds * random.uniform(1.0 - _BACKOFF_JITTER,
+                                             1.0 + _BACKOFF_JITTER))
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -2260,8 +2271,8 @@ class MCPServerTask:
                     except Exception as exc:
                         root = _unwrap_exception_group(exc)
                         logger.warning(
-                            "MCP server '%s' keepalive failed, "
-                            "triggering reconnect: %s: %s",
+                            "MCP server '%s' keepalive failed, triggering "
+                            "reconnect (state: connected → degraded): %s: %s",
                             self.name, type(root).__name__, root,
                         )
                         self._reconnect_event.set()
@@ -3095,7 +3106,10 @@ class MCPServerTask:
                         break
                     self._reconnect_event.clear()
                     continue
-                logger.info(
+                # Per-cycle reconnect chatter — DEBUG. In the flapping case
+                # this fires on every rebuild; the WARNINGs live on the
+                # state transitions.
+                logger.debug(
                     "MCP server '%s': reconnecting (OAuth recovery or "
                     "manual refresh)",
                     self.name,
@@ -3133,7 +3147,7 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             break
-                        logger.info(
+                        logger.debug(
                             "MCP server '%s': attempting revival from parked "
                             "state (self-probe or explicit reconnect request); "
                             "rebuilding transport.",
@@ -3216,7 +3230,7 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             return
-                        logger.info(
+                        logger.debug(
                             "MCP server '%s': attempting revival after "
                             "permanent initial failure (self-probe or explicit "
                             "reconnect request); rebuilding transport.",
@@ -3248,7 +3262,7 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             return
-                        logger.info(
+                        logger.debug(
                             "MCP server '%s': attempting revival after initial "
                             "connection failures (self-probe or explicit "
                             "reconnect request); rebuilding transport.",
@@ -3261,14 +3275,14 @@ class MCPServerTask:
                         self._ready.clear()
                         continue
 
-                    logger.warning(
+                    logger.debug(
                         "MCP server '%s' initial connection failed "
                         "(attempt %d/%d), retrying in %.0fs: %s: %s",
                         self.name, initial_retries,
                         _MAX_INITIAL_CONNECT_RETRIES, backoff,
                         type(root).__name__, root,
                     )
-                    await asyncio.sleep(backoff)
+                    await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
                     # Check if shutdown was requested during the sleep
@@ -3306,7 +3320,7 @@ class MCPServerTask:
                     )
                     if parked == "shutdown":
                         return
-                    logger.info(
+                    logger.debug(
                         "MCP server '%s': attempting revival from parked state "
                         "(permanent error; self-probe or explicit reconnect "
                         "request); rebuilding transport.",
@@ -3345,7 +3359,7 @@ class MCPServerTask:
                     )
                     if parked == "shutdown":
                         return
-                    logger.info(
+                    logger.debug(
                         "MCP server '%s': attempting revival from parked state "
                         "(self-probe or explicit reconnect request); "
                         "rebuilding transport.",
@@ -3358,13 +3372,16 @@ class MCPServerTask:
                     backoff = 1.0
                     continue
 
-                logger.warning(
+                # Per-attempt retry chatter stays at DEBUG; state transitions
+                # (connected->degraded, degraded->parked, parked->revived)
+                # carry the WARNINGs — one line per transition, not per try.
+                logger.debug(
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s: %s",
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
                     backoff, type(root).__name__, root,
                 )
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(_jittered(backoff))
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
                 # Check again after sleeping

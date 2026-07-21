@@ -123,6 +123,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        prefix: Optional[str] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
@@ -184,6 +185,10 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Response prefix — prepended to the first message chunk sent.
+        # Used by gateway to show model/provider info on streamed replies.
+        self._prefix = prefix or ""
+        self._prefix_applied = False    # Track whether prefix was already prepended
         # Set when the final response content was sent to the user via
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
@@ -1938,9 +1943,14 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
+                # Prepend response prefix to the first message only
+                send_text = text
+                if self._prefix and not self._prefix_applied:
+                    send_text = f"{self._prefix} {text}"
+                    self._prefix_applied = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
-                    content=text,
+                    content=send_text,
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
                         final=finalize,

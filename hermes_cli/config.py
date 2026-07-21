@@ -2052,6 +2052,22 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Message formatting settings (gateway mode)
+    "messages": {
+        # Response prefix prepended to the FIRST message of every agent turn.
+        # Template variables (case-insensitive):
+        #   {model}       — Short model name (e.g. "claude-opus-4.6")
+        #   {modelFull}   — Full model ID (e.g. "github-copilot/claude-opus-4.6")
+        #   {provider}    — Provider name (e.g. "github-copilot", "openai-codex")
+        #   {thinking}    — Thinking level (e.g. "high", "low", "off")
+        # Default (empty string) = disabled. Examples:
+        #   "[{provider}/{model}] "     → "[github-copilot/claude-opus-4.6] Hello!"
+        #   "🤖 {model} │ "             → "🤖 claude-opus-4.6 │ Hello!"
+        # Per-platform overrides go under messages.platforms.<platform>.response_prefix
+        "response_prefix": "",
+        "platforms": {},  # Per-platform overrides: {"telegram": {"response_prefix": "[TG {model}] "}}
+    },
+
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"

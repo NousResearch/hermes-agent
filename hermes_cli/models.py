@@ -272,6 +272,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
@@ -280,6 +281,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4.1",
         "gpt-4o",
         "gpt-4o-mini",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-opus-4.5",
         "claude-sonnet-4.6",
         "claude-sonnet-5",
         "claude-sonnet-4",
@@ -3088,6 +3092,7 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
     return (
         normalized.startswith(COPILOT_BASE_URL)
+        or normalized.startswith("https://api.business.githubcopilot.com")
         or normalized.startswith("https://models.github.ai/inference")
         or normalized.startswith("https://models.inference.ai.azure.com")
     )
@@ -4362,6 +4367,48 @@ def validate_requested_model(
             "recognized": False,
             "message": message,
         }
+
+    # Copilot has its own catalog path via the GitHub Copilot Model Catalog API.
+    # The generic /v1/models probe returns a different (incomplete) model list
+    # and may auto-correct valid model names to wrong versions (e.g. opus-4.6
+    # → opus-4.7). Validate against provider_model_ids instead. See #issue.
+    if normalized == "copilot":
+        try:
+            copilot_models = provider_model_ids("copilot")
+        except Exception:
+            copilot_models = []
+        if copilot_models:
+            if requested_for_lookup in set(copilot_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, copilot_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, copilot_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Copilot model listing. "
+                    "It may still work if your Copilot account has access to a newer or hidden model ID."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
     if normalized in {"openai-codex", "xai-oauth"}:

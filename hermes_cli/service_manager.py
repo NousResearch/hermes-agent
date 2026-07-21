@@ -810,7 +810,7 @@ class S6ServiceManager:
 
         * ``GatewayNotRegisteredError`` — the service directory at
           ``<scandir>/<name>/`` doesn't exist. ``s6-svc`` would
-          exit non-zero with a fairly opaque message; we pre-empt
+          exit non-zero with a fairly opaque message; we preempt
           it with a clear "no such gateway 'X'" tied to the profile
           name (without the ``gateway-`` prefix).
         * ``S6CommandError`` — anything else (EACCES on the

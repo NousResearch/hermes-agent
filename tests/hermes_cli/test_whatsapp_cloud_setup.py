@@ -384,7 +384,7 @@ class TestProfilePolishGuidance:
         self, isolated_home, monkeypatch
     ):
         """If the user gave us the WABA ID earlier in the wizard, the
-        Business Manager URL should pre-select their account."""
+        Business Manager URL should preselect their account."""
         waba = "987654321098765"
         inputs = iter([
             "",
@@ -400,7 +400,7 @@ class TestProfilePolishGuidance:
         with redirect_stdout(buf):
             run_whatsapp_cloud_setup()
         out = buf.getvalue()
-        # Deep-linked URL with the user's WABA pre-selected
+        # Deep-linked URL with the user's WABA preselected
         assert f"waba_id={waba}" in out
         # Without WABA, we tell the user they'll need to pick their account
         assert "select your WhatsApp Business Account" not in out

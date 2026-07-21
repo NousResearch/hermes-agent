@@ -51,7 +51,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     setup.add_argument(
         "--project-id",
-        help="Pre-select a project UUID instead of prompting",
+        help="Preselect a project UUID instead of prompting",
     )
     setup.add_argument(
         "--access-token",

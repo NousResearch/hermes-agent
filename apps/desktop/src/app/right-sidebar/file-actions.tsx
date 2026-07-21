@@ -127,7 +127,7 @@ interface InlineRenameInputProps {
 }
 
 /** The in-row rename editor (VS Code style): seeded with the name (stem
- *  pre-selected), commits on Enter/blur, cancels on Esc. Render it in place of a
+ *  preselected), commits on Enter/blur, cancels on Esc. Render it in place of a
  *  row's label when `$renamingPath === path`. */
 export function InlineRenameInput({ className, name, path }: InlineRenameInputProps) {
   const [value, setValue] = useState(name)

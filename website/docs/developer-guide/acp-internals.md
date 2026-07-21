@@ -128,7 +128,7 @@ prompt(..., session_id)
   -> emit final agent message chunk
 ```
 
-### Cancelation
+### Cancellation
 
 `cancel(session_id)`:
 

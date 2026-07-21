@@ -49,7 +49,7 @@ export function useDeclaredCursor({
   //      focus moves opposite to sibling order, the newly-inactive item's
   //      effect runs AFTER the newly-active item's set. Without the node
   //      check it would clobber.
-  // No dep array: must re-declare every commit so the active instance
+  // No dep array: must redeclare every commit so the active instance
   // re-claims the declaration after another instance's unmount-cleanup or
   // sibling handoff nulls it.
   useLayoutEffect(() => {

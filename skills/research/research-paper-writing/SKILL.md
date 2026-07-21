@@ -991,7 +991,7 @@ Organize methodologically, not paper-by-paper. Cite generously — reviewers lik
 
 All major conferences require this. Honesty helps:
 - Reviewers are instructed not to penalize honest limitation acknowledgment
-- Pre-empt criticisms by identifying weaknesses first
+- Preempt criticisms by identifying weaknesses first
 - Explain why limitations don't undermine core claims
 
 ### Step 5.8: Conclusion & Discussion

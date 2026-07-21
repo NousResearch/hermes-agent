@@ -1182,7 +1182,7 @@ class TestPrompt:
         via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects
         with it (e.g. ``kanban_create``) can read the env var inside
         ``run_conversation``. The variable must be visible during the
-        agent call AND restored afterwards so a re-used executor thread
+        agent call AND restored afterwards so a reused executor thread
         doesn't leak one session's id into another."""
         # Pre-condition: env is clean.
         monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
@@ -1217,7 +1217,7 @@ class TestPrompt:
         # Post-condition: must be restored to the prior value (None here).
         assert os.environ.get("HERMES_SESSION_ID") is None, (
             "HERMES_SESSION_ID must be restored after the agent call so "
-            "a re-used executor thread doesn't leak the id into the next "
+            "a reused executor thread doesn't leak the id into the next "
             "session's tools"
         )
 

@@ -94,7 +94,7 @@ networks with practical depth and width. [Remarkable result]
 
 ### What to Avoid
 
-From Zachary Lipton: "If the first sentence can be pre-pended to any ML paper, delete it."
+From Zachary Lipton: "If the first sentence can be prepended to any ML paper, delete it."
 
 **Delete these openings**:
 - "Large language models have achieved remarkable success..."

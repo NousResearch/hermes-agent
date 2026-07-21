@@ -362,7 +362,7 @@ class TestBackendSelection:
         beat an explicitly configured TAVILY_API_KEY in the fallback path.
         Free Nous tiers don't include web search, so the user's deliberate
         Tavily setup would fail at runtime with "no subscription" if the
-        gateway pre-empted it."""
+        gateway preempted it."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
@@ -372,7 +372,7 @@ class TestBackendSelection:
     def test_managed_gateway_only_falls_through_to_firecrawl(self):
         """When no explicit-credential backend is configured, a Nous-managed
         gateway token still selects firecrawl — the convenience path is
-        preserved, just no longer pre-empts."""
+        preserved, just no longer preempts."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._is_tool_gateway_ready", return_value=True):

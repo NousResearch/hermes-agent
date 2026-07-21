@@ -144,7 +144,7 @@ def test_pre_selection_respects_existing_exclude(capsys):
          patch(_SAVE):
         _configure_mcp_tools_interactive(config)
 
-    # create_issue (0) and search (2) should be pre-selected, delete_repo (1) should not
+    # create_issue (0) and search (2) should be preselected, delete_repo (1) should not
     assert captured_pre_selected["value"] == {0, 2}
 
 
@@ -170,7 +170,7 @@ def test_pre_selection_respects_existing_include(capsys):
          patch(_SAVE):
         _configure_mcp_tools_interactive(config)
 
-    # Only search (2) should be pre-selected
+    # Only search (2) should be preselected
     assert captured_pre_selected["value"] == {2}
 
 

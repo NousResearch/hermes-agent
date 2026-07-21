@@ -1012,7 +1012,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 
 
 # ============================================================================
-# Audio playback (interruptable)
+# Audio playback (interruptible)
 # ============================================================================
 
 # Global reference to the active playback process so it can be interrupted.

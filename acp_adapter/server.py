@@ -1372,8 +1372,13 @@ class HermesACPAgent(acp.Agent):
         # land immediately.
         with state.runtime_lock:
             if state.is_running:
-                queued_text = user_text or "[Image attachment]"
-                state.queued_prompts.append(queued_text)
+                # Queue the full content block list, not just the extracted
+                # text — otherwise images and other non-text blocks attached to
+                # a follow-up message sent mid-turn are silently dropped (and a
+                # caption-less image would replay as the literal placeholder
+                # "[Image attachment]"). The drain loop below replays whatever
+                # shape was stored. /steer and /queue still store plain strings.
+                state.queued_prompts.append(prompt)
                 depth = len(state.queued_prompts)
                 if self._conn:
                     update = acp.update_agent_message_text(
@@ -1668,13 +1673,24 @@ class HermesACPAgent(acp.Agent):
                 if not state.queued_prompts:
                     break
                 next_prompt = state.queued_prompts.pop(0)
+            # Queued items are either a plain string (from /steer and /queue,
+            # which are text-only by construction) or the original ACP content
+            # block list (from a regular prompt sent while the turn was busy,
+            # which may include images). Replay each shape faithfully so
+            # attachments survive the queue.
+            if isinstance(next_prompt, str):
+                next_blocks = [TextContentBlock(type="text", text=next_prompt)]
+                echo_text = next_prompt
+            else:
+                next_blocks = next_prompt
+                echo_text = _extract_text(next_prompt) or "[Image attachment]"
             if conn:
                 await conn.session_update(
                     session_id,
-                    acp.update_user_message_text(next_prompt),
+                    acp.update_user_message_text(echo_text),
                 )
             await self.prompt(
-                prompt=[TextContentBlock(type="text", text=next_prompt)],
+                prompt=next_blocks,
                 session_id=session_id,
             )
 

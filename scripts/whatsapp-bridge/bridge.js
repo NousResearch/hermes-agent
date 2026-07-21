@@ -41,6 +41,7 @@ import {
   extractBridgeEvent,
   inferMediaType,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -192,11 +193,6 @@ function rememberSentMessage(sent, payload) {
 
 function trackSentMessageId(sent) {
   rememberSentId(sent?.key?.id);
-}
-
-function normalizeWhatsAppId(value) {
-  if (!value) return '';
-  return String(value).replace(':', '@');
 }
 
 function redactWhatsAppId(value) {
@@ -757,6 +753,11 @@ async function startSocket() {
         bodyLength: event.body.length,
         hasMedia: event.hasMedia,
         mediaType: event.mediaType,
+        hasQuotedMessage: event.hasQuotedMessage,
+        quotedParticipantPresent: !!event.quotedParticipant,
+        quotedParticipantMatchesBot: !!event.quotedParticipant && botIds.includes(event.quotedParticipant),
+        quotedParticipantDomain: event.quotedParticipant?.split('@')[1] || '',
+        botIdDomains: Array.from(new Set(botIds.map(id => id.split('@')[1]).filter(Boolean))),
         queueLength: messageQueue.length,
       });
       if (messageQueue.length > MAX_QUEUE_SIZE) {

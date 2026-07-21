@@ -1107,3 +1107,95 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ── Gateway token migration ──────────────────────────────────────────────────
+
+
+def test_gateway_token_migrated_from_remote_path(tmp_path: Path):
+    """HERMES_GATEWAY_TOKEN is extracted from gateway.remote.token.
+
+    OpenClaw 2026.5.7 stores the gateway token at gateway.remote.token, not
+    at gateway.auth.token.  The migration must handle this real-world schema.
+    """
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    (source / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "gateway": {
+                    "mode": "remote",
+                    "remote": {
+                        "url": "wss://example.com/gateway",
+                        "token": "test-token-abc123",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=None,
+        selected_options={"gateway-config"},
+    )
+    migrator.migrate()
+
+    env_path = target / ".env"
+    assert env_path.exists(), ".env was not created by migration"
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "HERMES_GATEWAY_TOKEN=test-token-abc123" in env_text
+
+
+def test_gateway_token_migrated_from_auth_path(tmp_path: Path):
+    """HERMES_GATEWAY_TOKEN is also extracted from gateway.auth.token (legacy path).
+
+    Older OpenClaw versions stored the token at gateway.auth.token.  Both
+    paths must be supported for backward compatibility.
+    """
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    (source / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "gateway": {
+                    "mode": "local",
+                    "auth": {
+                        "token": "legacy-token-xyz789",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=None,
+        selected_options={"gateway-config"},
+    )
+    migrator.migrate()
+
+    env_path = target / ".env"
+    assert env_path.exists(), ".env was not created by migration"
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "HERMES_GATEWAY_TOKEN=legacy-token-xyz789" in env_text

@@ -159,7 +159,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | Browser CDP URL | `browser.cdpUrl` | `config.yaml` → `browser.cdp_url` | |
 | Browser headless | `browser.headless` | `config.yaml` → `browser.headless` | |
 | Brave search key | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | Requires `--migrate-secrets` |
-| Gateway auth token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets` |
+| Gateway auth token | `gateway.auth.token` or `gateway.remote.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets`. OpenClaw 2026.5.x remote-mode clients store the token at `gateway.remote.token`; older local installs use `gateway.auth.token`. Both paths are checked. |
 | Working directory | `agents.defaults.workspace` | `config.yaml` → `terminal.cwd` | Legacy migrations may still emit `MESSAGING_CWD` as a compatibility fallback |
 
 ### Archived (no direct Hermes equivalent)

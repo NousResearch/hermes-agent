@@ -2410,10 +2410,15 @@ class Migrator:
         self.record("gateway-config", "openclaw.json gateway.*", "archive/gateway-config.json",
                     "archived", "Gateway config archived. Use 'hermes gateway' to configure.")
 
-        # Extract gateway auth token to .env if present
+        # Extract gateway auth token to .env if present.
+        # OpenClaw 2026.5.x stores the token at gateway.remote.token (remote-mode
+        # clients) while older local-mode installs use gateway.auth.token.
+        # Check both paths so migrations work regardless of which schema is present.
         auth = gateway.get("auth") or {}
-        if auth.get("token") and self.migrate_secrets:
-            self._set_env_var("HERMES_GATEWAY_TOKEN", auth["token"], "gateway.auth.token")
+        remote = gateway.get("remote") or {}
+        token = auth.get("token") or remote.get("token")
+        if token and self.migrate_secrets:
+            self._set_env_var("HERMES_GATEWAY_TOKEN", token, "gateway.auth.token or gateway.remote.token")
 
     # ── Session config ────────────────────────────────────────
     def migrate_session_config(self, config: Optional[Dict[str, Any]] = None) -> None:

@@ -974,17 +974,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
-        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
-        # the chat GUID is nested under data.chats[0].guid instead.
-        if not chat_guid:
-            _chats = record.get("chats") or []
-            if _chats and isinstance(_chats[0], dict):
-                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        # Fallback: BlueBubbles v1.9+ webhook payloads often omit top-level
+        # chatGuid/chatIdentifier. The chat identity is nested under
+        # data.chats[0]; for group chats the stable routing GUID may appear as
+        # the private-api "[auth-key]" (for example: any;+;<group-id>).
+        _chats = record.get("chats") or []
+        _first_chat = _chats[0] if _chats and isinstance(_chats[0], dict) else {}
+        if not chat_guid and _first_chat:
+            chat_guid = self._value(
+                _first_chat.get("guid"),
+                _first_chat.get("chatGuid"),
+                _first_chat.get("[auth-key]"),
+            )
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),
             payload.get("chatIdentifier"),
             payload.get("identifier"),
+            _first_chat.get("chatIdentifier"),
+            _first_chat.get("identifier"),
+            _first_chat.get("displayName"),
         )
         sender = (
             self._value(
@@ -1004,7 +1013,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "missing message fields"}, status=400)
 
         session_chat_id = chat_guid or chat_identifier
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        is_group = (
+            bool(record.get("isGroup"))
+            or (";+;" in (chat_guid or ""))
+            or any(
+                isinstance(chat, dict) and int(chat.get("style") or 0) >= 43
+                for chat in _chats
+            )
+        )
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(

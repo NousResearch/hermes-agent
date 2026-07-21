@@ -10,6 +10,7 @@ from gateway.config import Platform, PlatformConfig
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    monkeypatch.delenv("BLUEBUBBLES_MENTION_PATTERNS", raising=False)
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(
@@ -261,6 +262,81 @@ class TestBlueBubblesMentionGating:
 
         assert response.status == 200
         assert [event.text for event in handled] == ["hello from a dm"]
+
+    @pytest.mark.asyncio
+    async def test_group_auth_key_payload_without_mention_is_skipped(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-auth-key-1",
+                "text": "casual family chatter",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [
+                    {
+                        "[auth-key]": "any;+;family-group",
+                        "style": 43,
+                        "chatIdentifier": "family-group",
+                        "displayName": "Family",
+                    }
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_group_auth_key_payload_with_mention_uses_group_source(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-auth-key-2",
+                "text": "Hermes summarize this",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [
+                    {
+                        "[auth-key]": "any;+;family-group",
+                        "style": 43,
+                        "chatIdentifier": "family-group",
+                        "displayName": "Family",
+                    }
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "summarize this"
+        assert event.source.chat_id == "any;+;family-group"
+        assert event.source.chat_id_alt == "family-group"
+        assert event.source.chat_type == "group"
 
 
 class TestBlueBubblesWebhookParsing:

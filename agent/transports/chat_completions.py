@@ -187,7 +187,6 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
-                or "api_content" in msg  # persist-what-you-send sidecar
             ):
                 needs_sanitize = True
                 break
@@ -230,7 +229,6 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
-                or "api_content" in msg  # persist-what-you-send sidecar
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -238,7 +236,6 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("tool_name", None)
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
-                out_msg.pop("api_content", None)  # persist-what-you-send sidecar
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
@@ -271,6 +268,11 @@ class ChatCompletionsTransport(ProviderTransport):
                             copied_tool_calls[tc_idx] = copied_tc
                 if copied_tool_calls is not None:
                     mutable_msg()["tool_calls"] = copied_tool_calls
+
+        # DeepSeek rejects tool_calls: [] with 400; strip empty arrays before sending
+        for i, m in enumerate(sanitized):
+            if isinstance(m, dict) and isinstance(m.get("tool_calls"), list) and len(m["tool_calls"]) == 0:
+                sanitized[i] = {k: v for k, v in m.items() if k != "tool_calls"}
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

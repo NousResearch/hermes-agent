@@ -35,6 +35,24 @@ def _get_config():
         _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
     )
 
+
+class HomeAssistantAPIError(Exception):
+    """Home Assistant REST API returned a non-2xx status.
+
+    Used instead of ``aiohttp.ClientResponseError(request_info=None, ...)``:
+    that exception's ``__str__`` dereferences ``request_info.real_url``, so a
+    synthesized instance with ``request_info=None`` raises ``AttributeError``
+    the moment anything formats it (``f"{e}"``, logging, ``str(e)``). The
+    handler error path does exactly that, so an unrelated 400 would crash the
+    handler instead of returning a clean tool error. This type stringifies
+    safely while still exposing ``status`` / ``message`` for callers.
+    """
+
+    def __init__(self, status: int, message: str = ""):
+        self.status = int(status)
+        self.message = message or f"HTTP {self.status}"
+        super().__init__(f"HTTP {self.status}: {self.message}")
+
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
@@ -57,6 +75,21 @@ _BLOCKED_DOMAINS = frozenset({
     "pyscript",         # scripting integration with broader access
     "hassio",           # addon control, host shutdown/reboot, stdin to containers
     "rest_command",     # HTTP requests from HA server (SSRF vector)
+})
+
+# Services that ALWAYS return data — i.e. registered in HA with
+# ``SupportsResponse.ONLY``.  Calling them via the REST API without
+# ``?return_response=true`` produces a 400 with a message like
+# "Service todo.get_items requires response data".  We auto-attach the
+# query string for these so the model doesn't have to know the rule.
+# Conservative list — anything not here still works via the explicit
+# ``return_response`` parameter and our 400-hint auto-retry below.
+# See: https://github.com/NousResearch/hermes-agent/issues/27256
+_RESPONSE_ONLY_SERVICES: frozenset = frozenset({
+    ("todo", "get_items"),
+    ("calendar", "get_events"),
+    ("weather", "get_forecasts"),
+    ("conversation", "process"),
 })
 
 
@@ -158,20 +191,64 @@ def _parse_service_response(
     service: str,
     result: Any,
 ) -> Dict[str, Any]:
-    """Parse HA service call response into a structured result."""
+    """Parse HA service call response into a structured result.
+
+    Two response shapes are supported:
+
+    * Legacy / non-response services: a flat list of changed state objects.
+    * Response services (called with ``?return_response=true``): a dict
+      with ``changed_states`` and ``service_response`` keys.  The latter
+      carries the actual payload the caller wants (e.g. todo items,
+      calendar events).
+    """
     affected = []
-    if isinstance(result, list):
-        for s in result:
+    service_response: Optional[Any] = None
+    changed_states: Any = result
+
+    if isinstance(result, dict) and (
+        "service_response" in result or "changed_states" in result
+    ):
+        service_response = result.get("service_response")
+        changed_states = result.get("changed_states") or []
+
+    if isinstance(changed_states, list):
+        for s in changed_states:
+            if not isinstance(s, dict):
+                continue
             affected.append({
                 "entity_id": s.get("entity_id", ""),
                 "state": s.get("state", ""),
             })
 
-    return {
+    parsed: Dict[str, Any] = {
         "success": True,
         "service": f"{domain}.{service}",
         "affected_entities": affected,
     }
+    if service_response is not None:
+        parsed["service_response"] = service_response
+    return parsed
+
+
+def _service_url(hass_url: str, domain: str, service: str, return_response: bool) -> str:
+    """Construct the /api/services URL, optionally with return_response."""
+    base = f"{hass_url}/api/services/{domain}/{service}"
+    return f"{base}?return_response=true" if return_response else base
+
+
+def _is_response_required_hint(status: int, body: str) -> bool:
+    """Detect HA's "requires response data" 400 so we can auto-retry.
+
+    HA's REST API returns 400 with a message such as
+    "Service todo.get_items requires response data" when a response-only
+    service is called without ``?return_response=true``.  Matching on
+    "return_response" / "requires response" is conservative and avoids
+    false positives — neither phrase appears in unrelated 400s in HA core.
+    """
+    if status != 400 or not body:
+        return False
+    lowered = body.lower()
+    return ("return_response" in lowered) or ("requires response" in lowered)
 
 
 async def _async_call_service(
@@ -179,23 +256,62 @@ async def _async_call_service(
     service: str,
     entity_id: Optional[str] = None,
     data: Optional[Dict[str, Any]] = None,
+    return_response: bool = False,
 ) -> Dict[str, Any]:
-    """Call a Home Assistant service."""
+    """Call a Home Assistant service.
+
+    ``return_response`` toggles HA's ``?return_response=true`` query
+    parameter, required for "response services" registered with
+    ``SupportsResponse.ONLY`` (e.g. ``todo.get_items``,
+    ``calendar.get_events``, ``weather.get_forecasts``).  Known
+    response-only services in :data:`_RESPONSE_ONLY_SERVICES` opt in
+    automatically; for everything else we auto-retry once when HA's 400
+    response explicitly says response data is required, so the model
+    never has to know the rule.  See issue #27256.
+    """
     import aiohttp
 
     hass_url, hass_token = _get_config()
-    url = f"{hass_url}/api/services/{domain}/{service}"
     payload = _build_service_payload(entity_id, data)
+    must_return_response = bool(return_response) or (
+        (domain, service) in _RESPONSE_ONLY_SERVICES
+    )
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            headers=_get_headers(hass_token),
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
+    async def _post(use_return_response: bool):
+        url = _service_url(hass_url, domain, service, use_return_response)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers=_get_headers(hass_token),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                status = resp.status
+                body_text = await resp.text()
+                return status, body_text, resp.content_type
+
+    status, body_text, content_type = await _post(must_return_response)
+
+    # Defensive auto-retry: if HA explicitly tells us this service needs
+    # ``?return_response=true`` (because the static list above didn't cover
+    # the user's HA version / custom integration), retry once with it on.
+    if (
+        not must_return_response
+        and _is_response_required_hint(status, body_text)
+    ):
+        must_return_response = True
+        status, body_text, content_type = await _post(True)
+
+    if status >= 400:
+        raise HomeAssistantAPIError(status, body_text)
+
+    if content_type and "json" in content_type:
+        try:
+            result = json.loads(body_text) if body_text else None
+        except json.JSONDecodeError:
+            result = body_text
+    else:
+        result = body_text or None
 
     return _parse_service_response(domain, service, result)
 
@@ -280,8 +396,20 @@ def _handle_call_service(args: dict, **kw) -> str:
         except json.JSONDecodeError as e:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
 
+    # ``return_response`` may arrive as a real bool (JSON tool calling) or
+    # as a string ("true"/"false"/"1"/"0") in XML tool-calling mode.
+    raw_rr = args.get("return_response", False)
+    if isinstance(raw_rr, bool):
+        return_response = raw_rr
+    elif isinstance(raw_rr, str):
+        return_response = raw_rr.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        return_response = bool(raw_rr)
+
     try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
+        result = _run_async(
+            _async_call_service(domain, service, entity_id, data, return_response)
+        )
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
@@ -427,8 +555,12 @@ HA_LIST_SERVICES_SCHEMA = {
 HA_CALL_SERVICE_SCHEMA = {
     "name": "ha_call_service",
     "description": (
-        "Call a Home Assistant service to control a device. Use ha_list_services "
-        "to discover available services and their parameters for each domain."
+        "Call a Home Assistant service to control a device or read data from "
+        "a response service. Use ha_list_services to discover available "
+        "services and their parameters for each domain. For services that "
+        "return data (e.g. todo.get_items, calendar.get_events, "
+        "weather.get_forecasts), set return_response=true; well-known "
+        "response services opt in automatically."
     ),
     "parameters": {
         "type": "object",
@@ -437,7 +569,8 @@ HA_CALL_SERVICE_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Service domain (e.g. 'light', 'switch', 'climate', "
-                    "'cover', 'media_player', 'fan', 'scene', 'script')."
+                    "'cover', 'media_player', 'fan', 'scene', 'script', "
+                    "'todo', 'calendar', 'weather')."
                 ),
             },
             "service": {
@@ -445,14 +578,17 @@ HA_CALL_SERVICE_SCHEMA = {
                 "description": (
                     "Service name (e.g. 'turn_on', 'turn_off', 'toggle', "
                     "'set_temperature', 'set_hvac_mode', 'open_cover', "
-                    "'close_cover', 'set_volume_level')."
+                    "'close_cover', 'set_volume_level', 'get_items', "
+                    "'add_item', 'remove_item', 'get_events', "
+                    "'get_forecasts')."
                 ),
             },
             "entity_id": {
                 "type": "string",
                 "description": (
-                    "Target entity ID (e.g. 'light.living_room'). "
-                    "Some services (like scene.turn_on) may not need this."
+                    "Target entity ID (e.g. 'light.living_room', "
+                    "'todo.mylist'). Some services (like scene.turn_on) "
+                    "may not need this."
                 ),
             },
             "data": {
@@ -461,7 +597,18 @@ HA_CALL_SERVICE_SCHEMA = {
                     "Additional service data as a JSON string. Examples: "
                     '{"brightness": 255, "color_name": "blue"} for lights, '
                     '{"temperature": 22, "hvac_mode": "heat"} for climate, '
-                    '{"volume_level": 0.5} for media players.'
+                    '{"volume_level": 0.5} for media players, '
+                    '{"status": "needs_action"} for todo.get_items.'
+                ),
+            },
+            "return_response": {
+                "type": "boolean",
+                "description": (
+                    "Set to true for response services that return data "
+                    "(todo.get_items, calendar.get_events, "
+                    "weather.get_forecasts, conversation.process). HA "
+                    "rejects these with HTTP 400 unless the request opts "
+                    "in to receiving response data. Default: false."
                 ),
             },
         },

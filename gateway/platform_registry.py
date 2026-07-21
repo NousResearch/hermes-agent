@@ -290,7 +290,16 @@ class PlatformRegistry:
         if entry is None:
             return None
 
-        if not entry.check_fn():
+        try:
+            check_ok = entry.check_fn()
+        except Exception as e:
+            logger.warning(
+                "Platform '%s' check_fn raised an exception: %s",
+                entry.label,
+                e,
+            )
+            return None
+        if not check_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning(
                 "Platform '%s' requirements not met%s",

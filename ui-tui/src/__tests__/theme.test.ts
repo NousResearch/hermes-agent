@@ -307,6 +307,7 @@ describe('fromSkin', () => {
       COLORTERM: 'truecolor',
       TERM_PROGRAM: 'Apple_Terminal'
     })
+
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     // No ansi256 bucketing on truecolor terminals — a truly invisible cream

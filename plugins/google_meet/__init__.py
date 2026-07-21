@@ -101,3 +101,19 @@ def register(ctx) -> None:
     )
 
     ctx.register_hook("on_session_end", _on_session_end)
+
+    # Plugin-scoped skill (fixes #48): SKILL.md shipped but was never wired.
+    # Resolvable as 'google_meet:meet' via explicit load only.
+    if hasattr(ctx, "register_skill"):
+        from pathlib import Path  # noqa: PLC0415
+        try:
+            ctx.register_skill(
+                name="meet",
+                path=Path(__file__).parent / "SKILL.md",
+                description=(
+                    "Join a Google Meet call, transcribe live captions, optionally "
+                    "speak in realtime, and do the followup work afterwards."
+                ),
+            )
+        except Exception:
+            logger.debug("google_meet: register_skill failed", exc_info=True)

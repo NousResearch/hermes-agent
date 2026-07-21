@@ -3116,9 +3116,51 @@ TERMINAL_SCHEMA = {
 }
 
 
-def _handle_terminal(args, **kw):
+def _handle_terminal(args=None, **kw):
+    """Normalize terminal tool arguments before dispatching to terminal_tool.
+
+    Defensively coerces the argument shape (None / bare string / non-dict) and
+    then enforces the schema-``required`` ``command`` field, which is otherwise
+    never validated on the dispatch path. A terminal call arriving with empty
+    or absent arguments is normalized upstream to ``{}`` (see
+    ``conversation_loop`` empty-args handling and ``handle_function_call``
+    non-dict coercion), which previously reached ``terminal_tool`` as
+    ``command=None`` and surfaced the cryptic ``expected string, got NoneType``
+    error. We return an explicit, model-actionable error here instead.
+
+    Execution-control identity (``task_id``) is read ONLY from the trusted
+    dispatch kwargs, never from model-supplied args — ``task_id`` selects the
+    container/sandbox isolation key and must not be influenced by tool input.
+    """
+    if isinstance(args, str):
+        args = {"command": args}
+    elif args is None:
+        args = {}
+    elif not isinstance(args, dict):
+        return json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "error": (
+                "Invalid terminal args: expected dict or string, "
+                f"got {type(args).__name__}"
+            ),
+            "status": "error",
+        }, ensure_ascii=False)
+
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "error": (
+                "terminal: missing required 'command' string argument. "
+                "Provide a non-empty shell command to run."
+            ),
+            "status": "error",
+        }, ensure_ascii=False)
+
     return terminal_tool(
-        command=args.get("command"),
+        command=command,
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),

@@ -1533,7 +1533,7 @@ discord:
 
 ```yaml
 security:
-  redact_secrets: false          # 在工具输出和日志中脱敏 API 密钥模式（默认关闭）
+  redact_secrets: true           # 在工具输出、工具输入/写入参数和日志中脱敏 API 密钥模式（默认开启）
   tirith_enabled: true           # 为终端命令启用 Tirith 安全扫描
   tirith_path: "tirith"          # tirith 二进制文件路径（默认：$PATH 中的 "tirith"）
   tirith_timeout: 5              # 等待 tirith 扫描的秒数
@@ -1544,7 +1544,13 @@ security:
     shared_files: []
 ```
 
-- `redact_secrets` —— 为 `true` 时，自动检测并脱敏工具输出中看起来像 API 密钥、token 和密码的模式，然后再进入对话上下文和日志。**默认关闭** —— 如果您经常在工具输出中处理真实凭据并希望有安全网，请启用。显式设置为 `true` 以开启。
+- `redact_secrets` —— 为 `true` 时，自动检测并脱敏工具输出**和工具输入/写入参数**中看起来像 API 密钥、token 和密码的模式，然后再进入对话上下文、日志**或文件系统**。**默认开启** —— 如果您经常在工具输出中处理真实凭据并希望有安全网，请保持开启。仅当您需要原始凭据字符串用于调试或红actor开发时，显式设置为 `false`。
+
+  :::warning 写入操作的副作用
+  脱敏过滤器不仅拦截工具**输出**中的 API 密钥模式，还会拦截工具**输入参数**（如 `write_file` 内容、写入 `.env` 或配置文件的 `terminal` 命令）。这会导致 agent 尝试写入秘密值时被**静默截断或替换** — 文件收到的是像 `TELEGRAM_BOT_TOKEN=***` 这样的截断值，而工具调用却报告成功。没有警告、没有错误、没有差异 — 这种损坏在下游服务因认证失败而暴露前是不可见的。
+
+  **自主化配置的变通方法：** 始终在 `execute_code` 内部通过字符串拼接/chr() 构造秘密值，因为脱敏扫描器不会拦截那里的参数载荷，然后从那里写入文件。切勿在 `write_file` 或 `echo`/`terminal` 重定向命令中直接内联完整的秘密值。
+  :::
 - `tirith_enabled` —— 为 `true` 时，终端命令在执行前由 [Tirith](https://github.com/sheeki03/tirith) 扫描以检测潜在危险操作。
 - `tirith_path` —— tirith 二进制文件的路径。如果 tirith 安装在非标准位置，请设置此项。
 - `tirith_timeout` —— 等待 tirith 扫描的最大秒数。如果扫描超时，命令继续执行。

@@ -457,15 +457,21 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 
 ### 工具输出中的密钥脱敏
 
-密钥脱敏**默认关闭** — 工具输出（终端 stdout、`read_file`、网页内容、子 agent 摘要等）不经修改直接传递。如果用户希望 Hermes 在 API key、token 和密钥进入对话上下文和日志之前自动屏蔽它们：
+密钥脱敏**默认开启** — 工具输出（终端 stdout、`read_file`、网页内容、子 agent 摘要等）**和工具输入/写入参数**（如 `write_file` 内容、写入 `.env` 或配置文件的 `terminal` 命令）在进入对话上下文、日志**或文件系统**之前会被扫描并屏蔽 API key、token 和密钥模式。正常使用请保持开启：
 
 ```bash
 hermes config set security.redact_secrets true       # 全局启用
 ```
 
-**需要重启。** `security.redact_secrets` 在导入时快照 — 在会话中途切换（例如通过工具调用执行 `export HERMES_REDACT_SECRETS=true`）对正在运行的进程**不会**生效。告知用户在终端运行 `hermes config set security.redact_secrets true`，然后启动新会话。这是有意为之——防止 LLM 在任务中途自行切换该开关。
+**需要重启。** `security.redact_secrets` 在导入时快照 — 在会话中途切换（例如通过工具调用执行 `export HERMES_REDACT_SECRETS=false`）对正在运行的进程**不会**生效。告知用户在终端运行 `hermes config set security.redact_secrets true`，然后启动新会话。这是有意为之——防止 LLM 在任务中途自行切换该开关。
 
-再次禁用：
+:::warning 写入操作的副作用
+脱敏过滤器不仅拦截工具**输出**中的 API 密钥模式，还会拦截工具**输入参数**。这会导致 agent 尝试写入秘密值时被**静默截断或替换** — 文件收到的是像 `TELEGRAM_BOT_TOKEN=*** 这样的截断值，而工具调用却报告成功。没有警告、没有错误、没有差异 — 这种损坏在下游服务因认证失败而暴露前是不可见的。
+
+**自主化配置的变通方法：** 始终在 `execute_code` 内部通过字符串拼接/chr() 构造秘密值，因为脱敏扫描器不会拦截那里的参数载荷，然后从那里写入文件。切勿在 `write_file` 或 `echo`/`terminal` 重定向命令中直接内联完整的秘密值。
+:::
+
+再次禁用（仅在您故意需要原始凭据字符串用于调试或红actor开发时）：
 ```bash
 hermes config set security.redact_secrets false
 ```

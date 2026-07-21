@@ -612,6 +612,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
+    _model_flow_kimi_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock_api_key,
@@ -3084,6 +3085,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "kimi-acp":
+        _model_flow_kimi_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":

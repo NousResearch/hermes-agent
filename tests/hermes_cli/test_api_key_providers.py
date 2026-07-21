@@ -21,6 +21,22 @@ from hermes_cli.auth import (
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
 
+@pytest.fixture(autouse=True)
+def _isolate_real_home(monkeypatch, tmp_path):
+    """Keep endpoint-default tests independent of the real Hermes dotenv file."""
+    from hermes_cli.config import invalidate_env_cache
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.get_env_path", lambda: env_path)
+    for provider in PROVIDER_REGISTRY.values():
+        if provider.base_url_env_var:
+            monkeypatch.delenv(provider.base_url_env_var, raising=False)
+    invalidate_env_cache()
+    yield
+    invalidate_env_cache()
+
+
 # =============================================================================
 # Provider Registry tests
 # =============================================================================

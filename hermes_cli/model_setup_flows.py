@@ -1825,6 +1825,64 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+
+def _model_flow_kimi_acp(config, current_model=""):
+    """Kimi Code ACP flow using the locally authenticated Kimi CLI."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    del config
+
+    provider_id = "kimi-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print("  Set HERMES_KIMI_ACP_COMMAND if Kimi Code is installed elsewhere.")
+        return
+
+    effective_base = creds.get("base_url") or pconfig.inference_base_url
+    command = creds.get("command") or "kimi"
+    print("  Kimi Code ACP delegates Hermes turns to `kimi acp`.")
+    print(f"  Command: {command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    selected = _prompt_model_selection(
+        _PROVIDER_MODELS[provider_id],
+        current_model=current_model,
+        confirm_provider=provider_id,
+        confirm_base_url=effective_base,
+        confirm_api_key=creds.get("api_key", ""),
+    )
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

@@ -34,6 +34,7 @@ import hashlib
 import inspect
 import ipaddress
 import json
+import keyword
 import logging
 import os
 import re
@@ -574,7 +575,11 @@ def _safe_identifier(name: str) -> str:
     return cleaned
 
 
-def _make_registry_tool_wrapper(tool_name: str):
+def _make_registry_tool_wrapper(
+    tool_name: str, *, omit_none_for: Optional[Set[str]] = None
+):
+    omitted_optional_names = set(omit_none_for or set())
+
     def _tool(**kwargs):
         # Registry tools exposed through MCP must follow the same guarded
         # execution path as model-issued tool calls. Calling registry.dispatch
@@ -582,12 +587,20 @@ def _make_registry_tool_wrapper(tool_name: str):
         # hooks, ACP edit approval, post-call hooks, and result transforms.
         from model_tools import handle_function_call
 
+        call_id = secrets.token_hex(8)
+        function_args = {
+            key: value
+            for key, value in kwargs.items()
+            if value is not None or key not in omitted_optional_names
+        }
         return handle_function_call(
             function_name=tool_name,
-            function_args=dict(kwargs),
-            task_id="mcp-serve",
-            tool_call_id=f"mcp-{secrets.token_hex(8)}",
-            session_id="mcp-serve",
+            function_args=function_args,
+            task_id=f"mcp-serve-{call_id}",
+            tool_call_id=f"mcp-{call_id}",
+            session_id=f"mcp-serve-{call_id}",
+            turn_id=f"mcp-turn-{call_id}",
+            api_request_id=f"mcp-request-{call_id}",
         )
 
     _tool.__name__ = f"_mcp_registry_tool_{_safe_identifier(tool_name)}"
@@ -602,6 +615,10 @@ def _apply_schema_signature(wrapper, schema: dict) -> Any:
     name_map: dict[str, str] = {}
 
     for raw_name, prop in properties.items():
+        if not str(raw_name).isidentifier() or keyword.iskeyword(str(raw_name)):
+            raise ValueError(
+                f"MCP-exposed tool property {raw_name!r} is not a valid Python identifier"
+            )
         param_name = _safe_identifier(str(raw_name))
         while param_name in name_map:
             param_name = f"{param_name}_"
@@ -629,6 +646,24 @@ def _apply_schema_signature(wrapper, schema: dict) -> Any:
     return wrapper
 
 
+def _schema_allows_null(prop: Any) -> bool:
+    if not isinstance(prop, dict):
+        return False
+    prop_type = prop.get("type")
+    if prop_type == "null" or (
+        isinstance(prop_type, list) and "null" in prop_type
+    ):
+        return True
+    for branch_key in ("anyOf", "oneOf"):
+        branches = prop.get(branch_key)
+        if isinstance(branches, list) and any(
+            isinstance(branch, dict) and branch.get("type") == "null"
+            for branch in branches
+        ):
+            return True
+    return False
+
+
 def _register_registry_tools_as_mcp(
     mcp,
     *,
@@ -641,15 +676,43 @@ def _register_registry_tools_as_mcp(
     if not include_toolsets and not include_tools and not expose_plugin_tools:
         return []
 
+    reserved_names = {
+        "conversations_list",
+        "conversation_get",
+        "messages_read",
+        "attachments_fetch",
+        "events_poll",
+        "events_wait",
+        "messages_send",
+        "channels_list",
+        "permissions_list_open",
+        "permissions_respond",
+    }
+    reserved_requests = include_tools & reserved_names
+    if reserved_requests:
+        raise RuntimeError(
+            "MCP tool selectors collide with built-in server tools: "
+            + ", ".join(sorted(reserved_requests))
+        )
+
     try:
         from tools.registry import registry
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from model_tools import _AGENT_LOOP_TOOLS
         discover_plugins()
     except Exception as exc:
-        logger.warning("Could not discover plugin tools for MCP serving: %s", exc)
-        return []
+        raise RuntimeError(
+            f"Could not discover requested Hermes tools for MCP serving: {exc}"
+        ) from exc
 
-    plugin_tool_names = set(getattr(get_plugin_manager(), "_plugin_tool_names", set()))
+    unsupported_requests = include_tools & set(_AGENT_LOOP_TOOLS)
+    if unsupported_requests:
+        raise RuntimeError(
+            "Agent-loop tools cannot be exposed by the stateless MCP server: "
+            + ", ".join(sorted(unsupported_requests))
+        )
+
+    plugin_tool_names = get_plugin_manager().get_registered_tool_names()
     registered: List[str] = []
     for name in registry.get_all_tool_names():
         entry = registry.get_entry(name)
@@ -662,6 +725,12 @@ def _register_registry_tools_as_mcp(
         )
         if not should_expose:
             continue
+        if name in _AGENT_LOOP_TOOLS:
+            logger.warning(
+                "Skipping MCP exposure for agent-loop tool %s; it requires live agent state",
+                name,
+            )
+            continue
         if entry.check_fn:
             try:
                 if not entry.check_fn():
@@ -671,7 +740,18 @@ def _register_registry_tools_as_mcp(
                 continue
 
         schema = {**(entry.schema or {}), "name": entry.name}
-        wrapper = _make_registry_tool_wrapper(entry.name)
+        parameters_schema = schema.get("parameters") or {}
+        properties = parameters_schema.get("properties") or {}
+        required = set(parameters_schema.get("required") or [])
+        omit_none_for = {
+            str(property_name)
+            for property_name, property_schema in properties.items()
+            if property_name not in required
+            and not _schema_allows_null(property_schema)
+        }
+        wrapper = _make_registry_tool_wrapper(
+            entry.name, omit_none_for=omit_none_for
+        )
         wrapper = _apply_schema_signature(wrapper, schema)
         mcp.add_tool(
             wrapper,
@@ -685,6 +765,29 @@ def _register_registry_tools_as_mcp(
 
     if registered:
         logger.info("Exposed %d Hermes registry tools over MCP", len(registered))
+    missing_tools = include_tools - set(registered)
+    if missing_tools:
+        raise RuntimeError(
+            "Requested MCP tools are unknown or unavailable: "
+            + ", ".join(sorted(missing_tools))
+        )
+    empty_toolsets = {
+        toolset
+        for toolset in include_toolsets
+        if not any(
+            (entry := registry.get_entry(name))
+            and entry.toolset == toolset
+            and name in registered
+            for name in registry.get_all_tool_names()
+        )
+    }
+    if empty_toolsets:
+        raise RuntimeError(
+            "Requested MCP toolsets have no available tools: "
+            + ", ".join(sorted(empty_toolsets))
+        )
+    if expose_plugin_tools and not (set(registered) & plugin_tool_names):
+        raise RuntimeError("No enabled plugin tools are available for MCP exposure")
     return registered
 
 
@@ -1129,7 +1232,7 @@ class McpHttpAuthConfig:
     oauth_client_secret: Optional[str] = None
     public_base_url: str = "http://127.0.0.1:8666"
     path: str = "/mcp"
-    token_ttl_seconds: int = 2_592_000
+    token_ttl_seconds: int = 3_600
     code_ttl_seconds: int = 300
     allowed_redirect_uris: Sequence[str] = field(default_factory=list)
 
@@ -1161,23 +1264,53 @@ class _AuthorizationCode:
     expires_at: float
     code_challenge: Optional[str] = None
     code_challenge_method: Optional[str] = None
+    resource: Optional[str] = None
+
+
+_OAUTH_FORM_BODY_LIMIT = 16 * 1024
 
 
 class _OAuthTokenStore:
     """Small in-memory token/code store for single-process HTTP MCP servers."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_tokens: int = 1024,
+        max_codes: int = 1024,
+        max_code_issuance_per_minute: int = 120,
+    ) -> None:
         self._tokens: Dict[str, _IssuedToken] = {}
         self._codes: Dict[str, _AuthorizationCode] = {}
         self._lock = threading.Lock()
+        self._max_tokens = max(1, int(max_tokens))
+        self._max_codes = max(1, int(max_codes))
+        self._max_code_issuance_per_minute = max(
+            1, int(max_code_issuance_per_minute)
+        )
+        self._code_issuance_times: List[float] = []
+
+    @staticmethod
+    def _prune_expired(entries: Dict[str, Any], now: float) -> None:
+        for key, value in list(entries.items()):
+            if value.expires_at < now:
+                entries.pop(key, None)
+
+    @staticmethod
+    def _make_room(entries: Dict[str, Any], maximum: int) -> None:
+        while len(entries) >= maximum:
+            entries.pop(next(iter(entries)))
 
     def issue_token(self, client_id: str, ttl_seconds: int) -> str:
         token = secrets.token_urlsafe(32)
         with self._lock:
+            now = time.time()
+            self._prune_expired(self._tokens, now)
+            self._make_room(self._tokens, self._max_tokens)
             self._tokens[token] = _IssuedToken(
                 token=token,
                 client_id=client_id,
-                expires_at=time.time() + ttl_seconds,
+                expires_at=now + ttl_seconds,
             )
         return token
 
@@ -1199,16 +1332,30 @@ class _OAuthTokenStore:
         *,
         code_challenge: Optional[str] = None,
         code_challenge_method: Optional[str] = None,
+        resource: Optional[str] = None,
     ) -> str:
         code = secrets.token_urlsafe(24)
         with self._lock:
+            now = time.time()
+            monotonic_now = time.monotonic()
+            self._code_issuance_times = [
+                issued_at
+                for issued_at in self._code_issuance_times
+                if issued_at > monotonic_now - 60
+            ]
+            if len(self._code_issuance_times) >= self._max_code_issuance_per_minute:
+                raise OverflowError("authorization-code issuance rate exceeded")
+            self._code_issuance_times.append(monotonic_now)
+            self._prune_expired(self._codes, now)
+            self._make_room(self._codes, self._max_codes)
             self._codes[code] = _AuthorizationCode(
                 code=code,
                 client_id=client_id,
                 redirect_uri=redirect_uri,
-                expires_at=time.time() + ttl_seconds,
+                expires_at=now + ttl_seconds,
                 code_challenge=code_challenge,
                 code_challenge_method=code_challenge_method,
+                resource=resource,
             )
         return code
 
@@ -1218,21 +1365,26 @@ class _OAuthTokenStore:
         client_id: str,
         redirect_uri: str,
         code_verifier: Optional[str] = None,
+        resource: Optional[str] = None,
     ) -> bool:
         with self._lock:
-            issued = self._codes.pop(code, None)
+            issued = self._codes.get(code)
             if not issued:
                 return False
             if issued.expires_at < time.time():
+                self._codes.pop(code, None)
                 return False
             if not secrets.compare_digest(issued.client_id, client_id):
                 return False
             if not secrets.compare_digest(issued.redirect_uri, redirect_uri):
                 return False
+            if issued.resource and resource not in {None, issued.resource}:
+                return False
             if issued.code_challenge:
                 derived = _pkce_challenge(code_verifier, issued.code_challenge_method)
                 if not derived or not secrets.compare_digest(issued.code_challenge, derived):
                     return False
+            self._codes.pop(code, None)
             return True
 
 
@@ -1243,6 +1395,11 @@ def _normalize_path(path: str) -> str:
     if len(path) > 1:
         path = path.rstrip("/")
     return path
+
+
+def _mcp_child_path(path: str, child: str) -> str:
+    normalized = _normalize_path(path)
+    return f"/{child.lstrip('/')}" if normalized == "/" else f"{normalized}/{child.lstrip('/')}"
 
 
 def _read_env_secret(env_name: Optional[str]) -> Optional[str]:
@@ -1294,6 +1451,13 @@ def _pkce_challenge(verifier: Optional[str], method: Optional[str]) -> Optional[
     return None
 
 
+_PKCE_VALUE_RE = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+
+
+def _valid_pkce_value(value: Optional[str]) -> bool:
+    return bool(value and _PKCE_VALUE_RE.fullmatch(value))
+
+
 def _is_loopback_host(host: str) -> bool:
     """Return whether *host* binds only to the local machine."""
     value = (host or "").strip().strip("[]")
@@ -1303,6 +1467,34 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(value).is_loopback
     except ValueError:
         return False
+
+
+def _http_host_literal(host: str) -> str:
+    bare_host = str(host).strip().strip("[]")
+    return f"[{bare_host}]" if ":" in bare_host else bare_host
+
+
+def _default_http_base_url(host: str, port: int) -> str:
+    return f"http://{_http_host_literal(host)}:{int(port)}"
+
+
+def _oauth_public_base_url_is_safe(public_base_url: str) -> bool:
+    """Require HTTPS for remote OAuth metadata and allow HTTP only on loopback."""
+    try:
+        parsed = urlparse(public_base_url)
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    return parsed.scheme == "https" or _is_loopback_host(hostname)
 
 
 def _client_secret_valid(config: McpHttpAuthConfig, supplied: Optional[str]) -> bool:
@@ -1324,18 +1516,18 @@ def _auth_challenge(config: McpHttpAuthConfig) -> str:
 
 
 def _oauth_redirect_uri_allowed(config: McpHttpAuthConfig, redirect_uri: Optional[str]) -> bool:
-    if not redirect_uri:
+    if not redirect_uri or redirect_uri not in set(config.allowed_redirect_uris):
         return False
-    parsed = urlparse(redirect_uri)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    try:
+        parsed = urlparse(redirect_uri)
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
         return False
     if parsed.fragment or parsed.username is not None or parsed.password is not None:
         return False
-    if parsed.hostname and _is_loopback_host(parsed.hostname):
-        return True
-    if parsed.scheme != "https":
-        return False
-    return redirect_uri in set(config.allowed_redirect_uris)
+    return parsed.scheme == "https" or _is_loopback_host(hostname)
 
 
 def _is_protected_mcp_http_path(config: McpHttpAuthConfig, request_path: str) -> bool:
@@ -1346,8 +1538,8 @@ def _is_protected_mcp_http_path(config: McpHttpAuthConfig, request_path: str) ->
     if mcp_path == "/" or not path.startswith(f"{mcp_path}/"):
         return False
     if config.oauth_compatible and path in {
-        f"{mcp_path}/authorize",
-        f"{mcp_path}/token",
+        _mcp_child_path(mcp_path, "authorize"),
+        _mcp_child_path(mcp_path, "token"),
     }:
         return False
     return True
@@ -1375,19 +1567,49 @@ def _is_authenticated(request, config: McpHttpAuthConfig, store: _OAuthTokenStor
     return False
 
 
-def _configure_transport_security(server, host: str, allowed_hosts: Sequence[str], allowed_origins: Sequence[str]) -> None:
-    hosts = list(dict.fromkeys([host, "127.0.0.1", "localhost", *allowed_hosts]))
-    origins = list(dict.fromkeys([*allowed_origins]))
-    if origins and "null" not in origins:
-        origins.append("null")
-    try:
-        from mcp.server.transport_security import TransportSecuritySettings
-        server.settings.transport_security = TransportSecuritySettings(
-            allowed_hosts=hosts,
-            allowed_origins=origins,
-        )
-    except Exception as exc:  # pragma: no cover - depends on MCP SDK version
-        logger.debug("Could not configure MCP transport security: %s", exc)
+def _configure_transport_security(
+    server,
+    host: str,
+    port: int,
+    allowed_hosts: Sequence[str],
+    allowed_origins: Sequence[str],
+) -> None:
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    header_host = _http_host_literal(host)
+    default_hosts = [
+        header_host,
+        f"{header_host}:{int(port)}",
+        "127.0.0.1",
+        f"127.0.0.1:{int(port)}",
+        "localhost",
+        f"localhost:{int(port)}",
+        "[::1]",
+        f"[::1]:{int(port)}",
+    ]
+    hosts = list(dict.fromkeys([*default_hosts, *allowed_hosts]))
+    origins = list(dict.fromkeys(allowed_origins))
+    server.settings.transport_security = TransportSecuritySettings(
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
+async def _read_request_body_limited(request, limit: int) -> bytes:
+    """Read an ASGI request body without allowing an unbounded allocation."""
+    stream = getattr(request, "stream", None)
+    if not callable(stream):
+        body = await request.body()
+        if len(body) > limit:
+            raise OverflowError("request body too large")
+        return body
+
+    body = bytearray()
+    async for chunk in stream():
+        body.extend(chunk)
+        if len(body) > limit:
+            raise OverflowError("request body too large")
+    return bytes(body)
 
 
 def create_streamable_http_app(
@@ -1426,16 +1648,28 @@ def create_streamable_http_app(
 
     if config and config.oauth_compatible:
         async def authorization_server_metadata(_request):
-            return JSONResponse({
+            authorization_code_enabled = bool(config.allowed_redirect_uris)
+            metadata = {
                 "issuer": config.public_base_url,
-                "authorization_endpoint": f"{config.public_base_url}{config.path}/authorize",
-                "token_endpoint": f"{config.public_base_url}{config.path}/token",
-                "response_types_supported": ["code"],
-                "grant_types_supported": ["authorization_code", "client_credentials"],
+                "token_endpoint": f"{config.public_base_url}{_mcp_child_path(config.path, 'token')}",
+                "response_types_supported": [],
+                "grant_types_supported": ["client_credentials"],
                 "token_endpoint_auth_methods_supported": ["client_secret_post"],
-                "code_challenge_methods_supported": ["plain", "S256"],
                 "scopes_supported": ["mcp"],
-            })
+            }
+            if authorization_code_enabled:
+                metadata.update(
+                    {
+                        "authorization_endpoint": f"{config.public_base_url}{_mcp_child_path(config.path, 'authorize')}",
+                        "response_types_supported": ["code"],
+                        "grant_types_supported": [
+                            "authorization_code",
+                            "client_credentials",
+                        ],
+                        "code_challenge_methods_supported": ["S256"],
+                    }
+                )
+            return JSONResponse(metadata)
 
         async def protected_resource_metadata(_request):
             return JSONResponse({
@@ -1451,9 +1685,20 @@ def create_streamable_http_app(
             redirect_uri = params.get("redirect_uri")
             response_type = params.get("response_type")
             state = params.get("state")
+            scope = params.get("scope")
             code_challenge = params.get("code_challenge")
             code_challenge_method = params.get("code_challenge_method")
+            expected_resource = f"{config.public_base_url}{config.path}"
+            resource = params.get("resource") or expected_resource
 
+            if not config.allowed_redirect_uris:
+                return JSONResponse(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "authorization-code grant is not configured",
+                    },
+                    status_code=400,
+                )
             if response_type != "code":
                 return JSONResponse({"error": "unsupported_response_type"}, status_code=400)
             if not _client_id_valid(config, client_id):
@@ -1468,48 +1713,98 @@ def create_streamable_http_app(
                     },
                     status_code=400,
                 )
-            if code_challenge:
-                code_challenge_method = code_challenge_method or "plain"
-                if code_challenge_method not in {"plain", "S256"}:
-                    return JSONResponse(
-                        {
-                            "error": "invalid_request",
-                            "error_description": "unsupported code_challenge_method",
-                        },
-                        status_code=400,
-                    )
-            elif code_challenge_method:
+            if resource != expected_resource:
+                return JSONResponse(
+                    {
+                        "error": "invalid_target",
+                        "error_description": "resource does not match this MCP server",
+                    },
+                    status_code=400,
+                )
+            if scope not in {None, "", "mcp"}:
+                return JSONResponse({"error": "invalid_scope"}, status_code=400)
+            if code_challenge_method != "S256" or not _valid_pkce_value(code_challenge):
                 return JSONResponse(
                     {
                         "error": "invalid_request",
-                        "error_description": "code_challenge is required with code_challenge_method",
+                        "error_description": "PKCE S256 code_challenge is required",
                     },
                     status_code=400,
                 )
 
-            code = store.issue_code(
-                client_id or "",
-                redirect_uri,
-                config.code_ttl_seconds,
-                code_challenge=code_challenge,
-                code_challenge_method=code_challenge_method,
-            )
+            try:
+                code = store.issue_code(
+                    client_id or "",
+                    redirect_uri,
+                    config.code_ttl_seconds,
+                    code_challenge=code_challenge,
+                    code_challenge_method="S256",
+                    resource=expected_resource,
+                )
+            except OverflowError:
+                return JSONResponse(
+                    {
+                        "error": "temporarily_unavailable",
+                        "error_description": "authorization-code issuance rate exceeded",
+                    },
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
             query = {"code": code}
             if state is not None:
                 query["state"] = state
             separator = "&" if "?" in redirect_uri else "?"
-            return RedirectResponse(f"{redirect_uri}{separator}{urlencode(query)}", status_code=302)
+            response = RedirectResponse(
+                f"{redirect_uri}{separator}{urlencode(query)}", status_code=302
+            )
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            return response
+
+        def _token_response(payload, status_code=200):
+            return JSONResponse(
+                payload,
+                status_code=status_code,
+                headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+            )
 
         async def token(request):
-            body = (await request.body()).decode("utf-8")
+            try:
+                raw_body = await _read_request_body_limited(
+                    request, _OAUTH_FORM_BODY_LIMIT
+                )
+            except OverflowError:
+                return _token_response(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "request body is too large",
+                    },
+                    413,
+                )
+            try:
+                body = raw_body.decode("utf-8")
+            except UnicodeDecodeError:
+                return _token_response(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "request body must be UTF-8",
+                    },
+                    400,
+                )
             parsed = parse_qs(body, keep_blank_values=True)
             form = {key: values[-1] if values else "" for key, values in parsed.items()}
             grant_type = form.get("grant_type")
             client_id = form.get("client_id")
             client_secret = form.get("client_secret")
+            expected_resource = f"{config.public_base_url}{config.path}"
+            requested_resource = form.get("resource")
 
             if not _client_id_valid(config, client_id) or not _client_secret_valid(config, client_secret):
-                return JSONResponse({"error": "invalid_client"}, status_code=401)
+                return _token_response({"error": "invalid_client"}, 401)
+            if requested_resource and requested_resource != expected_resource:
+                return _token_response({"error": "invalid_target"}, 400)
+            if form.get("scope") not in {None, "", "mcp"}:
+                return _token_response({"error": "invalid_scope"}, 400)
 
             if grant_type == "client_credentials":
                 access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
@@ -1517,28 +1812,32 @@ def create_streamable_http_app(
                 code = form.get("code")
                 redirect_uri = form.get("redirect_uri")
                 code_verifier = form.get("code_verifier")
-                if not store.consume_code(
+                resource = requested_resource or expected_resource
+                if not _valid_pkce_value(code_verifier) or not store.consume_code(
                     str(code or ""),
                     str(client_id or ""),
                     str(redirect_uri or ""),
-                    str(code_verifier) if code_verifier is not None else None,
+                    str(code_verifier),
+                    str(resource),
                 ):
-                    return JSONResponse({"error": "invalid_grant"}, status_code=400)
+                    return _token_response({"error": "invalid_grant"}, 400)
                 access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
             else:
-                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+                return _token_response({"error": "unsupported_grant_type"}, 400)
 
-            return JSONResponse({
-                "access_token": access_token,
-                "token_type": "Bearer",
-                "expires_in": config.token_ttl_seconds,
-                "scope": "mcp",
-            })
+            return _token_response(
+                {
+                    "access_token": access_token,
+                    "token_type": "Bearer",
+                    "expires_in": config.token_ttl_seconds,
+                    "scope": "mcp",
+                }
+            )
 
         app.add_route("/.well-known/oauth-authorization-server", authorization_server_metadata, methods=["GET"])
         app.add_route(f"/.well-known/oauth-protected-resource{config.path}", protected_resource_metadata, methods=["GET"])
-        app.add_route(f"{config.path}/authorize", authorize, methods=["GET"])
-        app.add_route(f"{config.path}/token", token, methods=["POST"])
+        app.add_route(_mcp_child_path(config.path, "authorize"), authorize, methods=["GET"])
+        app.add_route(_mcp_child_path(config.path, "token"), token, methods=["POST"])
 
     if config:
         class McpAuthMiddleware:
@@ -1569,6 +1868,32 @@ def create_streamable_http_app(
 
         app.add_middleware(McpAuthMiddleware)
 
+    transport_security = getattr(server.settings, "transport_security", None)
+    if transport_security is not None:
+        from mcp.server.transport_security import TransportSecurityMiddleware
+
+        validator = TransportSecurityMiddleware(transport_security)
+
+        class AllRouteTransportSecurityMiddleware:
+            def __init__(self, inner_app):
+                self.app = inner_app
+
+            def __getattr__(self, name):
+                return getattr(self.app, name)
+
+            async def __call__(self, scope, receive, send):
+                if scope.get("type") == "http":
+                    request = Request(scope, receive=receive)
+                    rejection = await validator.validate_request(
+                        request, is_post=False
+                    )
+                    if rejection is not None:
+                        await rejection(scope, receive, send)
+                        return
+                await self.app(scope, receive, send)
+
+        app = AllRouteTransportSecurityMiddleware(app)
+
     return app
 
 
@@ -1582,10 +1907,11 @@ def run_mcp_http_server(
     auth_token_env: Optional[str] = None,
     auth_header: str = "X-Hermes-MCP-PSK",
     allow_query_token: bool = False,
+    allow_insecure_http: bool = False,
     oauth_compatible: bool = False,
     oauth_client_id_env: Optional[str] = None,
     oauth_client_secret_env: Optional[str] = None,
-    token_ttl_seconds: int = 2_592_000,
+    token_ttl_seconds: int = 3_600,
     code_ttl_seconds: int = 300,
     oauth_redirect_uris: Optional[Sequence[str]] = None,
     allowed_hosts: Optional[Sequence[str]] = None,
@@ -1606,11 +1932,28 @@ def run_mcp_http_server(
 
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
 
+    if not 1 <= int(port) <= 65535:
+        print("Error: --port must be between 1 and 65535.", file=sys.stderr)
+        sys.exit(1)
+
     path = _normalize_path(path)
-    base_url = (public_base_url or f"http://{host}:{port}").rstrip("/")
+    base_url = (public_base_url or _default_http_base_url(host, port)).rstrip("/")
     psk = _read_env_secret(auth_token_env)
     oauth_client_id = _read_env_secret(oauth_client_id_env) if oauth_client_id_env else None
     oauth_client_secret = _read_env_secret(oauth_client_secret_env) if oauth_client_secret_env else None
+
+    if oauth_compatible and oauth_client_id_env and not oauth_client_id:
+        print(
+            f"Error: OAuth client id environment variable {oauth_client_id_env!r} is empty or unset.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if oauth_compatible and oauth_client_secret_env and not oauth_client_secret:
+        print(
+            f"Error: OAuth client secret environment variable {oauth_client_secret_env!r} is empty or unset.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if (auth_token_env or oauth_compatible) and not psk and not oauth_client_id:
         print(
@@ -1624,8 +1967,34 @@ def run_mcp_http_server(
             file=sys.stderr,
         )
         sys.exit(1)
+    if oauth_compatible and not _oauth_public_base_url_is_safe(base_url):
+        print(
+            "Error: OAuth public base URL must use HTTPS or a loopback HTTP host.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if oauth_compatible and not (1 <= int(token_ttl_seconds) <= 31_536_000):
+        print(
+            "Error: OAuth token TTL must be between 1 second and 1 year.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if oauth_compatible and not (1 <= int(code_ttl_seconds) <= 3_600):
+        print(
+            "Error: OAuth code TTL must be between 1 second and 1 hour.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     has_auth = bool(psk or (oauth_compatible and oauth_client_id))
+    if not _is_loopback_host(host) and not allow_insecure_http:
+        print(
+            "Error: cleartext HTTP serving is restricted to loopback hosts. "
+            "Bind to loopback behind HTTPS ingress, or explicitly pass "
+            "--allow-insecure-http for a trusted network.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not has_auth and not _is_loopback_host(host):
         print(
             "Error: unauthenticated MCP HTTP serving is restricted to loopback hosts. "
@@ -1633,25 +2002,6 @@ def run_mcp_http_server(
             file=sys.stderr,
         )
         sys.exit(1)
-
-    bridge = EventBridge()
-    bridge.start()
-    server = create_mcp_server(
-        event_bridge=bridge,
-        expose_toolsets=expose_toolsets,
-        expose_tools=expose_tools,
-        expose_plugin_tools=expose_plugin_tools,
-    )
-    server.settings.host = host
-    server.settings.port = int(port)
-    server.settings.streamable_http_path = path
-    server.settings.json_response = True
-    _configure_transport_security(
-        server,
-        host,
-        _comma_values(allowed_hosts),
-        _comma_values(allowed_origins),
-    )
 
     auth_config = None
     if psk or oauth_compatible:
@@ -1668,12 +2018,45 @@ def run_mcp_http_server(
             code_ttl_seconds=code_ttl_seconds,
             allowed_redirect_uris=_comma_values(oauth_redirect_uris),
         )
+        invalid_redirects = [
+            uri
+            for uri in auth_config.allowed_redirect_uris
+            if not _oauth_redirect_uri_allowed(auth_config, uri)
+        ]
+        if invalid_redirects:
+            print(
+                "Error: OAuth redirect URIs must be exact HTTP-loopback or HTTPS URLs without fragments.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    app = create_streamable_http_app(server, auth_config=auth_config, health_path=health_path)
-
-    import uvicorn
-
+    bridge = EventBridge()
+    bridge.start()
     try:
+        server = create_mcp_server(
+            event_bridge=bridge,
+            expose_toolsets=expose_toolsets,
+            expose_tools=expose_tools,
+            expose_plugin_tools=expose_plugin_tools,
+        )
+        server.settings.host = host
+        server.settings.port = int(port)
+        server.settings.streamable_http_path = path
+        server.settings.json_response = True
+        _configure_transport_security(
+            server,
+            host,
+            int(port),
+            _comma_values(allowed_hosts),
+            _comma_values(allowed_origins),
+        )
+
+        app = create_streamable_http_app(
+            server, auth_config=auth_config, health_path=health_path
+        )
+
+        import uvicorn
+
         uvicorn.run(
             app,
             host=host,
@@ -1710,25 +2093,26 @@ def run_mcp_server(
     else:
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
+    os.environ.setdefault("HERMES_QUIET", "1")
+    os.environ.setdefault("HERMES_REDACT_SECRETS", "true")
+
     bridge = EventBridge()
     bridge.start()
-
-    server = create_mcp_server(
-        event_bridge=bridge,
-        expose_toolsets=expose_toolsets,
-        expose_tools=expose_tools,
-        expose_plugin_tools=expose_plugin_tools,
-    )
-
-    import asyncio
-
-    async def _run():
-        try:
-            await server.run_stdio_async()
-        finally:
-            bridge.stop()
-
     try:
+        server = create_mcp_server(
+            event_bridge=bridge,
+            expose_toolsets=expose_toolsets,
+            expose_tools=expose_tools,
+            expose_plugin_tools=expose_plugin_tools,
+        )
+
+        import asyncio
+
+        async def _run():
+            await server.run_stdio_async()
+
         asyncio.run(_run())
     except KeyboardInterrupt:
+        pass
+    finally:
         bridge.stop()

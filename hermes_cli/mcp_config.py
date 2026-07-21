@@ -1059,6 +1059,7 @@ def mcp_command(args):
                 auth_token_env=getattr(args, "auth_token_env", None),
                 auth_header=getattr(args, "auth_header", "X-Hermes-MCP-PSK"),
                 allow_query_token=getattr(args, "allow_query_token", False),
+                allow_insecure_http=getattr(args, "allow_insecure_http", False),
                 oauth_compatible=getattr(args, "oauth_compatible", False),
                 oauth_client_id_env=getattr(args, "oauth_client_id_env", None),
                 oauth_client_secret_env=getattr(args, "oauth_client_secret_env", None),

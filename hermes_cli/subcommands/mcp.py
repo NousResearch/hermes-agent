@@ -58,23 +58,28 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Accept ?access_token= or ?psk= auth for clients that cannot send headers; disables access logs",
     )
     mcp_serve_p.add_argument(
+        "--allow-insecure-http",
+        action="store_true",
+        help="Explicitly allow cleartext non-loopback serving (still requires auth)",
+    )
+    mcp_serve_p.add_argument(
         "--oauth-compatible",
         action="store_true",
         help="Expose OAuth-compatible metadata plus /mcp/authorize and /mcp/token endpoints",
     )
     mcp_serve_p.add_argument(
         "--oauth-client-id-env",
-        help="Environment variable containing the OAuth client id (defaults to auth token when omitted)",
+        help="Environment variable containing the OAuth client id (default: hermes-mcp)",
     )
     mcp_serve_p.add_argument(
         "--oauth-client-secret-env",
-        help="Optional environment variable containing the OAuth client secret",
+        help="OAuth client-secret environment variable (required with a custom client id; otherwise uses the PSK)",
     )
     mcp_serve_p.add_argument(
         "--oauth-token-ttl-seconds",
         type=int,
-        default=2592000,
-        help="Issued OAuth bearer token lifetime in seconds",
+        default=3600,
+        help="Issued OAuth bearer token lifetime in seconds (default: 3600)",
     )
     mcp_serve_p.add_argument(
         "--oauth-code-ttl-seconds",
@@ -86,7 +91,7 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--oauth-redirect-uri",
         action="append",
         default=[],
-        help="Allowed non-loopback HTTPS OAuth redirect URI; repeat or comma-separate",
+        help="Registered HTTP-loopback or HTTPS OAuth redirect URI; repeat or comma-separate",
     )
     mcp_serve_p.add_argument(
         "--allowed-host",

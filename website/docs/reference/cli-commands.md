@@ -397,7 +397,10 @@ If neither a positional `message` argument nor `--file` is provided, `hermes sen
 hermes send --to telegram "MEDIA:/tmp/screenshot.png"
 hermes send --to telegram "Build chart for today MEDIA:/tmp/chart.png"   # with caption
 hermes send --to discord:#ops "MEDIA:/tmp/report.pdf"
+hermes send --to telegram "MEDIA:~/Downloads/photo.jpg"                  # ~/... paths are expanded
 ```
+
+The path must resolve to an existing local file — use an absolute path or `~/...` (the `~` is expanded to your home directory).
 
 By default, image files are sent as photos (platforms like Telegram recompress these). Add `[[as_document]]` to the message to deliver them as uncompressed file attachments instead:
 

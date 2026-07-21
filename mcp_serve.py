@@ -834,14 +834,19 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         channels_list tool. You can also use human-friendly channel names
         that will be resolved automatically.
 
+        To send an image or file as a native platform attachment, include
+        MEDIA:<local_path> in the message (e.g. "MEDIA:/tmp/screenshot.png").
+        The path must resolve to an existing local file (absolute path or ~/...).
+
         Examples:
             target="telegram:6308981865"
             target="discord:#general"
             target="slack:#engineering"
+            target="telegram:6308981865" message="MEDIA:/tmp/screenshot.png"
 
         Args:
             target: Platform target in "platform:identifier" format
-            message: The message text to send
+            message: The message text to send (supports MEDIA:<path> for attachments)
         """
         if not target or not message:
             return json.dumps({"error": "Both target and message are required"})

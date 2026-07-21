@@ -465,6 +465,7 @@ export async function extractBridgeEvent({
     messageId: msg.key.id,
     chatId,
     senderId,
+    fromMe: !!msg.key.fromMe,
     senderName: msg.pushName || senderNumber,
     chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
     isGroup,

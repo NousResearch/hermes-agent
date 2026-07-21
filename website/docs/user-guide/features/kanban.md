@@ -700,6 +700,8 @@ hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
 hermes kanban stats [--json]                           # per-status + per-assignee counts
+hermes kanban reliability [--window 24h|72h|7d]        # read-only failure burn-down
+        [--limit N] [--db PATH] [--json] [--output PATH]
 hermes kanban log <id> [--tail BYTES]                  # worker log from ~/.hermes/kanban/logs/
 hermes kanban notify-subscribe <id>                    # gateway bridge hook (used by /kanban in the gateway)
         --platform <name> --chat-id <id> [--thread-id <id>] [--user-id <id>]
@@ -714,6 +716,19 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+`hermes kanban reliability` summarizes run outcomes by profile and failure
+category, recurring `stale_lock` bursts, blocked reasons, and currently
+actionable blocked/triage tasks. It opens the existing database with SQLite
+`mode=ro` plus `query_only`; unlike normal board commands, it never initializes
+or migrates the schema. Use `--db /persisted/.hermes/kanban.db` to inspect an
+explicit deployment database. For cron or gateway automation, pass `--output`
+so the bounded terminal response only reports the saved file path:
+
+```bash
+hermes kanban reliability --window 72h --json \
+  --output ~/.hermes/reports/kanban-reliability.json
+```
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

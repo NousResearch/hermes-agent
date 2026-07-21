@@ -19,6 +19,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -711,6 +712,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- reliability (bounded, read-only burn-down report) ---
+    p_reliability = sub.add_parser(
+        "reliability",
+        aliases=["burn-down"],
+        help="Read-only failure burn-down for the last 24h, 72h, or 7d",
+    )
+    p_reliability.add_argument(
+        "--window", choices=("24h", "72h", "7d"), default="72h",
+        help="Reporting window (default: 72h)",
+    )
+    p_reliability.add_argument(
+        "--limit", type=int, default=10,
+        help="Maximum rows per top/actionable section (default: 10)",
+    )
+    p_reliability.add_argument(
+        "--db", type=Path, default=None, metavar="PATH",
+        help="Existing kanban.db to inspect (default: current board)",
+    )
+    p_reliability.add_argument("--json", action="store_true")
+    p_reliability.add_argument(
+        "--output", type=Path, default=None, metavar="PATH",
+        help="Save the full report to a file instead of printing it",
+    )
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -950,6 +975,15 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
+        # Reliability reporting must remain genuinely read-only. In
+        # particular, do not call init_db(): it can create/migrate schemas and
+        # defeats SQLite mode=ro even when the report queries are SELECT-only.
+        if action in {"reliability", "burn-down"}:
+            try:
+                return int(_cmd_reliability(args) or 0)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                print(f"kanban reliability: {exc}", file=sys.stderr)
+                return 1
         try:
             kb.init_db()
         except Exception as exc:
@@ -987,6 +1021,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
+            "reliability": _cmd_reliability,
+            "burn-down": _cmd_reliability,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
@@ -2574,6 +2610,40 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    return 0
+
+
+def _cmd_reliability(args: argparse.Namespace) -> int:
+    """Print or save a bounded report without mutating the board database."""
+    from hermes_cli.kanban_reliability import (
+        build_reliability_report,
+        open_readonly,
+        render_reliability_report,
+    )
+
+    windows = {"24h": 24 * 60 * 60, "72h": 72 * 60 * 60, "7d": 7 * 24 * 60 * 60}
+    label = getattr(args, "window", "72h")
+    db_path = getattr(args, "db", None) or kb.kanban_db_path()
+    with open_readonly(db_path) as conn:
+        report = build_reliability_report(
+            conn,
+            window_seconds=windows[label],
+            limit=int(getattr(args, "limit", 10)),
+        )
+    report["window"]["label"] = label
+    content = (
+        json.dumps(report, indent=2, ensure_ascii=False) + "\n"
+        if getattr(args, "json", False)
+        else render_reliability_report(report)
+    )
+    output = getattr(args, "output", None)
+    if output is None:
+        print(content, end="")
+        return 0
+    output = output.expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(content, encoding="utf-8")
+    print(f"Saved Kanban reliability report to {output}")
     return 0
 
 

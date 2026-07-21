@@ -305,7 +305,30 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
-  it('streams legacy thinking.delta into visible reasoning state', () => {
+  it('routes thinking.delta to the status bar only, not into reasoning state (#68600)', () => {
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    // thinking.delta carries the status-bar indicator (kaomoji + verb), never
+    // real reasoning — so it must update the status line but leave the
+    // Thinking block empty. Real reasoning arrives on reasoning.delta.
+    const indicator = '(⊙_⊙) pondering...'
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: indicator }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(getUiState().status).toBe(indicator)
+      expect(getTurnState().reasoning).toBe('')
+      expect(getTurnState().reasoningActive).toBe(false)
+      expect(getTurnState().reasoningTokens).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still records reasoning.delta into visible reasoning state', () => {
     vi.useFakeTimers()
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
@@ -313,7 +336,7 @@ describe('createGatewayEventHandler', () => {
 
     try {
       onEvent({ payload: {}, type: 'message.start' } as any)
-      onEvent({ payload: { text: streamed }, type: 'thinking.delta' } as any)
+      onEvent({ payload: { text: streamed }, type: 'reasoning.delta' } as any)
       vi.runOnlyPendingTimers()
 
       expect(getTurnState().reasoning).toBe(streamed)

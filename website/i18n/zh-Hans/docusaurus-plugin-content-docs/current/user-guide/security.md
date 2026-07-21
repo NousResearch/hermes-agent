@@ -38,39 +38,45 @@ approvals:
 |------|----------|
 | **smart**（默认） | 使用辅助 LLM 评估风险。低风险命令（如 `python -c "print('hello')"`）仅对当前命令自动批准，真正危险的命令自动拒绝，不确定的情况升级为手动提示。 |
 | **manual** | 始终提示用户审批危险命令。 |
-| **off** | 禁用所有审批检查——等同于使用 `--yolo` 运行。所有命令无需提示即可执行。 |
+| **off** | 全局跳过危险命令审批提示，等同于使用 `--yolo` 运行。硬性黑名单和 `approvals.deny` 规则仍会生效。 |
 
 :::warning
-设置 `approvals.mode: off` 将禁用所有安全提示。仅在受信任的环境（CI/CD、容器等）中使用。
+设置 `approvals.mode: off` 会全局禁用危险命令审批提示。
+硬性黑名单和 `approvals.deny` 规则仍会生效，但仍应只在 CI/CD 或容器等受信任环境中使用此模式。
 :::
 
 ### YOLO 模式
 
-YOLO 模式会绕过当前会话中**所有**危险命令审批提示。可通过以下三种方式激活：
+YOLO 模式会跳过危险命令审批提示，同时保留硬性黑名单和 `approvals.deny` 规则。
+以下任一来源启用时，有效 YOLO 模式即为 ON：
 
-1. **CLI 标志**：使用 `hermes --yolo` 或 `hermes chat --yolo` 启动会话
-2. **斜杠命令**：在会话中输入 `/yolo` 以切换开/关
-3. **环境变量**：设置 `HERMES_YOLO_MODE=1`
+1. **全局配置**：在 `~/.hermes/config.yaml` 中设置 `approvals.mode: off`。
+2. **启动时冻结的设置**：使用 `hermes --yolo` 或 `hermes chat --yolo` 启动，或在 Hermes 启动前设置 `HERMES_YOLO_MODE=1`。
+3. **会话切换项**：输入 `/yolo` 以切换当前会话的 YOLO 状态。
 
-`/yolo` 命令是一个**切换开关**——每次使用都会翻转模式的开/关状态：
+不带参数的 `/yolo` 只更改当前会话的切换项。
+它不会修改全局配置或启动时冻结的设置，因此其他来源仍启用时，关闭会话切换项不会让有效模式变为 OFF。
+使用 `/yolo status` 可只读查询有效模式，不会更改任何状态：
 
 ```
 > /yolo
-  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
+  ⚡ YOLO mode ON - hardline blocks and approvals.deny rules still apply.
 
-> /yolo
-  ⚠ YOLO mode OFF — dangerous commands will require approval.
+> /yolo status
+  YOLO mode is ON - hardline blocks and approvals.deny rules still apply.
 ```
 
-YOLO 模式在 CLI 和 gateway 会话中均可使用。在内部，它会设置 `HERMES_YOLO_MODE` 环境变量，该变量在每次命令执行前都会被检查。
+`/yolo` 切换和 `/yolo status` 可用于经典 CLI、消息 gateway、TUI 和桌面应用。
+会话切换项始终与对应会话隔离。
 
-当 YOLO 激活时，Hermes 会显示两个持久的视觉提醒，以确保用户不会忘记审批提示已被绕过：
+当启动设置或会话切换项开启 YOLO 模式时，经典 CLI 会显示两个持久的视觉提醒，以确保用户不会忘记审批提示已被绕过：
 
 - 当 YOLO 已激活时，会话开始时显示一条红色横幅：`⚠ YOLO mode — all approval prompts bypassed`。YOLO 关闭时隐藏，以保持默认横幅整洁。
 - 状态栏中所有宽度层级均显示 `⚠ YOLO` 片段，随着 YOLO 的切换实时更新（富文本渲染器和纯文本回退均支持）。
 
 :::danger
-YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性黑名单除外**（见下文）。仅在完全信任所生成命令的情况下使用（例如，在一次性环境中经过充分测试的自动化脚本）。
+YOLO 模式会跳过危险命令审批提示，但硬性黑名单和 `approvals.deny` 规则仍会生效。
+仅在完全信任所生成命令时使用，例如在一次性环境中运行经过充分测试的自动化脚本。
 :::
 
 对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。

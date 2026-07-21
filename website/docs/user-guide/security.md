@@ -52,39 +52,45 @@ The full set of keys:
 |------|----------|
 | **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
 | **manual** | Always prompt the user for approval on dangerous commands. |
-| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+| **off** | Skip dangerous-command approval prompts globally, equivalent to running with `--yolo`. The hardline blocklist and `approvals.deny` rules still apply. |
 
 :::warning
-Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
+Setting `approvals.mode: off` disables dangerous-command approval prompts globally.
+The hardline blocklist and `approvals.deny` rules still apply, but you should use this mode only in trusted environments such as CI/CD or containers.
 :::
 
 ### YOLO Mode
 
-YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:
+YOLO mode skips dangerous-command approval prompts while leaving the hardline blocklist and `approvals.deny` rules in force.
+Its effective state is ON when any of these sources enables it:
 
-1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
-2. **Slash command**: Type `/yolo` during a session to toggle it on/off
-3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
+1. **Global configuration**: Set `approvals.mode: off` in `~/.hermes/config.yaml`.
+2. **Frozen launch setting**: Start with `hermes --yolo` or `hermes chat --yolo`, or set `HERMES_YOLO_MODE=1` before Hermes starts.
+3. **Session toggle**: Type `/yolo` to toggle the current session's YOLO state.
 
-The `/yolo` command is a **toggle** — each use flips the mode on or off:
+The bare `/yolo` command changes only the current session toggle.
+It does not mutate global configuration or the frozen launch setting, so turning the session toggle off cannot make the effective mode OFF while another source remains enabled.
+Use `/yolo status` to report the effective mode without changing any state:
 
 ```
 > /yolo
-  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
+  ⚡ YOLO mode ON - hardline blocks and approvals.deny rules still apply.
 
-> /yolo
-  ⚠ YOLO mode OFF — dangerous commands will require approval.
+> /yolo status
+  YOLO mode is ON - hardline blocks and approvals.deny rules still apply.
 ```
 
-YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
+The `/yolo` toggle and `/yolo status` are available in the classic CLI, messaging gateway, TUI, and desktop app.
+Session toggles stay isolated to their session.
 
-When YOLO is active, Hermes shows two persistent visual reminders so it's hard to forget that approval prompts are bypassed:
+When a launch setting or session toggle enables YOLO mode, the classic CLI shows two persistent visual reminders so it is hard to forget that approval prompts are bypassed:
 
 - A red banner line at session start when YOLO is already active: `⚠ YOLO mode — all approval prompts bypassed`. Hidden when YOLO is off so the default banner stays uncluttered.
 - A `⚠ YOLO` fragment in the status bar across all width tiers, updated live as you toggle YOLO on or off (rich-text renderer and plain-text fallback).
 
 :::danger
-YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
+YOLO mode skips dangerous-command approval prompts, but the hardline blocklist and `approvals.deny` rules remain active.
+Use it only when you fully trust the commands being generated, such as well-tested automation scripts in disposable environments.
 :::
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).

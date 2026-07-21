@@ -1169,6 +1169,10 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
         ("</skill search:42> ocr-and-documents", "/skill search ocr-and-documents"),
         # Hyphens and underscores in command names are allowed by Discord.
         ("</my-cmd_x:42>", "/my-cmd_x"),
+        # Discord separates command path tokens with literal spaces, not other
+        # whitespace. Tabs/newlines must not be normalized across boundaries.
+        ("</cron\tlist:42>", "</cron\tlist:42>"),
+        ("</cron\nlist:42>", "</cron\nlist:42>"),
         # Multiple application-command mentions in a single message all resolve.
         ("</status:1> and </help:2>", "/status and /help"),
         # No application-command mention: pass-through, no rewrites.
@@ -1269,6 +1273,46 @@ async def test_clicked_slash_suggestion_after_bot_mention_still_dispatches(adapt
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_payload,mention_bot",
+    [
+        ("/help", False),
+        ("</help:123456789>", False),
+        ("</help:123456789>", True),
+    ],
+)
+async def test_dm_help_control_and_clicked_suggestions_dispatch_as_commands(
+    adapter, monkeypatch, command_payload, mention_bot
+):
+    """The real DM adapter path keeps literal and clicked `/help` routing aligned."""
+    class _FakeDMChannel:
+        id = 200
+
+    monkeypatch.setattr(_discord_mod, "DMChannel", _FakeDMChannel)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeDMChannel(),
+        command_payload=command_payload,
+        mention_bot=mention_bot,
+        bot_user=adapter._client.user if mention_bot else None,
+    )
+    msg.guild = None
+
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == "/help"
+    assert captured[0].message_type == MessageType.COMMAND
+    assert captured[0].source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
 async def test_plain_text_with_lt_slash_substring_not_misinterpreted(adapter, monkeypatch):
     """Literal `</` substrings in user text without an `:id>` suffix pass through."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
@@ -1284,5 +1328,3 @@ async def test_plain_text_with_lt_slash_substring_not_misinterpreted(adapter, mo
 
     assert captured[0].text == "see </tag> in HTML"
     assert captured[0].message_type == MessageType.TEXT
-
-

@@ -68,6 +68,86 @@ class TestSplitPairingDirMigration:
         assert migrated["ou_user"]["user_name"] == "Active"
         assert migrated["ou_other"]["user_name"] == "Other"
 
+    def _split_dirs(self, tmp_path):
+        """Active dir holds two approvals; the inactive dir holds a third."""
+        home = tmp_path / "home"
+        legacy = home / "pairing"
+        new = home / "platforms" / "pairing"
+        legacy.mkdir(parents=True)
+        new.mkdir(parents=True)
+        (legacy / "feishu-approved.json").write_text(json.dumps({
+            "ou_alice": {"user_name": "Alice", "approved_at": 1.0},
+            "ou_bob": {"user_name": "Bob", "approved_at": 2.0},
+        }))
+        (new / "feishu-approved.json").write_text(json.dumps({
+            "ou_carol": {"user_name": "Carol", "approved_at": 3.0},
+        }))
+        return home, legacy, new
+
+    def test_unreadable_active_file_is_never_overwritten(self, tmp_path):
+        """The merge WRITES the destination, so a swallowed read of it would
+        rebuild the file from ``{}`` and delete every approval it holds.
+
+        ``PermissionError`` is the documented way this happens: a 0600 pairing
+        file left owned by root after ``docker exec ... hermes pairing approve``
+        is unreadable to the gateway running as ``hermes`` (#10270). The file
+        is intact — only our access to it is broken — so it must survive.
+        """
+        from gateway.pairing import _merge_pairing_dir
+
+        home, legacy, new = self._split_dirs(tmp_path)
+        dest = legacy / "feishu-approved.json"
+        real_read = Path.read_text
+
+        def _denied(self, *args, **kwargs):
+            if self == dest:
+                raise PermissionError(13, "Permission denied")
+            return real_read(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", _denied):
+            _merge_pairing_dir(legacy, new)
+
+        survived = json.loads(real_read(dest, encoding="utf-8"))
+        assert set(survived) == {"ou_alice", "ou_bob"}, (
+            "an intact pairing file was rewritten from an unreadable state, "
+            "destroying its approvals"
+        )
+
+    def test_corrupt_active_file_is_never_overwritten(self, tmp_path):
+        """Same contract for unparseable content — we do not know what the
+        file holds, so it must not be rebuilt from a guess."""
+        from gateway.pairing import _merge_pairing_dir
+
+        home, legacy, new = self._split_dirs(tmp_path)
+        dest = legacy / "feishu-approved.json"
+        dest.write_text("{ this is not json", encoding="utf-8")
+
+        _merge_pairing_dir(legacy, new)
+
+        assert dest.read_text(encoding="utf-8") == "{ this is not json"
+
+    def test_readable_active_file_still_merges(self, tmp_path):
+        """Control: the normal path must keep working."""
+        from gateway.pairing import _merge_pairing_dir
+
+        home, legacy, new = self._split_dirs(tmp_path)
+        _merge_pairing_dir(legacy, new)
+
+        merged = json.loads((legacy / "feishu-approved.json").read_text())
+        assert set(merged) == {"ou_alice", "ou_bob", "ou_carol"}
+
+    def test_absent_active_file_still_receives_legacy_data(self, tmp_path):
+        """Control: an absent destination is not an unreadable one."""
+        from gateway.pairing import _merge_pairing_dir
+
+        home, legacy, new = self._split_dirs(tmp_path)
+        (legacy / "feishu-approved.json").unlink()
+
+        _merge_pairing_dir(legacy, new)
+
+        merged = json.loads((legacy / "feishu-approved.json").read_text())
+        assert set(merged) == {"ou_carol"}
+
 
 # ---------------------------------------------------------------------------
 # _secure_write

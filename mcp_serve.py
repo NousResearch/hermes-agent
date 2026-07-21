@@ -425,6 +425,17 @@ class EventBridge:
                 self._queue.pop(0)
         self._new_event.set()
 
+    def _get_last_poll_timestamp(self, session_key: str) -> float:
+        """Read the per-session poll cursor under the bridge lock."""
+        with self._lock:
+            return self._last_poll_timestamps.get(session_key, 0.0)
+
+    def _set_last_poll_timestamp(self, session_key: str, latest: float) -> None:
+        """Advance the per-session poll cursor without regressing it."""
+        with self._lock:
+            if latest > self._last_poll_timestamps.get(session_key, 0.0):
+                self._last_poll_timestamps[session_key] = latest
+
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages."""
         db = _get_session_db()
@@ -476,7 +487,7 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            last_seen = self._get_last_poll_timestamp(session_key)
 
             try:
                 messages = db.get_messages(session_id)
@@ -533,7 +544,7 @@ class EventBridge:
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+                    self._set_last_poll_timestamp(session_key, latest)
 
 
 # ---------------------------------------------------------------------------

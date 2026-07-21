@@ -3789,6 +3789,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        # Background thread handle for auto-playing TTS audio from tool results.
+        # Initialized here so run_agent's finally block can safely reference it
+        # even if an exception fires before the per-turn assignment.
+        self._tts_playback_thread = None
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -12393,6 +12397,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             sys.stdout.flush()
             time.sleep(0.15)
 
+            # Save pre-update history length for TTS current-turn isolation
+            _tts_history_len = len(self.conversation_history) - 1 if self.conversation_history else 0
+
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
@@ -12413,6 +12420,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+
+            # Play audio from text_to_speech tool results (if any) in background
+            self._tts_playback_thread = None
+            if result:
+                _cli_play_tts_media(
+                    result,
+                    history_len=_tts_history_len,
+                    thread_holder=lambda t: setattr(self, '_tts_playback_thread', t),
+                )
 
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
@@ -12641,6 +12657,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
+            _tts_thr = getattr(self, "_tts_playback_thread", None)
+            if _tts_thr is not None and _tts_thr.is_alive():
+                _tts_thr.join(timeout=10)
     
     def _clear_terminal_on_exit(self):
         """Clear screen + scrollback so nothing is stranded above the exit summary.
@@ -15701,6 +15720,65 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI helper: play TTS audio from text_to_speech tool results
+# ---------------------------------------------------------------------------
+def _cli_play_tts_media(result: dict, history_len: int, thread_holder=None) -> None:
+    """Play audio files from text_to_speech tool results in a background thread."""
+    if not result:
+        return
+    messages = result.get("messages", [])
+    if not messages:
+        return
+
+    def _play():
+        try:
+            from tools.voice_mode import play_audio_file
+
+            # Build tool_call_id -> tool_name mapping
+            tool_name_by_call_id = {}
+            for msg in messages:
+                if msg.get("role") != "assistant":
+                    continue
+                for call in msg.get("tool_calls") or []:
+                    call_id = str(call.get("id") or call.get("call_id", ""))
+                    fn = call.get("function") or {}
+                    name = str(fn.get("name") or call.get("name", ""))
+                    if call_id and name:
+                        tool_name_by_call_id[call_id] = name
+
+            # Current-turn isolation (mirrors gateway _collect_auto_append_media_tags)
+            if history_len and len(messages) >= history_len:
+                msgs = messages[history_len:]
+            else:
+                msgs = messages
+
+            seen = set()
+            for msg in msgs:
+                if msg.get("role") not in ("tool", "function"):
+                    continue
+                cid = str(msg.get("tool_call_id") or msg.get("call_id", ""))
+                tool_name = tool_name_by_call_id.get(cid)
+                if tool_name not in {"text_to_speech", "text_to_speech_tool"}:
+                    continue
+                content = str(msg.get("content") or "")
+                if "MEDIA:" not in content:
+                    continue
+                for m in re.finditer(r'MEDIA:(\S+)', content):
+                    path = m.group(1).strip().rstrip('\\",}')
+                    if path and path not in seen and os.path.isfile(path):
+                        seen.add(path)
+                        logger.info("_cli_play_tts_media: playing %s", path)
+                        play_audio_file(path)
+        except Exception:
+            pass  # Best-effort — never crash the main thread
+
+    t = threading.Thread(target=_play, daemon=True)
+    t.start()
+    if thread_holder:
+        thread_holder(t)
 
 
 def main(

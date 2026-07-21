@@ -17,11 +17,13 @@ from tools.tool_result_storage import (
     _heredoc_marker,
     _resolve_storage_dir,
     _safe_result_filename,
+    _split_trailing_steer_marker,
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
     maybe_persist_tool_result,
 )
+from agent.prompt_builder import format_steer_marker, STEER_MARKER_OPEN, STEER_MARKER_CLOSE
 
 
 # ── generate_preview ──────────────────────────────────────────────────
@@ -527,6 +529,63 @@ class TestEnforceTurnBudget:
     def test_empty_messages(self):
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
+
+    def test_steer_marker_survives_budget_enforcement(self):
+        """Regression (#31524): if apply_pending_steer_to_tool_results() already
+        appended a /steer marker to a tool result before enforce_turn_budget()
+        replaces that same result, the marker must not be silently dropped."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        marker = format_steer_marker("check the other file too")
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": ("x" * 250_000) + marker},
+        ]
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        content = msgs[0]["content"]
+        assert PERSISTED_OUTPUT_TAG in content
+        assert STEER_MARKER_OPEN in content and STEER_MARKER_CLOSE in content
+        assert "check the other file too" in content
+
+    def test_steer_marker_survives_inline_truncation_fallback(self):
+        """Same guarantee when no env is available (inline-truncation path)."""
+        marker = format_steer_marker("stop and summarize instead")
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": ("x" * 250_000) + marker},
+        ]
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        content = msgs[0]["content"]
+        assert "Truncated" in content
+        assert STEER_MARKER_OPEN in content and STEER_MARKER_CLOSE in content
+        assert "stop and summarize instead" in content
+
+
+class TestSplitTrailingSteerMarker:
+    def test_no_marker_returns_content_unchanged(self):
+        body, suffix = _split_trailing_steer_marker("plain tool output")
+        assert body == "plain tool output"
+        assert suffix == ""
+
+    def test_trailing_marker_is_split_off(self):
+        marker = format_steer_marker("hi")
+        body, suffix = _split_trailing_steer_marker("tool output" + marker)
+        assert body == "tool output"
+        assert suffix == marker
+
+    def test_non_trailing_marker_is_left_in_place(self):
+        """A marker embedded mid-content (not at the tail) is not a real
+        trailing steer marker — leave content untouched rather than risk
+        misparsing tool output that happens to contain the literal text."""
+        marker = format_steer_marker("hi")
+        content = "tool output" + marker + "\nmore tool output after"
+        body, suffix = _split_trailing_steer_marker(content)
+        assert body == content
+        assert suffix == ""
+
+    def test_non_string_content_returns_unchanged(self):
+        blocks = [{"type": "text", "text": "hi"}]
+        body, suffix = _split_trailing_steer_marker(blocks)
+        assert body is blocks
+        assert suffix == ""
 
 
 # ── Per-tool threshold integration ────────────────────────────────────

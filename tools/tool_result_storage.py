@@ -38,6 +38,40 @@ from tools.budget_config import (
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
+
+
+def _split_trailing_steer_marker(content: str) -> tuple[str, str]:
+    """Split a trailing /steer marker (see agent.prompt_builder.format_steer_marker)
+    off the end of a tool result, so budget enforcement can persist the tool
+    output alone and re-attach the marker afterward.
+
+    apply_pending_steer_to_tool_results() may run BEFORE enforce_turn_budget()
+    in the per-tool drain (agent/tool_executor.py), appending the marker to a
+    tool result that aggregate budget enforcement later replaces wholesale.
+    Without this split, that replacement silently drops the user's steer text
+    along with the truncated tool output (issue #31524).
+
+    Returns (content_without_marker, marker_suffix). marker_suffix is ""
+    if content is not a string or has no trailing marker.
+    """
+    if not isinstance(content, str):
+        return content, ""
+    from agent.prompt_builder import STEER_MARKER_OPEN, STEER_MARKER_CLOSE
+
+    close_idx = content.rfind(STEER_MARKER_CLOSE)
+    if close_idx == -1:
+        return content, ""
+    open_idx = content.rfind(STEER_MARKER_OPEN, 0, close_idx)
+    if open_idx == -1:
+        return content, ""
+    marker_end = close_idx + len(STEER_MARKER_CLOSE)
+    if content[marker_end:].strip():
+        # Marker isn't trailing (something follows it) — leave content as-is.
+        return content, ""
+    prefix_end = open_idx
+    if content[:prefix_end].endswith("\n\n"):
+        prefix_end -= 2
+    return content[:prefix_end], content[prefix_end:]
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
@@ -234,14 +268,18 @@ def enforce_turn_budget(
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
+        body, steer_suffix = _split_trailing_steer_marker(content)
+
         replacement = maybe_persist_tool_result(
-            content=content,
+            content=body,
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
             env=env,
             config=config,
             threshold=0,
         )
+        if steer_suffix:
+            replacement = replacement + steer_suffix
         if replacement != content:
             total_size -= size
             total_size += len(replacement)

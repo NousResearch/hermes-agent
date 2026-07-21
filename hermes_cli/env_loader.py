@@ -6,6 +6,7 @@ import codecs
 import io
 import os
 import sys
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -45,6 +46,7 @@ _SECRET_SOURCES: dict[str, str] = {}
 # in-process cache prevents redundant network calls, but the print, the
 # config re-parse, and the ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
+_APPLIED_HOMES_LOCK = threading.Lock()
 
 
 def get_secret_source(env_var: str) -> str | None:
@@ -394,9 +396,10 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     (tests, long-running processes after a config change).
     """
     home_key = str(Path(home_path).resolve())
-    if home_key in _APPLIED_HOMES:
-        return
-    _APPLIED_HOMES.add(home_key)
+    with _APPLIED_HOMES_LOCK:
+        if home_key in _APPLIED_HOMES:
+            return
+        _APPLIED_HOMES.add(home_key)
 
     try:
         cfg = _load_secrets_config(home_path)

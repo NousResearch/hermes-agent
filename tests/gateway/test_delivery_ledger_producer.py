@@ -8,6 +8,7 @@ block the send.
 """
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -136,6 +137,29 @@ class TestProducerHook:
         ):
             await _run(adapter, _event())
         assert adapter.sent == ["final answer"]
+
+    @pytest.mark.asyncio
+    async def test_contended_ledger_write_does_not_block_event_loop(self, monkeypatch):
+        """SQLite retry waits must run off-loop so the watchdog keeps ticking."""
+        adapter = _Adapter()
+        loop_thread = threading.get_ident()
+        writer_threads = []
+
+        def track(name):
+            original = getattr(dl, name)
+
+            def tracked(*args, **kwargs):
+                writer_threads.append(threading.get_ident())
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(dl, name, tracked)
+
+        for name in ("record_obligation", "mark_attempting", "mark_delivered"):
+            track(name)
+        await _run(adapter, _event())
+        assert adapter.sent == ["final answer"]
+        assert len(writer_threads) == 3
+        assert all(thread_id != loop_thread for thread_id in writer_threads)
 
     @pytest.mark.asyncio
     async def test_crash_between_attempting_and_ack_is_recoverable(self):

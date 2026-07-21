@@ -1980,6 +1980,25 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _close_session_databases_for_shutdown(*databases) -> None:
+    """Close unique gateway DB handles and force one final WAL checkpoint."""
+    unique = []
+    for db in databases:
+        if db is None or not hasattr(db, "close"):
+            continue
+        if all(db is not existing for existing in unique):
+            unique.append(db)
+    for index, db in enumerate(unique):
+        try:
+            # Other process-level caches may still own writable SessionDB
+            # handles. Force exactly one final checkpoint after gateway work
+            # has drained so a leaked/cache handle cannot leave a multi-GB WAL
+            # across a graceful restart.
+            db.close(force_checkpoint=index == len(unique) - 1)
+        except Exception as exc:
+            logger.debug("SessionDB close error: %s", exc)
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -7215,7 +7234,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    mark_delivered(row["obligation_id"])
+                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
@@ -7224,7 +7243,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    mark_failed(
+                    await asyncio.to_thread(
+                        mark_failed,
                         row["obligation_id"],
                         str(getattr(result, "error", "") or "send failed"),
                     )
@@ -9330,13 +9350,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
             _self_db = getattr(self, "_session_db", None)
             _self_db = getattr(_self_db, "_db", _self_db)
-            for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
-                if _db is None or not hasattr(_db, "close"):
-                    continue
-                try:
-                    _db.close()
-                except Exception as _e:
-                    logger.debug("SessionDB close error: %s", _e)
+            _close_session_databases_for_shutdown(
+                _self_db,
+                getattr(getattr(self, "session_store", None), "_db", None),
+            )
             GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",

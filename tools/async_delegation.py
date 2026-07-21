@@ -38,11 +38,13 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import sqlite3
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -82,53 +84,115 @@ _MAX_DURABLE_PENDING = 1000
 # attempts so an unroutable row converges to a terminal 'dropped' state
 # instead of replaying on every restart forever.
 _MAX_DELIVERY_ATTEMPTS = 8
-_DB_LOCK = threading.Lock()
 
 
 def _db_path():
     return get_hermes_home() / "state.db"
 
 
+class _StateDBWriteLock:
+    """Lazy proxy into SessionDB's canonical per-path writer lane."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def __enter__(self):
+        from hermes_state import get_process_db_write_lock
+
+        lock = get_process_db_write_lock(_db_path())
+        lock.acquire()
+        stack = getattr(self._local, "stack", None)
+        if stack is None:
+            stack = []
+            self._local.stack = stack
+        stack.append(lock)
+        return self
+
+    def __exit__(self, *_args):
+        self._local.stack.pop().release()
+
+
+_DB_LOCK = _StateDBWriteLock()
+_SCHEMA_READY_PATHS = set()
+_DB_BUSY_TIMEOUT_SECONDS = 0.1
+_DB_BUSY_MAX_ATTEMPTS = 5
+_DB_RETRY_MIN_SECONDS = 0.02
+_DB_RETRY_MAX_SECONDS = 0.08
+
+
+def _retry_db_busy(fn):
+    """Retry one complete SQLite operation without sleeping in the writer lane."""
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        for attempt in range(_DB_BUSY_MAX_ATTEMPTS):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if (
+                    "locked" not in message
+                    and "busy" not in message
+                    or attempt == _DB_BUSY_MAX_ATTEMPTS - 1
+                ):
+                    raise
+                # fn's context managers have released both the SQLite
+                # connection and process-wide writer lock before we sleep.
+                time.sleep(random.uniform(_DB_RETRY_MIN_SECONDS, _DB_RETRY_MAX_SECONDS))
+
+    return wrapped
+
+
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            task_json TEXT,
-            delivery_claim TEXT,
-            delivery_claimed_at REAL
-        )"""
-    )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
-    for name, sql_type in (
-        ("owner_pid", "INTEGER"),
-        ("owner_started_at", "INTEGER"),
-        ("task_json", "TEXT"),
-        ("delivery_claim", "TEXT"),
-        ("delivery_claimed_at", "REAL"),
-    ):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    conn = sqlite3.connect(path, timeout=_DB_BUSY_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout={int(_DB_BUSY_TIMEOUT_SECONDS * 1000)}")
+    schema_key = str(path.resolve())
+    if schema_key not in _SCHEMA_READY_PATHS:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS async_delegations (
+                delegation_id TEXT PRIMARY KEY,
+                origin_session TEXT NOT NULL,
+                origin_ui_session_id TEXT NOT NULL DEFAULT '',
+                parent_session_id TEXT,
+                state TEXT NOT NULL,
+                dispatched_at REAL NOT NULL,
+                completed_at REAL,
+                updated_at REAL NOT NULL,
+                event_json TEXT,
+                result_json TEXT,
+                delivery_state TEXT NOT NULL DEFAULT 'pending',
+                delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                delivered_at REAL,
+                owner_pid INTEGER,
+                owner_started_at INTEGER,
+                task_json TEXT,
+                delivery_claim TEXT,
+                delivery_claimed_at REAL
+            )"""
+        )
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")
+        }
+        for name, sql_type in (
+            ("owner_pid", "INTEGER"),
+            ("owner_started_at", "INTEGER"),
+            ("task_json", "TEXT"),
+            ("delivery_claim", "TEXT"),
+            ("delivery_claimed_at", "REAL"),
+        ):
+            if name not in columns:
+                conn.execute(
+                    f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}"
+                )
+        conn.commit()
+        _SCHEMA_READY_PATHS.add(schema_key)
     return conn
 
 
+@_retry_db_busy
 def _persist_dispatch(record: Dict[str, Any]) -> None:
     now = time.time()
     try:
@@ -154,14 +218,21 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload)),
         )
-    _prune_durable_records()
+    try:
+        _prune_durable_records()
+    except Exception:
+        # Retention maintenance must not turn an otherwise durable dispatch
+        # into a rejected task.
+        logger.debug("Async delegation durable prune failed", exc_info=True)
 
 
+@_retry_db_busy
 def _delete_durable_delegation(delegation_id: str) -> None:
     with _DB_LOCK, _connect() as conn:
         conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
 
 
+@_retry_db_busy
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     now = time.time()
@@ -201,6 +272,7 @@ def _prune_durable_records() -> None:
             )
 
 
+@_retry_db_busy
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     now = time.time()
     with _DB_LOCK, _connect() as conn:
@@ -213,6 +285,7 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
         )
 
 
+@_retry_db_busy
 def _note_delivery_attempt(delegation_id: str) -> None:
     with _DB_LOCK, _connect() as conn:
         conn.execute(
@@ -221,6 +294,7 @@ def _note_delivery_attempt(delegation_id: str) -> None:
         )
 
 
+@_retry_db_busy
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown."""
     try:
@@ -268,6 +342,7 @@ def recover_abandoned_delegations() -> int:
     return recovered
 
 
+@_retry_db_busy
 def restore_undelivered_completions(target_queue) -> int:
     """Enqueue durable pending completions as fresh turns after process start.
 
@@ -295,6 +370,7 @@ def restore_undelivered_completions(target_queue) -> int:
     return len(rows)
 
 
+@_retry_db_busy
 def mark_completion_delivered(delegation_id: str) -> bool:
     """Atomically acknowledge successful injection of a durable completion."""
     now = time.time()
@@ -307,6 +383,7 @@ def mark_completion_delivered(delegation_id: str) -> bool:
         return cur.rowcount == 1
 
 
+@_retry_db_busy
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
@@ -338,6 +415,7 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
 
 
+@_retry_db_busy
 def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Release a failed delivery claim so another consumer may retry.
 
@@ -396,6 +474,7 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
+@_retry_db_busy
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
     now = time.time()
@@ -421,6 +500,7 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
         release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
 
 
+@_retry_db_busy
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
     with _DB_LOCK, _connect() as conn:
         row = conn.execute(
@@ -570,7 +650,20 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    try:
+        _persist_dispatch(record)
+    except Exception as exc:
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        logger.error(
+            "Async delegation %s: durable dispatch failed: %s",
+            delegation_id,
+            exc,
+        )
+        return {
+            "status": "rejected",
+            "error": f"Failed to persist async delegation: {exc}",
+        }
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -681,7 +774,17 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
-    _persist_completion(evt, result)
+    try:
+        _persist_completion(evt, result)
+    except Exception:
+        # In-memory delivery is still preferable to losing the result and
+        # leaving the record permanently stuck in ``finalizing``.
+        logger.error(
+            "Async delegation %s: durable completion persistence failed; "
+            "delivering in-memory event",
+            record.get("delegation_id"),
+            exc_info=True,
+        )
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -767,7 +870,20 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    try:
+        _persist_dispatch(record)
+    except Exception as exc:
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        logger.error(
+            "Async delegation batch %s: durable dispatch failed: %s",
+            delegation_id,
+            exc,
+        )
+        return {
+            "status": "rejected",
+            "error": f"Failed to persist async delegation batch: {exc}",
+        }
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -865,7 +981,15 @@ def _finalize_batch(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
     }
-    _persist_completion(evt, combined)
+    try:
+        _persist_completion(evt, combined)
+    except Exception:
+        logger.error(
+            "Async delegation batch %s: durable completion persistence failed; "
+            "delivering in-memory event",
+            delegation_id,
+            exc_info=True,
+        )
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover

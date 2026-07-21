@@ -158,76 +158,39 @@ class TestNoMoreBareDeleteSites:
 
 
 class TestSessionDbCloseOnShutdown:
-    """_stop_impl should call .close() on both self._session_db and
-    self.session_store._db to release SQLite WAL locks before the new
-    gateway (during --replace restart) tries to open the same file.
-    """
+    """Gateway shutdown closes unique DBs and forces one final checkpoint."""
 
     def test_stop_impl_closes_both_session_dbs(self):
-        """Run the exact shutdown block that closes SessionDBs and verify
-        .close() was called on both holders."""
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
+        from gateway.run import _close_session_databases_for_shutdown
 
         runner_db = MagicMock()
         store_db = MagicMock()
 
-        runner._db = runner_db
-        runner.session_store = MagicMock()
-        runner.session_store._db = store_db
+        _close_session_databases_for_shutdown(runner_db, store_db)
 
-        # Replicate the exact production loop from _stop_impl.
-        for _db_holder in (runner, getattr(runner, "session_store", None)):
-            _db = getattr(_db_holder, "_db", None) if _db_holder else None
-            if _db is None or not hasattr(_db, "close"):
-                continue
-            _db.close()
+        runner_db.close.assert_called_once_with(force_checkpoint=False)
+        store_db.close.assert_called_once_with(force_checkpoint=True)
 
-        runner_db.close.assert_called_once()
-        store_db.close.assert_called_once()
+    def test_shutdown_deduplicates_same_session_db(self):
+        from gateway.run import _close_session_databases_for_shutdown
 
-    def test_shutdown_tolerates_missing_session_store(self):
-        """Gateway without a session_store attribute must not crash on shutdown."""
-        from gateway.run import GatewayRunner
+        db = MagicMock()
+        _close_session_databases_for_shutdown(db, db, None)
 
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._db = MagicMock()
-        # Deliberately no session_store attribute.
-
-        for _db_holder in (runner, getattr(runner, "session_store", None)):
-            _db = getattr(_db_holder, "_db", None) if _db_holder else None
-            if _db is None or not hasattr(_db, "close"):
-                continue
-            _db.close()
-
-        runner._db.close.assert_called_once()
+        db.close.assert_called_once_with(force_checkpoint=True)
 
     def test_shutdown_tolerates_close_raising(self):
-        """A close() that raises must not prevent subsequent cleanup."""
-        from gateway.run import GatewayRunner
+        """A close() that raises must not prevent the final forced checkpoint."""
+        from gateway.run import _close_session_databases_for_shutdown
 
-        runner = GatewayRunner.__new__(GatewayRunner)
         flaky_db = MagicMock()
         flaky_db.close.side_effect = RuntimeError("simulated lock error")
         healthy_db = MagicMock()
 
-        runner._db = flaky_db
-        runner.session_store = MagicMock()
-        runner.session_store._db = healthy_db
+        _close_session_databases_for_shutdown(flaky_db, healthy_db)
 
-        # Same pattern as production: try/except around each close().
-        for _db_holder in (runner, getattr(runner, "session_store", None)):
-            _db = getattr(_db_holder, "_db", None) if _db_holder else None
-            if _db is None or not hasattr(_db, "close"):
-                continue
-            try:
-                _db.close()
-            except Exception:
-                pass
-
-        flaky_db.close.assert_called_once()
-        healthy_db.close.assert_called_once()
+        flaky_db.close.assert_called_once_with(force_checkpoint=False)
+        healthy_db.close.assert_called_once_with(force_checkpoint=True)
 
 
 class TestSessionResetZombieRace:

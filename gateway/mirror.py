@@ -114,7 +114,7 @@ def _find_session_id(
     # Primary: state.db
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):
@@ -203,4 +203,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
         logger.debug("Mirror SQLite write failed: %s", e)
     finally:
         if db is not None:
-            db.close()
+            # The gateway keeps long-lived writers that perform periodic
+            # PASSIVE checkpoints. A per-message mirror helper must not issue
+            # a competing TRUNCATE checkpoint on teardown.
+            db.close(checkpoint=False)

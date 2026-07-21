@@ -92,6 +92,130 @@ def test_dispatch_returns_immediately_without_blocking():
     gate.set()
 
 
+def test_busy_retry_sleeps_outside_process_writer_lane(tmp_path, monkeypatch):
+    from hermes_state import get_process_db_write_lock
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_DB_RETRY_MIN_SECONDS", 0.2)
+    monkeypatch.setattr(ad, "_DB_RETRY_MAX_SECONDS", 0.2)
+    real_connect = ad._connect
+    first_failure = threading.Event()
+    attempts = []
+    errors = []
+
+    def flaky_connect():
+        attempts.append(1)
+        if len(attempts) == 1:
+            first_failure.set()
+            raise ad.sqlite3.OperationalError("database is locked")
+        return real_connect()
+
+    monkeypatch.setattr(ad, "_connect", flaky_connect)
+    record = {
+        "delegation_id": "deleg_retry",
+        "session_key": "owner",
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": time.time(),
+    }
+
+    def persist():
+        try:
+            ad._persist_dispatch(record)
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=persist)
+    worker.start()
+    assert first_failure.wait(timeout=5)
+    started = time.monotonic()
+    with get_process_db_write_lock(ad._db_path()):
+        pass
+    assert time.monotonic() - started < 0.15
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert errors == []
+    assert len(attempts) >= 2
+
+
+def test_durable_dispatch_failure_releases_capacity(monkeypatch):
+    monkeypatch.setattr(
+        ad,
+        "_persist_dispatch",
+        lambda _record: (_ for _ in ()).throw(
+            ad.sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    result = ad.dispatch_async_delegation(
+        goal="not persisted",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed"},
+        max_async_children=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert ad.active_count() == 0
+
+
+def test_completion_persistence_failure_still_delivers_event(monkeypatch):
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "still delivered"}
+
+    result = ad.dispatch_async_delegation(
+        goal="completion fallback",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=runner,
+    )
+    monkeypatch.setattr(
+        ad,
+        "_persist_completion",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ad.sqlite3.OperationalError("database is locked")
+        ),
+    )
+    gate.set()
+
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    assert event["summary"] == "still delivered"
+
+
+def test_batch_durable_dispatch_failure_releases_capacity(monkeypatch):
+    monkeypatch.setattr(
+        ad,
+        "_persist_dispatch",
+        lambda _record: (_ for _ in ()).throw(
+            ad.sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    result = ad.dispatch_async_delegation_batch(
+        goals=["not persisted"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"results": []},
+        max_async_children=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert ad.active_count() == 0
+
+
 def test_async_executor_workers_are_daemon_threads():
     gate = threading.Event()
 
@@ -871,5 +995,4 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
 

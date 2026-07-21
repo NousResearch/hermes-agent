@@ -293,7 +293,7 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     entries: List[Dict[str, str]] = []
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):

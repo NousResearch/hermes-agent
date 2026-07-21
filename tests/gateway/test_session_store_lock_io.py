@@ -8,7 +8,10 @@ SELECTs (``_is_session_ended_in_db``), a full routing-index rewrite +
 These tests assert those three I/O calls are invoked *outside* the lock.
 They follow the mock-DB idiom from ``test_session_store_runtime_stale_guard``.
 """
+import io
 import json
+import logging
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -165,6 +168,28 @@ class TestSaveOutsideLock:
             f"while lock was held"
         )
 
+    def test_update_session_saves_outside_lock_without_rewriting_peer(self, tmp_path):
+        """The per-turn hot path performs one off-lock routing transaction."""
+        source = _source()
+        db = _db_with_rows({"sid": {"id": "sid", "end_reason": None}})
+        store = _make_store(tmp_path, db)
+        key = store._generate_session_key(source)
+        _seed_entry(store, key, "sid")
+        save_lock_states = []
+        original_save = store._save_entries
+
+        def tracking_save():
+            save_lock_states.append(store._lock.held)
+            return original_save()
+
+        store._save_entries = tracking_save  # type: ignore[method-assign]
+        store._record_gateway_session_peer = MagicMock()
+
+        store.update_session(key, last_prompt_tokens=42)
+
+        assert save_lock_states == [False]
+        store._record_gateway_session_peer.assert_not_called()
+
 
 class TestRecoverOutsideLock:
     def test_recover_not_holding_lock(self, tmp_path):
@@ -196,6 +221,23 @@ class TestRecoverOutsideLock:
             f"_recover_session_from_db called "
             f"{len(recover_calls_under_lock)} time(s) while lock was held"
         )
+
+
+def test_create_session_lock_failure_is_fail_open_with_closed_stdout(tmp_path, caplog):
+    """A logging fallback must not turn recoverable contention into message loss."""
+    db = _db_with_rows({})
+    db.create_session.side_effect = sqlite3.OperationalError("database is locked")
+    store = _make_store(tmp_path, db)
+    closed_stdout = io.StringIO()
+    closed_stdout.close()
+
+    with patch("sys.stdout", closed_stdout), caplog.at_level(
+        logging.WARNING, logger="gateway.session"
+    ):
+        entry = store.get_or_create_session(_source())
+
+    assert store._entries[entry.session_key] is entry
+    assert "Failed to create SQLite session: database is locked" in caplog.text
 
 
 def test_concurrent_same_key_returns_one_published_session(tmp_path):
@@ -289,7 +331,7 @@ def test_legacy_and_off_lock_saves_share_one_serialization_lock(tmp_path):
     write_count = 0
     count_lock = threading.Lock()
 
-    def replace(entries, *, scope):
+    def replace(entries, *, scope, generation=None):
         nonlocal write_count, persisted
         with count_lock:
             write_count += 1
@@ -333,7 +375,7 @@ def test_save_serialization_snapshots_latest_routing_index(tmp_path):
     write_count = 0
     count_lock = threading.Lock()
 
-    def replace(entries, *, scope):
+    def replace(entries, *, scope, generation=None):
         nonlocal write_count, persisted
         with count_lock:
             write_count += 1

@@ -4476,7 +4476,7 @@ class GatewaySlashCommandsMixin:
             loop = asyncio.get_running_loop()
 
             def _run_insights():
-                db = SessionDB()
+                db = SessionDB(read_only=True)
                 engine = InsightsEngine(db)
                 report = engine.generate(days=days, source=source)
                 result = engine.format_gateway(report)

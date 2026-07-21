@@ -109,6 +109,54 @@ class TestCloseUsesTruncate:
             f"Expected debug log about TRUNCATE failure at close, got: {caplog.text}"
         )
 
+    def test_nonfinal_writer_close_skips_truncate(self, tmp_path):
+        """A short-lived sibling must not checkpoint an active writer's WAL."""
+        path = tmp_path / "shared.db"
+        first = SessionDB(db_path=path)
+        second = SessionDB(db_path=path)
+        statements = []
+        first._conn.set_trace_callback(statements.append)
+        try:
+            first.close()
+            assert not any("wal_checkpoint(TRUNCATE)" in sql for sql in statements)
+            second.create_session("survivor", "test")
+        finally:
+            first.close()
+            second.close()
+
+    def test_shutdown_can_force_truncate_with_cached_writer_alive(self, tmp_path):
+        """A leaked/cache handle must not prevent the explicit shutdown checkpoint."""
+        path = tmp_path / "shared.db"
+        shutdown_db = SessionDB(db_path=path)
+        cached_db = SessionDB(db_path=path)
+        statements = []
+        shutdown_db._conn.set_trace_callback(statements.append)
+        try:
+            shutdown_db.close(force_checkpoint=True)
+            assert any("wal_checkpoint(TRUNCATE)" in sql for sql in statements)
+            cached_db.create_session("survivor", "test")
+        finally:
+            shutdown_db.close()
+            cached_db.close()
+
+    def test_read_only_and_explicit_hot_close_skip_truncate(self, tmp_path):
+        path = tmp_path / "state.db"
+        writer = SessionDB(db_path=path)
+        writer.create_session("seed", "test")
+        writer.close()
+
+        read_only = SessionDB(db_path=path, read_only=True)
+        read_statements = []
+        read_only._conn.set_trace_callback(read_statements.append)
+        read_only.close()
+        assert not any("wal_checkpoint(TRUNCATE)" in sql for sql in read_statements)
+
+        hot_writer = SessionDB(db_path=path)
+        hot_statements = []
+        hot_writer._conn.set_trace_callback(hot_statements.append)
+        hot_writer.close(checkpoint=False)
+        assert not any("wal_checkpoint(TRUNCATE)" in sql for sql in hot_statements)
+
 
 class TestCheckpointFrequency:
     """Checkpoint triggers every N writes."""

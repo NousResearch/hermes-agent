@@ -1,5 +1,6 @@
 """Tests for gateway session management."""
 import json
+import sqlite3
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -2083,6 +2084,30 @@ class TestGatewayRoutingTable:
         assert recovered.session_id == entry.session_id
         restarted._db.close()
 
+    def test_successful_db_writes_coalesce_legacy_json_fsync(
+        self, tmp_path, monkeypatch
+    ):
+        config = GatewayConfig(write_sessions_json=True)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        monkeypatch.setattr(store, "_JSON_MIRROR_MIN_INTERVAL_SECONDS", 3600.0)
+        mirror = MagicMock(wraps=store._save_sessions_json)
+        monkeypatch.setattr(store, "_save_sessions_json", mirror)
+
+        store.update_session(entry.session_key, last_prompt_tokens=1)
+        store.update_session(entry.session_key, last_prompt_tokens=2)
+        mirror.assert_not_called()
+        state, generation = store._db.load_gateway_routing_state(
+            scope=store._routing_scope()
+        )
+        assert generation > 0
+        assert json.loads(state[entry.session_key])["last_prompt_tokens"] == 2
+
+        store._last_sessions_json_write_at = 0.0
+        store.update_session(entry.session_key, last_prompt_tokens=3)
+        mirror.assert_called_once()
+        store._db.close()
+
     def test_legacy_sessions_json_imported_when_db_table_empty(self, tmp_path):
         """Pre-migration installs: sessions.json entries fold into the index."""
         config = GatewayConfig()
@@ -2094,6 +2119,9 @@ class TestGatewayRoutingTable:
         import hermes_state
         db = hermes_state.SessionDB()
         db._conn.execute("DELETE FROM gateway_routing")
+        db._conn.execute(
+            "DELETE FROM state_meta WHERE key LIKE 'gateway_routing_generation:%'"
+        )
         db._conn.commit()
         db.close()
 
@@ -2123,6 +2151,105 @@ class TestGatewayRoutingTable:
         restarted._ensure_loaded()
         assert restarted._entries[entry.session_key].session_id == entry.session_id
         restarted._db.close()
+
+    def test_newer_json_snapshot_wins_after_db_save_failure(self, tmp_path, monkeypatch):
+        """A failed DB update must not be rolled back by stale DB data on restart."""
+        config = GatewayConfig(write_sessions_json=False)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        def fail_save(*_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store._db, "replace_gateway_routing_entries", fail_save)
+        store.set_model_override(entry.session_key, {"model": "newer-model"})
+
+        fallback = json.loads((tmp_path / "sessions.json").read_text())
+        assert int(fallback["_ROUTING_GENERATION"]) > 0
+        assert fallback[entry.session_key]["model_override"] == {
+            "model": "newer-model"
+        }
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        restarted._ensure_loaded()
+        assert restarted._entries[entry.session_key].model_override == {
+            "model": "newer-model"
+        }
+        restarted._db.close()
+
+    def test_newer_json_snapshot_preserves_failed_delete(self, tmp_path, monkeypatch):
+        """A DB lock during delete must not resurrect the removed routing key."""
+        config = GatewayConfig(write_sessions_json=False)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        keep = store.get_or_create_session(self._source(chat_id="keep"))
+        removed = store.get_or_create_session(self._source(chat_id="remove"))
+
+        def fail_save(*_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store._db, "replace_gateway_routing_entries", fail_save)
+        with store._lock:
+            store._entries.pop(removed.session_key)
+        store._save_entries()
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        restarted._ensure_loaded()
+        assert keep.session_key in restarted._entries
+        assert removed.session_key not in restarted._entries
+        restarted._db.close()
+
+    def test_newer_db_snapshot_wins_when_json_mirror_write_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """A committed DB generation remains usable after a mirror fsync failure."""
+        config = GatewayConfig(write_sessions_json=True)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        stale_json = (tmp_path / "sessions.json").read_bytes()
+
+        monkeypatch.setattr(
+            store,
+            "_save_sessions_json",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+        store._last_sessions_json_write_at = 0.0
+        store.set_model_override(entry.session_key, {"model": "db-model"})
+        # Simulate the old mirror remaining on disk after the failed atomic write.
+        assert (tmp_path / "sessions.json").read_bytes() == stale_json
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        restarted._ensure_loaded()
+        assert restarted._entries[entry.session_key].model_override == {
+            "model": "db-model"
+        }
+        restarted._db.close()
+
+    def test_stale_db_generation_never_overwrites_newer_json_mirror(
+        self, tmp_path, monkeypatch
+    ):
+        config = GatewayConfig(write_sessions_json=True)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        original_json = (tmp_path / "sessions.json").read_bytes()
+        store._last_sessions_json_write_at = 0.0
+        replacer = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            replacer,
+        )
+        mirror = MagicMock(wraps=store._save_sessions_json)
+        monkeypatch.setattr(store, "_save_sessions_json", mirror)
+
+        store.set_model_override(entry.session_key, {"model": "stale-model"})
+
+        replacer.assert_called_once()
+        mirror.assert_not_called()
+        assert (tmp_path / "sessions.json").read_bytes() == original_json
+        store._db.close()
 
     def test_prune_removes_routing_rows_for_ended_sessions(self, tmp_path):
         """Startup prune drops ended sessions from the DB routing table too."""

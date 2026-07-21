@@ -15,6 +15,7 @@ from gateway.channel_directory import (
     load_directory,
     _apply_channel_aliases,
     _build_from_sessions,
+    _build_from_sessions_db,
     _build_slack,
 )
 
@@ -162,6 +163,16 @@ class TestBuildChannelDirectoryOffload:
         assert channels == [{"id": "D1", "name": "Alice", "type": "dm"}]
         assert [name for name, _ in calls] == ["slack"]
         assert calls[0][1] != loop_thread
+
+
+def test_session_db_discovery_uses_read_only_connection():
+    db = MagicMock()
+    db.list_gateway_sessions.return_value = []
+    with patch("hermes_state.SessionDB", return_value=db) as session_db:
+        assert _build_from_sessions_db("discord") == []
+
+    session_db.assert_called_once_with(read_only=True)
+    db.close.assert_called_once_with()
 
 
 class TestResolveChannelName:

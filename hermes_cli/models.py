@@ -3767,14 +3767,22 @@ def probe_api_models(
             "used_fallback": False,
         }
 
-    if normalized.endswith("/v1"):
-        alternate_base = normalized[:-3].rstrip("/")
+    # For Anthropic-compatible endpoints, skip the /v1 URL heuristic —
+    # Anthropic's API does not use the /v1 convention, and probing with
+    # an appended /v1 can succeed on some proxies while silently
+    # rewriting the user's configured base_url (#43982).
+    if api_mode == "anthropic_messages":
+        candidates: list[tuple[str, bool]] = [(normalized, False)]
+        alternate_base = normalized
     else:
-        alternate_base = normalized + "/v1"
+        if normalized.endswith("/v1"):
+            alternate_base = normalized[:-3].rstrip("/")
+        else:
+            alternate_base = normalized + "/v1"
 
-    candidates: list[tuple[str, bool]] = [(normalized, False)]
-    if alternate_base and alternate_base != normalized:
-        candidates.append((alternate_base, True))
+        candidates: list[tuple[str, bool]] = [(normalized, False)]
+        if alternate_base and alternate_base != normalized:
+            candidates.append((alternate_base, True))
 
     tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}

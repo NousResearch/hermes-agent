@@ -305,6 +305,65 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    def test_probe_api_models_skips_v1_fallback_for_anthropic_mode(self):
+        """anthropic_messages mode must NOT try the /v1 alternate URL (#43982)."""
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "claude-opus-4"}]}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            probe = probe_api_models(
+                "key", "http://proxy:8000", api_mode="anthropic_messages"
+            )
+
+        # Only the original URL should be probed — no /v1 alternate
+        assert calls == ["http://proxy:8000/models"]
+        assert probe["models"] == ["claude-opus-4"]
+        assert probe["resolved_base_url"] == "http://proxy:8000"
+        assert probe["used_fallback"] is False
+
+    def test_probe_api_models_skips_v1_strip_for_anthropic_mode(self):
+        """anthropic_messages mode must NOT strip /v1 from the URL (#43982)."""
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "claude-opus-4"}]}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            probe = probe_api_models(
+                "key", "http://proxy:8000/v1", api_mode="anthropic_messages"
+            )
+
+        # Only the original URL (with /v1) should be probed — no strip
+        assert calls == ["http://proxy:8000/v1/models"]
+        assert probe["resolved_base_url"] == "http://proxy:8000/v1"
+        assert probe["used_fallback"] is False
+
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):

@@ -62,6 +62,30 @@ def get_env_value(name, default=None):
     value = _get_env_value(name)
     return default if value is None else value
 
+
+def _resolve_provider_key(env_var: str, provider_id: str) -> str:
+    """Resolve an API key from env, .env, or the credential pool.
+
+    Used by TTS/STT providers (Mistral, ElevenLabs) that store keys
+    via ``hermes auth add <provider_id>``.
+    """
+    key = get_env_value(env_var)
+    if key:
+        return key
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider_id)
+        if pool and pool.has_credentials():
+            entry = pool.peek()
+            if entry:
+                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                key = str(key).strip()
+                if key:
+                    return key
+    except Exception:
+        pass
+    return ""
+
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
 # ---------------------------------------------------------------------------
@@ -804,7 +828,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "mistral":
-            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+            if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
                 return "mistral"
             logger.warning(
                 "STT provider 'mistral' configured but mistralai package "
@@ -823,7 +847,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "elevenlabs":
-            if get_env_value("ELEVENLABS_API_KEY"):
+            if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
                 return "elevenlabs"
             logger.warning(
                 "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
@@ -865,7 +889,7 @@ def _get_provider(stt_config: dict) -> str:
     # Only auto-select Mistral if the SDK is already present — don't trigger a
     # lazy-install during passive auto-detection. Explicit `provider: mistral`
     # (above) does lazy-install on first transcription call.
-    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+    if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
     try:
@@ -876,7 +900,7 @@ def _get_provider(stt_config: dict) -> str:
             return "xai"
     except Exception:
         pass
-    if get_env_value("ELEVENLABS_API_KEY"):
+    if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
     if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
@@ -1425,7 +1449,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
     Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
     Requires ``MISTRAL_API_KEY`` environment variable.
     """
-    api_key = get_env_value("MISTRAL_API_KEY")
+    api_key = _resolve_provider_key("MISTRAL_API_KEY", "mistral")
     if not api_key:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
@@ -1572,7 +1596,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
-    api_key = get_env_value("ELEVENLABS_API_KEY")
+    api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
     if not api_key:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
 

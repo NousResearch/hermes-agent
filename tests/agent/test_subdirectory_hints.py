@@ -112,6 +112,39 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Backend-specific instructions" in result
 
+    def test_terminal_cd_relative_directory(self, project):
+        """`cd backend` resolves relative to working_dir (issue #11032).
+
+        Before the fix, the generic token filter in
+        `_extract_paths_from_command` dropped bare directory names because
+        they contain no `/` or `.`, so Hermes silently missed AGENTS.md
+        in the entered subdirectory.
+        """
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "terminal", {"command": "cd backend && ls"}
+        )
+        assert result is not None
+        assert "Backend-specific instructions" in result
+
+    def test_terminal_pushd_relative_directory(self, project):
+        """`pushd backend` behaves the same as `cd backend`."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "terminal", {"command": "pushd backend"}
+        )
+        assert result is not None
+        assert "Backend-specific instructions" in result
+
+    def test_terminal_cd_in_later_subcommand(self, project):
+        """A `cd` later in a pipeline/chain is still picked up."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "terminal", {"command": "echo starting; cd backend && ls"}
+        )
+        assert result is not None
+        assert "Backend-specific instructions" in result
+
     def test_relative_path(self, project):
         """Relative paths resolved against working_dir."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

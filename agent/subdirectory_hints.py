@@ -154,6 +154,12 @@ class SubdirectoryHintTracker:
         except ValueError:
             tokens = cmd.split()
 
+        # First pass: extract targets of shell navigation commands so bare
+        # directory names like `backend` in `cd backend && ls` resolve
+        # relative to working_dir. The generic token filter below would
+        # otherwise drop them because they contain no `/` or `.`.
+        self._extract_nav_command_targets(tokens, candidates)
+
         for token in tokens:
             # Skip flags
             if token.startswith("-"):
@@ -165,6 +171,30 @@ class SubdirectoryHintTracker:
             if token.startswith(("http://", "https://", "git@")):
                 continue
             self._add_path_candidate(token, candidates)
+
+    _NAV_COMMANDS = frozenset({"cd", "pushd"})
+
+    def _extract_nav_command_targets(self, tokens: list, candidates: Set[Path]):
+        """Resolve targets of `cd`/`pushd` invocations anywhere in tokens.
+
+        Scans the token stream for a `cd` / `pushd` token and treats the
+        next non-flag token as the navigation target. This covers the
+        common chained forms -- `cd backend && ls`, `pushd backend`, and
+        even cases where `shlex.split` leaves an operator glued to a
+        previous token such as `echo starting; cd backend`.
+
+        `cd -` (previous dir) and a bare `cd` (home) are intentionally
+        ignored -- neither points at a project subdirectory we could
+        augment with hints.
+        """
+        for idx, token in enumerate(tokens):
+            if token not in self._NAV_COMMANDS:
+                continue
+            for arg in tokens[idx + 1 :]:
+                if arg.startswith("-"):
+                    continue
+                self._add_path_candidate(arg, candidates)
+                break
 
     def _is_valid_subdir(self, path: Path) -> bool:
         """Check if path is a valid directory to scan for hints.

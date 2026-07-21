@@ -18,6 +18,32 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+_ROUTER_TIMEOUT_SHIM = "Connect timeout, please try again later."
+
+
+def _has_positive_completion_tokens(usage: Any) -> bool:
+    """Return whether a response usage object proves text was generated."""
+    for field in ("completion_tokens", "output_tokens"):
+        value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
+
+
+def _is_router_timeout_shim(response: Any) -> bool:
+    """Recognize a router failure encoded as a successful ChatCompletion."""
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or content.strip() != _ROUTER_TIMEOUT_SHIM:
+        return False
+    if getattr(message, "tool_calls", None):
+        return False
+    return not _has_positive_completion_tokens(getattr(response, "usage", None))
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Return the model's wire-compatible reasoning config."""
     if not isinstance(reasoning_config, dict):
@@ -769,12 +795,14 @@ class ChatCompletionsTransport(ProviderTransport):
         )
 
     def validate_response(self, response: Any) -> bool:
-        """Check that response has valid choices."""
+        """Check that response has valid choices and is not a router failure shim."""
         if response is None:
             return False
         if not hasattr(response, "choices") or response.choices is None:
             return False
         if not response.choices:
+            return False
+        if _is_router_timeout_shim(response):
             return False
         return True
 

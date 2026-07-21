@@ -294,6 +294,51 @@ def detect_vendor(model_name: str) -> Optional[str]:
     return None
 
 
+def _repair_anthropic_dashes_to_dots(model_name: str) -> str:
+    """Repair Anthropic-native dashes in version numbers to dots for aggregator APIs.
+
+    Anthropic's native API uses dashes where marketing/aggregator names use
+    dots: ``claude-sonnet-4-6`` → ``claude-sonnet-4.6``.
+
+    Only rewrites when the model appears to be a Claude model (contains
+    ``claude-`` in the name part after any ``vendor/`` prefix).  This
+    avoids false-positive rewrites on unrelated models.
+
+    The regex matches a single-digit major version followed by a single-digit
+    minor version (``\\d-\\d(?!\\d)``).  Dated models with a single major digit
+    and an 8-digit date suffix (``claude-sonnet-4-20250514``) are NOT touched
+    because the ``(?!)\\d`` lookahead fails when the ``minordigit`` is followed
+    by additional digits (``20250514``):
+
+        >>> _repair_anthropic_dashes_to_dots("claude-sonnet-4-6")
+        'claude-sonnet-4.6'
+        >>> _repair_anthropic_dashes_to_dots("claude-opus-4-8")
+        'claude-opus-4.8'
+        >>> _repair_anthropic_dashes_to_dots("claude-opus-4-5-20251101")
+        'claude-opus-4.5-20251101'
+        >>> _repair_anthropic_dashes_to_dots("claude-haiku-4-5-20251001")
+        'claude-haiku-4.5-20251001'
+        >>> _repair_anthropic_dashes_to_dots("claude-sonnet-4-20250514")
+        'claude-sonnet-4-20250514'
+        >>> _repair_anthropic_dashes_to_dots("claude-sonnet-4.6")
+        'claude-sonnet-4.6'
+        >>> _repair_anthropic_dashes_to_dots("claude-fable-5")
+        'claude-fable-5'
+        >>> _repair_anthropic_dashes_to_dots("anthropic/claude-sonnet-4-6")
+        'anthropic/claude-sonnet-4.6'
+        >>> _repair_anthropic_dashes_to_dots("openai/gpt-5.4-mini")
+        'openai/gpt-5.4-mini'
+    """
+    # Extract the model part (after vendor/ prefix, if any) for Claude detection.
+    model_part = _strip_vendor_prefix(model_name)
+    if not model_part.lower().startswith("claude-"):
+        return model_name
+
+    # Replace version-like patterns: single digit - single digit (not followed
+    # by more digits, which would indicate a date like -20250514).
+    return re.sub(r"(\d)-(\d)(?!\d)", r"\1.\2", model_name)
+
+
 def _prepend_vendor(model_name: str) -> str:
     """Prepend the detected ``vendor/`` prefix if missing.
 
@@ -389,9 +434,14 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     provider = _normalize_provider_alias(target_provider)
 
-    # --- Aggregators: need vendor/model format ---
+    # --- Aggregators: need vendor/model format with dots (not dashes) ---
+    # Anthropic's native API uses dashes in version numbers (claude-sonnet-4-6)
+    # while aggregators (OpenRouter, Nous, Kilo) key models by dot-style IDs
+    # (claude-sonnet-4.6).  Without the repair, a dash-format model ID in
+    # config.yaml produces a 404 from the aggregator API.
     if provider in _AGGREGATOR_PROVIDERS:
-        return _prepend_vendor(name)
+        with_vendor = _prepend_vendor(name)
+        return _repair_anthropic_dashes_to_dots(with_vendor)
 
     # --- OpenCode Zen / OpenCode Go: flat-namespace resellers.
     #     Their /v1/models API returns bare IDs only (no vendor prefix), and

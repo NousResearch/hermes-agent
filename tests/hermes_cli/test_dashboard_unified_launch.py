@@ -5,6 +5,7 @@ spawning a per-profile server: attach (open browser at ?profile=) when one
 is already listening, else re-exec as the machine dashboard with the
 launching profile preselected. `--isolated` opts out.
 """
+from pathlib import PurePath
 import sys
 import types
 import pytest
@@ -119,7 +120,8 @@ class TestUnifiedDashboardRouting:
         # get_default_hermes_root() strips the trailing profiles/<name>, so the
         # child binds /opt/data — where the real default/oracle/saga profiles
         # and the .install_method stamp actually live.
-        assert env.get("HERMES_HOME") == "/opt/data"
+        # Use PurePath for cross-platform path comparison (Windows uses backslashes).
+        assert PurePath(env.get("HERMES_HOME")) == PurePath("/opt/data")
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT

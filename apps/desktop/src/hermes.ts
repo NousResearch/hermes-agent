@@ -733,14 +733,14 @@ export function validateProviderCredential(
 export function getCustomEndpoint(): Promise<CustomEndpointConfig> {
   return window.hermesDesktop.api<CustomEndpointConfig>({
     ...profileScoped(),
-    path: '/api/providers/custom-endpoint'
+    path: '/api/providers/custom-endpoints'
   })
 }
 
 export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointConfig & { ok: boolean }> {
   return window.hermesDesktop.api<CustomEndpointConfig & { ok: boolean }>({
     ...profileScoped(),
-    path: '/api/providers/custom-endpoint',
+    path: '/api/providers/custom-endpoints',
     method: 'PUT',
     body: endpoint
   })

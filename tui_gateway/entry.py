@@ -16,6 +16,8 @@ import signal
 import time
 import traceback
 
+from tui_gateway._stdin_recovery import handle_spurious_eof
+
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
@@ -233,30 +235,65 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
 
 
 def mcp_discovery_in_flight() -> bool:
-    """Return True if the background MCP discovery thread is still running.
+    """Return True if ANY background MCP discovery thread is still running.
 
     Used by the agent-build path to decide whether to schedule a late tool
     snapshot refresh: if discovery didn't land within the bounded
     ``wait_for_mcp_discovery`` join, the agent was built without those tools
     and the banner/tool count will be stale until they arrive.
+
+    There are two independent discovery-thread owners by surface: the stdio
+    ``hermes --tui`` path spawns ITS thread here (``_mcp_discovery_thread``),
+    while the desktop app + dashboard WebSocket sidecar (``tui_gateway/ws.py``)
+    and ``hermes dashboard`` spawn theirs via
+    ``hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh
+    scheduler imports this function regardless of surface, so it MUST consult
+    both — checking only the entry thread left the desktop/dashboard surfaces
+    with no late refresh, so a slow MCP server's tools never surfaced for the
+    whole session (#51587).
     """
     thread = _mcp_discovery_thread
-    return thread is not None and thread.is_alive()
+    if thread is not None and thread.is_alive():
+        return True
+    try:
+        from hermes_cli.mcp_startup import (
+            mcp_discovery_in_flight as _startup_in_flight,
+        )
+
+        return _startup_in_flight()
+    except Exception:
+        return False
 
 
 def join_mcp_discovery(timeout: float | None = None) -> bool:
     """Block until background MCP discovery finishes, up to ``timeout`` seconds.
 
-    Returns True if discovery has completed (thread absent or no longer alive),
-    False if it is still running after the timeout. Unlike
+    Returns True if discovery has completed (both thread owners absent or no
+    longer alive), False if either is still running after the timeout. Unlike
     ``wait_for_mcp_discovery`` this accepts an unbounded/long wait and reports
     the outcome, for the off-critical-path late-refresh waiter.
+
+    Joins both discovery-thread owners (see ``mcp_discovery_in_flight``): the
+    entry thread first, then the ``hermes_cli.mcp_startup`` thread used by the
+    desktop/dashboard surfaces. ``timeout`` bounds EACH join, mirroring the
+    pre-#51587 single-owner behavior for the entry thread.
     """
+    entry_done = True
     thread = _mcp_discovery_thread
-    if thread is None:
-        return True
-    thread.join(timeout=timeout)
-    return not thread.is_alive()
+    if thread is not None:
+        thread.join(timeout=timeout)
+        entry_done = not thread.is_alive()
+    try:
+        from hermes_cli.mcp_startup import join_mcp_discovery as _startup_join
+
+        startup_done = _startup_join(timeout=timeout)
+    except Exception:
+        startup_done = True
+    return entry_done and startup_done
+
+
+# Spurious stdin-EOF recovery tracker (shared open-file-description O_NONBLOCK flip).
+_recovery_times: list[float] = []
 
 
 def main():
@@ -293,8 +330,11 @@ def main():
     if _has_mcp_servers:
         def _discover_mcp_background() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
-                discover_mcp_tools()
+                from hermes_cli.mcp_startup import (
+                    _discover_mcp_tools_without_interactive_oauth,
+                )
+
+                _discover_mcp_tools_without_interactive_oauth()
             except Exception:
                 logger.warning(
                     "Background MCP tool discovery failed", exc_info=True
@@ -320,7 +360,15 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
-    for raw in sys.stdin:
+    while True:
+        raw = sys.stdin.readline()
+        if not raw:
+            # Stdin fell through — check if spurious (O_NONBLOCK flip by a
+            # child on the shared open file description) or genuine EOF.
+            if not handle_spurious_eof(_recovery_times, _log_exit):
+                break
+            continue
+
         line = raw.strip()
         if not line:
             continue
@@ -339,8 +387,6 @@ def main():
             if not write_json(resp):
                 _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")
                 sys.exit(0)
-
-    _log_exit("stdin EOF (TUI closed the command pipe)")
 
 
 if __name__ == "__main__":

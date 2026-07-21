@@ -129,7 +129,7 @@ class _CaptureTransport:
         return {"success": True, "message_id": "m1"}
 
 
-def _make_event(chat_id="chan-1", guild_id="guild-9"):
+def _make_event(chat_id="chan-1", scope_id="scope-9"):
     from gateway.platforms.base import MessageEvent, MessageType
     from gateway.session import SessionSource
 
@@ -137,13 +137,13 @@ def _make_event(chat_id="chan-1", guild_id="guild-9"):
         platform=Platform.RELAY,
         chat_id=chat_id,
         chat_type="channel",
-        guild_id=guild_id,
+        scope_id=scope_id,
     )
     return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
 
 
 def _make_dm_event(chat_id="dm-1", user_id="user-42"):
-    """An inbound DM: no guild_id, carries the authentic author user_id."""
+    """An inbound DM: no scope_id, carries the authentic author user_id."""
     from gateway.platforms.base import MessageEvent, MessageType
     from gateway.session import SessionSource
 
@@ -151,53 +151,74 @@ def _make_dm_event(chat_id="dm-1", user_id="user-42"):
         platform=Platform.RELAY,
         chat_id=chat_id,
         chat_type="dm",
-        guild_id=None,
+        scope_id=None,
+        user_id=user_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
+def _make_scoped_event_with_author(
+    chat_id="chan-1", scope_id="scope-9", user_id="user-42"
+):
+    """An inbound scoped (guild/channel) message that ALSO carries the authentic
+    author user_id — the real shape of a Discord guild message (it has both a
+    guild scope_id and an author). Used to prove the adapter re-attaches BOTH
+    discriminators so the connector can fall back author-first when the guild
+    has no route row (managed agents join guilds dynamically)."""
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=Platform.RELAY,
+        chat_id=chat_id,
+        chat_type="channel",
+        scope_id=scope_id,
         user_id=user_id,
     )
     return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
 
 
 @pytest.mark.asyncio
-async def test_send_reattaches_guild_id_from_inbound_scope():
+async def test_send_reattaches_scope_id_from_inbound_scope():
     """The connector's egress guard resolves the owning tenant from
-    metadata.guild_id; the gateway's generic delivery path drops it, so the
-    relay adapter must re-attach the guild scope learned from the inbound event.
-    Regression for live 'discord egress declined: target not routed to an
+    metadata.scope_id; the gateway's generic delivery path drops it, so the
+    relay adapter must re-attach the scope learned from the inbound event.
+    Regression for live 'egress declined: target not routed to an
     onboarded tenant'."""
     t = _CaptureTransport()
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
-    # Simulate the connector delivering an inbound message in guild-9 / chan-1,
+    # Simulate the connector delivering an inbound message in scope-9 / chan-1,
     # but don't run the full handle_message pipeline — just the scope capture.
-    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+    a._capture_scope(_make_event(chat_id="chan-1", scope_id="scope-9"))
 
     await a.send("chan-1", "the reply")
 
-    assert t.sent["metadata"].get("guild_id") == "guild-9"
+    assert t.sent["metadata"].get("scope_id") == "scope-9"
 
 
 @pytest.mark.asyncio
-async def test_send_without_known_scope_omits_guild_id():
-    """A chat we never saw inbound (e.g. a DM) gets no guild_id — no-op, never
+async def test_send_without_known_scope_omits_scope_id():
+    """A chat we never saw inbound (e.g. a DM) gets no scope_id — no-op, never
     invents a scope."""
     t = _CaptureTransport()
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
     await a.send("unknown-chat", "hi")
-    assert "guild_id" not in t.sent["metadata"]
+    assert "scope_id" not in t.sent["metadata"]
 
 
 @pytest.mark.asyncio
-async def test_send_preserves_explicit_guild_id():
-    """An explicitly-provided metadata.guild_id is never overwritten."""
+async def test_send_preserves_explicit_scope_id():
+    """An explicitly-provided metadata.scope_id is never overwritten."""
     t = _CaptureTransport()
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
-    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
-    await a.send("chan-1", "hi", metadata={"guild_id": "explicit-1"})
-    assert t.sent["metadata"]["guild_id"] == "explicit-1"
+    a._capture_scope(_make_event(chat_id="chan-1", scope_id="scope-9"))
+    await a.send("chan-1", "hi", metadata={"scope_id": "explicit-1"})
+    assert t.sent["metadata"]["scope_id"] == "explicit-1"
 
 
 @pytest.mark.asyncio
 async def test_send_reattaches_dm_user_id_from_inbound_scope():
-    """A DM reply has no guild_id, so the connector resolves the tenant from the
+    """A DM reply has no scope_id, so the connector resolves the tenant from the
     recipient's author binding — it needs metadata.user_id. The adapter must
     re-attach the authentic author id learned from the inbound DM. Regression for
     live 'discord egress declined: target not routed to an onboarded tenant' on
@@ -209,8 +230,8 @@ async def test_send_reattaches_dm_user_id_from_inbound_scope():
     await a.send("dm-1", "the reply")
 
     assert t.sent["metadata"].get("user_id") == "user-42"
-    # A DM carries no guild_id — only the author discriminator.
-    assert "guild_id" not in t.sent["metadata"]
+    # A DM carries no scope_id — only the author discriminator.
+    assert "scope_id" not in t.sent["metadata"]
 
 
 @pytest.mark.asyncio
@@ -220,7 +241,7 @@ async def test_send_dm_does_not_invent_user_id_for_unknown_chat():
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
     await a.send("unknown-dm", "hi")
     assert "user_id" not in t.sent["metadata"]
-    assert "guild_id" not in t.sent["metadata"]
+    assert "scope_id" not in t.sent["metadata"]
 
 
 @pytest.mark.asyncio
@@ -234,15 +255,35 @@ async def test_send_preserves_explicit_user_id():
 
 
 @pytest.mark.asyncio
-async def test_guild_reply_does_not_carry_user_id():
-    """A guild reply resolves by guild_id and must NOT carry a DM user_id even if
-    the same chat_id was somehow seen — guild capture wins and user_id stays out
-    (guild_id is the discriminator; user_id is the DM-only fallback)."""
+async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
+    """A scoped (guild) reply now re-attaches BOTH scope_id AND the authentic
+    author user_id. scope_id is the connector's primary discriminator; user_id
+    is the author-first FALLBACK the connector uses when the guild has no route
+    row (a managed agent joins guilds dynamically, so a provision-time guild
+    route is not guaranteed). Regression for live 'discord egress declined:
+    target not routed to an onboarded tenant' on GUILD replies (paired with
+    gateway-gateway makeDiscordTenantOf guild-route-miss fallback)."""
     t = _CaptureTransport()
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
-    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+    a._capture_scope(
+        _make_scoped_event_with_author(
+            chat_id="chan-1", scope_id="scope-9", user_id="user-42"
+        )
+    )
     await a.send("chan-1", "hi")
-    assert t.sent["metadata"].get("guild_id") == "guild-9"
+    assert t.sent["metadata"].get("scope_id") == "scope-9"
+    assert t.sent["metadata"].get("user_id") == "user-42"
+
+
+@pytest.mark.asyncio
+async def test_scoped_reply_without_inbound_author_carries_scope_only():
+    """A scoped inbound with no author id yields scope_id only — the adapter
+    never invents a user_id it didn't observe."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_event(chat_id="chan-1", scope_id="scope-9"))
+    await a.send("chan-1", "hi")
+    assert t.sent["metadata"].get("scope_id") == "scope-9"
     assert "user_id" not in t.sent["metadata"]
 
 

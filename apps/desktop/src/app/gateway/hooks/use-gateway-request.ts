@@ -1,8 +1,8 @@
+import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
@@ -69,9 +69,10 @@ export function useGatewayRequest() {
         setConnection(conn)
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // and short-lived, so the cached conn.wsUrl ticket is dead here;
-        // resolveGatewayWsUrl() throws a reauth error in OAuth mode rather than
-        // connecting with a stale ticket. Stash it so requestGateway can show
-        // the actionable "sign in again" message.
+        // resolveGatewayWsUrl() never connects with a stale ticket. An explicit
+        // auth rejection becomes a reauth error; transport failures remain
+        // retryable. Stash only the former so requestGateway can show the
+        // actionable "sign in again" message.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await existing.connect(wsUrl)
 

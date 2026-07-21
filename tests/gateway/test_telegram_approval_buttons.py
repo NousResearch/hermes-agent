@@ -106,6 +106,49 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_smart_deny_owner_override_only_offers_once_and_deny(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="rm -rf /", session_key="s",
+            allow_permanent=False, smart_denied=True,
+        )
+
+        labels = [label for label, _ in buttons]
+        assert labels == ["✅ Allow Once", "❌ Deny"]
+        text = adapter._bot.send_message.call_args.kwargs["text"]
+        assert "one operation" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_smart_allow_permanent_false_keeps_session(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append(text) or text,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="curl example.test", session_key="s",
+            allow_permanent=False,
+        )
+
+        assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()
@@ -330,6 +373,39 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         assert "12345" in adapter._typing_paused
+
+    @pytest.mark.asyncio
+    async def test_stale_tap_shows_expired_not_approved(self):
+        """A tap that lands after the approval wait timed out (resolver
+        returns 0) must NOT render '✅ Approved' — the command was already
+        denied fail-closed. Regression for the false-confirmation UX where
+        the message claimed approval but nothing ran."""
+        adapter = _make_adapter()
+        adapter._approval_state[8] = "agent:main:telegram:dm:12345"
+
+        query = AsyncMock()
+        query.data = "ea:session:8"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Teknium"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=0):
+                await adapter._handle_callback_query(update, context)
+
+        answer_text = query.answer.call_args[1]["text"]
+        assert "expired" in answer_text.lower()
+        edit_text = query.edit_message_text.call_args[1]["text"]
+        assert "Approved" not in edit_text
+        assert "expired" in edit_text.lower()
 
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):

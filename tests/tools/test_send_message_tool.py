@@ -39,6 +39,8 @@ from tools.send_message_tool import (
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
 from plugins.platforms.discord.adapter import (
+    _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+    _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
     _derive_forum_thread_name,
     _probe_is_forum_cached,
     _remember_channel_is_forum,
@@ -66,6 +68,54 @@ async def _send_discord(
         thread_id=thread_id,
         media_files=media_files,
     )
+
+
+class _StreamingAiohttpContent:
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_sizes = []
+
+    async def read(self, size=-1):
+        self.read_sizes.append(size)
+        if not self._body:
+            return b""
+        if size is None or size < 0:
+            chunk = self._body
+            self._body = b""
+            return chunk
+        chunk = self._body[:size]
+        self._body = self._body[size:]
+        return chunk
+
+
+class _StreamingAiohttpResponse:
+    def __init__(self, status: int, body: bytes):
+        self.status = status
+        self.content = _StreamingAiohttpContent(body)
+        self.closed = False
+        self.json = AsyncMock(side_effect=AssertionError("resp.json() should not be used"))
+        self.text = AsyncMock(side_effect=AssertionError("resp.text() should not be used"))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class _StreamingAiohttpSession:
+    def __init__(self, response: _StreamingAiohttpResponse):
+        self.response = response
+        self.post = MagicMock(return_value=response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
 
 
 def _discord_entry():
@@ -96,11 +146,14 @@ class _patch_discord_sender:
         self._entry = None
         self._original = None
 
-    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None):
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None):
         token = getattr(pconfig, "token", None)
+        # Only forward caption= when set, so mocks written against the
+        # pre-caption signature (no caption kwarg) keep working.
+        extra = {"caption": caption} if caption is not None else {}
         return await self._mock(
             token, chat_id, message,
-            thread_id=thread_id, media_files=media_files,
+            thread_id=thread_id, media_files=media_files, **extra,
         )
 
     def __enter__(self):
@@ -545,7 +598,9 @@ class TestSendMessageTool:
 
 
 class TestSendTelegramMediaDelivery:
-    def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
+    def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
+        # A single captionable image + short text now rides as the photo's
+        # native caption (MEDIA:<path> caption), not a separate text message.
         image_path = tmp_path / "photo.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
@@ -569,11 +624,10 @@ class TestSendTelegramMediaDelivery:
 
         assert result["success"] is True
         assert result["message_id"] == "2"
-        bot.send_message.assert_awaited_once()
+        # No separate text send — the caption rides the photo bubble.
+        bot.send_message.assert_not_awaited()
         bot.send_photo.assert_awaited_once()
-        sent_text = bot.send_message.await_args.kwargs["text"]
-        assert "MEDIA:" not in sent_text
-        assert sent_text == "Hello there"
+        assert bot.send_photo.await_args.kwargs.get("caption") == "Hello there"
 
     def test_sends_voice_for_ogg_with_voice_directive(self, tmp_path, monkeypatch):
         voice_path = tmp_path / "voice.ogg"
@@ -783,27 +837,75 @@ class TestSendToPlatformChunking:
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
 
-    def test_telegram_media_attaches_to_last_chunk(self):
+    def test_telegram_markdown_expansion_is_chunked_before_send(self, monkeypatch):
+        """Telegram chunking must account for MarkdownV2 escaping expansion.
 
-        sent_calls = []
+        A raw message under 4096 UTF-16 units can inflate past the limit once
+        MarkdownV2-escaped (each `!`/`.`/`-` becomes `\\!`/`\\.`/`\\-`). The
+        send path must chunk the *formatted* text so no single send exceeds
+        4096 (issue #28557).
+        """
+        from gateway.platforms.base import utf16_len
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-            sent_calls.append(media_files or [])
-            return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+        send_lengths = []
 
-        long_msg = "word " * 2000  # ~10000 chars, well over 4096
-        media = [("/tmp/photo.png", False)]
-        with patch("tools.send_message_tool._send_telegram", fake_send):
-            asyncio.run(
-                _send_to_platform(
-                    Platform.TELEGRAM,
-                    SimpleNamespace(enabled=True, token="tok", extra={}),
-                    "123", long_msg, media_files=media,
-                )
+        async def fake_send_message(**kwargs):
+            text = kwargs["text"]
+            send_lengths.append(utf16_len(text))
+            if utf16_len(text) > 4096:
+                raise Exception("Message is too long")
+            return SimpleNamespace(message_id=len(send_lengths))
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=fake_send_message)
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.TELEGRAM,
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "123",
+                "!" * 4096,  # raw 4096 -> ~8192 after MarkdownV2 escaping
             )
-        assert len(sent_calls) >= 3
-        assert all(call == [] for call in sent_calls[:-1])
-        assert sent_calls[-1] == media
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count >= 2
+        assert max(send_lengths) <= 4096
+
+    def test_telegram_media_attaches_after_long_text_chunks(self, tmp_path, monkeypatch):
+        """Long text is split into multiple chunks, then media is attached."""
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        long_msg = "word " * 2000  # ~10000 chars, well over Telegram's 4096 limit
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.TELEGRAM,
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "123",
+                long_msg,
+                media_files=[(str(image_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count >= 3
+        bot.send_photo.assert_awaited_once()
 
     def test_matrix_media_uses_native_adapter_helper(self, tmp_path):
         doc_path = tmp_path / "test-send-message-matrix.pdf"
@@ -831,19 +933,22 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
-    def test_matrix_text_only_uses_lightweight_path(self):
-        """Text-only Matrix sends should NOT go through the heavy adapter path.
+    def test_matrix_text_only_uses_adapter_path(self):
+        """Text-only Matrix sends must go through the E2EE-capable adapter.
 
-        Post-#41112 the lightweight text path flows through the matrix plugin's
-        registry standalone_sender_fn (not the via-adapter media path)."""
+        The raw-HTTP standalone path (registry standalone_sender_fn) sends
+        cleartext, so in an E2EE room text-only messages arrived with a red
+        padlock. All Matrix sends now route through _send_matrix_via_adapter,
+        which encrypts via the mautrix adapter (live gateway session when
+        available, encryption-aware ephemeral adapter otherwise)."""
         from hermes_cli.plugins import discover_plugins
         from gateway.platform_registry import platform_registry
         discover_plugins()
-        helper = AsyncMock()
-        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        standalone = AsyncMock()
         matrix_entry = platform_registry.get("matrix")
         original_sender = matrix_entry.standalone_sender_fn
-        matrix_entry.standalone_sender_fn = lightweight
+        matrix_entry.standalone_sender_fn = standalone
         try:
             with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
                 result = asyncio.run(
@@ -858,8 +963,8 @@ class TestSendToPlatformChunking:
             matrix_entry.standalone_sender_fn = original_sender
 
         assert result["success"] is True
-        helper.assert_not_awaited()
-        lightweight.assert_awaited_once()
+        helper.assert_awaited_once()
+        standalone.assert_not_awaited()
 
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"
@@ -911,6 +1016,145 @@ class TestSendToPlatformChunking:
             ("send_document", "!room:example.com", str(file_path), None),
             ("disconnect",),
         ]
+
+
+class TestMatrixMediaLiveAdapterReuse:
+    """Verify _send_matrix_via_adapter reuses the live gateway adapter
+    when available, avoiding per-message E2EE re-init storms (#46310)."""
+
+    def test_live_adapter_skips_connect_disconnect(self, tmp_path):
+        """When a live gateway adapter exists, no connect() or disconnect()
+        should be called — the persistent E2EE session is reused."""
+        img_path = tmp_path / "photo.png"
+        img_path.write_bytes(b"\x89PNG\r\n")
+
+        calls = []
+
+        class LiveAdapter:
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$text")
+
+            async def send_image_file(self, chat_id, path, metadata=None):
+                calls.append(("send_image_file", chat_id, path))
+                return SimpleNamespace(success=True, message_id="$img")
+
+        live_adapter = LiveAdapter()
+        fake_runner = SimpleNamespace(
+            adapters={Platform.MATRIX: live_adapter}
+        )
+
+        with patch(
+            "gateway.run._gateway_runner_ref",
+            return_value=fake_runner,
+        ), patch.dict(
+            sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace()}
+        ):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "here is an image",
+                    media_files=[(str(img_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "$img"
+        # Only send + send_image_file; no connect / disconnect
+        assert calls == [
+            ("send", "!room:example.com", "here is an image"),
+            ("send_image_file", "!room:example.com", str(img_path)),
+        ]
+
+    def test_live_adapter_not_available_falls_back_to_ephemeral(self, tmp_path):
+        """When _gateway_runner_ref returns None, the ephemeral adapter
+        path (connect + disconnect) is used as before."""
+        doc_path = tmp_path / "doc.pdf"
+        doc_path.write_bytes(b"%PDF-1.4")
+
+        calls = []
+
+        class EphemeralAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$txt")
+
+            async def send_document(self, chat_id, path, metadata=None):
+                calls.append(("send_document", chat_id, path))
+                return SimpleNamespace(success=True, message_id="$doc")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=EphemeralAdapter)
+
+        with patch(
+            "gateway.run._gateway_runner_ref", return_value=None
+        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "report attached",
+                    media_files=[(str(doc_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "report attached"),
+            ("send_document", "!room:example.com", str(doc_path)),
+            ("disconnect",),
+        ]
+
+    def test_live_adapter_no_matrix_adapter_falls_back(self):
+        """When the runner exists but has no Matrix adapter registered,
+        fall back to ephemeral."""
+        calls = []
+
+        class EphemeralAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send",))
+                return SimpleNamespace(success=True, message_id="$txt")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        # Runner exists but adapters dict has no MATRIX key
+        fake_runner = SimpleNamespace(adapters={})
+        fake_module = SimpleNamespace(MatrixAdapter=EphemeralAdapter)
+
+        with patch(
+            "gateway.run._gateway_runner_ref",
+            return_value=fake_runner,
+        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        assert ("connect",) in calls
+        assert ("disconnect",) in calls
 
 
 # ---------------------------------------------------------------------------
@@ -1564,6 +1808,41 @@ class TestSendDiscordThreadId:
         assert "error" in result
         assert "403" in result["error"]
 
+    def test_success_response_json_read_is_bounded(self):
+        """Standalone Discord sends parse success JSON through the bounded reader."""
+        body = b'{"id":"bounded-json"}'
+        response = _StreamingAiohttpResponse(200, body)
+        session = _StreamingAiohttpSession(response)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+
+        assert result["success"] is True
+        assert result["message_id"] == "bounded-json"
+        assert response.content.read_sizes[0] == _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES + 1
+        response.json.assert_not_awaited()
+        response.text.assert_not_awaited()
+
+    def test_error_response_text_read_is_bounded(self):
+        """Oversized Discord API error bodies are capped before formatting."""
+        body = b"E" * (_DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1024)
+        response = _StreamingAiohttpResponse(500, body)
+        session = _StreamingAiohttpSession(response)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+
+        assert "error" in result
+        assert "500" in result["error"]
+        assert response.content.read_sizes[0] == _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1
+        assert response.closed is True
+        response.json.assert_not_awaited()
+        response.text.assert_not_awaited()
+        prefix = "Discord API error (500): "
+        assert len(result["error"].encode("utf-8")) <= (
+            len(prefix.encode("utf-8")) + _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES
+        )
+
 
 class TestSendToPlatformDiscordThread:
     """_send_to_platform passes thread_id through to _send_discord."""
@@ -1773,7 +2052,7 @@ class TestSendToPlatformDiscordMedia:
         assert call_log[1]["media_files"] == [("/fake/img.png", False)]  # Last chunk: media attached
 
     def test_single_chunk_gets_media(self):
-        """Short message (single chunk) gets media_files directly."""
+        """Short message + single image rides as the media caption."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
         with _patch_discord_sender(send_mock):
@@ -1791,6 +2070,9 @@ class TestSendToPlatformDiscordMedia:
         send_mock.assert_awaited_once()
         call_kwargs = send_mock.await_args.kwargs
         assert call_kwargs["media_files"] == [("/fake/img.png", False)]
+        # Text rides as the caption, not a separate positional message body.
+        assert call_kwargs.get("caption") == "short message"
+        assert send_mock.await_args.args[2] == ""
 
 
 class TestSendMatrixUrlEncoding:
@@ -3059,13 +3341,17 @@ class TestSendTelegramThreadNotFoundRetry:
             "retry should drop message_thread_id after thread-not-found"
 
     def test_disable_web_page_preview_not_leaked_to_media_sends(self):
-        """disable_web_page_preview should only appear in text send, not media sends."""
-        text_kwargs_seen = []
+        """disable_web_page_preview must never leak into a media send.
+
+        A single captionable file + short text now rides as the document's
+        caption (no separate text send), so the invariant to protect is that
+        the captioned send_document does not inherit disable_web_page_preview
+        (valid only for send_message).
+        """
         media_kwargs_seen = []
 
         class FakeBot:
             async def send_message(self, **kwargs):
-                text_kwargs_seen.append(kwargs)
                 return SimpleNamespace(message_id=1)
 
             async def send_document(self, **kwargs):
@@ -3089,9 +3375,9 @@ class TestSendTelegramThreadNotFoundRetry:
 
             result = asyncio.run(run_test())
             assert result["success"] is True
-            # Text send should have disable_web_page_preview
-            assert text_kwargs_seen[0].get("disable_web_page_preview") is True
-            # Media send should NOT have disable_web_page_preview
+            # Caption rides the document bubble.
+            assert media_kwargs_seen[0].get("caption") == "check preview"
+            # Media send must NOT carry disable_web_page_preview.
             assert "disable_web_page_preview" not in media_kwargs_seen[0], \
                 "disable_web_page_preview leaked into send_document kwargs"
         finally:

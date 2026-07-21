@@ -5,6 +5,8 @@
 // like navigate / theme); labels come from i18n (`t.keybinds.actions[id]`). To
 // add a hotkey, add a row here and a handler there — nothing else.
 
+import { registry } from '@/contrib/registry'
+
 import { IS_MAC } from './combo'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
@@ -22,6 +24,8 @@ export interface KeybindActionMeta {
   category: KeybindCategory
   /** Default combos. Empty = shipped unbound (user can assign one). */
   defaults: readonly string[]
+  /** Display label for CONTRIBUTED actions (built-ins use i18n). */
+  label?: string
 }
 
 // Positional switch slots for *named* profiles: ⌘1…⌘9 for profiles 1-9, then
@@ -38,11 +42,6 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   category: 'profiles' as const,
   defaults: [comboForSlot(i + 1)]
 }))
-
-// ⌘` on macOS / Ctrl+` elsewhere (the `~` key), plus the Shift/tilde variant.
-// `mod` keeps one binding cross-platform; on macOS this shadows the system
-// window-cycler, which is fine for a single-window app.
-const TERMINAL_TOGGLE_DEFAULTS = ['mod+`', 'mod+shift+`']
 
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
 export const SESSION_SLOT_COUNT = 9
@@ -74,6 +73,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
   // ── Session ──────────────────────────────────────────────────────────────
   { id: 'session.new', category: 'session', defaults: ['mod+n', 'shift+n'] },
+  { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
@@ -102,9 +102,25 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
-  { id: 'view.showTerminal', category: 'view', defaults: TERMINAL_TOGGLE_DEFAULTS },
+  // Control+` everywhere (literal `ctrl`, NOT `mod`): ⌘` is macOS-reserved for
+  // cycling app windows, so VS Code/Cursor/Zed bind the terminal to Ctrl+` on
+  // every platform. Off macOS `ctrl` folds to `mod` (= Ctrl), so it's unchanged.
+  // Toggle reveals the terminal (opening one if none exist); Shift spawns a new one.
+  { id: 'view.showTerminal', category: 'view', defaults: ['ctrl+`'] },
+  { id: 'view.newTerminal', category: 'view', defaults: ['ctrl+shift+`'] },
+  // Same Ctrl(+Shift) terminal family: arrows walk the (vertical) tab rail, W
+  // kills the active one. ⌘W is taken (close preview tab) and ⌘⇧[ ] are profiles,
+  // so these stay on `ctrl` — distinct on macOS, folding to Ctrl elsewhere.
+  { id: 'view.nextTerminal', category: 'view', defaults: ['ctrl+shift+down'] },
+  { id: 'view.prevTerminal', category: 'view', defaults: ['ctrl+shift+up'] },
+  { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
+  // ⌘W closes the focused zone's active tab — its own tab strip (preview) or
+  // the tree tab (session tiles, files, terminal). The uncloseable workspace
+  // is a no-op. ⌘⇧T reopens the last closed tab where it was.
+  { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
+  { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]
@@ -113,14 +129,58 @@ export const KEYBIND_ACTION_IDS: readonly string[] = KEYBIND_ACTIONS.map(action 
 
 const ACTION_BY_ID = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
+// ── Contributed actions — the `keybinds` registry area ──────────────────────
+// Same declarative schema as every other surface: a data contribution carries
+// the action's metadata AND its handler. Contributed actions are first-class:
+// they dispatch, appear in the panel, are rebindable, and their overrides
+// persist exactly like built-ins. Built-in ids can't be shadowed.
+
+export const KEYBINDS_AREA = 'keybinds'
+
+/** Payload of a `keybinds` data contribution. */
+export interface KeybindContribution {
+  id: string
+  /** Panel section. Defaults to `view`. */
+  category?: KeybindCategory
+  /** Default combos (canonical form, e.g. `mod+shift+\\`). Empty = unbound. */
+  defaults?: readonly string[]
+  label: string
+  run: () => void
+}
+
+export function contributedKeybinds(): KeybindContribution[] {
+  return registry
+    .getArea(KEYBINDS_AREA)
+    .map(c => c.data as KeybindContribution)
+    .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))
+}
+
+/** Built-ins + contributed, one metadata list (panel, bindings, conflicts). */
+export function allKeybindActions(): KeybindActionMeta[] {
+  return [
+    ...KEYBIND_ACTIONS,
+    ...contributedKeybinds().map(k => ({
+      id: k.id,
+      category: k.category ?? ('view' as const),
+      defaults: k.defaults ?? [],
+      label: k.label
+    }))
+  ]
+}
+
 export function keybindAction(id: string): KeybindActionMeta | undefined {
-  return ACTION_BY_ID.get(id)
+  return ACTION_BY_ID.get(id) ?? allKeybindActions().find(action => action.id === id)
+}
+
+/** The contributed handler for an action id (built-ins wire theirs in use-keybinds). */
+export function contributedKeybindHandler(id: string): (() => void) | undefined {
+  return contributedKeybinds().find(k => k.id === id)?.run
 }
 
 export type KeybindBindings = Record<string, string[]>
 
 export function defaultBindings(): KeybindBindings {
-  return Object.fromEntries(KEYBIND_ACTIONS.map(action => [action.id, [...action.defaults]]))
+  return Object.fromEntries(allKeybindActions().map(action => [action.id, [...action.defaults]]))
 }
 
 // Fixed, non-rebindable shortcuts surfaced read-only in the panel so the map is
@@ -144,6 +204,5 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
   { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
   // Fixed, context-local shortcuts surfaced for discoverability.
-  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
-  { id: 'view.closePreviewTab', category: 'view', keys: ['mod+w'] }
+  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] }
 ]

@@ -99,6 +99,7 @@ def _make_runner(session_db=None):
     runner.session_store.append_to_transcript = MagicMock()
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
+    runner.session_store._entries = {}
     runner.session_store.reset_session = MagicMock(return_value=None)
 
     # Default switch_session impl: returns a SessionEntry carrying the target
@@ -223,6 +224,80 @@ async def test_telegram_topic_prompt_still_runs_agent_when_topic_mode_enabled(mo
 
     assert result == "agent response"
     runner._handle_message_with_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disabled_topic_mode_ignores_telegram_dm_thread_for_session_key(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: False
+    captured = {}
+
+    async def fake_run_agent(*args, **kwargs):
+        captured["session_id"] = kwargs.get("session_id")
+        captured["session_key"] = kwargs.get("session_key")
+        return {
+            "success": True,
+            "final_response": "plain dm response",
+            "session_id": kwargs.get("session_id"),
+            "messages": [],
+        }
+
+    runner._run_agent = AsyncMock(side_effect=fake_run_agent)
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("plain dm despite telegram thread", thread_id="763"))
+
+    assert result == "plain dm response"
+    assert captured["session_id"] == "sess-root"
+    assert captured["session_key"] == "agent:main:telegram:dm:208214988"
+    assert "763" not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_disabled_topic_mode_new_resets_root_dm_session(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: False
+    reset_keys = []
+    created_sources = []
+
+    def fake_reset(session_key):
+        reset_keys.append(session_key)
+        return None
+
+    def fake_get_or_create(source, force_new=False):
+        created_sources.append((source, force_new))
+        return SessionEntry(
+            session_key=build_session_key(source),
+            session_id="sess-root-new" if not source.thread_id else "sess-topic-new",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=source,
+        )
+
+    runner.session_store.reset_session = MagicMock(side_effect=fake_reset)
+    runner.session_store.get_or_create_session = MagicMock(side_effect=fake_get_or_create)
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/new", thread_id="763"))
+
+    assert isinstance(result, str)
+    assert "New session started" in result
+    assert reset_keys == ["agent:main:telegram:dm:208214988"]
+    assert created_sources
+    assert created_sources[0][0].thread_id is None
+    assert created_sources[0][1] is True
 
 
 @pytest.mark.asyncio

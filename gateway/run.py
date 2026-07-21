@@ -3930,6 +3930,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # opt into topic mode) means topic mode is off for this chat.
         return raw is True
 
+    def _normalize_telegram_disabled_topic_source(self, source: SessionSource) -> SessionSource:
+        """Collapse Telegram DM topic metadata when Hermes topic mode is disabled.
+
+        Telegram can keep sending ``message_thread_id`` after the operator turns
+        Hermes topic mode off. Normalize that stale client-side topic metadata
+        before deriving any session key so commands, locks, queues, clarify,
+        approvals, and the agent path all agree on the root DM session.
+        """
+        if (
+            source.platform == Platform.TELEGRAM
+            and source.chat_type == "dm"
+            and source.thread_id
+            and not self._telegram_topic_mode_enabled(source)
+        ):
+            logger.info(
+                "telegram topic mode off: ignoring DM thread_id for session routing chat=%s user=%s thread=%s",
+                source.chat_id,
+                source.user_id,
+                source.thread_id,
+            )
+            return dataclasses.replace(source, thread_id=None)
+        return source
+
     # Telegram's General (pinned top) topic in forum-enabled private chats.
     # Bot API behavior varies: some clients omit message_thread_id for
     # General, others send "1". Treat both as "root" for lobby/lane purposes.
@@ -10017,6 +10040,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        normalized_source = source
+        if event.get_command() != "topic":
+            normalized_source = self._normalize_telegram_disabled_topic_source(source)
+        if normalized_source is not source:
+            source = normalized_source
+            try:
+                event.source = source
+            except Exception:
+                event = dataclasses.replace(event, source=source)
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -12026,6 +12058,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         # Get or create session
+        # Disabled Telegram DM topic metadata is normalized at the top of
+        # _handle_message(), before _quick_key and command/session handlers.
+        # Keep this guard for direct unit callers of _handle_message_with_agent.
+        normalized_source = self._normalize_telegram_disabled_topic_source(source)
+        if normalized_source is not source:
+            source = normalized_source
+            try:
+                event.source = source
+            except Exception:
+                pass
+
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
         # last-active topic so a cross-topic Reply or stripped plain reply
         # doesn't fragment the conversation across sessions.

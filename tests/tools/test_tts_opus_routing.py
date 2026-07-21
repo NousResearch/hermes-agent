@@ -68,3 +68,39 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
     convert.assert_called_once_with(str(out))
+
+
+def _write_openai_output(_text: str, output_path: str, _tts_config: dict) -> str:
+    Path(output_path).write_bytes(b"mp3")
+    return output_path
+
+
+def test_openai_mp3_is_not_voice_compatible_outside_discord(tmp_path, monkeypatch):
+    out = tmp_path / "speech.mp3"
+
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "openai"})
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_openai_tts", _write_openai_output)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(out)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(out)
+    assert result["voice_compatible"] is False
+    assert result["media_tag"] == f"MEDIA:{out}"
+
+
+def test_openai_mp3_is_voice_compatible_on_discord(tmp_path, monkeypatch):
+    out = tmp_path / "speech.mp3"
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "openai"})
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_openai_tts", _write_openai_output)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(out)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(out)
+    assert result["voice_compatible"] is True
+    assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{out}"

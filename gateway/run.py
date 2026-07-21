@@ -13531,7 +13531,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            # Only check the current turn's messages for TTS dedup — scanning
+            # the full history would permanently suppress _send_voice_reply once
+            # any prior turn called the TTS tool.
+            _hist_offset = agent_result.get("history_offset", 0) or 0
+            _this_turn_msgs = agent_messages[_hist_offset:] if _hist_offset < len(agent_messages) else agent_messages
+            if self._should_send_voice_reply(event, response, _this_turn_msgs, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and

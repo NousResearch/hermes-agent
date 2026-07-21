@@ -2330,7 +2330,7 @@ def text_to_speech_tool(
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = (platform in ("telegram", "discord"))
 
     # Determine output path
     if output_path:
@@ -2570,6 +2570,8 @@ def text_to_speech_tool(
                 voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
+            if platform == "discord" and file_str.endswith((".ogg", ".mp3")):
+                voice_compatible = True
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)

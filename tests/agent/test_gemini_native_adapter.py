@@ -86,6 +86,41 @@ def test_build_native_request_adds_dummy_signature_for_cross_provider_tool_repla
     assert part["thoughtSignature"] == "skip_thought_signature_validator"
 
 
+def test_followup_user_turn_is_not_merged_into_function_response_turn():
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "Load the skill"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": '{"name":"hermes-agent"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "loaded"},
+        {"role": "user", "content": "Continue"},
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+
+    assert [content["role"] for content in contents] == [
+        "user",
+        "model",
+        "user",
+        "user",
+    ]
+    assert "functionResponse" in contents[-2]["parts"][0]
+    assert contents[-1]["parts"] == [{"text": "Continue"}]
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 

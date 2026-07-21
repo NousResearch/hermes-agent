@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -196,11 +196,42 @@ class QQAdapter(BasePlatformAdapter):
     def is_connected(self) -> bool:
         """Return True only when the QQ WebSocket transport is usable."""
         return bool(self._running and self._ws and not self._ws.closed)
+    # -- Active instance registry (profile-aware) --------------------------
+    # Keyed by profile name so profile multiplexing does not route a send
+    # through another profile's connection or credentials.
+    _active_instances: ClassVar[Dict[str, "QQAdapter"]] = {}
+
+    @classmethod
+    def get_active(cls, profile_name: Optional[str] = None) -> Optional["QQAdapter"]:
+        """Return the connected QQAdapter for *profile_name*, or None.
+
+        When *profile_name* is omitted, returns the first connected adapter
+        (backwards-compatible single-profile lookup).
+        """
+        if profile_name:
+            return cls._active_instances.get(profile_name)
+        for adapter in cls._active_instances.values():
+            if adapter.is_connected:
+                return adapter
+        return None
+
+    @classmethod
+    def set_active(
+        cls, adapter: Optional["QQAdapter"], profile_name: Optional[str] = None
+    ) -> None:
+        """Register (or clear) the active adapter instance for *profile_name*."""
+        if profile_name is None:
+            profile_name = getattr(adapter, "_profile_name", "default") if adapter else "default"
+        if adapter is None:
+            cls._active_instances.pop(profile_name, None)
+        else:
+            cls._active_instances[profile_name] = adapter
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
+        self._profile_name = str(extra.get("profile_name") or "default").strip()
         self._app_id = str(extra.get("app_id") or os.getenv("QQ_APP_ID", "")).strip()
         self._client_secret = str(
             extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
@@ -240,7 +271,7 @@ class QQAdapter(BasePlatformAdapter):
         # Token cache
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
+        self._token_lock: Optional[asyncio.Lock] = None  # created in connect()
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
@@ -319,7 +350,8 @@ class QQAdapter(BasePlatformAdapter):
                 limits=platform_httpx_limits(),
             )
 
-            # 1. Get access token
+            # 1. Get access token (create lock in the running event loop)
+            self._token_lock = asyncio.Lock()
             await self._ensure_token()
 
             # 2. Get WebSocket gateway URL
@@ -333,6 +365,7 @@ class QQAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
+            QQAdapter.set_active(self, profile_name=self._profile_name)
             logger.info("[%s] Connected", self._log_tag)
             return True
         except Exception as exc:
@@ -347,6 +380,7 @@ class QQAdapter(BasePlatformAdapter):
         """Close all connections and stop listeners."""
         self._running = False
         self._mark_disconnected()
+        QQAdapter.set_active(None, profile_name=self._profile_name)
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -2446,6 +2480,7 @@ class QQAdapter(BasePlatformAdapter):
 
         Applies format_message(), splits long messages via truncate_message(),
         and retries transient failures with exponential backoff.
+        Also extracts MEDIA: tags and delivers media files natively.
         """
         del metadata
 
@@ -2456,17 +2491,56 @@ class QQAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True)
 
-        formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # Extract MEDIA: tags from content
+        media_files, cleaned_content = self.extract_media(content)
 
-        last_result = SendResult(success=False, error="No chunks")
-        for chunk in chunks:
-            last_result = await self._send_chunk(chat_id, chunk, reply_to)
-            if not last_result.success:
-                return last_result
-            # Only reply_to the first chunk
-            reply_to = None
-        return last_result
+        _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+        _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+
+        # Deliver media files first — propagate every SendResult so a failed
+        # upload (or an unsupported-chat result that does not raise) surfaces
+        # instead of being silently dropped.
+        for media_path, is_voice in media_files:
+            try:
+                ext = Path(media_path).suffix.lower()
+                if is_voice or ext in _AUDIO_EXTS:
+                    media_result = await self.send_voice(chat_id=chat_id, audio_path=media_path)
+                elif ext in _VIDEO_EXTS:
+                    media_result = await self.send_video(chat_id=chat_id, video_path=media_path)
+                elif ext in _IMAGE_EXTS:
+                    media_result = await self.send_image_file(chat_id=chat_id, image_path=media_path)
+                else:
+                    media_result = await self.send_document(chat_id=chat_id, file_path=media_path)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] media delivery failed for %s: %s",
+                    self._log_tag, media_path, exc,
+                )
+                return SendResult(success=False, error=f"Media delivery failed: {exc}", retryable=True)
+
+            if not media_result.success:
+                logger.warning(
+                    "[%s] media delivery failed for %s: %s",
+                    self._log_tag, media_path, media_result.error,
+                )
+                return media_result
+
+        # Deliver remaining text content
+        if cleaned_content and cleaned_content.strip():
+            formatted = self.format_message(cleaned_content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+            last_result = SendResult(success=False, error="No chunks")
+            for chunk in chunks:
+                last_result = await self._send_chunk(chat_id, chunk, reply_to)
+                if not last_result.success:
+                    return last_result
+                # Only reply_to the first chunk
+                reply_to = None
+            return last_result
+
+        return SendResult(success=True)
 
     async def _send_chunk(
             self,
@@ -3237,3 +3311,8 @@ class QQAdapter(BasePlatformAdapter):
             return True
         self._seen_messages[msg_id] = now
         return False
+
+
+def get_active_adapter(profile_name: Optional[str] = None) -> Optional["QQAdapter"]:
+    """Return the currently connected QQAdapter singleton, or None."""
+    return QQAdapter.get_active(profile_name)

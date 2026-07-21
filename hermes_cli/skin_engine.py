@@ -48,6 +48,16 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       completion_menu_meta_bg: "#1a1a2e"     # Completion meta column background
       completion_menu_meta_current_bg: "#333355"  # Active completion meta background
 
+    # Optional paired palette for the opposite terminal polarity (mirrors the
+    # desktop app's colors/darkColors pairing). If `colors` above is authored
+    # for dark terminals, `light_colors` supplies the hand-tuned light-terminal
+    # variant (same keys); light-authored skins supply `dark_colors` instead.
+    # Without a paired block, the TUI adapts `colors` automatically
+    # (contrast-clamped foregrounds, polarity-corrected fills).
+    light_colors:
+      banner_title: "#8B6914"
+      # ... same keys as `colors` ...
+
     # Spinner: customize the animated spinner during API calls
     spinner:
       waiting_faces:                      # Faces shown while waiting for API
@@ -132,6 +142,14 @@ class SkinConfig:
     name: str
     description: str = ""
     colors: Dict[str, str] = field(default_factory=dict)
+    # Paired palettes for terminals whose background polarity differs from the
+    # one `colors` was authored against (mirrors the desktop app's
+    # colors/darkColors pairing). A consumer that knows the terminal is light
+    # prefers `light_colors` (falling back to `colors`), and vice versa for
+    # `dark_colors`. Both merge over the default skin's matching block, so
+    # partial user skins still resolve to a complete palette.
+    light_colors: Dict[str, str] = field(default_factory=dict)
+    dark_colors: Dict[str, str] = field(default_factory=dict)
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
@@ -165,6 +183,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
         "name": "default",
         "description": "Classic Hermes — gold and kawaii",
+        # Dark-authored. Values match the TUI's DARK_THEME so the classic CLI
+        # and the TUI render the same Hermes gold.
         "colors": {
             "banner_border": "#CD7F32",
             "banner_title": "#FFD700",
@@ -180,8 +200,56 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "input_rule": "#CD7F32",
             "response_border": "#FFD700",
             "status_bar_bg": "#1a1a2e",
+            "status_bar_text": "#C0C0C0",
+            "status_bar_strong": "#FFD700",
+            "status_bar_dim": "#8A7A4A",
+            "status_bar_good": "#8FBC8F",
+            "status_bar_warn": "#FFD700",
+            "status_bar_bad": "#FF8C00",
+            "status_bar_critical": "#FF6B6B",
             "session_label": "#DAA520",
             "session_border": "#8B8682",
+            "completion_menu_bg": "#1a1a2e",
+            "completion_menu_current_bg": "#333355",
+            "selection_bg": "#3a3a55",
+            "shell_dollar": "#4dabf7",
+            "voice_status_bg": "#1a1a2e",
+        },
+        # Light overlay (merged onto `colors`; dark mode renders the vivid
+        # block above untouched). The goldenrod ladder: on white, the vivid
+        # #FFD700/#FFBF00 read as glare and WCAG-darkened mustard (#867000)
+        # reads as mud — the sweet spot is the statusbar's goldenrod family
+        # (#B8860B/#DAA520): hue kept, saturation tamed, mid luminance.
+        # Hierarchy on white: ink body 8.9:1 > fade 5.2 > label 3.7 >
+        # muted 3.3 > title 2.7 > headers 2.4 (accents recede last, like
+        # slate's pastels — the raw-canon look, just not neon).
+        "light_colors": {
+            "banner_title": "#C8961E",
+            "banner_accent": "#D89B04",
+            "banner_dim": "#B8860B",
+            "banner_text": "#5C4718",
+            "ui_accent": "#D89B04",
+            "ui_label": "#A97E10",
+            "ui_ok": "#2E7D32",
+            "ui_error": "#C62828",
+            "ui_warn": "#D97706",
+            "prompt": "#5C4718",
+            "response_border": "#C8961E",
+            "session_label": "#A97E10",
+            "status_bar_text": "#6F6F6F",
+            "status_bar_strong": "#C8961E",
+            "status_bar_dim": "#9A8A5A",
+            "status_bar_good": "#2E7D32",
+            "status_bar_warn": "#C8961E",
+            "status_bar_bad": "#C2410C",
+            "status_bar_critical": "#B91C1C",
+            "shell_dollar": "#1E6FC0",
+            # Fills: flip the dark navy surfaces to light polarity.
+            "completion_menu_bg": "#F5F5F5",
+            "completion_menu_current_bg": "#E0D1BF",
+            "selection_bg": "#D4E4F7",
+            "status_bar_bg": "#F5F5F5",
+            "voice_status_bg": "#F5F5F5",
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
@@ -200,10 +268,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "name": "ares",
         "description": "War-god theme — crimson and bronze",
         "colors": {
-            "banner_border": "#9F1C1C",
+            "banner_border": "#A93333",
             "banner_title": "#C7A96B",
             "banner_accent": "#DD4A3A",
-            "banner_dim": "#6B1717",
+            "banner_dim": "#905151",
             "banner_text": "#F1E6CF",
             "ui_accent": "#DD4A3A",
             "ui_label": "#C7A96B",
@@ -211,18 +279,23 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",
             "prompt": "#F1E6CF",
-            "input_rule": "#9F1C1C",
+            "input_rule": "#A93333",
             "response_border": "#C7A96B",
             "status_bar_bg": "#2A1212",
             "status_bar_text": "#F1E6CF",
             "status_bar_strong": "#C7A96B",
-            "status_bar_dim": "#6E584B",
+            "status_bar_dim": "#756054",
             "status_bar_good": "#7BC96F",
             "status_bar_warn": "#C7A96B",
             "status_bar_bad": "#DD4A3A",
             "status_bar_critical": "#EF5350",
             "session_label": "#C7A96B",
             "session_border": "#6E584B",
+            "completion_menu_bg": "#2A1212",
+            "completion_menu_current_bg": "#5C221D",
+            "selection_bg": "#692620",
+            "shell_dollar": "#DD4A3A",
+            "voice_status_bg": "#2A1212",
         },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
@@ -272,10 +345,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "name": "mono",
         "description": "Monochrome — clean grayscale",
         "colors": {
-            "banner_border": "#555555",
+            "banner_border": "#5E5E5E",
             "banner_title": "#e6edf3",
             "banner_accent": "#aaaaaa",
-            "banner_dim": "#444444",
+            "banner_dim": "#606060",
             "banner_text": "#c9d1d9",
             "ui_accent": "#aaaaaa",
             "ui_label": "#888888",
@@ -283,7 +356,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_error": "#cccccc",
             "ui_warn": "#999999",
             "prompt": "#c9d1d9",
-            "input_rule": "#444444",
+            "input_rule": "#606060",
             "response_border": "#aaaaaa",
             "status_bar_bg": "#1F1F1F",
             "status_bar_text": "#C9D1D9",
@@ -294,7 +367,12 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_bad": "#D0D0D0",
             "status_bar_critical": "#F0F0F0",
             "session_label": "#888888",
-            "session_border": "#555555",
+            "session_border": "#5E5E5E",
+            "completion_menu_bg": "#1F1F1F",
+            "completion_menu_current_bg": "#464646",
+            "selection_bg": "#505050",
+            "shell_dollar": "#aaaaaa",
+            "voice_status_bg": "#1F1F1F",
         },
         "spinner": {},
         "branding": {
@@ -314,7 +392,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_border": "#4169e1",
             "banner_title": "#7eb8f6",
             "banner_accent": "#8EA8FF",
-            "banner_dim": "#4b5563",
+            "banner_dim": "#545E6B",
             "banner_text": "#c9d1d9",
             "ui_accent": "#7eb8f6",
             "ui_label": "#8EA8FF",
@@ -327,13 +405,18 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_bg": "#151C2F",
             "status_bar_text": "#C9D1D9",
             "status_bar_strong": "#7EB8F6",
-            "status_bar_dim": "#4B5563",
+            "status_bar_dim": "#5D6672",
             "status_bar_good": "#63D0A6",
             "status_bar_warn": "#E6A855",
             "status_bar_bad": "#F7A072",
             "status_bar_critical": "#FF7A7A",
             "session_label": "#7eb8f6",
-            "session_border": "#4b5563",
+            "session_border": "#545E6B",
+            "completion_menu_bg": "#151C2F",
+            "completion_menu_current_bg": "#324867",
+            "selection_bg": "#3A5375",
+            "shell_dollar": "#7eb8f6",
+            "voice_status_bg": "#151C2F",
         },
         "spinner": {},
         "branding": {
@@ -361,16 +444,25 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_error": "#B91C1C",
             "ui_warn": "#B45309",
             "prompt": "#111827",
-            "input_rule": "#93C5FD",
+            "input_rule": "#6E94BE",
             "response_border": "#2563EB",
+            "status_bar_bg": "#E5EDF8",
+            "status_bar_text": "#111827",
+            "status_bar_strong": "#2563EB",
+            "status_bar_dim": "#838890",
+            "status_bar_good": "#15803D",
+            "status_bar_warn": "#B45309",
+            "status_bar_bad": "#B45309",
+            "status_bar_critical": "#B91C1C",
             "session_label": "#1D4ED8",
             "session_border": "#64748B",
-            "status_bar_bg": "#E5EDF8",
-            "voice_status_bg": "#E5EDF8",
             "completion_menu_bg": "#F8FAFC",
             "completion_menu_current_bg": "#DBEAFE",
             "completion_menu_meta_bg": "#EEF2FF",
             "completion_menu_meta_current_bg": "#BFDBFE",
+            "selection_bg": "#D3E0FB",
+            "shell_dollar": "#2563EB",
+            "voice_status_bg": "#E5EDF8",
         },
         "spinner": {},
         "branding": {
@@ -400,14 +492,23 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#2C1810",
             "input_rule": "#8B6914",
             "response_border": "#8B6914",
+            "status_bar_bg": "#F5F0E8",
+            "status_bar_text": "#2C1810",
+            "status_bar_strong": "#8B4513",
+            "status_bar_dim": "#8A8F98",
+            "status_bar_good": "#2E7D32",
+            "status_bar_warn": "#E65100",
+            "status_bar_bad": "#DA4D00",
+            "status_bar_critical": "#C62828",
             "session_label": "#5C3D11",
             "session_border": "#A0845C",
-            "status_bar_bg": "#F5F0E8",
-            "voice_status_bg": "#F5F0E8",
             "completion_menu_bg": "#F5EFE0",
             "completion_menu_current_bg": "#E8DCC8",
             "completion_menu_meta_bg": "#F0E8D8",
             "completion_menu_meta_current_bg": "#DFCFB0",
+            "selection_bg": "#E8DAD0",
+            "shell_dollar": "#8B4513",
+            "voice_status_bg": "#F5F0E8",
         },
         "spinner": {},
         "branding": {
@@ -427,7 +528,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_border": "#2A6FB9",
             "banner_title": "#A9DFFF",
             "banner_accent": "#5DB8F5",
-            "banner_dim": "#153C73",
+            "banner_dim": "#44638F",
             "banner_text": "#EAF7FF",
             "ui_accent": "#5DB8F5",
             "ui_label": "#A9DFFF",
@@ -440,13 +541,18 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_bg": "#0F2440",
             "status_bar_text": "#EAF7FF",
             "status_bar_strong": "#A9DFFF",
-            "status_bar_dim": "#496884",
+            "status_bar_dim": "#52708A",
             "status_bar_good": "#6ED7B0",
             "status_bar_warn": "#5DB8F5",
-            "status_bar_bad": "#2A6FB9",
+            "status_bar_bad": "#3576BC",
             "status_bar_critical": "#D94F4F",
             "session_label": "#A9DFFF",
             "session_border": "#496884",
+            "completion_menu_bg": "#0F2440",
+            "completion_menu_current_bg": "#254D73",
+            "selection_bg": "#2A587F",
+            "shell_dollar": "#5DB8F5",
+            "voice_status_bg": "#0F2440",
         },
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
@@ -499,7 +605,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_border": "#B7B7B7",
             "banner_title": "#F5F5F5",
             "banner_accent": "#E7E7E7",
-            "banner_dim": "#4A4A4A",
+            "banner_dim": "#5C5C5C",
             "banner_text": "#D3D3D3",
             "ui_accent": "#E7E7E7",
             "ui_label": "#D3D3D3",
@@ -512,13 +618,18 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_bg": "#202020",
             "status_bar_text": "#D3D3D3",
             "status_bar_strong": "#F5F5F5",
-            "status_bar_dim": "#656565",
+            "status_bar_dim": "#6D6D6D",
             "status_bar_good": "#B7B7B7",
             "status_bar_warn": "#D3D3D3",
             "status_bar_bad": "#E7E7E7",
             "status_bar_critical": "#F5F5F5",
             "session_label": "#919191",
             "session_border": "#656565",
+            "completion_menu_bg": "#202020",
+            "completion_menu_current_bg": "#585858",
+            "selection_bg": "#666666",
+            "shell_dollar": "#E7E7E7",
+            "voice_status_bg": "#202020",
         },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
@@ -585,18 +696,20 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_bg": "#2B160E",
             "status_bar_text": "#FFF0D4",
             "status_bar_strong": "#FFD39A",
-            "status_bar_dim": "#6C4724",
+            "status_bar_dim": "#826144",
             "status_bar_good": "#6BCB77",
             "status_bar_warn": "#F29C38",
             "status_bar_bad": "#E2832B",
             "status_bar_critical": "#EF5350",
             "session_label": "#FFD39A",
-            "session_border": "#6C4724",
-            "selection_bg": "#5A260D",
+            "session_border": "#7B593A",
             "completion_menu_bg": "#0B0503",
             "completion_menu_current_bg": "#4A1B07",
             "completion_menu_meta_bg": "#120806",
             "completion_menu_meta_current_bg": "#5A260D",
+            "selection_bg": "#5A260D",
+            "shell_dollar": "#F29C38",
+            "voice_status_bg": "#2B160E",
         },
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
@@ -703,10 +816,20 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     branding = dict(default.get("branding", {}))
     branding.update(branding_overrides)
 
+    # Paired palettes are NOT merged over the default skin's blocks: an empty
+    # block means "this skin has no hand-tuned variant for that polarity", and
+    # consumers (the TUI) fall back to `colors` + automatic adaptation. Merging
+    # the default's gold light palette under a crimson skin would be worse
+    # than adapting the crimson.
+    light_colors = _mapping_or_empty(data.get("light_colors"), section="light_colors", skin_name=skin_name)
+    dark_colors = _mapping_or_empty(data.get("dark_colors"), section="dark_colors", skin_name=skin_name)
+
     return SkinConfig(
         name=skin_name,
         description=data.get("description", ""),
         colors=colors,
+        light_colors=light_colors,
+        dark_colors=dark_colors,
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),

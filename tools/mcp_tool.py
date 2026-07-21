@@ -500,7 +500,19 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     if not msg:
-        return False
+        # Empty exception message — ambiguous for generic Exception, but
+        # known transport/real-failure types (TimeoutError, ConnectionError,
+        # OSError, etc.) are always real failures even with no message (#62212).
+        _TRANSPORT_FAILURES = (
+            TimeoutError, ConnectionError, BrokenPipeError, OSError, EOFError,
+        )
+        if isinstance(exc, _TRANSPORT_FAILURES):
+            return False
+        # For other exception types (e.g. CancelledError, bare Exception,
+        # McpError without code), treat as "method not found" so the caller
+        # latches ``_ping_unsupported`` and falls back to ``list_tools``
+        # instead of triggering an immediate reconnect.
+        return True
     return (
         str(_JSONRPC_METHOD_NOT_FOUND) in msg
         or "method not found" in msg
@@ -1731,6 +1743,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries",
+        "_keepalive_reconnect_count",
     )
 
     def __init__(self, name: str):
@@ -1753,6 +1766,7 @@ class MCPServerTask:
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
         self._reconnect_retries: int = 0
+        self._keepalive_reconnect_count: int = 0
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -2144,12 +2158,28 @@ class MCPServerTask:
                 if self.session:
                     try:
                         await self._keepalive_probe()
+                        self._keepalive_reconnect_count = 0
                     except Exception as exc:
+                        self._keepalive_reconnect_count += 1
                         logger.warning(
-                            "MCP server '%s' keepalive failed, "
-                            "triggering reconnect: %s",
-                            self.name, exc,
+                            "MCP server '%s' keepalive failed "
+                            "(%d consecutive), triggering reconnect: %s",
+                            self.name,
+                            self._keepalive_reconnect_count,
+                            exc,
                         )
+                        if self._keepalive_reconnect_count >= 3:
+                            logger.error(
+                                "MCP server '%s': %d consecutive keepalive "
+                                "failures — parking to prevent infinite "
+                                "reconnect loop. Use /mcp to revive.",
+                                self.name,
+                                self._keepalive_reconnect_count,
+                            )
+                            # Park instead of shutdown: the task stays alive
+                            # so _reconnect_event always has a listener.
+                            # Shutdown would permanently wedge the server.
+                            break
                         self._reconnect_event.set()
                         break
         finally:

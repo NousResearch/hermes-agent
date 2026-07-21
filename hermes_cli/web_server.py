@@ -45,7 +45,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -16282,6 +16282,38 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
     Returns token/cost/session breakdown per model plus capability metadata
     from models.dev (context window, vision, tools, reasoning, etc.).
     """
+    def _history_model_provider(model_name: str, billing_provider: str) -> str:
+        provider = str(billing_provider or "").strip()
+        if provider:
+            return provider
+        if "/" in model_name:
+            return model_name.split("/", 1)[0].strip()
+        return ""
+
+    def _current_model_inventory() -> Optional[Dict[str, Set[str]]]:
+        """Best-effort snapshot of currently selectable models by provider."""
+        try:
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+
+            payload = build_models_payload(load_picker_context(), max_models=0)
+        except Exception:
+            _log.debug("Models analytics inventory snapshot failed", exc_info=True)
+            return None
+
+        inventory: Dict[str, Set[str]] = {}
+        for row in payload.get("providers", []) or []:
+            if not isinstance(row, dict):
+                continue
+            slug = str(row.get("slug", "") or "").strip()
+            if not slug:
+                continue
+            inventory[slug] = {
+                str(model_id).strip()
+                for model_id in (row.get("models") or [])
+                if str(model_id).strip()
+            }
+        return inventory
+
     db = _open_session_db_for_profile(profile)
     try:
         cutoff = time.time() - (days * 86400)
@@ -16392,10 +16424,12 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             reverse=True,
         )
 
+        current_inventory = _current_model_inventory()
         models = []
         for row in rows:
             provider = row.get("billing_provider") or ""
             model_name = row["model"]
+            provider_slug = _history_model_provider(model_name, provider)
             caps = {}
             try:
                 from agent.models_dev import get_model_capabilities
@@ -16412,9 +16446,14 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             except Exception:
                 pass
 
+            available = True
+            if current_inventory is not None and provider_slug:
+                available = model_name in current_inventory.get(provider_slug, set())
+
             models.append({
                 "model": model_name,
                 "provider": provider,
+                "available": available,
                 "input_tokens": row["input_tokens"],
                 "output_tokens": row["output_tokens"],
                 "cache_read_tokens": row["cache_read_tokens"],

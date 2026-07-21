@@ -1004,9 +1004,11 @@ def init_agent(
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client
-            _routed_client, _ = resolve_provider_client(
+            _routed_client, resolved_model = resolve_provider_client(
                 agent.provider or "auto", model=agent.model, raw_codex=True)
             if _routed_client is not None:
+                if not agent.model and resolved_model:
+                    agent.model = resolved_model
                 client_kwargs = {
                     "api_key": _routed_client.api_key,
                     "base_url": str(_routed_client.base_url),

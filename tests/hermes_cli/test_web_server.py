@@ -9179,3 +9179,123 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+class TestWorkflowSecurityEndpoints:
+    """Test path traversal defenses on visual workflow endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_list_workflows_empty_by_default(self):
+        resp = self.client.get("/api/workflows")
+        assert resp.status_code == 200
+        assert resp.json() == {"workflows": []}
+
+    def test_save_get_delete_workflow_success(self):
+        # 1. Save workflow
+        graph = {"nodes": [{"id": "1", "data": {"goal": "test goal"}}], "edges": []}
+        resp = self.client.post("/api/workflows/my-test-workflow", json={"graph": graph})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+        # 2. Get workflow list
+        resp = self.client.get("/api/workflows")
+        assert resp.status_code == 200
+        assert "my-test-workflow" in resp.json()["workflows"]
+
+        # 3. Get specific workflow
+        resp = self.client.get("/api/workflows/my-test-workflow")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "my-test-workflow"
+        assert data["graph"] == graph
+
+        # 4. Delete specific workflow
+        resp = self.client.delete("/api/workflows/my-test-workflow")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+        # 5. Verify it's gone
+        resp = self.client.get("/api/workflows/my-test-workflow")
+        assert resp.status_code == 404
+
+    def test_get_workflow_path_validation_direct(self):
+        from fastapi import HTTPException
+        from hermes_cli.web_server import _get_workflow_path
+
+        bad_names = [
+            "../../config",
+            "..\\config",
+            "sub/dir",
+            "sub\\dir",
+            "/absolute/path",
+            "some-workflow/../../config",
+            "../etc/passwd",
+            "..",
+            "sub/../dir",
+        ]
+
+        for name in bad_names:
+            with pytest.raises(HTTPException) as exc_info:
+                _get_workflow_path(name)
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.detail == "Invalid workflow name"
+
+    def test_workflow_path_traversal_attempts_rejected(self):
+        from urllib.parse import quote
+
+        bad_names = [
+            "../../config",
+            "..\\config",
+            "sub/dir",
+            "sub\\dir",
+            "/absolute/path",
+            "some-workflow/../../config",
+            "../etc/passwd",
+        ]
+        graph = {"nodes": [], "edges": []}
+
+        for name in bad_names:
+            encoded_name = quote(name, safe="")
+            # POST should be rejected by either our handler or the router (404/405)
+            resp = self.client.post(f"/api/workflows/{encoded_name}", json={"graph": graph})
+            assert resp.status_code in (400, 404, 405)
+            if resp.status_code == 400:
+                assert "Invalid workflow name" in resp.json()["detail"]
+
+            # GET should be rejected
+            resp = self.client.get(f"/api/workflows/{encoded_name}")
+            assert resp.status_code in (400, 404, 405)
+            if resp.status_code == 400:
+                assert "Invalid workflow name" in resp.json()["detail"]
+
+            # DELETE should be rejected
+            resp = self.client.delete(f"/api/workflows/{encoded_name}")
+            assert resp.status_code in (400, 404, 405)
+            if resp.status_code == 400:
+                assert "Invalid workflow name" in resp.json()["detail"]
+
+            # POST execute should be rejected
+            resp = self.client.post(f"/api/workflows/{encoded_name}/execute")
+            assert resp.status_code in (400, 404, 405)
+            if resp.status_code == 400:
+                assert "Invalid workflow name" in resp.json()["detail"]
+
+    def test_execute_non_existent_workflow_is_404(self):
+        resp = self.client.post("/api/workflows/non-existent-workflow/execute")
+        assert resp.status_code == 404
+

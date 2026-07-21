@@ -55,6 +55,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 )
 
 
+
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
 # ---------------------------------------------------------------------------
@@ -2586,6 +2587,7 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -3548,6 +3550,8 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+
+
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3558,11 +3562,13 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": "Task-specific context",
                         },
+
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+
                     },
                     "required": ["goal"],
                 },

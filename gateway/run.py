@@ -16231,10 +16231,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
-        """Notify the chat that initiated /restart that the gateway is back."""
+        """Notify the chat that initiated /restart that the gateway is back.
+
+        Retries on transient send-path failures (e.g. ``send_path_degraded``
+        while the platform adapter is still settling after reconnect) so the
+        notification isn't permanently lost when the adapter isn't ready yet.
+        """
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
+
+        _RESTART_NOTIFY_MAX_RETRIES = 5
+        _RESTART_NOTIFY_RETRY_DELAY = 1.0
 
         try:
             data = json.loads(notify_path.read_text())
@@ -16272,35 +16280,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
-            # adapter.send() catches provider errors (e.g. "Chat not found")
-            # and returns SendResult(success=False) rather than raising, so
-            # we must inspect the result before claiming success — otherwise
-            # the log line is misleading and hides real delivery failures.
-            if result is not None and getattr(result, "success", True) is False:
+
+            for attempt in range(1, _RESTART_NOTIFY_MAX_RETRIES + 1):
+                result = await adapter.send(
+                    str(chat_id),
+                    "♻ Gateway restarted successfully. Your session continues.",
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+                if result is None or getattr(result, "success", True):
+                    logger.info(
+                        "Sent restart notification to %s:%s",
+                        platform_str,
+                        chat_id,
+                    )
+                    return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
+
+                error = getattr(result, "error", "send returned success=False")
+                is_transient = getattr(result, "retryable", False) or error == "send_path_degraded"
+                if is_transient and attempt < _RESTART_NOTIFY_MAX_RETRIES:
+                    logger.debug(
+                        "Restart notification to %s:%s transient failure (attempt %d/%d): %s — retrying in %.1fs",
+                        platform_str, chat_id, attempt, _RESTART_NOTIFY_MAX_RETRIES,
+                        error, _RESTART_NOTIFY_RETRY_DELAY,
+                    )
+                    await asyncio.sleep(_RESTART_NOTIFY_RETRY_DELAY)
+                    continue
+
                 logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s",
+                    "Restart notification to %s:%s was not delivered after %d attempt(s): %s",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    attempt,
+                    error,
                 )
                 return None
 
-            logger.info(
-                "Sent restart notification to %s:%s",
-                platform_str,
-                chat_id,
-            )
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
-            return None
         finally:
             notify_path.unlink(missing_ok=True)
+        return None
+
 
     async def _send_home_channel_startup_notifications(
         self,

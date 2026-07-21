@@ -1488,6 +1488,7 @@ export interface Translations {
     urlHintPre: string
     attach: string
     queued: (count: number) => string
+    queuedPaused: (count: number) => string
     attachmentOnly: string
     emptyTurn: string
     attachments: (count: number) => string
@@ -1497,6 +1498,8 @@ export interface Translations {
     queueSendNext: string
     queueSend: string
     queueDelete: string
+    queueResume: string
+    queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
     previewUnavailable: string

@@ -21,7 +21,7 @@ import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
-import { migrateQueuedPrompts } from '@/store/composer-queue'
+import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
@@ -300,6 +300,17 @@ export function ChatView({
     migrateQueuedPrompts(selectedSessionId, queueSessionKey)
   }, [queueSessionKey, selectedSessionId])
 
+  // Transcript-side stops (the streaming message's hover Stop, the runtime's
+  // cancel) are explicit halts, same as the composer's Stop button: park any
+  // queued turns so the interrupt doesn't roll straight into the next one.
+  // ChatBar wraps its own onCancel internally — its send-now-while-busy path
+  // needs the raw interrupt — so it still receives the unwrapped prop.
+  const haltRun = useCallback(() => {
+    parkQueuedPrompts(queueSessionKey || activeSessionId)
+
+    return onCancel()
+  }, [activeSessionId, onCancel, queueSessionKey])
+
   // A tile IS its session — no route involved, never "mismatched".
   const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)
@@ -460,7 +471,7 @@ export function ChatView({
 
       <ChatRuntimeBoundary
         busy={busy}
-        onCancel={onCancel}
+        onCancel={haltRun}
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
@@ -478,7 +489,7 @@ export function ChatView({
             intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
-            onCancel={onCancel}
+            onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
             sessionId={activeSessionId}

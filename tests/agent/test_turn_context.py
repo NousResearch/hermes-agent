@@ -168,7 +168,13 @@ def _build(agent, **overrides):
     return build_turn_context(**kwargs)
 
 
-def test_returns_turn_context_with_user_message_appended():
+def test_returns_turn_context_with_user_message_appended(monkeypatch):
+    # First-turn/no-plugin default would inject the budget discoverability
+    # nudge into the appended user turn's api_content; silence it so this test
+    # isolates raw user-turn appending/indexing (budget wiring has its own tests).
+    monkeypatch.setattr(
+        "hermes_cli.plugins.budget_enforcement_bootstrap_notice", lambda: ""
+    )
     agent = _FakeAgent()
     ctx = _build(agent)
     assert isinstance(ctx, TurnContext)

@@ -496,3 +496,50 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Firecrawl timeout alignment (#43272)
+# ---------------------------------------------------------------------------
+
+
+class TestFirecrawlScrapeTimeout:
+    """Verify the server-side scrape timeout matches the asyncio deadline."""
+
+    def test_extract_passes_timeout_ms_to_scrape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """scrape() must receive timeout=60000 (ms) so the server-side
+        deadline matches the 60 s asyncio.wait_for deadline.  Without this
+        the API uses its 30 s default, causing SCRAPE_TIMEOUT."""
+        from unittest.mock import MagicMock, patch
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        # Set up a fake client whose scrape() returns a minimal response
+        fake_client = MagicMock()
+        fake_client.scrape.return_value = {
+            "metadata": {"title": "Test", "sourceURL": "https://example.com"},
+            "markdown": "content",
+        }
+
+        # Patch _get_firecrawl_client to return our fake client
+        monkeypatch.setattr(
+            firecrawl_provider, "_get_firecrawl_client", lambda: fake_client
+        )
+        # Patch check_website_access to allow the URL
+        monkeypatch.setattr(
+            firecrawl_provider, "check_website_access", lambda url: None
+        )
+
+        p = firecrawl_provider.FirecrawlWebSearchProvider()
+        results = asyncio.run(p.extract(["https://example.com"]))
+
+        # Verify scrape was called with timeout=60000
+        fake_client.scrape.assert_called_once()
+        call_kwargs = fake_client.scrape.call_args
+        assert call_kwargs.kwargs.get("timeout") == 60_000, (
+            f"Expected timeout=60000, got {call_kwargs.kwargs.get('timeout')}"
+        )
+
+        # Verify the result was processed correctly
+        assert len(results) == 1
+        assert results[0]["url"] == "https://example.com"
+        assert results[0]["content"] == "content"

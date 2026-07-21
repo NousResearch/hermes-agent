@@ -253,6 +253,11 @@ class TestLooksLikeGitUrl:
         "git@github.com:user/repo.git",
         "ssh://git@example.com/repo.git",
         "git://example.com/repo.git",
+        # Bare GitHub user/repo shorthand
+        "SouthpawIN/senter",
+        "SouthpawIN/nous-girl",
+        "nousresearch/hermes-agent",
+        "user-name/repo_name",
     ])
     def test_accepts_git_sources(self, src):
         assert _looks_like_git_url(src)
@@ -262,6 +267,11 @@ class TestLooksLikeGitUrl:
         "./relative/dir",
         "~/profile",
         "some-random-string",
+        # Shorthand that looks like local paths
+        "./user/repo",
+        "../user/repo",
+        "/user/repo",
+        "~/myprofiles/senter",
     ])
     def test_rejects_non_git(self, src):
         assert not _looks_like_git_url(src)

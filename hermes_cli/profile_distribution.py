@@ -356,6 +356,8 @@ def _env_template_from_manifest(manifest: DistributionManifest) -> str:
 # ---------------------------------------------------------------------------
 
 
+_BARE_USER_REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+")
+
 def _looks_like_git_url(s: str) -> bool:
     s = s.strip()
     if s.endswith(".git"):
@@ -369,6 +371,9 @@ def _looks_like_git_url(s: str) -> bool:
     # Bare github.com/user/repo shorthand
     if re.match(r"^github\.com/[\w.-]+/[\w.-]+/?$", s):
         return True
+    # Bare GitHub shorthand: user/repo (e.g. SouthpawIN/senter)
+    if _BARE_USER_REPO_RE.match(s) and "/" in s and not s.startswith((".", "/", "~")):
+        return True
     return False
 
 
@@ -376,6 +381,9 @@ def _git_clone(url: str, dest: Path) -> None:
     # Normalize github.com/user/repo shorthand
     if re.match(r"^github\.com/[\w.-]+/[\w.-]+/?$", url):
         url = f"https://{url.rstrip('/')}"
+    # Normalize bare user/repo shorthand
+    elif _BARE_USER_REPO_RE.match(url) and "/" in url and not url.startswith((".", "/", "~")):
+        url = f"https://github.com/{url.strip('/')}"
     try:
         subprocess.run(
             ["git", "clone", "--depth", "1", url, str(dest)],

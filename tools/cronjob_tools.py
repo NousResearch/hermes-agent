@@ -598,6 +598,11 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    # Organizational metadata (#68482) — emitted only when set, like the
+    # optional fields above, so jobs without metadata keep their old shape.
+    for _meta_field in ("tags", "category", "description", "workflow"):
+        if job.get(_meta_field):
+            result[_meta_field] = job[_meta_field]
     return result
 
 
@@ -677,6 +682,10 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    tags: Optional[List[str]] = None,
+    category: Optional[str] = None,
+    description: Optional[str] = None,
+    workflow: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -750,6 +759,10 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                tags=tags,
+                category=category,
+                description=description,
+                workflow=workflow,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -774,8 +787,34 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
-            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+            records = list_jobs(include_disabled=include_disabled)
+            # Optional metadata filters (#68482). Category matches
+            # case-insensitively; tags require the job to carry ALL the
+            # requested tags (subset match, case-insensitive).
+            applied_filters: Dict[str, Any] = {}
+            filter_category = (category or "").strip().lower()
+            if filter_category:
+                records = [
+                    j for j in records
+                    if (j.get("category") or "").strip().lower() == filter_category
+                ]
+                applied_filters["category"] = category.strip()
+            filter_tags = {
+                str(t).strip().lower() for t in (tags or []) if str(t).strip()
+            }
+            if filter_tags:
+                records = [
+                    j for j in records
+                    if filter_tags <= {
+                        str(t).strip().lower() for t in (j.get("tags") or [])
+                    }
+                ]
+                applied_filters["tags"] = sorted(filter_tags)
+            jobs = [_format_job(job) for job in records]
+            response: Dict[str, Any] = {"success": True, "count": len(jobs), "jobs": jobs}
+            if applied_filters:
+                response["filters"] = applied_filters
+            return json.dumps(response, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
@@ -947,6 +986,16 @@ def cronjob(
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
+            # Organizational metadata (#68482): empty list / empty string
+            # clears the field (update_job drops cleared keys from storage).
+            if tags is not None:
+                updates["tags"] = tags
+            if category is not None:
+                updates["category"] = category
+            if description is not None:
+                updates["description"] = description
+            if workflow is not None:
+                updates["workflow"] = workflow
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
                 updates["schedule"] = parsed_schedule
@@ -991,7 +1040,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. action=list accepts optional category/tags filters."
             },
             "job_id": {
                 "type": "string",
@@ -1008,6 +1057,23 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "name": {
                 "type": "string",
                 "description": "Optional human-friendly name"
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional free-form tags for grouping jobs (e.g. [\"daily\", \"report\"]). On list, filters to jobs carrying ALL given tags. On update, pass an empty array to clear."
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional single category label (e.g. 'reporting', 'system', 'maintenance'). On list, filters to jobs in that category (case-insensitive). On update, pass an empty string to clear."
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional one-line summary of what the job does — shown in list output so jobs are understandable without reading the full prompt. On update, pass an empty string to clear."
+            },
+            "workflow": {
+                "type": "string",
+                "description": "Optional description of the process the job follows (e.g. 'collect data -> analyze -> generate report'). On update, pass an empty string to clear."
             },
             "repeat": {
                 "type": "integer",

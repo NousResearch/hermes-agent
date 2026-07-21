@@ -26,6 +26,7 @@ const widgetCommand = (name: string, help: string): SlashCommand => ({
 export const debugCommands: SlashCommand[] = [
   widgetCommand('grid-test', 'open an interactive widget-grid demo overlay'),
   widgetCommand('dialog-test', 'open a sample dialog overlay with a faked backdrop'),
+  widgetCommand('weather', 'current conditions with themed ASCII art (wttr.in)'),
 
   {
     help: 'write a V8 heap snapshot + memory diagnostics (see HERMES_HEAPDUMP_DIR)',

@@ -767,12 +767,22 @@ def test_confirmed_outcome_receipt_retry_is_idempotent_and_keeps_ownership_bound
     ) is None
 
 
-def test_confirmation_race_returns_first_winner_without_overwriting_it(
+def test_confirmation_reserves_writer_before_binding_current_evidence(
     tmp_path, monkeypatch
 ):
-    """Force a winner between the guarded read and conditional UPDATE."""
+    """An edit writer cannot land between confirmation's proof read and update."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
+    monkeypatch.setattr(
+        "agent.coding_context.project_facts_for",
+        lambda _cwd=None: {
+            "root": str(tmp_path),
+            "verifyCommands": ["pnpm test"],
+            "manifests": ["package.json"],
+            "packageManagers": ["pnpm"],
+            "contextFiles": [],
+        },
+    )
     record_terminal_result(
         command="pnpm test",
         cwd=tmp_path,
@@ -788,87 +798,138 @@ def test_confirmation_race_returns_first_winner_without_overwriting_it(
     )
     assert receipt is not None
     database_path = tmp_path / ".hermes" / "verification_evidence.db"
-    winner = {
-        "actor": "concurrent-winner",
-        "confirmed_at": "2026-07-21T00:00:00+00:00",
-        "verification_status": "passed",
-        "verification_event_id": receipt["verification_event_id"],
-        "reusable": 1,
-    }
-    original_connect = verification_evidence._connect
-    injected = False
+    original_status = verification_evidence._outcome_verification_status_in_conn
+    observed = {"reservation": False, "competing_writer_blocked": False}
 
-    class RacingConnection:
-        def __init__(self, connection):
-            self.connection = connection
-
-        def __enter__(self):
-            self.connection.__enter__()
-            return self
-
-        def __exit__(self, *args):
-            return self.connection.__exit__(*args)
-
-        def execute(self, statement, parameters=()):
-            nonlocal injected
-            if not injected and "UPDATE outcome_receipts" in statement:
-                injected = True
-                with sqlite3.connect(database_path) as competing_connection:
-                    competing_connection.execute(
-                        """
-                        UPDATE outcome_receipts
-                        SET terminal_kind = 'achieved_confirmed',
-                            verification_status = ?,
-                            verification_event_id = ?,
-                            actor = ?,
-                            user_confirmed_at = ?,
-                            reusable = ?
-                        WHERE id = ?
-                          AND terminal_kind = 'judge_done_unconfirmed'
-                        """,
-                        (
-                            winner["verification_status"],
-                            winner["verification_event_id"],
-                            winner["actor"],
-                            winner["confirmed_at"],
-                            winner["reusable"],
-                            receipt["id"],
-                        ),
-                    )
-            return self.connection.execute(statement, parameters)
-
-        def commit(self):
-            return self.connection.commit()
+    def verify_under_reservation(conn, *, session_id, root):
+        observed["reservation"] = conn.in_transaction
+        competing = sqlite3.connect(database_path, timeout=0)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competing.execute(
+                    "UPDATE outcome_receipts SET actor = actor WHERE id = ?",
+                    (receipt["id"],),
+                )
+            observed["competing_writer_blocked"] = True
+        finally:
+            competing.close()
+        return original_status(conn, session_id=session_id, root=root)
 
     monkeypatch.setattr(
         verification_evidence,
-        "_connect",
-        lambda: RacingConnection(original_connect()),
+        "_outcome_verification_status_in_conn",
+        verify_under_reservation,
     )
-
-    raced = confirm_outcome_receipt(
+    confirmed = confirm_outcome_receipt(
         receipt["id"],
         expected_session_id="s1",
         cwd=tmp_path,
-        actor="losing-retry-must-not-overwrite",
+        actor="atomic-confirmation",
     )
 
-    assert injected is True
-    assert raced is not None
-    assert raced["terminal_kind"] == "achieved_confirmed"
-    assert raced["actor"] == winner["actor"]
-    assert raced["user_confirmed_at"] == winner["confirmed_at"]
-    assert raced["verification_status"] == winner["verification_status"]
-    assert raced["verification_event_id"] == winner["verification_event_id"]
-    assert raced["reusable"] is True
-    assert confirm_outcome_receipt(
-        receipt["id"], expected_session_id="other-session", cwd=tmp_path
-    ) is None
-    other_root = tmp_path / "other-workspace"
-    other_root.mkdir()
-    _node_project(other_root)
-    assert confirm_outcome_receipt(
-        receipt["id"], expected_session_id="s1", cwd=other_root
+    assert observed == {"reservation": True, "competing_writer_blocked": True}
+    assert confirmed is not None
+    assert confirmed["actor"] == "atomic-confirmation"
+    assert confirmed["reusable"] is True
+    assert confirmed["currently_reusable"] is True
+    assert confirmed["current_verification_status"] == "passed"
+
+
+def test_confirmation_retry_reports_current_eligibility_without_rewriting_snapshot(
+    tmp_path, monkeypatch
+):
+    """Retry feedback must not report an edited receipt as currently reusable."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    monkeypatch.setattr(
+        "agent.coding_context.project_facts_for",
+        lambda _cwd=None: {
+            "root": str(tmp_path),
+            "verifyCommands": ["pnpm test"],
+            "manifests": ["package.json"],
+            "packageManagers": ["pnpm"],
+            "contextFiles": [],
+        },
+    )
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="keep the audit snapshot but show present eligibility",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+    first = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
+    assert first is not None and first["reusable"] is True
+    mark_workspace_edited(session_id="s2", cwd=tmp_path, paths=["src/widget.ts"])
+
+    retry = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
+
+    assert retry is not None
+    assert retry["reusable"] is True
+    assert retry["verification_status"] == "passed"
+    assert retry["currently_reusable"] is False
+    assert retry["current_verification_status"] == "stale"
+
+
+def test_confirmation_retry_never_promotes_a_previously_nonreusable_snapshot(
+    tmp_path, monkeypatch
+):
+    """Fresh proof after confirmation cannot retroactively create learning consent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    monkeypatch.setattr(
+        "agent.coding_context.project_facts_for",
+        lambda _cwd=None: {
+            "root": str(tmp_path),
+            "verifyCommands": ["pnpm test"],
+            "manifests": ["package.json"],
+            "packageManagers": ["pnpm"],
+            "contextFiles": [],
+        },
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="do not turn later proof into retroactive confirmation",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+    first = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
+    assert first is not None
+    assert first["reusable"] is False
+    assert first["currently_reusable"] is False
+
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="later green evidence",
+    )
+    retry = confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
+
+    assert retry is not None
+    assert retry["verification_status"] == "unverified"
+    assert retry["reusable"] is False
+    assert retry["current_verification_status"] == "passed"
+    assert retry["currently_reusable"] is False
+    assert get_reusable_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
     ) is None
 
 

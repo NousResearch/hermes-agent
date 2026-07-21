@@ -13452,10 +13452,14 @@ def _(rid, params: dict) -> dict:
                     rid,
                     {"type": "exec", "output": f"/goal confirm: outcome receipt #{receipt_id} was not found."},
                 )
-            if receipt.get("reusable"):
+            if receipt.get("currently_reusable", receipt.get("reusable")):
                 output = f"✓ Outcome receipt #{receipt_id} confirmed and reusable."
             else:
-                status = receipt.get("verification_status") or "unverified"
+                status = (
+                    receipt.get("current_verification_status")
+                    or receipt.get("verification_status")
+                    or "unverified"
+                )
                 output = (
                     f"✓ Outcome receipt #{receipt_id} confirmed, but current verification "
                     f"is {status}; it is not reusable."

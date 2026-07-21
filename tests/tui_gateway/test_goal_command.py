@@ -195,6 +195,24 @@ def test_goal_confirm_promotes_receipt_with_explicit_user_action(server, session
     )
 
 
+def test_goal_confirm_reports_current_stale_eligibility(server, session):
+    sid, _, _ = session
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={
+            "id": 73,
+            "reusable": True,
+            "currently_reusable": False,
+            "current_verification_status": "stale",
+        },
+    ):
+        result = _call(server, "command.dispatch", name="goal", arg="confirm 73", session_id=sid)
+
+    output = result["result"]["output"]
+    assert "not reusable" in output
+    assert "stale" in output
+
+
 def test_goal_outcomes_shows_only_the_active_session_learning_candidates(server, session):
     sid, session_key, _ = session
     with patch(

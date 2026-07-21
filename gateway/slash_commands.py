@@ -2358,9 +2358,13 @@ class GatewaySlashCommandsMixin:
                 return f"/goal confirm: {exc}"
             if receipt is None:
                 return f"/goal confirm: outcome receipt #{receipt_id} was not found."
-            if receipt.get("reusable"):
+            if receipt.get("currently_reusable", receipt.get("reusable")):
                 return f"✓ Outcome receipt #{receipt_id} confirmed and reusable."
-            status = receipt.get("verification_status") or "unverified"
+            status = (
+                receipt.get("current_verification_status")
+                or receipt.get("verification_status")
+                or "unverified"
+            )
             return (
                 f"✓ Outcome receipt #{receipt_id} confirmed, but current verification "
                 f"is {status}; it is not reusable."

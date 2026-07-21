@@ -365,6 +365,33 @@ class TestGoalManager:
 
 
 class TestGoalOutcomesCommand:
+    def test_cli_goal_confirm_reports_current_stale_eligibility(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.session_id = "cli-confirm-session"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with (
+            patch.dict("sys.modules", {"cli": fake_cli_module}),
+            patch(
+                "agent.verification_evidence.confirm_outcome_receipt",
+                return_value={
+                    "id": 73,
+                    "reusable": True,
+                    "currently_reusable": False,
+                    "current_verification_status": "stale",
+                },
+            ),
+        ):
+            CLICommandsMixin._handle_goal_command(caller, "goal confirm 73")
+
+        output = fake_cli_module._cprint.call_args.args[0]
+        assert "not reusable" in output
+        assert "stale" in output
+
     def test_cli_outcomes_routes_current_workspace_to_goal_manager(self, tmp_path, monkeypatch):
         from hermes_cli.cli_commands_mixin import CLICommandsMixin
 

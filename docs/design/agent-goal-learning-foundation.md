@@ -73,6 +73,12 @@ current workspace, presents only receipts with currently passing evidence, and
 shows a short criteria-digest prefix for newly recorded receipts. It does not
 disclose raw goal text, mutate a receipt, or inject a model prompt.
 
+`/goal confirm` preserves the first confirmation as an immutable audit snapshot,
+but takes its proof snapshot inside one SQLite writer reservation. Its response
+also includes response-only current eligibility for a later retry, so an edit
+after confirmation is reported as not reusable rather than being confused with
+the historical `reusable` field.
+
 `/goal learn <receipt-id> <lesson>` is the explicit, user-authored bridge from
 one such candidate to procedural memory. It always stages a V3 memory proposal
 instead of writing directly, even when ordinary memory approval is disabled.

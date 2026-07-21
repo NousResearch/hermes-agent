@@ -863,6 +863,23 @@ def _receipt_from_row(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
     return receipt
 
 
+def _receipt_with_current_reusability(
+    row: sqlite3.Row | None, status: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Attach response-only current eligibility without changing audit history."""
+    receipt = _receipt_from_row(row)
+    if receipt is None:
+        return None
+    current_status = str(status.get("status") or "unverified")
+    receipt["current_verification_status"] = current_status
+    receipt["currently_reusable"] = bool(
+        receipt.get("terminal_kind") == "achieved_confirmed"
+        and receipt.get("reusable")
+        and current_status == "passed"
+    )
+    return receipt
+
+
 def _approval_receipt_from_row(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
     """Return one immutable approval receipt as a plain dictionary."""
     return dict(row) if row is not None else None
@@ -1204,10 +1221,12 @@ def confirm_outcome_receipt(
 ) -> Optional[dict[str, Any]]:
     """Convert one judge-done receipt into an explicitly confirmed outcome.
 
-    Confirmation is restricted to the active session and workspace.  It then
-    re-checks current workspace evidence.  Passing evidence makes the record
-    reusable; stale, failed, and absent evidence remain an audited confirmation
-    but are never promoted for future learning.
+    Confirmation is restricted to the active session and workspace.  It binds
+    the current workspace evidence and receipt transition under one SQLite
+    writer reservation, so an edit cannot land between the freshness check and
+    the audited snapshot.  Passing evidence makes the record reusable; stale,
+    failed, and absent evidence remain an audited confirmation but are never
+    promoted for future learning.
     """
     receipt_id = int(receipt_id)
     actor = str(actor or "user").strip() or "user"
@@ -1217,54 +1236,38 @@ def confirm_outcome_receipt(
         raise ValueError("current session and workspace are required")
     with _DB_LOCK:
         with _connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
-            ).fetchone()
-    if row is None:
-        return None
-    existing = dict(row)
-    if (
-        existing["session_id"] != expected_sid
-        or existing["root"] != expected_root
-    ):
-        # Do not disclose another session's receipt existence to a shared
-        # gateway or TUI user who guesses a global receipt id.
-        return None
-    if existing["terminal_kind"] == "achieved_confirmed":
-        # A retry from the same session/workspace is a read-only success.  In
-        # particular, do not re-evaluate proof or overwrite the first actor,
-        # timestamp, and verification snapshot.
-        return _receipt_from_row(row)
-    if existing["terminal_kind"] != "judge_done_unconfirmed":
-        raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
-
-    # ``verification_status`` opens the same SQLite ledger, so it must run
-    # outside the non-reentrant write lock held for receipt mutation.
-    status = _outcome_verification_status(
-        session_id=existing["session_id"], root=existing["root"]
-    )
-    evidence = status.get("evidence") or {}
-    verification_status_value = str(status.get("status") or "unverified")
-    reusable = int(verification_status_value == "passed")
-    confirmed_at = _utc_now()
-
-    with _DB_LOCK:
-        with _connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
                 "SELECT * FROM outcome_receipts WHERE id = ?",
                 (receipt_id,),
             ).fetchone()
             if current is None:
+                conn.rollback()
                 return None
             if (
                 current["session_id"] != expected_sid
                 or current["root"] != expected_root
             ):
+                conn.rollback()
                 return None
             if current["terminal_kind"] == "achieved_confirmed":
-                return _receipt_from_row(current)
+                status = _outcome_verification_status_in_conn(
+                    conn, session_id=expected_sid, root=expected_root
+                )
+                conn.rollback()
+                # The persisted receipt remains immutable.  These two fields
+                # describe current eligibility for a retry's user-facing reply.
+                return _receipt_with_current_reusability(current, status)
             if current["terminal_kind"] != "judge_done_unconfirmed":
+                conn.rollback()
                 raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
+            status = _outcome_verification_status_in_conn(
+                conn, session_id=expected_sid, root=expected_root
+            )
+            evidence = status.get("evidence") or {}
+            verification_status_value = str(status.get("status") or "unverified")
+            reusable = int(verification_status_value == "passed")
+            confirmed_at = _utc_now()
             update = conn.execute(
                 """
                 UPDATE outcome_receipts
@@ -1298,20 +1301,27 @@ def confirm_outcome_receipt(
                     "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
                 ).fetchone()
                 if raced is None:
+                    conn.rollback()
                     return None
                 if (
                     raced["session_id"] != expected_sid
                     or raced["root"] != expected_root
                 ):
+                    conn.rollback()
                     return None
                 if raced["terminal_kind"] == "achieved_confirmed":
-                    return _receipt_from_row(raced)
+                    raced_status = _outcome_verification_status_in_conn(
+                        conn, session_id=expected_sid, root=expected_root
+                    )
+                    conn.rollback()
+                    return _receipt_with_current_reusability(raced, raced_status)
+                conn.rollback()
                 raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
             updated = conn.execute(
                 "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
             ).fetchone()
             conn.commit()
-    return _receipt_from_row(updated)
+    return _receipt_with_current_reusability(updated, status)
 
 
 def list_reusable_outcome_receipts(

@@ -109,6 +109,48 @@ async def test_gateway_goal_confirm_promotes_receipt_with_explicit_user_action(t
 
 
 @pytest.mark.asyncio
+async def test_gateway_goal_confirm_reports_current_stale_eligibility(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    event = MessageEvent(
+        text="/goal confirm 73",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-currentness",
+            chat_type="channel",
+            user_id="user-goal-currentness",
+        ),
+        message_id="msg-goal-currentness",
+    )
+
+    with patch(
+        "agent.verification_evidence.confirm_outcome_receipt",
+        return_value={
+            "id": 73,
+            "reusable": True,
+            "currently_reusable": False,
+            "current_verification_status": "stale",
+        },
+    ):
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+    assert "not reusable" in response
+    assert "stale" in response
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
 async def test_gateway_goal_outcomes_scopes_receipts_to_event_session(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

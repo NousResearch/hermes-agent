@@ -2091,10 +2091,14 @@ class CLICommandsMixin:
                 return
             if receipt is None:
                 _cprint(f"  /goal confirm: outcome receipt #{receipt_id} was not found.")
-            elif receipt.get("reusable"):
+            elif receipt.get("currently_reusable", receipt.get("reusable")):
                 _cprint(f"  ✓ Outcome receipt #{receipt_id} confirmed and reusable.")
             else:
-                status = receipt.get("verification_status") or "unverified"
+                status = (
+                    receipt.get("current_verification_status")
+                    or receipt.get("verification_status")
+                    or "unverified"
+                )
                 _cprint(
                     f"  ✓ Outcome receipt #{receipt_id} confirmed, but current "
                     f"verification is {status}; it is not reusable."

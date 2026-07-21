@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 
+import json
+
 import pytest
 
 from _common import (
@@ -21,6 +23,7 @@ from _common import (
     parse_model_list,
     resolve_url,
     safe_path_join,
+    strip_workflow_metadata,
     unwrap_workflow,
 )
 
@@ -112,6 +115,13 @@ class TestAPIFormatDetection:
         wf = {"3": {"class_type": "KSampler", "inputs": {}}}
         assert is_api_format(wf) is True
 
+    def test_rejects_top_level_metadata(self):
+        wf = {
+            "_comment": "not accepted by ComfyUI /prompt",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        assert is_api_format(wf) is False
+
 
 class TestUnwrapWorkflow:
     def test_passthrough_api_format(self, sd15_workflow):
@@ -123,6 +133,45 @@ class TestUnwrapWorkflow:
         result = unwrap_workflow(wrapped)
         assert result is sd15_workflow
 
+    def test_unwrap_strips_top_level_comment(self):
+        workflow = {
+            "_comment": "human note",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        result = unwrap_workflow(workflow)
+        assert "_comment" not in result
+        assert result == {"3": {"class_type": "KSampler", "inputs": {}}}
+
+    def test_unwrap_strips_comment_inside_prompt_wrapper(self):
+        workflow = {
+            "_comment": "human note",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        result = unwrap_workflow({"prompt": workflow, "client_id": "abc"})
+        assert "_comment" not in result
+        assert result == {"3": {"class_type": "KSampler", "inputs": {}}}
+
+    def test_unwrap_full_prompt_payload(self):
+        workflow = {"3": {"class_type": "KSampler", "inputs": {}}}
+        result = unwrap_workflow({
+            "prompt": workflow,
+            "client_id": "abc",
+            "extra_data": {"api_key_comfy_org": "partner-key"},
+        })
+        assert result is workflow
+
+    def test_unwrap_strips_wrapper_and_prompt_metadata(self):
+        workflow = {
+            "_comment": "inner note",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        result = unwrap_workflow({
+            "_comment": "outer note",
+            "prompt": workflow,
+            "client_id": "abc",
+        })
+        assert result == {"3": {"class_type": "KSampler", "inputs": {}}}
+
     def test_editor_format_raises(self):
         with pytest.raises(ValueError, match="editor format"):
             unwrap_workflow({"nodes": [], "links": []})
@@ -130,6 +179,21 @@ class TestUnwrapWorkflow:
     def test_garbage_raises(self):
         with pytest.raises(ValueError):
             unwrap_workflow({"foo": "bar"})
+
+
+class TestStripWorkflowMetadata:
+    def test_passthrough_when_no_metadata(self):
+        workflow = {"3": {"class_type": "KSampler", "inputs": {}}}
+        assert strip_workflow_metadata(workflow) is workflow
+
+    def test_strips_only_non_node_underscore_keys(self):
+        workflow = {
+            "_comment": "human note",
+            "_meta": {"source": "template"},
+            "_node": {"class_type": "KSampler", "inputs": {}},
+        }
+        result = strip_workflow_metadata(workflow)
+        assert result == {"_node": {"class_type": "KSampler", "inputs": {}}}
 
 
 class TestIsLink:
@@ -156,10 +220,14 @@ class TestIterators:
         assert "3" in nodes
         assert nodes["3"]["class_type"] == "KSampler"
 
-    def test_iter_nodes_skips_comments(self, sd15_workflow):
+    def test_iter_nodes_skips_comments(self):
         # _comment is not a node
-        nodes = dict(iter_nodes(sd15_workflow))
+        nodes = dict(iter_nodes({
+            "_comment": "human note",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }))
         assert "_comment" not in nodes
+        assert "3" in nodes
 
     def test_iter_model_deps(self, sd15_workflow):
         deps = list(iter_model_deps(sd15_workflow))
@@ -173,6 +241,14 @@ class TestIterators:
         assert names["t5xxl_fp16.safetensors"] == "clip"
         assert names["clip_l.safetensors"] == "clip"
         assert names["ae.safetensors"] == "vae"
+
+
+class TestBundledWorkflows:
+    def test_workflows_are_prompt_api_node_mappings(self, workflows_dir):
+        for path in sorted(workflows_dir.glob("*.json")):
+            workflow = json.loads(path.read_text())
+            assert is_api_format(workflow), path.name
+            assert not any(str(key).startswith("_") for key in workflow), path.name
 
 
 # =============================================================================

@@ -1979,10 +1979,23 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
 
     try:
         st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+        is_dir = resolved.is_dir()
+    except OSError:
+        # Broken symlink — target doesn't exist. Use lstat for symlink's own
+        # metadata so the entry still appears in listings with partial info.
+        try:
+            st = target.lstat()
+        except OSError:
+            return {
+                "name": target.name,
+                "path": str(resolved),
+                "is_directory": False,
+                "size": None,
+                "mtime": None,
+                "mime_type": None,
+            }
+        is_dir = target.is_dir()
 
-    is_dir = resolved.is_dir()
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
     return {
         "name": target.name or resolved.name or str(resolved),

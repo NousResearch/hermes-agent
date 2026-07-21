@@ -704,6 +704,13 @@ def run_conversation(
     # over instead of spinning. Reset here so each turn starts fresh. See #26080.
     agent._auth_pool_refresh_counts = {}
 
+    # Stuck-loop detection: track consecutive identical tool calls.
+    # If the model emits the same tool call signature N times in a row,
+    # it's stuck and the loop should break with a diagnostic message.
+    _STUCK_LOOP_THRESHOLD = 3
+    _prev_tool_call_signature: Optional[str] = None
+    _consecutive_identical_calls = 0
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -5099,9 +5106,45 @@ def run_conversation(
                 # Refund the iteration if the ONLY tool(s) called were
                 # execute_code (programmatic tool calling).  These are
                 # cheap RPC-style calls that shouldn't eat the budget.
+                # Refunds are capped (default 15) to prevent infinite loops
+                # when the model keeps calling execute_code without progress.
                 _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                 if _tc_names == {"execute_code"}:
                     agent.iteration_budget.refund()
+
+                # ── Stuck-loop detection ─────────────────────────────────
+                # Build a signature from tool names + arguments.  If the
+                # model emits the same signature N times in a row, it's
+                # stuck in a loop and the turn should break with a
+                # diagnostic message to the user.
+                _call_sig_parts = []
+                for tc in assistant_message.tool_calls:
+                    _call_sig_parts.append(f"{tc.function.name}:{tc.function.arguments}")
+                _call_signature = "|".join(sorted(_call_sig_parts))
+
+                if _call_signature == _prev_tool_call_signature:
+                    _consecutive_identical_calls += 1
+                else:
+                    _prev_tool_call_signature = _call_signature
+                    _consecutive_identical_calls = 1
+
+                if _consecutive_identical_calls >= _STUCK_LOOP_THRESHOLD:
+                    _stuck_tool_names = ", ".join(sorted(_tc_names))
+                    logger.warning(
+                        "Stuck loop detected: model called [%s] %d times "
+                        "consecutively with identical arguments — breaking.",
+                        _stuck_tool_names,
+                        _consecutive_identical_calls,
+                    )
+                    agent._vprint(
+                        f"\n{agent.log_prefix}⚠️  Stuck loop detected: "
+                        f"model called [{_stuck_tool_names}] "
+                        f"{_consecutive_identical_calls} times with identical "
+                        f"arguments. Breaking out of tool loop.",
+                        force=True,
+                    )
+                    _turn_exit_reason = "stuck_loop_detected"
+                    break
                 
                 # Use real token counts from the API response to decide
                 # compression.  prompt_tokens + completion_tokens is the

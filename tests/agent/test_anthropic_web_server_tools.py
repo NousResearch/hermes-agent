@@ -133,6 +133,7 @@ def test_web_fetch_blocks_use_the_same_round_trip_channel():
     assert [block["type"] for block in normalized.anthropic_content_blocks] == [
         "server_tool_use", "web_fetch_tool_result", "text",
     ]
+    assert normalized.content.endswith("Sources:\n- https://example.com")
 
 
 def test_pause_turn_remains_distinct_for_the_conversation_loop():

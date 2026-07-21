@@ -96,6 +96,14 @@ class AnthropicTransport(ProviderTransport):
         tool_calls = []
         citation_sources = []
         seen_citation_urls = set()
+
+        def _add_citation_source(url: Any, title: Any = None) -> None:
+            if not isinstance(url, str) or not url or url in seen_citation_urls:
+                return
+            seen_citation_urls.add(url)
+            normalized_title = " ".join(str(title or url).split())
+            citation_sources.append((normalized_title, url))
+
         # Verbatim, order-preserving copy of every content block in the turn.
         # Anthropic signs each thinking block against the turn content that
         # PRECEDES it at its position; when a turn interleaves thinking and
@@ -131,12 +139,22 @@ class AnthropicTransport(ProviderTransport):
                     if not isinstance(citation_dict, dict):
                         continue
                     url = citation_dict.get("url")
-                    if not isinstance(url, str) or not url or url in seen_citation_urls:
-                        continue
-                    seen_citation_urls.add(url)
                     title = citation_dict.get("title") or citation_dict.get("cited_text") or url
-                    title = " ".join(str(title).split())
-                    citation_sources.append((title, url))
+                    _add_citation_source(url, title)
+            elif block.type == "web_fetch_tool_result":
+                # Fetch citations may use document-relative locations without
+                # carrying a URL on the text block.  The server result itself
+                # remains the authoritative source for the fetched URL, so
+                # surface it in Hermes' neutral text channel as a fallback.
+                result_content = (
+                    clean_block.get("content")
+                    if isinstance(clean_block, dict)
+                    else None
+                )
+                if isinstance(result_content, dict):
+                    _add_citation_source(
+                        result_content.get("url"), result_content.get("title")
+                    )
             elif block.type in ("thinking", "redacted_thinking"):
                 if block.type == "thinking":
                     reasoning_parts.append(block.thinking)
@@ -213,7 +231,8 @@ class AnthropicTransport(ProviderTransport):
         normalized_content = "\n".join(text_parts) if text_parts else None
         if citation_sources:
             sources = "\n".join(
-                f"- {title}: {url}" for title, url in citation_sources
+                f"- {url}" if title == url else f"- {title}: {url}"
+                for title, url in citation_sources
             )
             normalized_content = (
                 f"{normalized_content}\n\nSources:\n{sources}"

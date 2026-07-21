@@ -230,6 +230,70 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertIn("error", response)
         self.assertFalse(target.exists())
 
+    def test_read_text_file_passes_explicit_utf8(self) -> None:
+        # The actual Windows-cp1252-mojibake scenario can't be reproduced
+        # under PEP 686 UTF-8 mode on POSIX without forking the interpreter,
+        # so spy on Path.read_text and confirm the shim forwards the
+        # encoding kwarg the underlying open() needs.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            f = root / "utf8.txt"
+            f.write_bytes("café — 中文 ✓".encode("utf-8"))
+
+            captured: list[dict] = []
+            real_read_text = Path.read_text
+
+            def _spy(self, *args, **kwargs):
+                if self == f.resolve():
+                    captured.append(kwargs)
+                return real_read_text(self, *args, **kwargs)
+
+            with patch.object(Path, "read_text", _spy):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 6,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(f)},
+                    },
+                    cwd=str(root),
+                )
+
+        content = ((response.get("result") or {}).get("content") or "")
+        self.assertEqual(content, "café — 中文 ✓")
+        self.assertEqual(captured, [{"encoding": "utf-8"}])
+
+    def test_write_text_file_passes_explicit_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            f = root / "out.txt"
+
+            captured: list[dict] = []
+            real_write_text = Path.write_text
+
+            def _spy(self, *args, **kwargs):
+                if self == f.resolve():
+                    captured.append(kwargs)
+                return real_write_text(self, *args, **kwargs)
+
+            with patch.object(Path, "write_text", _spy):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "fs/write_text_file",
+                        "params": {
+                            "path": str(f),
+                            "content": "café — 中文 ✓",
+                        },
+                    },
+                    cwd=str(root),
+                )
+
+            self.assertNotIn("error", response)
+            self.assertEqual(captured, [{"encoding": "utf-8"}])
+            self.assertEqual(f.read_bytes(), "café — 中文 ✓".encode("utf-8"))
+
     def test_write_text_file_respects_safe_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

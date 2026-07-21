@@ -487,33 +487,100 @@ def test_repair_noop_db_uses_already_healthy_shortcut(tmp_path):
     assert report["strategy"] == "already_healthy"
 
 
-def test_repair_rebuilds_stale_btree_indexes(tmp_path, monkeypatch):
-    """repair_state_db_schema uses REINDEX for 'wrong # of entries in index'.
+def _corrupt_btree_index(db_path: Path, index_name: str) -> None:
+    """Make a real B-tree index stale so integrity_check reports
+    'wrong # of entries in index <name>'.
 
-    When PRAGMA integrity_check reports a stale B-tree index (e.g.
-    idx_sessions_handoff_state), the FTS-rebuild and dedup strategies don't
-    help — REINDEX rewrites the index b-tree from the canonical table rows.
+    writable_schema hack: temporarily rewrite the index definition in
+    sqlite_master to a partial index (``WHERE 0``), REINDEX so its b-tree is
+    rebuilt EMPTY, then restore the original full definition. The stored
+    b-tree now has zero entries while the schema says it must cover every
+    row — exactly the on-disk state issue #63386 reported for
+    idx_sessions_handoff_state, produced without any mocking.
+    """
+    raw = sqlite3.connect(str(db_path))
+    orig_sql = raw.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+        (index_name,),
+    ).fetchone()[0]
+
+    def _set_index_sql(conn, sql):
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql=? WHERE type='index' AND name=?",
+            (sql, index_name),
+        )
+        ver = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(f"PRAGMA schema_version={ver + 1}")
+        conn.execute("PRAGMA writable_schema=OFF")
+        conn.commit()
+
+    _set_index_sql(raw, orig_sql + " WHERE 0")
+    raw.close()
+
+    # Fresh connection so the doctored schema is re-parsed, then rebuild the
+    # index under the WHERE 0 definition — empty b-tree on disk.
+    raw = sqlite3.connect(str(db_path))
+    raw.execute(f"REINDEX {index_name}")
+    raw.commit()
+    # Restore the original (full) definition: schema and b-tree now disagree.
+    _set_index_sql(raw, orig_sql)
+    raw.close()
+
+
+def test_repair_rebuilds_stale_btree_indexes(tmp_path):
+    """repair_state_db_schema repairs a REAL stale B-tree index via REINDEX.
+
+    End-to-end, no mocks: a genuinely stale index (empty b-tree under a full
+    index definition — the #63386 'wrong # of entries in index' class) is
+    detected by the real _db_opens_cleanly, repaired by Strategy 0.5
+    (REINDEX), and the DB verifies clean afterwards with real integrity
+    checks.
     """
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
 
-    _reason = "wrong # of entries in index idx_sessions_handoff_state"
-    _call_count = {"n": 0}
-    _real_check = hermes_state._db_opens_cleanly
+    _corrupt_btree_index(db_path, "idx_messages_session")
 
-    def _simulated_check(path):
-        _call_count["n"] += 1
-        # initial health check + post-Strategy-0 check report corruption;
-        # after REINDEX (Strategy 0.5) the DB is healthy.
-        if _call_count["n"] <= 2:
-            return _reason
-        return _real_check(path)
+    # The real detector must see the real corruption...
+    reason = hermes_state._db_opens_cleanly(db_path)
+    assert reason is not None
+    assert "wrong # of entries in index idx_messages_session" in reason
 
-    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", _simulated_check)
-
+    # ...and the real repair ladder must fix it via REINDEX.
     report = repair_state_db_schema(db_path)
     assert report["repaired"] is True
     assert report["strategy"] == "reindex_btree"
+
+    # Post-repair the DB is genuinely healthy: detector and raw
+    # integrity_check both agree, and the repaired index answers queries.
+    assert hermes_state._db_opens_cleanly(db_path) is None
+    raw = sqlite3.connect(str(db_path))
+    assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    n = raw.execute(
+        "SELECT count(*) FROM messages INDEXED BY idx_messages_session "
+        "WHERE session_id IS NOT NULL"
+    ).fetchone()[0]
+    raw.close()
+    assert n == 10  # every row visible through the rebuilt index
+
+
+def test_repair_stale_btree_index_preserves_rows(tmp_path):
+    """The REINDEX strategy is non-destructive: sessions/messages survive."""
+    db_path = tmp_path / "state.db"
+    sid = _build_healthy_db(db_path)
+    _corrupt_btree_index(db_path, "idx_messages_session")
+
+    report = repair_state_db_schema(db_path, backup=False)
+    assert report["strategy"] == "reindex_btree"
+
+    db = SessionDB(db_path=db_path)
+    try:
+        msgs = db.get_messages(sid)
+        assert len(msgs) == 10
+        assert msgs[0]["content"] == "hello world 0"
+    finally:
+        db.close()
 
 
 def test_select_cached_agent_history_prefers_longer_live_transcript():

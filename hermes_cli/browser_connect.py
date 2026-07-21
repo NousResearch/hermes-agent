@@ -132,6 +132,10 @@ def chrome_debug_data_dir() -> str:
 def _chrome_debug_args(port: int) -> list[str]:
     return [
         f"--remote-debugging-port={port}",
+        # Chrome 115+ rejects cross-origin CDP WebSocket handshakes by default,
+        # causing "Chrome exited early without writing DevToolsActivePort".
+        # Allow all origins for the local debug port so Hermes can attach.
+        "--remote-allow-origins=*",
         f"--user-data-dir={chrome_debug_data_dir()}",
         "--no-first-run",
         "--no-default-browser-check",

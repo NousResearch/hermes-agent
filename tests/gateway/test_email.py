@@ -14,6 +14,7 @@ Covers:
 
 import os
 import unittest
+from types import SimpleNamespace
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -277,7 +278,43 @@ class TestEmailResponseDelivery(unittest.TestCase):
         self.assertTrue(extra["suppress_home_notice"])
         self.assertTrue(extra["skip_attachments"])
 
-    def test_discord_response_delivery_does_not_call_smtp_send(self):
+    def test_discord_response_delivery_uses_live_discord_adapter(self):
+        import asyncio
+        from gateway.config import Platform, PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(
+                enabled=True,
+                extra={"response_delivery": "discord", "approval_discord_channel": "12345"},
+            ))
+            discord_adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        adapter._send_email = MagicMock(return_value="email-message-id")
+        discord_adapter._send_with_retry = AsyncMock(
+            return_value=SendResult(success=True, message_id="discord-message-id")
+        )
+        setattr(adapter, "gateway_runner", SimpleNamespace(adapters={Platform.DISCORD: discord_adapter}))
+
+        result = asyncio.run(adapter._send_final_response_with_retry("rob@example.com", "approval card"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "discord-message-id")
+        discord_adapter._send_with_retry.assert_awaited_once_with(
+            chat_id="12345",
+            content="approval card",
+            metadata=None,
+            max_retries=2,
+            base_delay=2.0,
+        )
+        adapter._send_email.assert_not_called()
+
+    def test_discord_response_delivery_leaves_non_final_notices_on_email_path(self):
         import asyncio
         from gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
@@ -287,25 +324,19 @@ class TestEmailResponseDelivery(unittest.TestCase):
             "EMAIL_PASSWORD": "secret",
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
-            "DISCORD_BOT_TOKEN": "token",
-            "DISCORD_HOME_CHANNEL": "12345",
         }, clear=False):
             adapter = EmailAdapter(PlatformConfig(
                 enabled=True,
-                extra={"response_delivery": "discord"},
+                extra={"response_delivery": "discord", "approval_discord_channel": "12345"},
             ))
 
-        adapter._send_email = MagicMock(return_value="email-message-id")
-        adapter._send_discord_approval_message = MagicMock(
-            return_value=SendResult(success=True, message_id="discord-message-id")
-        )
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="email-message-id"))
 
-        result = asyncio.run(adapter._send_with_retry("rob@example.com", "approval card"))
+        result = asyncio.run(adapter._send_with_retry("rob@example.com", "busy notice"))
 
         self.assertTrue(result.success)
-        self.assertEqual(result.message_id, "discord-message-id")
-        adapter._send_discord_approval_message.assert_called_once_with("approval card")
-        adapter._send_email.assert_not_called()
+        self.assertEqual(result.message_id, "email-message-id")
+        adapter.send.assert_awaited_once()
 
     def test_default_response_delivery_still_uses_email_send_path(self):
         import asyncio
@@ -323,7 +354,7 @@ class TestEmailResponseDelivery(unittest.TestCase):
 
         adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="email-message-id"))
 
-        result = asyncio.run(adapter._send_with_retry("rob@example.com", "normal reply"))
+        result = asyncio.run(adapter._send_final_response_with_retry("rob@example.com", "normal reply"))
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "email-message-id")

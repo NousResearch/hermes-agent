@@ -4247,6 +4247,32 @@ class BasePlatformAdapter(ABC):
             return self
         return live_adapter
 
+    async def _send_final_response_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> "SendResult":
+        """Send a final agent response.
+
+        Most adapters use the ordinary retry wrapper. Adapters that are input
+        surfaces only may override this narrow seam without changing system
+        notices, approval replies, busy acknowledgements, or other internal
+        callers of :meth:`_send_with_retry`.
+        """
+
+        return await self._send_with_retry(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+            max_retries=max_retries,
+            base_delay=base_delay,
+        )
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -5231,7 +5257,7 @@ class BasePlatformAdapter(ABC):
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
-                    result = await delivery_adapter._send_with_retry(
+                    result = await delivery_adapter._send_final_response_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,

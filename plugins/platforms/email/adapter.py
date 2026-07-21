@@ -26,8 +26,6 @@ import smtplib
 import socket
 import ssl
 import uuid
-import urllib.error
-import urllib.request
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -928,7 +926,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
             return SendResult(success=False, error=str(e))
 
-    async def _send_with_retry(
+    async def _send_final_response_with_retry(
         self,
         chat_id: str,
         content: str,
@@ -937,15 +935,16 @@ class EmailAdapter(BasePlatformAdapter):
         max_retries: int = 2,
         base_delay: float = 2.0,
     ) -> SendResult:
-        """Deliver the gateway's automatic response to an inbound email.
+        """Deliver the gateway's automatic final response to an inbound email.
 
         The stock Email adapter replies by email.  For approval-gated email
         intake, email is an input surface only: the response/approval card must
-        go to Discord, and explicit outbound email remains possible only via an
-        approved send/reply action that calls ``send`` directly.
+        go to the live Discord adapter.  Explicit outbound email remains
+        possible only via an approved send/reply action that calls ``send``
+        directly, and other gateway notices keep the inherited retry path.
         """
         if self._response_delivery not in {"discord", "discord_home", "approval_discord"}:
-            return await super()._send_with_retry(
+            return await super()._send_final_response_with_retry(
                 chat_id=chat_id,
                 content=content,
                 reply_to=reply_to,
@@ -954,58 +953,54 @@ class EmailAdapter(BasePlatformAdapter):
                 base_delay=base_delay,
             )
 
-        result = await asyncio.to_thread(self._send_discord_approval_message, content)
-        if not result.success:
+        channel_id = self._approval_discord_thread or self._approval_discord_channel
+        if not channel_id:
+            return SendResult(success=False, error="No Discord approval channel configured")
+
+        discord_adapter = self._discord_delivery_adapter()
+        if discord_adapter is None:
+            return SendResult(success=False, error="Discord adapter is not connected")
+
+        result = await discord_adapter._send_with_retry(
+            chat_id=channel_id,
+            content=content,
+            metadata=None,
+            max_retries=max_retries,
+            base_delay=base_delay,
+        )
+        if result.success:
+            logger.info("[Email] Routed inbound-email response to Discord channel %s", channel_id)
+        else:
             logger.error(
                 "[Email] Discord approval delivery failed; suppressing email fallback: %s",
                 result.error,
             )
         return result
 
-    def _send_discord_approval_message(self, content: str) -> SendResult:
-        """Send an email-intake response to the configured Discord channel."""
-        token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-        channel_id = self._approval_discord_thread or self._approval_discord_channel
-        if not token:
-            return SendResult(success=False, error="DISCORD_BOT_TOKEN is not configured")
-        if not channel_id:
-            return SendResult(success=False, error="No Discord approval channel configured")
+    def _discord_delivery_adapter(self) -> Optional[BasePlatformAdapter]:
+        """Resolve the active Discord adapter for email-intake final replies."""
 
-        chunks = []
-        text = content or ""
-        while text:
-            chunks.append(text[:1900])
-            text = text[1900:]
-        if not chunks:
-            chunks = ["(empty email-intake response)"]
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return None
 
-        last_message_id = None
-        for idx, chunk in enumerate(chunks, start=1):
-            if len(chunks) > 1:
-                chunk = f"{chunk}\n\n({idx}/{len(chunks)})"
-            payload = json.dumps({"content": chunk}).encode("utf-8")
-            req = urllib.request.Request(
-                f"https://discord.com/api/v10/channels/{channel_id}/messages",
-                data=payload,
-                headers={
-                    "Authorization": f"Bot {token}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "HermesEmailApprovalRelay/1.0",
-                },
-                method="POST",
-            )
+        adapter = None
+        resolver = getattr(runner, "_authorization_adapter", None)
+        if callable(resolver):
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    last_message_id = str(data.get("id") or "") or last_message_id
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", errors="replace")[:500]
-                return SendResult(success=False, error=f"Discord HTTP {e.code}: {detail}")
-            except Exception as e:
-                return SendResult(success=False, error=str(e))
+                adapter = resolver(Platform.DISCORD, getattr(self.config, "profile", None))
+            except TypeError:
+                adapter = resolver(Platform.DISCORD)
+            except Exception:
+                logger.debug("[Email] Failed to resolve Discord adapter from gateway runner", exc_info=True)
 
-        logger.info("[Email] Routed inbound-email response to Discord channel %s", channel_id)
-        return SendResult(success=True, message_id=last_message_id)
+        if adapter is None:
+            adapters = getattr(runner, "adapters", None) or {}
+            adapter = adapters.get(Platform.DISCORD)
+
+        if not isinstance(adapter, BasePlatformAdapter):
+            return None
+        return adapter
 
     def _message_id_domain(self) -> str:
         """Domain part for generated Message-IDs.

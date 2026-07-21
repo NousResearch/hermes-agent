@@ -12,6 +12,7 @@ import {
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
   mergeSessionPage,
+  resolveComposerSessionKey,
   sessionPinId,
   setCurrentCwd,
   setSelectedStoredSessionId,
@@ -82,6 +83,21 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('resolveComposerSessionKey', () => {
+  it('keeps the lineage root across compression tip rotation', () => {
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+    const sessions = [session({ id: tipAfter, _lineage_root_id: tipBefore })]
+
+    expect(resolveComposerSessionKey(tipBefore, [session({ id: tipBefore })])).toBe(tipBefore)
+    expect(resolveComposerSessionKey(tipAfter, sessions)).toBe(tipBefore)
+  })
+
+  it('falls back to the live id when the tip row is not loaded yet', () => {
+    expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
   })
 })
 

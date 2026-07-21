@@ -375,6 +375,39 @@ class TestTelegramApprovalCallback:
         assert "12345" in adapter._typing_paused
 
     @pytest.mark.asyncio
+    async def test_stale_tap_shows_expired_not_approved(self):
+        """A tap that lands after the approval wait timed out (resolver
+        returns 0) must NOT render '✅ Approved' — the command was already
+        denied fail-closed. Regression for the false-confirmation UX where
+        the message claimed approval but nothing ran."""
+        adapter = _make_adapter()
+        adapter._approval_state[8] = "agent:main:telegram:dm:12345"
+
+        query = AsyncMock()
+        query.data = "ea:session:8"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Teknium"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=0):
+                await adapter._handle_callback_query(update, context)
+
+        answer_text = query.answer.call_args[1]["text"]
+        assert "expired" in answer_text.lower()
+        edit_text = query.edit_message_text.call_args[1]["text"]
+        assert "Approved" not in edit_text
+        assert "expired" in edit_text.lower()
+
+    @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
         adapter._approval_state[3] = "agent:main:telegram:group:12345:99"

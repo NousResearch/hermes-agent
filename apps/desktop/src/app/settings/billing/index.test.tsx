@@ -74,7 +74,9 @@ describe('BillingSettings', () => {
     expect(screen.getByText('Ultra · $200/mo')).toBeTruthy()
     expect(screen.getByText('Visa •••• 3206')).toBeTruthy()
     expect(
-      screen.getByText('Terminal billing is off for this account — an admin must enable it on the portal.')
+      screen.getByText(
+        "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page."
+      )
     ).toBeTruthy()
     expect(screen.queryByRole('button', { name: '$100' })).toBeNull()
     expect(screen.getByText('Refill $10 when balance falls below $5')).toBeTruthy()
@@ -197,10 +199,8 @@ describe('BillingSettings', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    expect(await screen.findByText('Terminal billing needs approval:')).toBeTruthy()
-    expect(
-      screen.getByText('This needs terminal billing enabled. Start a top-up to enable it, then retry.')
-    ).toBeTruthy()
+    expect(await screen.findByText('Remote Spending needs approval:')).toBeTruthy()
+    expect(screen.getByText('This needs Remote Spending allowed. Start a top-up to allow it, then retry.')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Verify to continue' })).toBeTruthy()
   })
 

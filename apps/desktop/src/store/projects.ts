@@ -2,15 +2,16 @@ import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import { getHermesConfig, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
-import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -265,6 +266,34 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+async function gatewayRequestOn<T>(
+  gateway: HermesGateway,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  return gateway.request<T>(method, params)
+}
+
+interface ActiveProjectsContext {
+  gateway: HermesGateway
+  profile: string
+}
+
+async function activeProjectsContext(): Promise<ActiveProjectsContext> {
+  const profile = $activeGatewayProfile.get() || 'default'
+  let gateway = activeGateway()
+
+  if (!gateway || gateway.connectionState !== 'open') {
+    gateway = await ensureActiveGatewayOpen()
+  }
+
+  if (!gateway || gateway !== activeGateway() || profile !== ($activeGatewayProfile.get() || 'default')) {
+    throw new Error('Active Hermes profile changed while connecting')
+  }
+
+  return { gateway, profile }
+}
+
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
@@ -288,24 +317,27 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-// Pull the authoritative project tree (overview structure + counts + preview
-// sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
-export async function refreshProjectTree(): Promise<void> {
-  $projectTreeLoading.set(true)
+let projectTreeRefreshGeneration = 0
+
+async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
+
+  if (activeGateway() === gateway) {
+    $projectTreeLoading.set(true)
+  }
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
-    // The flat Sessions list shows everything; scoped ids are only used here to
-    // reconcile the optimistic eviction layer against what the server still lists.
-    const scoped = new Set(res.scoped_session_ids ?? [])
+    const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
+      preview_limit: 3
+    })
 
+    if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
+      return
+    }
+
+    const scoped = new Set(res.scoped_session_ids ?? [])
     $projectTree.set(res.projects ?? [])
     $activeProjectId.set(res.active_id ?? null)
-
-    // Reconcile the optimistic eviction layer against the fresh snapshot: keep
-    // evicting ids the server still lists (delete in flight) and drop the rest
-    // (server caught up), so the set can't grow unbounded across a long session.
     const tombstones = $removedSessionIds.get()
 
     if (tombstones.size) {
@@ -318,10 +350,25 @@ export async function refreshProjectTree(): Promise<void> {
 
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
-    // Backend may not be ready; keep the last known tree.
+    if (activeGateway() === gateway) {
+      markProjectsRpcFailure(err)
+    }
   } finally {
-    $projectTreeLoading.set(false)
+    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+      $projectTreeLoading.set(false)
+    }
+  }
+}
+
+// Pull the authoritative project tree (overview structure + counts + preview
+// sessions + the scoped-session-id set). Best-effort: a failure leaves the
+// cached tree intact so the sidebar doesn't flicker.
+export async function refreshProjectTree(): Promise<void> {
+  try {
+    const { gateway } = await activeProjectsContext()
+    await refreshProjectTreeOn(gateway)
+  } catch {
+    // Backend may not be ready; keep the last known tree.
   }
 }
 
@@ -340,30 +387,129 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   }
 }
 
-// One filesystem scan per app run: the heavy disk walk happens once, the result
-// is cached in the backend, and later opens read the cache. Desktop-only (needs
-// the native crawler); elsewhere discovery falls back to session-derived repos.
-let didScanRepos = false
+export interface RepoDiscoveryPolicy {
+  enabled: boolean
+  roots: string[]
+  exclude_paths: string[]
+}
+
+export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPolicy {
+  const desktopValue = config && typeof config === 'object' ? (config as { desktop?: unknown }).desktop : undefined
+
+  const desktop =
+    desktopValue && typeof desktopValue === 'object'
+      ? (desktopValue as {
+          repo_scan_enabled?: unknown
+          repo_scan_exclude_paths?: unknown
+          repo_scan_roots?: unknown
+        })
+      : {}
+
+  return {
+    enabled: desktop.repo_scan_enabled !== false,
+    roots: Array.isArray(desktop.repo_scan_roots)
+      ? desktop.repo_scan_roots.filter((value): value is string => typeof value === 'string')
+      : [],
+    exclude_paths: Array.isArray(desktop.repo_scan_exclude_paths)
+      ? desktop.repo_scan_exclude_paths.filter((value): value is string => typeof value === 'string')
+      : []
+  }
+}
+
+export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): string {
+  return JSON.stringify(policy)
+}
+
+interface RepoScanState {
+  completedSignature?: string
+  generation: number
+  runningSignature?: string
+}
+
+const repoScanStates = new WeakMap<HermesGateway, RepoScanState>()
+const scanningGatewayGenerations = new WeakMap<HermesGateway, number>()
+
+function syncReposScanning(): void {
+  const gateway = activeGateway()
+  $reposScanning.set(Boolean(gateway && scanningGatewayGenerations.has(gateway)))
+}
+
+$gateway.subscribe(syncReposScanning)
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
-  const scan = desktopGit()?.scanRepos
-
-  if (!scan || (didScanRepos && !force)) {
+  if (isDesktopFsRemoteMode()) {
     return
   }
 
-  didScanRepos = true
-  $reposScanning.set(true)
+  let context: ActiveProjectsContext
 
   try {
-    const repos = await scan([])
-    await gatewayRequest('projects.record_repos', { repos })
-    // The disk scan may surface new zero-session repos; refold them into the tree.
-    await refreshProjectTree()
+    context = await activeProjectsContext()
   } catch {
-    didScanRepos = false // let a later open retry a failed scan
+    return
+  }
+
+  const scan = desktopGit()?.scanRepos
+
+  if (!scan) {
+    return
+  }
+
+  const state = repoScanStates.get(context.gateway) ?? { generation: 0 }
+  repoScanStates.set(context.gateway, state)
+  let generation: number | undefined
+
+  try {
+    const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
+    const signature = repoDiscoveryPolicySignature(policy)
+
+    if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
+      return
+    }
+
+    generation = ++state.generation
+    state.runningSignature = signature
+
+    if (!policy.enabled) {
+      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
+        discovery_policy: policy,
+        repos: []
+      })
+    } else {
+      scanningGatewayGenerations.set(context.gateway, generation)
+      syncReposScanning()
+
+      const repos = await scan(policy.roots, {
+        enabled: true,
+        excludePaths: policy.exclude_paths
+      })
+
+      if (state.generation !== generation) {
+        return
+      }
+
+      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
+        discovery_policy: policy,
+        repos
+      })
+    }
+
+    if (state.generation !== generation) {
+      return
+    }
+
+    state.completedSignature = signature
+    await refreshProjectTreeOn(context.gateway)
+  } catch {
+    state.completedSignature = undefined
   } finally {
-    $reposScanning.set(false)
+    state.runningSignature = undefined
+
+    if (scanningGatewayGenerations.get(context.gateway) === generation) {
+      scanningGatewayGenerations.delete(context.gateway)
+    }
+
+    syncReposScanning()
   }
 }
 

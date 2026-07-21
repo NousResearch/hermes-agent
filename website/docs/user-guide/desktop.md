@@ -44,7 +44,7 @@ The center of the app. You get:
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
-- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent.
+- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
 
 #### Status bar
 
@@ -53,6 +53,23 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 - **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+
+#### Repository discovery
+
+Hermes Desktop discovers local Git repositories for the Projects sidebar by scanning your home directory to a bounded depth. You can change this per profile in **Settings → Workspace**, or in `config.yaml`:
+
+```yaml
+desktop:
+  repo_scan_enabled: true
+  repo_scan_roots: []
+  repo_scan_exclude_paths: []
+```
+
+- Set `repo_scan_enabled: false` to stop the filesystem scan completely. Existing disk-discovery cache rows for that profile are cleared; explicit projects and repositories inferred from intentional Hermes sessions remain available.
+- Set `repo_scan_roots` to a list of folders to restrict scanning. An empty list preserves the default home-directory scan.
+- Set `repo_scan_exclude_paths` to folders whose complete subtrees should be skipped.
+
+Changing any of these values invalidates only that profile's disk-discovery cache and starts a policy-compliant refresh. **Hide from sidebar** remains a separate per-item curation action.
 
 #### Choosing a model
 

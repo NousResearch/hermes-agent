@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { buildSessionWindowUrl, chatWindowWebPreferences, createSessionWindowRegistry } from './session-windows'
+import {
+  buildSessionWindowUrl,
+  chatWindowWebPreferences,
+  createSessionWindowRegistry,
+  instanceWindowBounds
+} from './session-windows'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the
@@ -83,10 +88,16 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
-test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () => {
-  const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
+test('instanceWindowBounds cascades a new window off its source bounds', () => {
+  const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 
-  assert.equal(url, 'http://localhost:5173/?win=secondary&new=1#/')
+  assert.deepEqual(bounds, { width: 1400, height: 900, x: 132, y: 152 })
+})
+
+test('instanceWindowBounds falls back to the persisted geometry with no source window', () => {
+  const fallback = { width: 1280, height: 800 }
+
+  assert.equal(instanceWindowBounds(null, fallback), fallback)
 })
 
 test('registry opens one window per session and focuses on re-open', () => {

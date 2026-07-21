@@ -22,6 +22,9 @@
   wl-clipboard,
   xclip,
 
+  # linux-only dev deps
+  cage,
+
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -61,8 +64,7 @@ let
 
   bundledSkills = lib.cleanSourceWith {
     src = ../skills;
-    filter =
-      path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
+    filter = path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
   };
 
   # Optional skills are NOT in the wheel (pythonSrc excludes them, see
@@ -70,8 +72,7 @@ let
   # same mechanism Homebrew packaging uses.
   bundledOptionalSkills = lib.cleanSourceWith {
     src = ../optional-skills;
-    filter =
-      path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
+    filter = path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
   };
 
   # Import bundled plugins (memory, context_engine, platforms/*).  Keeping
@@ -251,7 +252,14 @@ stdenv.mkDerivation (finalAttrs: {
         export HERMES_PYTHON=${devPython}/bin/python3
       '';
 
-      devDeps = runtimeDeps ++ [ devPython ];
+      devDeps =
+        runtimeDeps
+        ++ [
+          devPython
+        ]
+        ++ lib.optionals stdenv.isLinux [
+          cage # for running e2e tests without popping windows
+        ];
     };
 
   meta = with lib; {

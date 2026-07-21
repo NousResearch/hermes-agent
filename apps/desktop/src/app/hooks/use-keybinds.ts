@@ -40,7 +40,7 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
-import { openNewSessionInNewWindow } from '@/store/windows'
+import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
@@ -145,7 +145,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),
-    'session.newWindow': () => void openNewSessionInNewWindow(),
+    'session.newWindow': () => void openNewWindow(),
     // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
     // falls through to the recent-session switcher.
     'session.next': () => void (cycleTreeTabInFocusedZone(1) || stepSession(1)),

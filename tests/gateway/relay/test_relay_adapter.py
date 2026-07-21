@@ -157,6 +157,27 @@ def _make_dm_event(chat_id="dm-1", user_id="user-42"):
     return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
 
 
+def _make_scoped_event_with_author(
+    chat_id="chan-1", scope_id="scope-9", user_id="user-42"
+):
+    """An inbound scoped (guild/channel) message that ALSO carries the authentic
+    author user_id — the real shape of a Discord guild message (it has both a
+    guild scope_id and an author). Used to prove the adapter re-attaches BOTH
+    discriminators so the connector can fall back author-first when the guild
+    has no route row (managed agents join guilds dynamically)."""
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=Platform.RELAY,
+        chat_id=chat_id,
+        chat_type="channel",
+        scope_id=scope_id,
+        user_id=user_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
 @pytest.mark.asyncio
 async def test_send_reattaches_scope_id_from_inbound_scope():
     """The connector's egress guard resolves the owning tenant from
@@ -234,10 +255,30 @@ async def test_send_preserves_explicit_user_id():
 
 
 @pytest.mark.asyncio
-async def test_scoped_reply_does_not_carry_user_id():
-    """A scoped reply resolves by scope_id and must NOT carry a DM user_id even if
-    the same chat_id was somehow seen — scope capture wins and user_id stays out
-    (scope_id is the discriminator; user_id is the DM-only fallback)."""
+async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
+    """A scoped (guild) reply now re-attaches BOTH scope_id AND the authentic
+    author user_id. scope_id is the connector's primary discriminator; user_id
+    is the author-first FALLBACK the connector uses when the guild has no route
+    row (a managed agent joins guilds dynamically, so a provision-time guild
+    route is not guaranteed). Regression for live 'discord egress declined:
+    target not routed to an onboarded tenant' on GUILD replies (paired with
+    gateway-gateway makeDiscordTenantOf guild-route-miss fallback)."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(
+        _make_scoped_event_with_author(
+            chat_id="chan-1", scope_id="scope-9", user_id="user-42"
+        )
+    )
+    await a.send("chan-1", "hi")
+    assert t.sent["metadata"].get("scope_id") == "scope-9"
+    assert t.sent["metadata"].get("user_id") == "user-42"
+
+
+@pytest.mark.asyncio
+async def test_scoped_reply_without_inbound_author_carries_scope_only():
+    """A scoped inbound with no author id yields scope_id only — the adapter
+    never invents a user_id it didn't observe."""
     t = _CaptureTransport()
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
     a._capture_scope(_make_event(chat_id="chan-1", scope_id="scope-9"))

@@ -280,6 +280,18 @@ app.include_router(_memory_oauth_router)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_SSH_OWNER_NONCE: Optional[str] = None
+
+
+def _apply_ssh_session_token(token: str) -> None:
+    global _SESSION_TOKEN
+    if token:
+        _SESSION_TOKEN = token
+
+
+def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
+    global _SSH_OWNER_NONCE
+    _SSH_OWNER_NONCE = nonce
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -2772,6 +2784,14 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         mode = "none"
 
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
+
+
+@app.get("/api/ssh/ownership")
+async def get_ssh_ownership(request: Request):
+    _require_token(request)
+    if not _SSH_OWNER_NONCE:
+        raise HTTPException(status_code=404, detail="SSH ownership is not active")
+    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
 @app.get("/api/status")
@@ -19145,6 +19165,8 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    ssh_session_token: Optional[str] = None,
+    ssh_owner_nonce: Optional[str] = None,
 ):
     """Start the web UI server.
 
@@ -19156,7 +19178,13 @@ def start_server(
     ``headless`` is the ``serve`` path: the JSON-RPC/WS backend with no UI
     build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
     the banner announces the bind rather than a browser URL.
+
+    ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
+    bootstrap state. Neither is persisted or exported to child processes.
     """
+    _apply_ssh_session_token(ssh_session_token or "")
+    _apply_ssh_owner_nonce(ssh_owner_nonce)
+
     import uvicorn
 
     try:

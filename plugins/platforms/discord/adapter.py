@@ -7865,19 +7865,9 @@ def _define_discord_view_classes() -> None:
 
             self.resolved = True
 
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
-
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.response.edit_message(embed=embed, view=self)
-
-            # Unblock the waiting agent thread via the gateway approval queue
+            # Unblock the waiting agent thread FIRST, then render the outcome.
+            # A click that lands after the approval wait timed out (count == 0)
+            # must not claim "Approved" — the command was already denied.
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
@@ -7887,6 +7877,24 @@ def _define_discord_view_classes() -> None:
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
+                count = 0
+
+            if not count:
+                color = discord.Color.dark_grey()
+                label = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+
+            # Update the embed with the decision
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                footer = f"{label} by {interaction.user.display_name}" if count else label
+                embed.set_footer(text=footer)
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(

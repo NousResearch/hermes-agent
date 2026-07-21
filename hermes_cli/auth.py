@@ -8154,7 +8154,7 @@ def step_up_nous_billing_scope(
     The lazy step-up (plan D-A): triggered when a billing endpoint returns
     ``403 insufficient_scope``. Runs a fresh device-connect with
     ``inference:invoke tool:invoke billing:manage`` on the scope. The user must be
-    an ADMIN/OWNER and tick "Allow terminal billing" in the portal for the minted
+    an ADMIN/OWNER and select "Allow Remote Spending" in the portal for the minted
     token to actually carry the scope; otherwise the server silently downscopes and this
     returns False.
 

@@ -330,7 +330,7 @@ class TestAdapterInit:
         adapter = APIServerAdapter(config)
         assert adapter._port == 8642
 
-    def test_create_agent_forwards_config_reasoning_effort(self, monkeypatch):
+    def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -349,7 +349,15 @@ class TestAdapterInit:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
         monkeypatch.setattr(
             "gateway.run._load_gateway_config",
-            lambda: {"agent": {"reasoning_effort": "xhigh"}},
+            lambda: {
+                "agent": {"reasoning_effort": "xhigh"},
+                "checkpoints": {
+                    "enabled": True,
+                    "max_snapshots": 7,
+                    "max_total_size_mb": 321,
+                    "max_file_size_mb": 4,
+                },
+            },
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
@@ -365,6 +373,10 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert captured["checkpoints_enabled"] is True
+        assert captured["checkpoint_max_snapshots"] == 7
+        assert captured["checkpoint_max_total_size_mb"] == 321
+        assert captured["checkpoint_max_file_size_mb"] == 4
 
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}

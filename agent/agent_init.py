@@ -68,18 +68,28 @@ def _ra():
     return run_agent
 
 
-def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
+def _build_codex_gpt5_autoraise_notice(
+    autoraise: Dict[str, Any], context_length: Optional[int] = None
+) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
     ``autoraise`` is ``{"model": <slug>, "from": <old_ratio>, "to": <new_ratio>}``.
-    The same text is printed inline for CLI users and replayed via
+    ``context_length`` is the live-resolved window from the context compressor
+    (Codex's /models catalog is authoritative and can change server-side, e.g.
+    the gpt-5.6 family's 272K → 372K → 272K shifts in July 2026), so the banner
+    reports what this session actually got rather than a hardcoded cap. The
+    same text is printed inline for CLI users and replayed via
     ``status_callback`` for gateway users, so it must be self-contained and
     include the exact opt-back-out command.
     """
     model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6 family
-    # is capped at 272K by the Codex OAuth backend.
-    cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
+    if isinstance(context_length, int) and context_length > 0:
+        cap = f"{round(context_length / 1000)}K"
+    else:
+        # Static fallback when the resolved window isn't available:
+        # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6
+        # family is capped at 272K by the Codex OAuth backend.
+        cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
@@ -2116,7 +2126,7 @@ def init_agent(
     # autoraised model) updates the marker state and re-notifies once. The
     # config display gate (compression.codex_gpt55_autoraise_notice) still
     # suppresses the banner entirely without disabling the threshold autoraise.
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None) or {}
     _show_autoraise_notice = (
         bool(_autoraise)
         and compression_enabled
@@ -2139,7 +2149,10 @@ def init_agent(
         # for CLI users; gateway users get the same text replayed via
         # _compression_warning on turn 1 (set below).
         if _show_autoraise_notice:
-            print(_build_codex_gpt5_autoraise_notice(_autoraise))
+            print(_build_codex_gpt5_autoraise_notice(
+                _autoraise,
+                context_length=getattr(agent.context_compressor, "context_length", None),
+            ))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
@@ -2149,7 +2162,10 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     if _show_autoraise_notice:
-        agent._compression_warning = _build_codex_gpt5_autoraise_notice(_autoraise)
+        agent._compression_warning = _build_codex_gpt5_autoraise_notice(
+            _autoraise,
+            context_length=getattr(agent.context_compressor, "context_length", None),
+        )
 
     # Mark shown so repeated inits in this profile (e.g. every gateway message)
     # stay silent. Recorded once, whether the notice went to the CLI print or

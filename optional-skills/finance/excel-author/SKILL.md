@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [excel, openpyxl, finance, spreadsheet, modeling]
-    related_skills: [pptx-author, dcf-model, comps-analysis, lbo-model, 3-statement-model]
+    related_skills: [xlsx, pptx-author, dcf-model, comps-analysis, lbo-model, 3-statement-model]
 ---
 
 # excel-author

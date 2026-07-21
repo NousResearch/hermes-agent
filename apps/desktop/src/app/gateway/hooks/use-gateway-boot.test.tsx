@@ -18,6 +18,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 // post-boot reconnect loop.
 
 type Listener = (ev: unknown) => void
+let connectionApplied: null | (() => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -97,7 +98,13 @@ function fakeDesktop() {
     })),
     onBootProgress: vi.fn(() => () => undefined),
     onBackendExit: vi.fn(() => () => undefined),
-    onConnectionApplied: vi.fn(() => () => undefined),
+    onConnectionApplied: vi.fn(callback => {
+      connectionApplied = callback
+
+      return () => {
+        connectionApplied = null
+      }
+    }),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
@@ -105,8 +112,12 @@ function fakeDesktop() {
   }
 }
 
-function Harness({ refreshSessions }: { refreshSessions?: () => Promise<void> } = {}) {
+function Harness({
+  beforeConnectionSwitch = () => undefined,
+  refreshSessions
+}: { beforeConnectionSwitch?: () => void; refreshSessions?: () => Promise<void> } = {}) {
   useGatewayBoot({
+    beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
@@ -123,6 +134,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  connectionApplied = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -197,6 +209,18 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('resets the old machine context before connecting an applied gateway', async () => {
+    const beforeConnectionSwitch = vi.fn()
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+    expect(connectionApplied).not.toBeNull()
+
+    act(() => connectionApplied?.())
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
   })
 
   it('a remote that drops post-boot keeps looping with NO boot.error (the dead-end CONNECTING combo)', async () => {

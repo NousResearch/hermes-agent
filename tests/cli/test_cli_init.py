@@ -289,28 +289,26 @@ class TestPromptToolkitTerminalCompatibility:
         result = _build_cpr_disabled_output(_NoFileno())
         assert result is None or result.enable_cpr is False
 
-    def test_cpr_gating_local_vs_tunnel(self, monkeypatch):
-        """CPR is only suppressed on tunneled links / explicit opt-out.
+    def test_cpr_gating_posix_local_and_windows_preserve(self, monkeypatch):
+        """POSIX suppresses CPR without SSH; native Windows keeps PT default.
 
-        CPR works fine on local terminals and is only a layout hint, so the fix
-        for #13870 must not change default behavior locally — it gates on
-        _terminal_may_leak_cpr(). Local (no SSH env) -> CPR left enabled;
-        SSH session or PROMPT_TOOLKIT_NO_CPR=1 -> CPR suppressed.
+        Broader coverage (Application wiring + delayed-CPR PTY repro) lives in
+        ``tests/cli/test_cpr_local_leak.py``.
         """
+        import sys as _sys
+
         from cli import _terminal_may_leak_cpr
 
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):
             monkeypatch.delenv(var, raising=False)
 
-        # Local terminal: leave prompt_toolkit's default (CPR on) untouched.
+        monkeypatch.setattr(_sys, "platform", "linux")
+        assert _terminal_may_leak_cpr() is True
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        assert _terminal_may_leak_cpr() is True
+        monkeypatch.setattr(_sys, "platform", "win32")
         assert _terminal_may_leak_cpr() is False
 
-        # SSH session: the tunnel where the leak reproduces.
-        monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 51234")
-        assert _terminal_may_leak_cpr() is True
-        monkeypatch.delenv("SSH_CONNECTION", raising=False)
-
-        # prompt_toolkit's own explicit opt-out is honored.
         monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
         assert _terminal_may_leak_cpr() is True
 

@@ -2,294 +2,367 @@
   "schema_version": 1,
   "skills": [
     {
+      "frontmatter_name": "apple-notes",
       "name": "apple/apple-notes",
       "path": "apple/apple-notes/SKILL.md"
     },
     {
+      "frontmatter_name": "apple-reminders",
       "name": "apple/apple-reminders",
       "path": "apple/apple-reminders/SKILL.md"
     },
     {
+      "frontmatter_name": "findmy",
       "name": "apple/findmy",
       "path": "apple/findmy/SKILL.md"
     },
     {
+      "frontmatter_name": "imessage",
       "name": "apple/imessage",
       "path": "apple/imessage/SKILL.md"
     },
     {
+      "frontmatter_name": "claude-code",
       "name": "autonomous-ai-agents/claude-code",
       "path": "autonomous-ai-agents/claude-code/SKILL.md"
     },
     {
+      "frontmatter_name": "codex",
       "name": "autonomous-ai-agents/codex",
       "path": "autonomous-ai-agents/codex/SKILL.md"
     },
     {
+      "frontmatter_name": "hermes-agent",
       "name": "autonomous-ai-agents/hermes-agent",
       "path": "autonomous-ai-agents/hermes-agent/SKILL.md"
     },
     {
+      "frontmatter_name": "opencode",
       "name": "autonomous-ai-agents/opencode",
       "path": "autonomous-ai-agents/opencode/SKILL.md"
     },
     {
+      "frontmatter_name": "computer-use",
       "name": "computer-use",
       "path": "computer-use/SKILL.md"
     },
     {
+      "frontmatter_name": "architecture-diagram",
       "name": "creative/architecture-diagram",
       "path": "creative/architecture-diagram/SKILL.md"
     },
     {
+      "frontmatter_name": "ascii-art",
       "name": "creative/ascii-art",
       "path": "creative/ascii-art/SKILL.md"
     },
     {
+      "frontmatter_name": "ascii-video",
       "name": "creative/ascii-video",
       "path": "creative/ascii-video/SKILL.md"
     },
     {
+      "frontmatter_name": "baoyu-infographic",
       "name": "creative/baoyu-infographic",
       "path": "creative/baoyu-infographic/SKILL.md"
     },
     {
+      "frontmatter_name": "claude-design",
       "name": "creative/claude-design",
       "path": "creative/claude-design/SKILL.md"
     },
     {
+      "frontmatter_name": "comfyui",
       "name": "creative/comfyui",
       "path": "creative/comfyui/SKILL.md"
     },
     {
+      "frontmatter_name": "design-md",
       "name": "creative/design-md",
       "path": "creative/design-md/SKILL.md"
     },
     {
+      "frontmatter_name": "excalidraw",
       "name": "creative/excalidraw",
       "path": "creative/excalidraw/SKILL.md"
     },
     {
+      "frontmatter_name": "humanizer",
       "name": "creative/humanizer",
       "path": "creative/humanizer/SKILL.md"
     },
     {
+      "frontmatter_name": "manim-video",
       "name": "creative/manim-video",
       "path": "creative/manim-video/SKILL.md"
     },
     {
+      "frontmatter_name": "p5js",
       "name": "creative/p5js",
       "path": "creative/p5js/SKILL.md"
     },
     {
+      "frontmatter_name": "popular-web-designs",
       "name": "creative/popular-web-designs",
       "path": "creative/popular-web-designs/SKILL.md"
     },
     {
+      "frontmatter_name": "pretext",
       "name": "creative/pretext",
       "path": "creative/pretext/SKILL.md"
     },
     {
+      "frontmatter_name": "sketch",
       "name": "creative/sketch",
       "path": "creative/sketch/SKILL.md"
     },
     {
+      "frontmatter_name": "songwriting-and-ai-music",
       "name": "creative/songwriting-and-ai-music",
       "path": "creative/songwriting-and-ai-music/SKILL.md"
     },
     {
+      "frontmatter_name": "touchdesigner-mcp",
       "name": "creative/touchdesigner-mcp",
       "path": "creative/touchdesigner-mcp/SKILL.md"
     },
     {
+      "frontmatter_name": "jupyter-live-kernel",
       "name": "data-science/jupyter-live-kernel",
       "path": "data-science/jupyter-live-kernel/SKILL.md"
     },
     {
+      "frontmatter_name": "dogfood",
       "name": "dogfood",
       "path": "dogfood/SKILL.md"
     },
     {
+      "frontmatter_name": "himalaya",
       "name": "email/himalaya",
       "path": "email/himalaya/SKILL.md"
     },
     {
+      "frontmatter_name": "codebase-inspection",
       "name": "github/codebase-inspection",
       "path": "github/codebase-inspection/SKILL.md"
     },
     {
+      "frontmatter_name": "github-auth",
       "name": "github/github-auth",
       "path": "github/github-auth/SKILL.md"
     },
     {
+      "frontmatter_name": "github-code-review",
       "name": "github/github-code-review",
       "path": "github/github-code-review/SKILL.md"
     },
     {
+      "frontmatter_name": "github-issues",
       "name": "github/github-issues",
       "path": "github/github-issues/SKILL.md"
     },
     {
+      "frontmatter_name": "github-pr-workflow",
       "name": "github/github-pr-workflow",
       "path": "github/github-pr-workflow/SKILL.md"
     },
     {
+      "frontmatter_name": "github-repo-management",
       "name": "github/github-repo-management",
       "path": "github/github-repo-management/SKILL.md"
     },
     {
+      "frontmatter_name": "hermes-desktop-plugins",
       "name": "hermes-desktop-plugins",
       "path": "hermes-desktop-plugins/SKILL.md"
     },
     {
+      "frontmatter_name": "gif-search",
       "name": "media/gif-search",
       "path": "media/gif-search/SKILL.md"
     },
     {
+      "frontmatter_name": "heartmula",
       "name": "media/heartmula",
       "path": "media/heartmula/SKILL.md"
     },
     {
+      "frontmatter_name": "songsee",
       "name": "media/songsee",
       "path": "media/songsee/SKILL.md"
     },
     {
+      "frontmatter_name": "youtube-content",
       "name": "media/youtube-content",
       "path": "media/youtube-content/SKILL.md"
     },
     {
+      "frontmatter_name": "evaluating-llms-harness",
       "name": "mlops/evaluation/lm-evaluation-harness",
       "path": "mlops/evaluation/lm-evaluation-harness/SKILL.md"
     },
     {
+      "frontmatter_name": "weights-and-biases",
       "name": "mlops/evaluation/weights-and-biases",
       "path": "mlops/evaluation/weights-and-biases/SKILL.md"
     },
     {
+      "frontmatter_name": "huggingface-hub",
       "name": "mlops/huggingface-hub",
       "path": "mlops/huggingface-hub/SKILL.md"
     },
     {
+      "frontmatter_name": "llama-cpp",
       "name": "mlops/inference/llama-cpp",
       "path": "mlops/inference/llama-cpp/SKILL.md"
     },
     {
+      "frontmatter_name": "serving-llms-vllm",
       "name": "mlops/inference/vllm",
       "path": "mlops/inference/vllm/SKILL.md"
     },
     {
+      "frontmatter_name": "audiocraft-audio-generation",
       "name": "mlops/models/audiocraft",
       "path": "mlops/models/audiocraft/SKILL.md"
     },
     {
+      "frontmatter_name": "segment-anything-model",
       "name": "mlops/models/segment-anything",
       "path": "mlops/models/segment-anything/SKILL.md"
     },
     {
+      "frontmatter_name": "obsidian",
       "name": "note-taking/obsidian",
       "path": "note-taking/obsidian/SKILL.md"
     },
     {
+      "frontmatter_name": "airtable",
       "name": "productivity/airtable",
       "path": "productivity/airtable/SKILL.md"
     },
     {
+      "frontmatter_name": "google-workspace",
       "name": "productivity/google-workspace",
       "path": "productivity/google-workspace/SKILL.md"
     },
     {
+      "frontmatter_name": "maps",
       "name": "productivity/maps",
       "path": "productivity/maps/SKILL.md"
     },
     {
+      "frontmatter_name": "nano-pdf",
       "name": "productivity/nano-pdf",
       "path": "productivity/nano-pdf/SKILL.md"
     },
     {
+      "frontmatter_name": "notion",
       "name": "productivity/notion",
       "path": "productivity/notion/SKILL.md"
     },
     {
+      "frontmatter_name": "ocr-and-documents",
       "name": "productivity/ocr-and-documents",
       "path": "productivity/ocr-and-documents/SKILL.md"
     },
     {
+      "frontmatter_name": "petdex",
       "name": "productivity/petdex",
       "path": "productivity/petdex/SKILL.md"
     },
     {
+      "frontmatter_name": "powerpoint",
       "name": "productivity/powerpoint",
       "path": "productivity/powerpoint/SKILL.md"
     },
     {
+      "frontmatter_name": "teams-meeting-pipeline",
       "name": "productivity/teams-meeting-pipeline",
       "path": "productivity/teams-meeting-pipeline/SKILL.md"
     },
     {
+      "frontmatter_name": "arxiv",
       "name": "research/arxiv",
       "path": "research/arxiv/SKILL.md"
     },
     {
+      "frontmatter_name": "blogwatcher",
       "name": "research/blogwatcher",
       "path": "research/blogwatcher/SKILL.md"
     },
     {
+      "frontmatter_name": "llm-wiki",
       "name": "research/llm-wiki",
       "path": "research/llm-wiki/SKILL.md"
     },
     {
+      "frontmatter_name": "polymarket",
       "name": "research/polymarket",
       "path": "research/polymarket/SKILL.md"
     },
     {
+      "frontmatter_name": "research-paper-writing",
       "name": "research/research-paper-writing",
       "path": "research/research-paper-writing/SKILL.md"
     },
     {
+      "frontmatter_name": "openhue",
       "name": "smart-home/openhue",
       "path": "smart-home/openhue/SKILL.md"
     },
     {
+      "frontmatter_name": "xurl",
       "name": "social-media/xurl",
       "path": "social-media/xurl/SKILL.md"
     },
     {
+      "frontmatter_name": "hermes-agent-skill-authoring",
       "name": "software-development/hermes-agent-skill-authoring",
       "path": "software-development/hermes-agent-skill-authoring/SKILL.md"
     },
     {
+      "frontmatter_name": "node-inspect-debugger",
       "name": "software-development/node-inspect-debugger",
       "path": "software-development/node-inspect-debugger/SKILL.md"
     },
     {
+      "frontmatter_name": "plan",
       "name": "software-development/plan",
       "path": "software-development/plan/SKILL.md"
     },
     {
+      "frontmatter_name": "python-debugpy",
       "name": "software-development/python-debugpy",
       "path": "software-development/python-debugpy/SKILL.md"
     },
     {
+      "frontmatter_name": "requesting-code-review",
       "name": "software-development/requesting-code-review",
       "path": "software-development/requesting-code-review/SKILL.md"
     },
     {
+      "frontmatter_name": "simplify-code",
       "name": "software-development/simplify-code",
       "path": "software-development/simplify-code/SKILL.md"
     },
     {
+      "frontmatter_name": "spike",
       "name": "software-development/spike",
       "path": "software-development/spike/SKILL.md"
     },
     {
+      "frontmatter_name": "systematic-debugging",
       "name": "software-development/systematic-debugging",
       "path": "software-development/systematic-debugging/SKILL.md"
     },
     {
+      "frontmatter_name": "test-driven-development",
       "name": "software-development/test-driven-development",
       "path": "software-development/test-driven-development/SKILL.md"
     },
     {
+      "frontmatter_name": "yuanbao",
       "name": "yuanbao",
       "path": "yuanbao/SKILL.md"
     }

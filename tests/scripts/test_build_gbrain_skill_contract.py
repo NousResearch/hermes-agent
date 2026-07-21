@@ -60,6 +60,10 @@ def test_contract_lists_nested_skills_deterministically(tmp_path):
         "creative/pixel-art",
         "research/deep-research",
     ]
+    assert [entry["frontmatter_name"] for entry in result.manifest["skills"]] == [
+        "pixel-art",
+        "deep-research",
+    ]
     assert "`skills/creative/pixel-art/SKILL.md`" in result.resolver
     assert "`skills/research/deep-research/SKILL.md`" in result.resolver
     assert result.resolver.index("Create pixel art.") < result.resolver.index(
@@ -185,7 +189,11 @@ def test_explicit_triggers_preserve_declared_order_and_manifest_is_unique(tmp_pa
         "First intent"
     )
     assert "Fallback trigger." not in result.resolver
-    assert result.manifest["skills"] == [{"name": "one", "path": "one/SKILL.md"}]
+    assert result.manifest["skills"] == [{
+        "frontmatter_name": "one",
+        "name": "one",
+        "path": "one/SKILL.md",
+    }]
 
 
 @pytest.mark.parametrize(
@@ -240,7 +248,11 @@ def test_generated_files_are_not_contract_inputs(tmp_path):
 
     result = build_contract(skills)
 
-    assert result.manifest["skills"] == [{"name": "one", "path": "one/SKILL.md"}]
+    assert result.manifest["skills"] == [{
+        "frontmatter_name": "one",
+        "name": "one",
+        "path": "one/SKILL.md",
+    }]
     assert "not-real" not in result.resolver
 
 

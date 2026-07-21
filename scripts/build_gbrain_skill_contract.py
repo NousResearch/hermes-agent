@@ -236,7 +236,11 @@ def build_contract(skills_dir: Path) -> Contract:
     manifest: dict[str, object] = {
         "schema_version": 1,
         "skills": [
-            {"name": entry.manifest_name, "path": entry.relative_path}
+            {
+                "frontmatter_name": entry.frontmatter_name,
+                "name": entry.manifest_name,
+                "path": entry.relative_path,
+            }
             for entry in sorted_entries
         ],
     }

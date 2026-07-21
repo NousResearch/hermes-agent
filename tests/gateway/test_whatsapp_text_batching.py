@@ -105,3 +105,51 @@ def test_lone_message_dispatched_alone():
 
     asyncio.run(_drive())
     assert dispatched == ["solo"]
+
+
+def test_group_merge_tags_each_appended_author():
+    """Shared group batch: each appended message is tagged with its own sender.
+
+    The first message stays unprefixed (run.py prefixes it with its author
+    later); subsequent messages from other users must carry their own [Name]
+    so authorship isn't collapsed onto the batch owner (issue: author-merge).
+    """
+    async def _run():
+        adapter = _make_adapter(
+            group_sessions_per_user=False,
+            text_batch_delay_seconds=60,   # don't flush during the test
+            text_batch_split_delay_seconds=60,
+        )
+
+        def _gev(text, user_id, user_name):
+            src = SessionSource(
+                platform=Platform.WHATSAPP, chat_id="grp", chat_type="group",
+                user_id=user_id, user_name=user_name,
+            )
+            return MessageEvent(text=text, message_type=MessageType.TEXT, source=src)
+
+        adapter._enqueue_text_event(_gev("hey", "u1", "Maks"))
+        adapter._enqueue_text_event(_gev("elo", "u2", "Borrell"))
+        key = adapter._text_batch_key(_gev("x", "u1", "Maks"))
+        assert adapter._pending_text_batches[key].text == "hey\n[Borrell] elo"
+        for t in adapter._pending_text_batch_tasks.values():
+            t.cancel()
+
+    asyncio.run(_run())
+
+
+def test_dm_merge_not_tagged():
+    """DMs are single-author: no [Name] tags injected on merge."""
+    async def _run():
+        adapter = _make_adapter(
+            text_batch_delay_seconds=60,
+            text_batch_split_delay_seconds=60,
+        )
+        adapter._enqueue_text_event(_event("a"))
+        adapter._enqueue_text_event(_event("b"))
+        key = adapter._text_batch_key(_event("x"))
+        assert adapter._pending_text_batches[key].text == "a\nb"
+        for t in adapter._pending_text_batch_tasks.values():
+            t.cancel()
+
+    asyncio.run(_run())

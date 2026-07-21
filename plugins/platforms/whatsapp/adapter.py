@@ -1296,7 +1296,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._pending_text_batches[key] = event
         else:
             if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+                # Merged batch keeps only the first event's source, so tag each
+                # appended message with its own sender in shared group sessions
+                # (mirrors the [Name] prefix run.py adds to the first message).
+                # DMs / per-user sessions: no tag.
+                from gateway.session import is_shared_multi_user_session
+                _shared = is_shared_multi_user_session(
+                    event.source,
+                    group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                    thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+                )
+                _line = (
+                    f"[{event.source.user_name}] {event.text}"
+                    if _shared and event.source.user_name
+                    else event.text
+                )
+                existing.text = f"{existing.text}\n{_line}" if existing.text else _line
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)

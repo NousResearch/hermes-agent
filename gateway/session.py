@@ -309,7 +309,9 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
-    
+    topic_context_prompt: str = ""
+    topic_workdir: str = ""
+
     # Session metadata
     session_key: str = ""
     session_id: str = ""
@@ -324,6 +326,8 @@ class SessionContext:
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
+            "topic_context_prompt": self.topic_context_prompt,
+            "topic_workdir": self.topic_workdir,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -475,6 +479,10 @@ def build_session_context_prompt(
         lines.append(
             f"**Channel Topic:** {_format_untrusted_prompt_value(context.source.chat_topic)}"
         )
+
+    if context.topic_context_prompt:
+        lines.append("")
+        lines.append(context.topic_context_prompt)
 
     if context.source.platform == Platform.MATRIX:
         src = context.source

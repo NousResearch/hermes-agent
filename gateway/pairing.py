@@ -653,7 +653,7 @@ class PairingStore:
     def _all_platforms(self, suffix: str) -> list:
         """List all platforms that have data files of a given suffix."""
         platforms = []
-        for f in PAIRING_DIR.iterdir():
+        for f in self._dir.iterdir():
             if f.name.endswith(f"-{suffix}.json"):
                 platform = f.name.replace(f"-{suffix}.json", "")
                 if not platform.startswith("_"):

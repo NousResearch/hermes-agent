@@ -103,13 +103,21 @@ def _detect_openclaw_processes() -> list[str]:
             pass
     else:
         try:
-            result = subprocess.run(
-                ["pgrep", "-f", "openclaw"],
-                capture_output=True, text=True, timeout=3,
-            )
-            if result.returncode == 0:
-                pids = result.stdout.strip().split()
-                found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
+            matched_pids: list[str] = []
+            for proc_name in ("openclaw", "clawd"):
+                result = subprocess.run(
+                    ["pgrep", "-x", proc_name],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if result.returncode == 0:
+                    matched_pids.extend(
+                        pid for pid in result.stdout.strip().split() if pid
+                    )
+            if matched_pids:
+                deduped = list(dict.fromkeys(matched_pids))
+                found.append(
+                    f"openclaw process(es) (PIDs: {', '.join(deduped)})"
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 

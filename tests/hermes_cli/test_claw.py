@@ -683,19 +683,26 @@ class TestPrintMigrationReport:
 
 
 class TestDetectOpenclawProcesses:
-    def test_returns_match_when_pgrep_finds_openclaw(self):
+    def test_returns_match_when_exact_pgrep_finds_openclaw(self):
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "linux"
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
-                # systemd check misses, pgrep finds openclaw
+                # systemd check misses, exact-name pgrep finds openclaw
                 mock_subprocess.run.side_effect = [
                     MagicMock(returncode=1, stdout=""),  # systemctl
-                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep -x openclaw
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
                 ]
                 mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
                 result = claw_mod._detect_openclaw_processes()
                 assert len(result) == 1
                 assert "1234" in result[0]
+                assert mock_subprocess.run.call_args_list[1].args[0] == [
+                    "pgrep", "-x", "openclaw",
+                ]
+                assert mock_subprocess.run.call_args_list[2].args[0] == [
+                    "pgrep", "-x", "clawd",
+                ]
 
     def test_returns_empty_when_pgrep_finds_nothing(self):
         with patch.object(claw_mod, "sys") as mock_sys:
@@ -703,7 +710,35 @@ class TestDetectOpenclawProcesses:
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
                 mock_subprocess.run.side_effect = [
                     MagicMock(returncode=1, stdout=""),  # systemctl (not found)
-                    MagicMock(returncode=1, stdout=""),  # pgrep
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert result == []
+
+    def test_returns_match_when_exact_pgrep_finds_clawd(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw
+                    MagicMock(returncode=0, stdout="4321\n"),  # pgrep -x clawd
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) == 1
+                assert "4321" in result[0]
+
+    def test_ignores_substring_only_false_positive_on_non_windows(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
                 ]
                 mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
                 result = claw_mod._detect_openclaw_processes()
@@ -715,7 +750,8 @@ class TestDetectOpenclawProcesses:
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
                 mock_subprocess.run.side_effect = [
                     MagicMock(returncode=0, stdout="active\n"),  # systemctl
-                    MagicMock(returncode=1, stdout=""),  # pgrep
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
                 ]
                 mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
                 result = claw_mod._detect_openclaw_processes()

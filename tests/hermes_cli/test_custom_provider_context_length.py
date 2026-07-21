@@ -238,3 +238,117 @@ class TestContextProbeTiers:
             assert a > b, f"tiers must strictly descend, got {a} then {b}"
         # 128K is still a tier (users relying on it probe-down get there)
         assert 128_000 in CONTEXT_PROBE_TIERS
+
+
+class TestNormalizeCustomProviderTimeouts:
+    """_normalize_custom_provider_entry must preserve timeout fields.
+
+    Regression guard: request_timeout_seconds and stale_timeout_seconds were
+    listed in _KNOWN_KEYS (so no unknown-key warning fired) but were never
+    extracted into the normalized dict — silently dropped for any
+    custom_providers list entry. rate_limit_delay and context_length are
+    extracted correctly; timeouts must follow the same pattern.
+    """
+
+    def test_request_timeout_seconds_survives_normalization(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "slow-llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "request_timeout_seconds": 300,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result.get("request_timeout_seconds") == 300
+
+    def test_stale_timeout_seconds_survives_normalization(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "slow-llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "stale_timeout_seconds": 60,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result.get("stale_timeout_seconds") == 60
+
+    def test_both_timeout_fields_survive_together(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "slow-llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "request_timeout_seconds": 300,
+            "stale_timeout_seconds": 60,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result.get("request_timeout_seconds") == 300
+        assert result.get("stale_timeout_seconds") == 60
+
+    def test_timeout_consistent_with_rate_limit_delay(self):
+        """All three per-provider throttle fields must survive normalization together."""
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "slow-llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "rate_limit_delay": 1.5,
+            "request_timeout_seconds": 300,
+            "stale_timeout_seconds": 60,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result.get("rate_limit_delay") == 1.5
+        assert result.get("request_timeout_seconds") == 300
+        assert result.get("stale_timeout_seconds") == 60
+
+    def test_zero_timeout_is_rejected(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "request_timeout_seconds": 0,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert "request_timeout_seconds" not in result
+
+    def test_negative_timeout_is_rejected(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "request_timeout_seconds": -10,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert "request_timeout_seconds" not in result
+
+    def test_absent_timeout_not_in_result(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert "request_timeout_seconds" not in result
+        assert "stale_timeout_seconds" not in result
+
+    def test_float_timeout_accepted(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "llm",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "k",
+            "request_timeout_seconds": 30.5,
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result.get("request_timeout_seconds") == 30.5

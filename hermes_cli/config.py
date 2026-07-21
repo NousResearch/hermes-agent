@@ -5154,6 +5154,14 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    request_timeout_seconds = entry.get("request_timeout_seconds")
+    if isinstance(request_timeout_seconds, (int, float)) and request_timeout_seconds > 0:
+        normalized["request_timeout_seconds"] = request_timeout_seconds
+
+    stale_timeout_seconds = entry.get("stale_timeout_seconds")
+    if isinstance(stale_timeout_seconds, (int, float)) and stale_timeout_seconds > 0:
+        normalized["stale_timeout_seconds"] = stale_timeout_seconds
+
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models

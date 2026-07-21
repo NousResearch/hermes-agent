@@ -3494,9 +3494,9 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+def _recover_codex_tokens_from_cli(reason: str, auth_path: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
-    imported = _import_codex_cli_tokens()
+    imported = _import_codex_cli_tokens(auth_path)
     # Require BOTH tokens before adopting: persisting a payload without a
     # usable refresh_token would only break the next refresh cycle.
     if not (
@@ -3688,20 +3688,27 @@ def _refresh_codex_auth_tokens(
     return updated_tokens
 
 
-def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
+def _import_codex_cli_tokens(auth_path: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
-    
+
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
+
+    When ``auth_path`` is provided, reads from that path instead of the
+    default ``~/.codex/auth.json``. This enables importing multiple Codex
+    accounts from separate auth files (e.g. after logging out of Account A
+    and logging into Account B in the Codex CLI).
     """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
-    if not auth_path.is_file():
+    if auth_path is None:
+        codex_home = os.getenv("CODEX_HOME", "").strip()
+        if not codex_home:
+            codex_home = str(Path.home() / ".codex")
+        auth_path = str(Path(codex_home).expanduser() / "auth.json")
+    path = Path(auth_path).expanduser()
+    if not path.is_file():
         return None
     try:
-        payload = json.loads(auth_path.read_text())
+        payload = json.loads(path.read_text())
         tokens = payload.get("tokens")
         if not isinstance(tokens, dict):
             return None
@@ -3714,12 +3721,38 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         # but no working credentials.
         if _codex_access_token_is_expiring(access_token, 0):
             logger.debug(
-                "Codex CLI tokens at %s are expired — skipping import.", auth_path,
+                "Codex CLI tokens at %s are expired — skipping import.", path,
             )
             return None
         return dict(tokens)
     except Exception:
         return None
+
+
+def _import_codex_cli_tokens_from_directory(directory: str) -> list[Dict[str, str]]:
+    """Import all valid Codex token pairs from a directory of auth files.
+
+    Scans ``directory`` for ``auth*.json`` files (e.g. ``auth.json``,
+    ``auth.account-a.json``, ``auth.account-b.json``) and imports each
+    valid, non-expired token pair found. Returns a list of token dicts
+    (each with ``access_token`` and ``refresh_token``).
+
+    This enables the multi-account workflow: the user logs into Account A
+    in the Codex CLI (``~/.codex/auth.json``), copies it to
+    ``~/.codex/auth.account-a.json``, logs into Account B
+    (``~/.codex/auth.json``), and Hermes imports both.
+    """
+    dir_path = Path(directory).expanduser()
+    if not dir_path.is_dir():
+        return []
+    results: list[Dict[str, str]] = []
+    for auth_file in sorted(dir_path.glob("auth*.json")):
+        tokens = _import_codex_cli_tokens(str(auth_file))
+        if tokens is not None:
+            # Tag the entry with the source filename for debugging
+            tokens["_source_file"] = auth_file.name
+            results.append(tokens)
+    return results
 
 
 def resolve_codex_runtime_credentials(

@@ -642,6 +642,77 @@ class TestResumePendingSystemNote:
         )
         assert result == ""
 
+    @pytest.mark.asyncio
+    async def test_shared_channel_empty_auto_resume_keeps_original_semantics(self):
+        """Sender attribution must not convert startup's empty synthetic event
+        into a real user message such as ``[민서] ``.
+
+        Slack shared threads use this path.  The semantic-empty flag is captured
+        before preprocessing and forwarded to the model-run boundary.
+        """
+        runner, adapter = make_restart_runner()
+        runner.config.group_sessions_per_user = False
+        runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+            platform=Platform.TELEGRAM, chat_id="home", name="Home",
+        )
+        source = make_restart_source(chat_id="shared", chat_type="group")
+        source.user_name = "민서"
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        session_entry = SessionEntry(
+            session_key="agent:main:telegram:group:shared",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        runner.session_store.get_or_create_session = MagicMock(return_value=session_entry)
+        runner._async_session_store = MagicMock()
+        runner._async_session_store._store = runner.session_store
+        runner._async_session_store.get_or_create_session = AsyncMock(return_value=session_entry)
+        runner._async_session_store.load_transcript = AsyncMock(return_value=[])
+        runner._async_session_store.has_any_sessions = AsyncMock(return_value=True)
+        runner._set_session_env = MagicMock(return_value=[])
+        runner._recover_telegram_topic_thread_id = MagicMock(return_value=None)
+        runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="[민서] ")
+        runner._reply_anchor_for_event = MagicMock(return_value=None)
+        runner._bind_adapter_run_generation = MagicMock()
+        runner._is_session_run_current = MagicMock(return_value=True)
+        runner._refresh_agent_cache_message_count = AsyncMock()
+        runner._run_agent = AsyncMock(return_value={
+            "final_response": "",
+            "messages": [],
+            "api_calls": 0,
+            "completed": False,
+            "interrupted": True,
+            "tools": [],
+            "history_offset": 0,
+            "session_id": "sid",
+            "_dropped_empty_internal_auto_resume": True,
+        })
+        adapter.stop_typing = AsyncMock()
+
+        result = await runner._handle_message_with_agent(
+            event, source, session_entry.session_key, 0,
+        )
+
+        assert result is None
+        kwargs = runner._run_agent.await_args.kwargs
+        assert kwargs["message"] == "[민서] "
+        assert kwargs["event_internal"] is True
+        assert kwargs["event_has_media"] is False
+        assert kwargs["orig_empty_internal"] is True
+        assert adapter.sent == []
+
     def test_fresh_tool_tail_preserves_auto_continue_note(self):
         history = [
             {"role": "assistant", "content": None, "tool_calls": [

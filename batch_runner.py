@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import time
+from collections import Counter
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -729,67 +730,101 @@ class BatchRunner:
         else:
             atomic_json_write(self.checkpoint_file, checkpoint_data)
     
-    def _scan_completed_prompts_by_content(self) -> set:
+    def _scan_completed_work(self) -> Tuple[set, Counter]:
         """
-        Scan all batch files and extract completed prompts by their actual content.
-        
-        This provides a more robust resume mechanism that matches on prompt text
-        rather than indices, allowing recovery even if indices don't match.
-        
+        Scan all batch files to determine which dataset entries are done.
+
+        Each saved trajectory carries the ``prompt_index`` of the dataset entry
+        it was generated from. Resuming by that index is robust even when a
+        dataset intentionally contains duplicate ``prompt`` strings (the same
+        task sampled multiple times at different temperatures / toolset
+        distributions for RL/MoA data) — every copy keeps its own index.
+
+        For legacy batch files written before ``prompt_index`` was recorded we
+        fall back to matching on the prompt text, but as a *multiset* so that N
+        completed copies skip exactly N dataset entries rather than every entry
+        that shares the text.
+
         Returns:
-            set: Set of prompt texts that have been successfully processed
+            Tuple of (completed_indices, completed_text_counts):
+              - completed_indices: set of ``prompt_index`` values already saved.
+              - completed_text_counts: multiset of prompt texts for legacy
+                entries that lack a ``prompt_index``.
         """
-        completed_prompts = set()
+        completed_indices: set = set()
+        completed_text_counts: Counter = Counter()
         batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
-        
+
         if not batch_files:
-            return completed_prompts
-        
+            return completed_indices, completed_text_counts
+
         print(f"📂 Scanning {len(batch_files)} batch files for completed prompts...")
-        
+
         for batch_file in batch_files:
             try:
                 with open(batch_file, 'r', encoding='utf-8') as f:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            
-                            # Skip failed entries - we want to retry these
-                            if entry.get("failed", False):
-                                continue
-                            
-                            # Extract the human/user prompt from conversations
-                            conversations = entry.get("conversations", [])
-                            for msg in conversations:
-                                if msg.get("from") == "human":
-                                    prompt_text = msg.get("value", "").strip()
-                                    if prompt_text:
-                                        completed_prompts.add(prompt_text)
-                                    break  # Only need the first human message
                         except json.JSONDecodeError:
                             continue
+
+                        # Skip failed entries - we want to retry these
+                        if entry.get("failed", False):
+                            continue
+
+                        # Prefer the recorded index: unique per dataset entry,
+                        # so duplicate prompts resume correctly.
+                        idx = entry.get("prompt_index")
+                        if isinstance(idx, int):
+                            completed_indices.add(idx)
+                            continue
+
+                        # Legacy fallback: match on the first human message.
+                        conversations = entry.get("conversations", [])
+                        for msg in conversations:
+                            if msg.get("from") == "human":
+                                prompt_text = msg.get("value", "").strip()
+                                if prompt_text:
+                                    completed_text_counts[prompt_text] += 1
+                                break  # Only need the first human message
             except Exception as e:
                 print(f"  ⚠️  Warning: Error reading {batch_file.name}: {e}")
-        
-        return completed_prompts
-    
-    def _filter_dataset_by_completed(self, completed_prompts: set) -> Tuple[List[Dict], List[int]]:
+
+        return completed_indices, completed_text_counts
+
+    def _filter_dataset_by_completed(
+        self, completed_indices: set, completed_text_counts: Counter
+    ) -> Tuple[List[Dict], List[int]]:
         """
-        Filter the dataset to exclude prompts that have already been completed.
-        
+        Filter the dataset to exclude entries that have already been completed.
+
+        Entries are skipped by index first; the text multiset is only consulted
+        for legacy batch files that lack a ``prompt_index``. Consuming the
+        multiset (decrementing as matches are found) ensures that a dataset with
+        duplicate prompts only skips as many copies as were actually completed,
+        instead of dropping every remaining copy.
+
         Args:
-            completed_prompts: Set of prompt texts that have been completed
-            
+            completed_indices: set of completed ``prompt_index`` values.
+            completed_text_counts: multiset of completed prompt texts (legacy).
+
         Returns:
             Tuple of (filtered_dataset, skipped_indices)
         """
+        # Copy so we can decrement as legacy matches are consumed.
+        remaining_text_counts = Counter(completed_text_counts)
         filtered_dataset = []
         skipped_indices = []
-        
+
         for idx, entry in enumerate(self.dataset):
+            if idx in completed_indices:
+                skipped_indices.append(idx)
+                continue
+
             # Extract prompt from the dataset entry
             prompt_text = entry.get("prompt", "").strip()
-            
+
             # Also check conversations format
             if not prompt_text:
                 conversations = entry.get("conversations", [])
@@ -798,13 +833,16 @@ class BatchRunner:
                     if role in {"user", "human"}:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
-            
-            if prompt_text in completed_prompts:
+
+            # Legacy text fallback: skip at most as many entries as were
+            # completed for this prompt text.
+            if prompt_text and remaining_text_counts.get(prompt_text, 0) > 0:
+                remaining_text_counts[prompt_text] -= 1
                 skipped_indices.append(idx)
             else:
                 # Keep original index for tracking
                 filtered_dataset.append((idx, entry))
-        
+
         return filtered_dataset, skipped_indices
     
     def run(self, resume: bool = False):
@@ -818,16 +856,22 @@ class BatchRunner:
         print("🚀 Starting Batch Processing")
         print("=" * 70)
         
-        # Smart resume: scan batch files by content to find completed prompts
-        completed_prompt_texts = set()
+        # Smart resume: scan batch files to find completed prompts. Resume by
+        # the recorded prompt_index (with a legacy text fallback) so datasets
+        # that intentionally repeat prompts don't drop their unprocessed copies.
+        completed_indices: set = set()
+        completed_text_counts: Counter = Counter()
         if resume:
-            completed_prompt_texts = self._scan_completed_prompts_by_content()
-            if completed_prompt_texts:
-                print(f"   Found {len(completed_prompt_texts)} already-completed prompts by content matching")
-        
+            completed_indices, completed_text_counts = self._scan_completed_work()
+            completed_total = len(completed_indices) + sum(completed_text_counts.values())
+            if completed_total:
+                print(f"   Found {completed_total} already-completed prompts")
+
         # Filter dataset to only include unprocessed prompts
-        if resume and completed_prompt_texts:
-            filtered_entries, skipped_indices = self._filter_dataset_by_completed(completed_prompt_texts)
+        if resume and (completed_indices or completed_text_counts):
+            filtered_entries, skipped_indices = self._filter_dataset_by_completed(
+                completed_indices, completed_text_counts
+            )
             
             if not filtered_entries:
                 print("\n✅ All prompts have already been processed!")

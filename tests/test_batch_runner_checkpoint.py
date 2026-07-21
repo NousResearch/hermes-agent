@@ -1,6 +1,7 @@
 """Tests for batch_runner checkpoint behavior — incremental writes, resume, atomicity."""
 
 import json
+from collections import Counter
 from pathlib import Path
 from threading import Lock
 
@@ -248,3 +249,89 @@ class TestFinalCheckpointNoDuplicates:
             buggy.extend(br.get("completed_prompts", []))
         # Every index appears twice
         assert len(buggy) == 2 * len(set(buggy))
+
+
+def _resume_runner(tmp_path, dataset):
+    """Build a BatchRunner wired for resume scans (output_dir + dataset only)."""
+    r = BatchRunner.__new__(BatchRunner)
+    r.run_name = "test_run"
+    r.output_dir = tmp_path
+    r.batch_size = 4
+    r.dataset = dataset
+    return r
+
+
+def _write_batch_file(tmp_path, entries):
+    """Write saved trajectory entries to a batch_*.jsonl file."""
+    batch_file = tmp_path / "batch_0.jsonl"
+    with open(batch_file, "w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+    return batch_file
+
+
+class TestResumeWithDuplicatePrompts:
+    """Regression: resuming a run whose dataset intentionally repeats prompts
+    must only skip the copies that were actually completed, not every copy that
+    shares the prompt text.
+
+    Such datasets are normal here — the same task is sampled several times at
+    different temperatures / toolset distributions for RL/MoA training data.
+    Before this fix, resume matched on prompt *text* as a plain set, so a single
+    completed copy removed all remaining copies from the run, silently dropping
+    those trajectories from the output.
+    """
+
+    def test_only_completed_index_is_skipped(self, tmp_path):
+        # Three copies of the same prompt; index 1 was completed before a crash.
+        dataset = [{"prompt": "same task"} for _ in range(3)]
+        _write_batch_file(tmp_path, [
+            {"prompt_index": 1, "conversations": [{"from": "human", "value": "same task"}]},
+        ])
+        runner = _resume_runner(tmp_path, dataset)
+
+        completed_indices, completed_text_counts = runner._scan_completed_work()
+        assert completed_indices == {1}
+
+        filtered, skipped = runner._filter_dataset_by_completed(
+            completed_indices, completed_text_counts
+        )
+        # Only the completed copy is skipped; the other two are rescheduled.
+        assert skipped == [1]
+        assert [idx for idx, _ in filtered] == [0, 2]
+
+    def test_legacy_text_fallback_is_multiset_aware(self, tmp_path):
+        # Legacy batch files predate prompt_index: match by text, but as a
+        # multiset so N completed copies skip exactly N dataset entries.
+        dataset = [{"prompt": "dup"}, {"prompt": "dup"}, {"prompt": "dup"}, {"prompt": "other"}]
+        _write_batch_file(tmp_path, [
+            {"conversations": [{"from": "human", "value": "dup"}]},
+            {"conversations": [{"from": "human", "value": "dup"}]},
+        ])
+        runner = _resume_runner(tmp_path, dataset)
+
+        completed_indices, completed_text_counts = runner._scan_completed_work()
+        assert completed_indices == set()
+        assert completed_text_counts == Counter({"dup": 2})
+
+        filtered, skipped = runner._filter_dataset_by_completed(
+            completed_indices, completed_text_counts
+        )
+        # Two "dup" copies were completed -> skip two, keep the third + "other".
+        assert len(skipped) == 2
+        remaining_prompts = [entry["prompt"] for _, entry in filtered]
+        assert remaining_prompts == ["dup", "other"]
+
+    def test_failed_entries_are_not_treated_as_completed(self, tmp_path):
+        dataset = [{"prompt": "task a"}, {"prompt": "task b"}]
+        _write_batch_file(tmp_path, [
+            {"prompt_index": 0, "failed": True,
+             "conversations": [{"from": "human", "value": "task a"}]},
+            {"prompt_index": 1,
+             "conversations": [{"from": "human", "value": "task b"}]},
+        ])
+        runner = _resume_runner(tmp_path, dataset)
+
+        completed_indices, _ = runner._scan_completed_work()
+        # The failed index 0 must remain schedulable for retry.
+        assert completed_indices == {1}

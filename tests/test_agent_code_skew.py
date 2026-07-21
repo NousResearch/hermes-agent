@@ -7,6 +7,54 @@ gateway.  See #68178.
 """
 
 import pytest
+from types import SimpleNamespace
+
+
+class TestConversationLoopCodeSkewFinalization:
+    def test_code_skew_finalizes_without_unbound_local_error(self, monkeypatch):
+        """The early code-skew exit must use the module-level finalizer import."""
+        from agent import conversation_loop
+
+        context = SimpleNamespace(
+            user_message="hello",
+            original_user_message="hello",
+            messages=[],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="test-code-skew",
+            turn_id="turn-1",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context="",
+            ext_prefetch_cache="",
+        )
+        monkeypatch.setattr(conversation_loop, "build_turn_context", lambda *_a, **_k: context)
+        monkeypatch.setattr(
+            conversation_loop,
+            "finalize_turn",
+            lambda _agent, **kwargs: {"response": kwargs["final_response"], "reason": kwargs["_turn_exit_reason"]},
+        )
+
+        class FakeAgent:
+            api_mode = ""
+            max_iterations = 1
+            iteration_budget = SimpleNamespace(remaining=1)
+            _budget_grace_call = False
+
+            @staticmethod
+            def _check_code_skew_before_turn():
+                return "source changed"
+
+        result = conversation_loop.run_conversation(FakeAgent(), "hello")
+
+        assert result == {
+            "response": (
+                "I apologize, but the agent has detected that its source code "
+                "has been updated while running. To avoid compatibility issues, "
+                "please restart the application. (source changed)"
+            ),
+            "reason": "code_skew_detected",
+        }
 
 
 class TestAgentCodeSkewCaching:

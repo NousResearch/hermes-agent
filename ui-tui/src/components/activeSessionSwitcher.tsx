@@ -16,7 +16,7 @@ import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
 import { windowOffset } from './overlayControls.js'
-import { listRowStyle } from './overlayPrimitives.js'
+import { clampOverlayWidth, listRowStyle } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const VISIBLE = 12
@@ -325,7 +325,7 @@ export function ActiveSessionSwitcher({
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
-  const width = Math.max(24, Math.min(preferredWidth, Math.trunc(maxWidth ?? preferredWidth)))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
   const promptColumns = Math.max(20, width - 11)
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,

@@ -6,7 +6,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
-import { chipRowProps } from './overlayPrimitives.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 44
@@ -53,7 +53,7 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the hub its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
-  const width = Math.max(24, Math.min(preferredWidth, Math.trunc(maxWidth ?? preferredWidth)))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   const load = () => {
     gw.request<PluginsListResponse>('plugins.manage', { action: 'list' })

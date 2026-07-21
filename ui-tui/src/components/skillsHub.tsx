@@ -7,6 +7,7 @@ import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
 import { chipRowProps } from './overlayPrimitives.js'
+import { clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -26,8 +27,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
   const { stdout } = useStdout()
   const terminalWidth = Math.max(1, (stdout?.columns ?? 80) - 6)
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, terminalWidth))
-  const widthCap = Math.max(24, Math.trunc(maxWidth ?? preferredWidth))
-  const width = Math.max(24, Math.min(preferredWidth, widthCap))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
     gw.request<{ skills?: Record<string, string[]> }>('skills.manage', { action: 'list' })

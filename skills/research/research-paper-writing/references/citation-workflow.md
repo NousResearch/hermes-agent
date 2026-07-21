@@ -209,6 +209,8 @@ def generate_citation_key(bibtex: str) -> str:
     return f"{first_author.lower()}_{year}_{first_word}"
 ```
 
+If verification fails, leave `[CITATION NEEDED: claim or paper]` in the draft; do not invent a BibTeX record, DOI, venue, year, or citation key.
+
 ---
 
 ## Python Implementation

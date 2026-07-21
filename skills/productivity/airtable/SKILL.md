@@ -208,7 +208,7 @@ done
 3. **Inspect the schema.** `GET /v0/meta/bases/$BASE_ID/tables` — cache the exact field names and primary-field name locally in the session before mutating anything.
 4. **Read before you write.** For "update X where Y", `filterByFormula` first to resolve the `rec...` ID, then `PATCH /v0/$BASE_ID/$TABLE/$RECORD_ID`. Never guess record IDs.
 5. **Batch writes.** Combine related creates into one 10-record POST to stay under the 5 req/sec budget.
-6. **Destructive ops.** Deletions can't be undone via API. If the user says "delete all Xs", echo back the filter + record count and confirm before firing.
+6. **Destructive ops.** Deletions can't be undone via API. Before any `DELETE` or filter-driven `PATCH`, echo back the filter, resolved `rec...` IDs, primary values, and count; if a singular request matches more than one record, stop.
 
 ## Pitfalls
 

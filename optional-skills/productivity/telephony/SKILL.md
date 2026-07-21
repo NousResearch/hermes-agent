@@ -40,8 +40,8 @@ It does **not** turn Hermes into a real-time inbound phone gateway. Inbound SMS 
 
 ## Safety rules — mandatory
 
-1. Always confirm before placing a call or sending a text.
-2. Never dial emergency numbers.
+1. Always preview then confirm before placing a call or sending a text: show the provider, from-number, resolved destination number, message/call script, media URLs, and expected cost/rate limits when available.
+2. Never dial emergency numbers or emergency-like short codes (`911`, `112`, `999`, `000`, `110`, `119`, local short codes). If the destination looks like a short code, stop and ask for a normal phone number.
 3. Never use telephony for harassment, spam, impersonation, or anything illegal.
 4. Treat third-party phone numbers as sensitive operational data:
    - do not save them to Hermes memory

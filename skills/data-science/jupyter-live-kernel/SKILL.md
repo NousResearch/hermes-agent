@@ -126,8 +126,7 @@ uv run "$SCRIPT" edit --path <notebook.ipynb> delete --cell-id <id> --compact
 
 ### 5. Verification (restart + run all)
 
-Only use when the user asks for a clean verification or you need to confirm
-the notebook runs top-to-bottom:
+Only use when the user explicitly asks for a clean top-to-bottom run and confirms after you show the notebook path and that all cells will execute:
 
 ```
 uv run "$SCRIPT" restart-run-all --path <notebook.ipynb> --save-outputs --compact

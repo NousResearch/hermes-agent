@@ -84,7 +84,7 @@ Run `hermes meet setup` to preflight local prereqs.
 ## Flow
 
 1. **Join** — call `meet_join(url=..., mode=..., node=...)`. Returns immediately.
-2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
+2. **Announce yourself in the meeting before collecting transcript content** — no auto-consent. In `realtime` mode, say: "A Hermes agent bot is in this call taking notes." In `transcribe` mode, have the user or host announce the bot in the meeting and confirm notice was given.
 3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
 4. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
 5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave.
@@ -144,5 +144,6 @@ Remote node: transcript lives on the node host's disk. Use `meet_transcript(node
 
 - URL regex: only `https://meet.google.com/...` URLs pass.
 - No calendar scanning. No auto-dial.
+- Do not read, summarize, or export transcript content until the in-meeting notice step above has completed.
 - Remote nodes use bearer-token auth; tokens are generated on the node (32 hex chars, persisted in `$HERMES_HOME/workspace/meetings/node_token.json`) and must be copied to the gateway via `hermes meet node approve`.
 - `meet_say` text is rate-limited by the OpenAI Realtime session; spam-protection is the bot's problem, not yours, but still — don't queue hundreds of lines.

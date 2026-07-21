@@ -600,7 +600,7 @@ describe('createSlashHandler', () => {
     ['/browser connect', 'browser.manage', { action: 'connect', session_id: null, url: 'http://127.0.0.1:9222' }],
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
     ['/reload', 'reload.env', {}],
-    ['/stop', 'process.stop', {}],
+    ['/stop', 'process.stop', { session_id: null }],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
     ['/busy status', 'config.get', { key: 'busy' }],
     ['/indicator', 'config.get', { key: 'indicator' }]

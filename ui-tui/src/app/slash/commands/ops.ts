@@ -67,7 +67,7 @@ export const opsCommands: SlashCommand[] = [
     name: 'stop',
     run: (_arg, ctx) => {
       ctx.gateway
-        .rpc<ProcessStopResponse>('process.stop', {})
+        .rpc<ProcessStopResponse>('process.stop', { session_id: ctx.sid })
         .then(
           ctx.guarded<ProcessStopResponse>(r => {
             const killed = Number(r.killed ?? 0)

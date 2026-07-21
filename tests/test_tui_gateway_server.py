@@ -2323,6 +2323,53 @@ def _session(agent=None, **extra):
     }
 
 
+def test_process_stop_only_kills_calling_session_processes(monkeypatch):
+    class _FakeProc:
+        def __init__(self, session_key, exited=False):
+            self.session_key = session_key
+            self.exited = exited
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.procs = {
+                "own-1": _FakeProc("owner-key"),
+                "other-1": _FakeProc("other-key"),
+                "own-finished": _FakeProc("owner-key", exited=True),
+                "own-2": _FakeProc("owner-key"),
+            }
+            self.killed = []
+
+        def list_sessions(self):
+            return [{"session_id": sid} for sid in self.procs]
+
+        def get(self, sid):
+            return self.procs.get(sid)
+
+        def kill_process(self, sid):
+            self.killed.append(sid)
+            return {"status": "killed", "session_id": sid}
+
+        def kill_all(self):
+            raise AssertionError("process.stop must not kill every session")
+
+    fake_registry = _FakeRegistry()
+    fake_module = types.ModuleType("tools.process_registry")
+    fake_module.process_registry = fake_registry
+    monkeypatch.setitem(sys.modules, "tools.process_registry", fake_module)
+    server._sessions["stop-owner"] = _session(session_key="owner-key")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "process.stop",
+            "params": {"session_id": "stop-owner"},
+        }
+    )
+
+    assert resp["result"] == {"killed": 2}
+    assert fake_registry.killed == ["own-1", "own-2"]
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
@@ -6231,6 +6278,62 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
     )
 
 
+def test_slash_exec_stop_scoped_to_session(monkeypatch):
+    class _FakeProc:
+        def __init__(self, session_key, exited=False):
+            self.session_key = session_key
+            self.exited = exited
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.procs = {
+                "own-1": _FakeProc("owner-key"),
+                "other-1": _FakeProc("other-key"),
+                "own-finished": _FakeProc("owner-key", exited=True),
+                "own-2": _FakeProc("owner-key"),
+            }
+            self.killed = []
+
+        def list_sessions(self):
+            return [{"session_id": sid} for sid in self.procs]
+
+        def get(self, sid):
+            return self.procs.get(sid)
+
+        def kill_process(self, sid):
+            self.killed.append(sid)
+            return {"status": "killed", "session_id": sid}
+
+    class _FakeWorker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, cmd):
+            assert cmd == "stop"
+            return "stopped"
+
+        def close(self):
+            pass
+
+    fake_registry = _FakeRegistry()
+    fake_module = types.ModuleType("tools.process_registry")
+    fake_module.process_registry = fake_registry
+    monkeypatch.setitem(sys.modules, "tools.process_registry", fake_module)
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    server._sessions["slash-owner"] = _session(session_key="owner-key")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "slash.exec",
+            "params": {"session_id": "slash-owner", "command": "stop"},
+        }
+    )
+
+    assert resp["result"]["output"] == "stopped"
+    assert fake_registry.killed == ["own-1", "own-2"]
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -7209,6 +7312,45 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     # Should NOT contain "session busy" — the switch went through.
     assert "session busy" not in warning
     assert applied["model"]
+
+
+def test_mirror_slash_side_effects_stop_scoped_to_session(monkeypatch):
+    class _FakeProc:
+        def __init__(self, session_key, exited=False):
+            self.session_key = session_key
+            self.exited = exited
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.procs = {
+                "own-1": _FakeProc("owner-key"),
+                "other-1": _FakeProc("other-key"),
+                "own-finished": _FakeProc("owner-key", exited=True),
+                "own-2": _FakeProc("owner-key"),
+            }
+            self.killed = []
+
+        def list_sessions(self):
+            return [{"session_id": sid} for sid in self.procs]
+
+        def get(self, sid):
+            return self.procs.get(sid)
+
+        def kill_process(self, sid):
+            self.killed.append(sid)
+            return {"status": "killed", "session_id": sid}
+
+    fake_registry = _FakeRegistry()
+    fake_module = types.ModuleType("tools.process_registry")
+    fake_module.process_registry = fake_registry
+    monkeypatch.setitem(sys.modules, "tools.process_registry", fake_module)
+    session = _session()
+    session["session_key"] = "owner-key"
+
+    warning = server._mirror_slash_side_effects("sid", session, "/stop")
+
+    assert warning == ""
+    assert fake_registry.killed == ["own-1", "own-2"]
 
 
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):

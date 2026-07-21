@@ -179,6 +179,23 @@ export function useComposerDraft({
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
 
+  // Keep the per-session draft stash in lockstep with structural attachment
+  // mutations (add/remove/clear/replace). Attachment-only edits do not go
+  // through the text-driven debounced persist path, so without this a
+  // remove-then-session-switch reloads the pre-remove snapshot and the chip
+  // resurrects (#68417). Upload-state-only mutations do not notify.
+  useEffect(() => {
+    attachmentScope.setOnChange(attachments => {
+      if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
+        return
+      }
+
+      stashSessionDraft(draftScopeRef.current, draftRef.current, attachments)
+    })
+
+    return () => attachmentScope.setOnChange(null)
+  }, [attachmentScope, queueEditRef])
+
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     attachmentScope.$attachments.set(cloneAttachments(attachments))
     paintDraft(text, false)

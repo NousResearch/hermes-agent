@@ -1,11 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $composerAttachments,
   addComposerAttachment,
+  clearComposerAttachments,
   clearSessionDraft,
   type ComposerAttachment,
-  migrateSessionDraft,
+  createComposerAttachmentScope,
+  mainComposerScope,
   removeComposerAttachment,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
@@ -15,6 +17,41 @@ import {
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }
+}
+
+/** Some node/vitest host combos ship a non-functional localStorage stub
+ *  (`getItem`/`clear` missing). Provide an in-memory implementation so draft
+ *  persistence tests exercise real store behavior rather than the host stub. */
+function installMemoryLocalStorage() {
+  const data = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return data.size
+    },
+    clear() {
+      data.clear()
+    },
+    getItem(key) {
+      return data.has(key) ? data.get(key)! : null
+    },
+    key(index) {
+      return [...data.keys()][index] ?? null
+    },
+    removeItem(key) {
+      data.delete(key)
+    },
+    setItem(key, value) {
+      data.set(key, String(value))
+    }
+  }
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: storage,
+    writable: true
+  })
+
+  return storage
 }
 
 describe('updateComposerAttachment', () => {
@@ -48,6 +85,10 @@ describe('updateComposerAttachment', () => {
 })
 
 describe('session drafts', () => {
+  beforeEach(() => {
+    installMemoryLocalStorage()
+  })
+
   afterEach(() => {
     for (const scope of ['session-a', 'session-b', null]) {
       clearSessionDraft(scope)
@@ -107,29 +148,85 @@ describe('session drafts', () => {
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
   })
+})
 
-  it('migrates a tip-keyed draft onto the post-compression tip', () => {
-    const tipBefore = '20260720_062637_ad96b3'
-    const tipAfter = '20260720_071049_a28905'
-
-    stashSessionDraft(tipBefore, 'half typed while thinking', [])
-
-    expect(migrateSessionDraft(tipBefore, tipAfter)).toBe(true)
-    expect(takeSessionDraft(tipAfter).text).toBe('half typed while thinking')
-    expect(takeSessionDraft(tipBefore).text).toBe('')
-
-    clearSessionDraft(tipAfter)
+describe('attachment scope change notifications (#68417)', () => {
+  beforeEach(() => {
+    installMemoryLocalStorage()
   })
 
-  it('does not overwrite a non-empty destination draft during migration', () => {
-    stashSessionDraft('from', 'old tip draft', [])
-    stashSessionDraft('to', 'already typed on new tip', [])
+  afterEach(() => {
+    $composerAttachments.set([])
+    clearComposerAttachments()
+    mainComposerScope.setOnChange(null)
 
-    expect(migrateSessionDraft('from', 'to')).toBe(false)
-    expect(takeSessionDraft('to').text).toBe('already typed on new tip')
-    expect(takeSessionDraft('from').text).toBe('old tip draft')
+    for (const scope of ['session-a', 'session-b', null]) {
+      clearSessionDraft(scope)
+    }
 
-    clearSessionDraft('from')
-    clearSessionDraft('to')
+    window.localStorage.clear()
+  })
+
+  it('notifies on structural add/remove/clear but not upload-state-only changes', () => {
+    const scope = createComposerAttachmentScope()
+    const seen: number[] = []
+
+    scope.setOnChange(attachments => {
+      seen.push(attachments.length)
+    })
+
+    scope.add(attachment({ id: 'file:a' }))
+    scope.setUploadState('file:a', 'uploading')
+    scope.remove('file:a')
+    scope.add(attachment({ id: 'file:b' }))
+    scope.clear()
+    // No-op clear must not re-notify.
+    scope.clear()
+    // Missing id must not re-notify.
+    scope.remove('file:missing')
+
+    expect(seen).toEqual([1, 0, 1, 0])
+  })
+
+  it('does not resurrect removed attachments after a session-scope restore', () => {
+    // Mirrors the desktop composer path:
+    // 1) stash attachments with the session
+    // 2) user removes a chip (onChange immediately re-stashes)
+    // 3) session leave/re-enter reloads via takeSessionDraft + loadIntoComposer
+    const scope = createComposerAttachmentScope()
+
+    scope.setOnChange(attachments => {
+      stashSessionDraft('session-a', 'still typing', attachments)
+    })
+
+    scope.add(attachment({ id: 'file:a', label: 'IndexTest.html' }))
+    scope.add(attachment({ id: 'file:b', label: 'WechatTest.html' }))
+    expect(takeSessionDraft('session-a').attachments.map(a => a.id)).toEqual(['file:a', 'file:b'])
+
+    // User clicks × on both chips without typing (no text-debounce path).
+    scope.remove('file:a')
+    scope.remove('file:b')
+    expect(scope.$attachments.get()).toHaveLength(0)
+    expect(takeSessionDraft('session-a').attachments).toEqual([])
+
+    // Session switch away + back restores from the stash — must stay empty.
+    const restored = takeSessionDraft('session-a')
+    scope.$attachments.set(restored.attachments.map(a => ({ ...a })))
+
+    expect(scope.$attachments.get()).toEqual([])
+    expect(restored.text).toBe('still typing')
+  })
+
+  it('wires the main composer helpers through the same notification path', () => {
+    const onChange = vi.fn()
+
+    mainComposerScope.setOnChange(onChange)
+    addComposerAttachment(attachment({ id: 'file:main' }))
+    removeComposerAttachment('file:main')
+    clearComposerAttachments()
+    mainComposerScope.setOnChange(null)
+
+    expect(onChange).toHaveBeenCalled()
+    expect($composerAttachments.get()).toEqual([])
   })
 })

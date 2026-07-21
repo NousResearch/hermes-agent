@@ -34,13 +34,26 @@ export interface ComposerAttachmentScope {
   add(attachment: ComposerAttachment): void
   clear(): void
   remove(id: string): ComposerAttachment | null
+  /**
+   * Optional observer for structural attachment changes (add / remove / clear /
+   * replace). Used by the composer draft engine to keep the per-session stash
+   * in sync so chips do not resurrect after a session switch (#68417).
+   * Upload-state-only mutations intentionally do not notify.
+   */
+  setOnChange(cb: ((attachments: ComposerAttachment[]) => void) | null): void
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
   update(attachment: ComposerAttachment): boolean
 }
 
 export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
+  let onChange: ((attachments: ComposerAttachment[]) => void) | null = null
+  const emitChange = () => onChange?.($attachments.get())
+
   return {
     $attachments,
+    setOnChange(cb) {
+      onChange = cb
+    },
     add(attachment) {
       const previous = $attachments.get()
       const next = upsertAttachment(previous, attachment)
@@ -49,14 +62,32 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
       if (next.length > previous.length && attachment.kind !== 'url') {
         triggerHaptic('selection')
       }
+
+      // Notify even when an existing id was replaced — callers (draft stash)
+      // need the latest snapshot after any structural mutation.
+      emitChange()
     },
     clear() {
+      if ($attachments.get().length === 0) {
+        return
+      }
+
       $attachments.set([])
+      emitChange()
     },
     remove(id) {
       const current = $attachments.get()
       const removed = current.find(attachment => attachment.id === id) || null
+
+      if (!removed) {
+        return null
+      }
+
       $attachments.set(current.filter(attachment => attachment.id !== id))
+      // Persist immediately — the text-driven draft debounce does not fire on
+      // attachment-only edits, so without this a session switch reloads the
+      // pre-remove stash and the chip resurrects (#68417 / #58251).
+      emitChange()
 
       return removed
     },
@@ -83,6 +114,8 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
       const next = [...current]
       next[index] = attachment
       $attachments.set(next)
+      // Treat full replacement as structural (path/session binding, etc.).
+      emitChange()
 
       return true
     }

@@ -1654,12 +1654,17 @@ class TestCuaDriverSessionReconnect:
         assert cli_calls == [("get_window_state", {"pid": 1, "window_id": 2})]
         assert result["images"] == ["B64PNG"]
 
-    def test_cli_fallback_reads_screenshot_from_file(self, tmp_path):
+    def test_cli_fallback_reads_screenshot_from_file(self, tmp_path, monkeypatch):
         """_call_tool_via_cli must base64-read a screenshot written to disk
         (screenshot_out_file path) when no inline base64 is present."""
         import base64 as _b64
         from typing import Any, cast
         from tools.computer_use.cua_backend import _CuaDriverSession
+
+        monkeypatch.setattr(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            lambda: "/resolved/cua-driver",
+        )
 
         png_bytes = b"\x89PNG\r\n\x1a\nFAKEDATA"
         shot = tmp_path / "shot.png"
@@ -1701,6 +1706,10 @@ class TestCuaDriverSessionReconnect:
         from tools.computer_use.cua_backend import _CuaDriverSession
 
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        monkeypatch.setattr(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            lambda: "/resolved/cua-driver",
+        )
 
         class FakeProc:
             stdout = '{"isError": true, "message": "bad target"}'
@@ -2425,6 +2434,30 @@ class TestCuaEnvironmentScrubbing:
             "At least one safe environment variable should be preserved"
 
 
+class TestCuaCliFallbackResolution:
+    def test_cli_fallback_uses_resolved_driver_under_thin_path(self):
+        """CLI transport must use the same resolved path as MCP startup.
+
+        The CLI fallback runs after an MCP bridge error, precisely when a
+        Finder/Dock-launched Desktop process may have a PATH without
+        ``~/.local/bin``. Falling back to the bare ``cua-driver`` command
+        would reintroduce the original bug at runtime.
+        """
+        from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+
+        proc = MagicMock(stdout="{}", stderr="", returncode=0)
+        session = _CuaDriverSession(_AsyncBridge())
+        with patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/Users/example/.local/bin/cua-driver",
+        ), patch("subprocess.run", return_value=proc) as run:
+            session._call_tool_via_cli("click", {"x": 1, "y": 2}, timeout=0.1)
+
+        assert run.call_args.args[0][:3] == [
+            "/Users/example/.local/bin/cua-driver", "call", "click"
+        ]
+
+
 class TestClickButtonPassthrough:
     """Surface 5 (NousResearch/hermes-agent#47072) — `middle_click` must
     actually reach cua-driver as a middle button, not silently degrade to
@@ -2855,6 +2888,21 @@ class TestMcpInvocationResolution:
             cmd, args = _resolve_mcp_invocation("cua-driver")
         assert cmd == "/opt/cua-driver"
         assert args == ["mcp"]
+
+    def test_manifest_bare_command_keeps_resolved_driver_path(self):
+        """A bare manifest command must not reintroduce the narrow-PATH bug."""
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = (
+            '{"mcp_invocation":'
+            '{"command":"cua-driver","args":["mcp-stdio","--strict"]}}'
+        )
+        driver = "/Users/example/.local/bin/cua-driver"
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation(driver)
+        assert cmd == driver
+        assert args == ["mcp-stdio", "--strict"]
 
     def test_future_renamed_subcommand_is_honored(self):
         """The whole point: a future cua-driver that exposes `mcp-stdio`

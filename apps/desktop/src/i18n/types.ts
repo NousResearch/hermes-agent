@@ -272,6 +272,7 @@ export interface Translations {
       providers: string
       providerAccounts: string
       providerApiKeys: string
+      providerCustomEndpoints: string
       gateway: string
       apiKeys: string
       keybinds: string
@@ -434,6 +435,8 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      keepAwakeTitle: string
+      keepAwakeDesc: string
     }
     credentials: {
       pasteKey: string

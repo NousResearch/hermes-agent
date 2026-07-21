@@ -52,6 +52,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    _estimate_tools_tokens_rough,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -689,6 +690,12 @@ def run_conversation(
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    # Tracks whether the pending verification candidate was already streamed
+    # to the user as interim content. The finalizer uses this to set
+    # ``_response_was_previewed`` ONLY when the pending candidate is actually
+    # reused as the final response — not merely because any interim was
+    # streamed. (#65919 review: response-loss blocker)
+    _pending_verification_response_previewed = False
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -1072,17 +1079,16 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging and pressure checks.
-        # estimate_messages_tokens_rough(api_messages) includes the system
-        # prompt copy but not the tool schema payload, which is sent as a
-        # separate field. Add tools back for compression decisions so long
-        # tool-heavy turns do not creep up to the context ceiling and leave
-        # no room for the model's final answer.
-        total_chars = sum(len(str(msg)) for msg in api_messages)
+        # One image-stripped message estimate feeds both figures. Was: a
+        # str(msg) char walk (re-serialized base64 every call) + a second
+        # messages walk inside estimate_request_tokens_rough. Tools added
+        # separately (compression needs them: 50+ tools = 20-30K tokens).
+        # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        request_pressure_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+        request_pressure_tokens = approx_tokens + (
+            _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
+        total_chars = approx_tokens * 4
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens
@@ -5522,17 +5528,17 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
-                    final_msg["_verification_stop_synthetic"] = True
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the verification loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
-                    # Keep the attempted final answer in model history so the
-                    # synthetic user nudge preserves role alternation, but do
-                    # not surface it to the user as an interim answer. The
-                    # whole point of this guard is to prevent premature
-                    # "done" claims before checks run. Both the attempted
-                    # answer and the nudge are flagged synthetic so neither
-                    # persists — otherwise the resumed transcript keeps a
-                    # premature "done" with the nudge stripped, producing an
-                    # assistant→assistant adjacency. (#55733)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("verify-on-stop interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge,
@@ -5548,7 +5554,13 @@ def run_conversation(
                     # continuation-budget exhaustion.  ``final_response`` itself
                     # must be cleared so the finalizer can distinguish this gate
                     # from unrelated error/recovery exits. (#61631)
+                    # Track whether this candidate was already streamed so the
+                    # finalizer can mark the turn previewed only if the
+                    # candidate is actually reused as the final response.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5587,12 +5599,17 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    final_msg["_pre_verify_synthetic"] = True
-                    # Same alternation contract as verify-on-stop: keep the
-                    # attempted answer in history, follow it with a synthetic
-                    # user nudge, and don't surface the premature answer. Both
-                    # are flagged synthetic so neither persists. (#55733)
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the pre_verify loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("pre_verify interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge2,
@@ -5602,6 +5619,9 @@ def run_conversation(
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5649,6 +5669,9 @@ def run_conversation(
                     # exhaustion path does not treat the narrated stop as
                     # a completed answer.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5773,6 +5796,7 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 
 

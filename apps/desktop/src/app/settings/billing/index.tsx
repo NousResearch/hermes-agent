@@ -94,7 +94,14 @@ function RowValue({ onAction, row }: { onAction?: () => void; row: BillingAccoun
       {row.pill && <Pill tone={row.pill.tone}>{row.pill.label}</Pill>}
       {row.secondaryPill && <Pill>{row.secondaryPill}</Pill>}
       {row.chips?.map(chip => (
-        <Button disabled={chip.disabled} key={chip.label} size="sm" type="button" variant="outline">
+        <Button
+          disabled={chip.disabled}
+          key={chip.label}
+          onClick={chip.url ? () => openExternal(chip.url) : undefined}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
           {chip.label}
         </Button>
       ))}

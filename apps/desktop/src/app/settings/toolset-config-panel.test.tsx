@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -15,7 +16,17 @@ vi.mock('react-router-dom', async importOriginal => ({
   useNavigate: () => navigateSpy
 }))
 
-const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter })
+// The inline VoiceProviderFields reads the shared config record through React
+// Query, so the panel needs a QueryClientProvider (fresh per render — cached
+// config from one test must not leak into the next).
+const render = (ui: ReactElement) =>
+  rtlRender(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        {ui}
+      </QueryClientProvider>
+    </MemoryRouter>
+  )
 
 const getToolsetConfig = vi.fn()
 const getToolsetModels = vi.fn()
@@ -28,20 +39,30 @@ const runToolsetPostSetup = vi.fn()
 const getActionStatus = vi.fn()
 const startOAuthLogin = vi.fn()
 const pollOAuthSession = vi.fn()
+const getHermesConfigRecord = vi.fn()
+const getHermesConfigSchema = vi.fn()
+const saveHermesConfig = vi.fn()
+const getElevenLabsVoices = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
   selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),
   selectToolsetProvider: (name: string, provider: string, capability?: string) =>
-    capability === undefined ? selectToolsetProvider(name, provider) : selectToolsetProvider(name, provider, capability),
+    capability === undefined
+      ? selectToolsetProvider(name, provider)
+      : selectToolsetProvider(name, provider, capability),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
   revealEnvVar: (key: string) => revealEnvVar(key),
   runToolsetPostSetup: (name: string, key: string) => runToolsetPostSetup(name, key),
   getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines),
   startOAuthLogin: (providerId: string) => startOAuthLogin(providerId),
-  pollOAuthSession: (providerId: string, sessionId: string) => pollOAuthSession(providerId, sessionId)
+  pollOAuthSession: (providerId: string, sessionId: string) => pollOAuthSession(providerId, sessionId),
+  getHermesConfigRecord: () => getHermesConfigRecord(),
+  getHermesConfigSchema: () => getHermesConfigSchema(),
+  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  getElevenLabsVoices: () => getElevenLabsVoices()
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -103,6 +124,17 @@ beforeEach(() => {
   selectToolsetProvider.mockResolvedValue({ ok: true, name: 'tts', provider: 'ElevenLabs' })
   setEnvVar.mockResolvedValue({ ok: true })
   deleteEnvVar.mockResolvedValue({ ok: true })
+  getHermesConfigRecord.mockResolvedValue({
+    tts: {
+      provider: 'edge',
+      edge: { voice: 'en-US-AriaNeural' },
+      openai: { model: 'gpt-4o-mini-tts', voice: 'alloy' },
+      elevenlabs: { voice_id: 'pNInz6obpgDQGcFmaJgB', model_id: 'eleven_multilingual_v2' }
+    }
+  })
+  getHermesConfigSchema.mockResolvedValue({ fields: {}, category_order: [] })
+  saveHermesConfig.mockResolvedValue({ ok: true })
+  getElevenLabsVoices.mockResolvedValue({ available: false, voices: [] })
 })
 
 afterEach(() => {
@@ -111,6 +143,55 @@ afterEach(() => {
 })
 
 describe('ToolsetConfigPanel', () => {
+  it('renders inline voice/model fields for a TTS provider row carrying tts_provider', async () => {
+    // The Capabilities gap: provider rows only showed API keys — voice/model
+    // settings lived exclusively in Settings → Voice. Rows now carry the
+    // backend's tts_provider key and the panel renders the same config
+    // fields inline (here: OpenAI TTS Model + OpenAI Voice).
+    getToolsetConfig.mockResolvedValue(
+      config({
+        active_provider: 'OpenAI TTS',
+        providers: [
+          {
+            name: 'OpenAI TTS',
+            badge: 'paid',
+            tag: 'High quality voices',
+            env_vars: [
+              { key: 'VOICE_TOOLS_OPENAI_KEY', prompt: 'OpenAI API key', url: 'https://x', default: null, is_set: true }
+            ],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            tts_provider: 'openai'
+          }
+        ]
+      })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+    expect(await screen.findByText('OpenAI TTS Model')).toBeTruthy()
+    expect(screen.getByText('OpenAI Voice')).toBeTruthy()
+    // Voice/model names are free-input comboboxes seeded with the current
+    // config value — a custom voice ID must be typeable, not gated by a
+    // closed Select.
+    const voiceInput = screen.getByDisplayValue('alloy')
+    fireEvent.change(voiceInput, { target: { value: 'marin' } })
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled(), { timeout: 3000 })
+    const saved = saveHermesConfig.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
+    expect(saved.tts.openai.voice).toBe('marin')
+  })
+
+  it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+    await screen.findByText('Microsoft Edge TTS')
+    expect(screen.queryByText('Edge Voice')).toBeNull()
+    expect(screen.queryByText('OpenAI Voice')).toBeNull()
+  })
+
   it('lists providers from the config endpoint', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
@@ -378,7 +459,6 @@ describe('ToolsetConfigPanel', () => {
     })
   })
 
-
   it('swaps the install hint for the installed one-liner when the provider is ready', async () => {
     // Server says the post_setup install is already satisfied (status ready) —
     // the "needs a one-time install" copy would contradict the Ready pill.
@@ -589,8 +669,8 @@ describe('ToolsetConfigPanel', () => {
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByText('Local Browser')
-      expect(screen.getByText('Installed')).toBeTruthy()
-      expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
+      expect(await screen.findByText('Installed')).toBeTruthy()
+      expect(await screen.findByRole('button', { name: /Re-run setup/ })).toBeTruthy()
       expect(screen.queryByRole('button', { name: /^Run setup$/ })).toBeNull()
     })
 
@@ -654,7 +734,10 @@ describe('ToolsetConfigPanel', () => {
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByText('Local Browser')
-      expect(screen.getByRole('button', { name: /Run setup/ })).toBeTruthy()
+      // The Run setup CTA renders inside the expanded panel, which appears one
+      // effect-driven re-render after the row itself — await it (getByRole
+      // raced the auto-expand effect and flaked under the RQ provider).
+      expect(await screen.findByRole('button', { name: /Run setup/ })).toBeTruthy()
       expect(screen.queryByText('Installed')).toBeNull()
     })
   })
@@ -825,9 +908,7 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
 
-      await waitFor(() =>
-        expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY')
-      )
+      await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY'))
     })
 
     it('hides "Manage in API Keys" while the key is unset', async () => {

@@ -11178,10 +11178,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        # Exec-type quick commands bypass the draining guard — they are pure
+        # shell subprocesses that do not depend on the agent loop or LLM backend.
+        # This ensures ops commands remain available when the system is unhealthy.
+        if command:
+            if isinstance(self.config, dict):
+                _quick_cmds = self.config.get("quick_commands", {}) or {}
+            else:
+                _quick_cmds = getattr(self.config, "quick_commands", {}) or {}
+            if isinstance(_quick_cmds, dict) and command in _quick_cmds:
+                _qcmd = _quick_cmds[command]
+                if _qcmd.get("type") == "exec":
+                    _exec_cmd = _qcmd.get("command", "")
+                    if _exec_cmd:
+                        try:
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+                            proc = await asyncio.create_subprocess_shell(
+                                _exec_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                env=sanitized_env,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+                    else:
+                        return f"Quick command '/{command}' has no command defined."
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
+        # User-defined quick commands (alias-type and fallback; exec-type handled above)
         if command:
             if isinstance(self.config, dict):
                 quick_commands = self.config.get("quick_commands", {}) or {}
@@ -11202,12 +11237,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return _denied
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
+                    # Already handled above (pre-draining bypass); unreachable
+                    # but kept as defensive fallback.
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            # Sanitize env to prevent credential leakage —
-                            # quick commands run in the gateway process which
-                            # has all API keys in os.environ.
                             from tools.environments.local import _sanitize_subprocess_env
                             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             proc = await asyncio.create_subprocess_shell(
@@ -11218,7 +11252,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                             output = (stdout or stderr).decode().strip()
-                            # Redact any remaining sensitive patterns in output
                             if output:
                                 from agent.redact import redact_sensitive_text
                                 output = redact_sensitive_text(output)

@@ -15,7 +15,11 @@ import json
 import logging
 import os
 import re
+import uuid
 from typing import Any, Dict, Optional
+
+from tools.approval import request_tool_approval
+from tools.homeassistant_policy import BLOCKED_DOMAINS, classify_service_action
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +54,19 @@ _SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # Service domains blocked for security -- these allow arbitrary code/command
 # execution on the HA host or enable SSRF attacks on the local network.
 # HA provides zero service-level access control; all safety must be in our layer.
-_BLOCKED_DOMAINS = frozenset({
-    "shell_command",    # arbitrary shell commands as root in HA container
-    "command_line",     # sensors/switches that execute shell commands
-    "python_script",    # sandboxed but can escalate via hass.services.call()
-    "pyscript",         # scripting integration with broader access
-    "hassio",           # addon control, host shutdown/reboot, stdin to containers
-    "rest_command",     # HTTP requests from HA server (SSRF vector)
-})
+_BLOCKED_DOMAINS = BLOCKED_DOMAINS
+
+
+def _get_action_policy() -> tuple[str, set[str]]:
+    """Return the configured action-policy mode and exact trusted entities."""
+    from hermes_cli.config import cfg_get, load_config_readonly
+
+    config = load_config_readonly()
+    mode = cfg_get(config, "homeassistant", "action_policy", "mode", default="legacy")
+    trusted = cfg_get(
+        config, "homeassistant", "action_policy", "trusted_entities", default=[]
+    )
+    return (mode if mode in {"legacy", "safe"} else "legacy", set(trusted or []))
 
 
 def _get_headers(token: str = "") -> Dict[str, str]:
@@ -204,8 +213,9 @@ async def _async_call_service(
 # Sync wrappers (handler signature: (args, **kw) -> str)
 # ---------------------------------------------------------------------------
 
-def _run_async(coro):
-    """Run an async coroutine from a sync handler."""
+def _run_async(coro_factory):
+    """Create and run an async coroutine from a sync handler."""
+    coro = coro_factory()
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -226,7 +236,7 @@ def _handle_list_entities(args: dict, **kw) -> str:
     domain = args.get("domain")
     area = args.get("area")
     try:
-        result = _run_async(_async_list_entities(domain=domain, area=area))
+        result = _run_async(lambda: _async_list_entities(domain=domain, area=area))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_entities error: %s", e)
@@ -241,7 +251,7 @@ def _handle_get_state(args: dict, **kw) -> str:
     if not _ENTITY_ID_RE.match(entity_id):
         return tool_error(f"Invalid entity_id format: {entity_id}")
     try:
-        result = _run_async(_async_get_state(entity_id))
+        result = _run_async(lambda: _async_get_state(entity_id))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_get_state error: %s", e)
@@ -279,9 +289,30 @@ def _handle_call_service(args: dict, **kw) -> str:
             data = json.loads(data) if data.strip() else None
         except json.JSONDecodeError as e:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
+    if data is not None and not isinstance(data, dict):
+        return tool_error("Invalid 'data' parameter: expected an object or JSON object string")
+
+    mode, trusted_entities = _get_action_policy()
+    decision = classify_service_action(
+        domain, entity_id, data, mode=mode, trusted_entities=trusted_entities
+    )
+    if decision.action == "block":
+        return tool_error(decision.reason)
+    if decision.action == "approve":
+        target = ", ".join(decision.targets) if decision.targets else "broad/unspecified target"
+        approval = request_tool_approval(
+            "ha_call_service",
+            f"Home Assistant {domain}.{service} on {target}: {decision.reason}",
+            rule_key=f"homeassistant-service:{uuid.uuid4().hex}",
+            allow_yolo=False,
+            allow_headless=False,
+            allow_permanent=False,
+        )
+        if not approval.get("approved"):
+            return tool_error(str(approval.get("message") or "Home Assistant action denied"))
 
     try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
+        result = _run_async(lambda: _async_call_service(domain, service, entity_id, data))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
@@ -330,7 +361,7 @@ def _handle_list_services(args: dict, **kw) -> str:
     """Handler for ha_list_services tool."""
     domain = args.get("domain")
     try:
-        result = _run_async(_async_list_services(domain=domain))
+        result = _run_async(lambda: _async_list_services(domain=domain))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_services error: %s", e)

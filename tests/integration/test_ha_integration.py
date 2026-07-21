@@ -23,6 +23,8 @@ from tools.homeassistant_tool import (
     _async_get_state,
     _async_list_entities,
 )
+from tools.homeassistant_client import HomeAssistantClient
+from tools.homeassistant_config import HomeAssistantResources
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +73,7 @@ class TestGatewayWebSocket:
     async def test_event_received_and_forwarded(self):
         """Server pushes event -> adapter calls handle_message with correct MessageEvent."""
         async with FakeHAServer() as server:
-            adapter = _adapter_for(server)
+            adapter = _adapter_for(server, watch_all=True)
             adapter.handle_message = AsyncMock()
 
             await adapter.connect()
@@ -260,6 +262,38 @@ class TestToolRest:
             assert call["service"] == "turn_on"
             assert call["data"]["entity_id"] == "light.bedroom"
             assert call["data"]["brightness"] == 255
+
+
+class TestNativeConfigAPI:
+    @pytest.mark.asyncio
+    async def test_capabilities_and_automation_round_trip(self):
+        async with FakeHAServer() as server:
+            resources = HomeAssistantResources(HomeAssistantClient(server.url, server.token))
+
+            capabilities = await resources.capabilities()
+            before = await resources.get("automation", "morning")
+            after = await resources.apply(
+                "automation", "morning", "update", {"alias": "Early Morning"}
+            )
+            persisted = await resources.get("automation", "morning")
+
+            assert capabilities["home_assistant_version"] == "2026.7.0"
+            assert before["alias"] == "Morning"
+            assert after == {"alias": "Early Morning"}
+            assert persisted["alias"] == "Early Morning"
+
+    @pytest.mark.asyncio
+    async def test_timer_websocket_round_trip(self):
+        async with FakeHAServer() as server:
+            resources = HomeAssistantResources(HomeAssistantClient(server.url, server.token))
+
+            before = await resources.get("timer", "tea")
+            after = await resources.apply(
+                "timer", "tea", "update", {"name": "Tea timer", "duration": "00:06:00"}
+            )
+
+            assert before["duration"] == "00:05:00"
+            assert after["duration"] == "00:06:00"
 
 
 # ---------------------------------------------------------------------------

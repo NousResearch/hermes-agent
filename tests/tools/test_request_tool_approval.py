@@ -32,6 +32,57 @@ def _isolate_approval_state(monkeypatch):
 
 
 class TestRequestToolApproval:
+    def test_strict_approval_does_not_allow_yolo_bypass(self, monkeypatch):
+        monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: True)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "deny")
+
+        res = request_tool_approval(
+            "ha_manage_config",
+            "Apply Home Assistant proposal",
+            allow_yolo=False,
+        )
+
+        assert res["approved"] is False
+
+    def test_strict_approval_does_not_allow_cron_autoapproval(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(
+            approval, "env_var_enabled", lambda key: key == "HERMES_CRON_SESSION"
+        )
+        monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
+
+        res = request_tool_approval(
+            "ha_manage_config",
+            "Apply Home Assistant proposal",
+            allow_headless=False,
+        )
+
+        assert res["approved"] is False
+        assert "cron" in res["message"].lower()
+
+    def test_nonpermanent_approval_hides_always_choice(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        captured = {}
+
+        def prompt(*args, **kwargs):
+            captured.update(kwargs)
+            return "once"
+
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", prompt)
+
+        res = request_tool_approval(
+            "ha_manage_config",
+            "Apply Home Assistant proposal",
+            allow_permanent=False,
+        )
+
+        assert res["approved"] is True
+        assert captured["allow_permanent"] is False
+
     def test_session_cached_approval_short_circuits(self, monkeypatch):
         monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
         # Should NOT prompt at all.

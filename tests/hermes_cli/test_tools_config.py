@@ -216,6 +216,16 @@ def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_tok
     assert "homeassistant" in cli_enabled
 
 
+def test_get_platform_tools_homeassistant_toolset_enabled_for_configured_telegram(monkeypatch):
+    """Configured Telegram keeps every registered HA tool when credentials exist."""
+    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
+    config = {"platform_toolsets": {"telegram": ["hermes-telegram"]}}
+
+    enabled = _get_platform_tools(config, "telegram")
+
+    assert "homeassistant" in enabled
+
+
 def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_missing(monkeypatch):
     """Without HASS_TOKEN, HA stays off by default — preserves #14798's behavior
     for users who never configured HA."""

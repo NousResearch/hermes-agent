@@ -89,6 +89,8 @@ class FakeHAServer:
         # Observability -- tests inspect these after exercising the adapter.
         self.received_service_calls: List[Dict[str, Any]] = []
         self.received_notifications: List[Dict[str, Any]] = []
+        self.automation_configs = {"morning": {"id": "morning", "alias": "Morning"}}
+        self.helpers = {"timer": {"tea": {"id": "tea", "name": "Tea", "duration": "00:05:00"}}}
 
         # Control -- tests push events, server forwards them over WS.
         self._event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
@@ -148,6 +150,13 @@ class FakeHAServer:
         app.router.add_get("/api/websocket", self._handle_ws)
         app.router.add_get("/api/states", self._handle_get_states)
         app.router.add_get("/api/states/{entity_id}", self._handle_get_state)
+        app.router.add_get("/api/config", self._handle_get_config)
+        app.router.add_get(
+            "/api/config/{resource_type}/config/{resource_id}", self._handle_get_resource
+        )
+        app.router.add_post(
+            "/api/config/{resource_type}/config/{resource_id}", self._handle_post_resource
+        )
         # Notification endpoint must be registered before the generic service
         # route so that it takes priority.
         app.router.add_post(
@@ -204,6 +213,14 @@ class FakeHAServer:
         sub_msg = json.loads(msg.data)
         sub_id = sub_msg.get("id", 1)
 
+        if sub_msg.get("type") != "subscribe_events":
+            result = self._handle_ws_command(sub_msg)
+            await ws.send_json({
+                "id": sub_id, "type": "result", "success": True, "result": result,
+            })
+            await ws.close()
+            return ws
+
         # Step 5: ACK
         await ws.send_json({
             "id": sub_id,
@@ -231,6 +248,23 @@ class FakeHAServer:
 
         return ws
 
+    def _handle_ws_command(self, msg: Dict[str, Any]) -> Any:
+        command = msg.get("type", "")
+        if command == "config/entity_registry/list":
+            return [
+                {"entity_id": "automation.morning", "platform": "automation", "unique_id": "morning"}
+            ]
+        if command.endswith("/list"):
+            domain = command.split("/", 1)[0]
+            return list(self.helpers.get(domain, {}).values())
+        if command.endswith("/update"):
+            domain = command.split("/", 1)[0]
+            item_id = msg[f"{domain}_id"]
+            updates = {key: value for key, value in msg.items() if key not in {"id", "type", f"{domain}_id"}}
+            self.helpers[domain][item_id].update(updates)
+            return self.helpers[domain][item_id]
+        return None
+
     # -- REST handlers ---------------------------------------------------------
 
     async def _handle_get_states(self, request: web.Request) -> web.Response:
@@ -238,6 +272,32 @@ class FakeHAServer:
         if err:
             return err
         return web.json_response(ENTITY_STATES)
+
+    async def _handle_get_config(self, request: web.Request) -> web.Response:
+        err = self._check_rest_auth(request)
+        if err:
+            return err
+        return web.json_response({"version": "2026.7.0", "components": ["automation", "timer"]})
+
+    async def _handle_get_resource(self, request: web.Request) -> web.Response:
+        err = self._check_rest_auth(request)
+        if err:
+            return err
+        if request.match_info["resource_type"] != "automation":
+            return web.Response(status=404)
+        item = self.automation_configs.get(request.match_info["resource_id"])
+        return web.json_response(item) if item else web.Response(status=404)
+
+    async def _handle_post_resource(self, request: web.Request) -> web.Response:
+        err = self._check_rest_auth(request)
+        if err:
+            return err
+        if request.match_info["resource_type"] != "automation":
+            return web.Response(status=404)
+        body = await request.json()
+        resource_id = request.match_info["resource_id"]
+        self.automation_configs[resource_id] = {"id": resource_id, **body}
+        return web.json_response({"result": "ok"})
 
     async def _handle_get_state(self, request: web.Request) -> web.Response:
         err = self._check_rest_auth(request)

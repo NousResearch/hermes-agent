@@ -570,6 +570,36 @@ def _is_present(spec: str) -> bool:
         return False
 
 
+def _activation_specs(feature: str) -> tuple[str, ...]:
+    """Return the specs that should count as evidence a feature was enabled.
+
+    Some lazy features intentionally mirror shared transitive security pins
+    such as ``aiohttp``. Presence of a shared package alone is not evidence
+    that the feature itself was ever activated; otherwise an unrelated backend
+    can make another feature look active and trigger a doomed refresh during
+    ``hermes update``.
+
+    Heuristic:
+    - Prefer packages unique to this feature across :data:`LAZY_DEPS`.
+    - If every package is shared, fall back to all specs so purely-shared
+      feature bundles still remain refreshable.
+    """
+    specs = LAZY_DEPS.get(feature, ())
+    if not specs:
+        return ()
+
+    counts: dict[str, int] = {}
+    for feature_specs in LAZY_DEPS.values():
+        for spec in feature_specs:
+            pkg = _pkg_name_from_spec(spec)
+            counts[pkg] = counts.get(pkg, 0) + 1
+
+    unique_specs = tuple(
+        spec for spec in specs if counts.get(_pkg_name_from_spec(spec), 0) == 1
+    )
+    return unique_specs or specs
+
+
 def _core_constraints_file() -> Optional[Path]:
     """Write a pip constraints file pinning every package already importable
     in the core environment to its installed version.
@@ -858,16 +888,17 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
+    A feature counts as "active" if at least one of its activation specs
     is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    Shared transitive pins alone do not count unless the feature has no
+    feature-unique packages to key off.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
-    for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+    for feature in LAZY_DEPS:
+        if any(_is_present(s) for s in _activation_specs(feature)):
             active.append(feature)
     return active
 

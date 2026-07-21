@@ -161,7 +161,8 @@ when `fetch_model_metadata()` returns an accurate `context_length`,
 `max_model_len`, or equivalent supported field. The default hook honors
 `models_url`, Bearer authentication, and `default_headers`; override it for
 other catalog contracts. Results and initial failures are cached in memory for
-five minutes. If a refresh fails after a successful lookup, Hermes retains the
+five minutes, scoped by provider, catalog URL, and a non-secret credential
+fingerprint. If a refresh fails after a successful lookup, Hermes retains the
 last valid catalog; an initial failure falls through to the normal
 provider-aware resolution chain. Providers that leave the flag disabled are
 not affected.

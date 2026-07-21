@@ -2694,3 +2694,218 @@ class TestContextLengthSetterCoherence:
         # ...and budgets recompute from the same window+percent.
         assert c.threshold_tokens == 150_000
 
+
+
+class TestPreLlmFeasibilityCheck:
+    """Tests for the pre-LLM feasibility skip in compress().
+
+    When the middle section is < 10% of threshold tokens AND at least one
+    prior real-usage ineffectiveness strike has been recorded, the expensive
+    LLM summarization call is skipped and the deterministic fallback is used
+    instead. The skip must NOT increment _ineffective_compression_count (the
+    strike counter that latches at >=2) and must NOT trip the abort branch
+    via stale _last_summary_auth_failure / _last_summary_network_failure flags.
+    """
+
+    def _make_messages(self, n_pairs=10, content="short reply"):
+        """Build a message list large enough to survive compress()'s early exits.
+
+        compress() bails if n_messages <= protect_head_size + 4, and again
+        if compress_start >= compress_end (tail budget covers everything).
+        With protect_first_n=2 → head=2, protect_last_n=2, we need enough
+        middle turns to produce compress_start < compress_end.  10 pairs
+        (21 messages including system) is comfortably past both gates.
+        """
+        msgs = [{"role": "system", "content": "system prompt"}]
+        for i in range(n_pairs):
+            msgs.append({"role": "user", "content": f"question {i}"})
+            msgs.append({"role": "assistant", "content": content})
+        return msgs
+
+    def test_skip_does_not_increment_strike_counter(self, compressor):
+        """Feasibility skip must use _prellm_skip_count, not _ineffective_compression_count."""
+        compressor._ineffective_compression_count = 1  # one prior real strike
+        msgs = self._make_messages()
+
+        with patch("agent.context_compressor.call_llm") as mock_llm, \
+             patch.object(compressor, "_generate_summary") as mock_gen:
+            mock_llm.return_value = (None, None)
+            # Middle section is tiny → feasibility skip fires
+            compressor.compress(msgs, force=False)
+
+        # The strike counter must NOT have been incremented by the skip
+        assert compressor._ineffective_compression_count == 1
+        # The pre-LLM skip counter should have been incremented
+        assert compressor._prellm_skip_count >= 1
+        # _generate_summary must NOT have been called
+        mock_gen.assert_not_called()
+
+    def test_skip_does_not_trip_abort_on_stale_auth_failure(self, compressor):
+        """A feasibility skip must not trip the abort branch even if
+        _last_summary_auth_failure is stale True from a prior cycle."""
+        compressor._ineffective_compression_count = 1
+        compressor._last_summary_auth_failure = True  # stale from prior failure
+        msgs = self._make_messages()
+
+        with patch("agent.context_compressor.call_llm") as mock_llm, \
+             patch.object(compressor, "_generate_summary") as mock_gen:
+            mock_llm.return_value = (None, None)
+            result = compressor.compress(msgs, force=False)
+
+        # Should NOT abort — should produce compressed output with fallback
+        assert result is not None
+        assert len(result) > 0
+        mock_gen.assert_not_called()
+
+    def test_skip_does_not_trip_abort_on_stale_network_failure(self, compressor):
+        """Same as above but for _last_summary_network_failure."""
+        compressor._ineffective_compression_count = 1
+        compressor._last_summary_network_failure = True  # stale
+        msgs = self._make_messages()
+
+        with patch("agent.context_compressor.call_llm") as mock_llm, \
+             patch.object(compressor, "_generate_summary") as mock_gen:
+            mock_llm.return_value = (None, None)
+            result = compressor.compress(msgs, force=False)
+
+        assert result is not None
+        assert len(result) > 0
+        mock_gen.assert_not_called()
+
+    def test_no_skip_when_force_true(self, compressor):
+        """force=True (manual /compress) must bypass the feasibility check."""
+        compressor._ineffective_compression_count = 1
+        msgs = self._make_messages()
+
+        with patch("agent.context_compressor.call_llm") as mock_llm, \
+             patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            mock_llm.return_value = (None, None)
+            compressor.compress(msgs, force=True)
+
+        # _generate_summary MUST have been called despite tiny middle section
+        mock_gen.assert_called_once()
+        assert compressor._prellm_skip_count == 0
+
+    def test_no_skip_when_no_prior_strikes(self, compressor):
+        """No prior ineffectiveness strikes → feasibility check doesn't fire."""
+        compressor._ineffective_compression_count = 0
+        msgs = self._make_messages()
+
+        with patch("agent.context_compressor.call_llm") as mock_llm, \
+             patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            mock_llm.return_value = (None, None)
+            compressor.compress(msgs, force=False)
+
+        mock_gen.assert_called_once()
+        assert compressor._prellm_skip_count == 0
+
+    def test_skip_count_resets_on_session_reset(self, compressor):
+        """_prellm_skip_count must reset alongside _ineffective_compression_count."""
+        compressor._prellm_skip_count = 5
+        compressor._ineffective_compression_count = 2
+
+        # on_session_reset() resets all per-session counters
+        compressor.on_session_reset()
+
+        assert compressor._prellm_skip_count == 0
+        assert compressor._ineffective_compression_count == 0
+
+    def test_skip_count_resets_on_bind_session_state(self, compressor):
+        """Rebinding to a session row must clear the per-session skip counter
+        like every other per-session guard (stale carry-over from a previous
+        binding must not inflate the new session's observability count)."""
+        compressor._prellm_skip_count = 5
+
+        compressor.bind_session_state(None, "s-new")
+
+        assert compressor._prellm_skip_count == 0
+
+    def test_skip_fires_on_fat_tail_small_middle(self, compressor):
+        """The target scenario from #60451: a tool-heavy transcript whose
+        protected tail already holds most of the tokens, leaving a tiny
+        middle window. The skip must fire and _generate_summary must not
+        be called."""
+        compressor._ineffective_compression_count = 1
+        msgs = [{"role": "system", "content": "system prompt"}]
+        # Small middle: a few lightweight early exchanges.
+        for i in range(6):
+            msgs.append({"role": "user", "content": f"early question {i}"})
+            msgs.append({"role": "assistant", "content": "brief answer"})
+        # Fat tail: recent turns carrying big tool-style payloads.
+        for i in range(4):
+            msgs.append({"role": "user", "content": f"recent request {i}"})
+            msgs.append({"role": "assistant", "content": "big result " + "x" * 20000})
+
+        with patch("agent.context_compressor.call_llm") as mock_llm, \
+             patch.object(compressor, "_generate_summary") as mock_gen:
+            mock_llm.return_value = (None, None)
+            result = compressor.compress(msgs, force=False)
+
+        mock_gen.assert_not_called()
+        assert compressor._prellm_skip_count == 1
+        assert compressor._last_feasibility_skip is True
+        # Deterministic dropping still made progress.
+        assert len(result) < len(msgs)
+
+    def test_boundary_accounting_skip_does_not_feed_fallback_streak(self, compressor):
+        """The interaction teknium's sweeper review flagged on #68334: the
+        skip path sets _last_summary_fallback_used, which the boundary
+        wrapper (conversation_compression.py) records via
+        record_completed_compaction(used_fallback=True) — incrementing
+        _fallback_compression_streak, whose second occurrence blocks
+        automatic compression. Two deliberate skips must NOT trip that
+        breaker."""
+        compressor._ineffective_compression_count = 1
+        msgs = self._make_messages()
+
+        for _ in range(2):
+            with patch("agent.context_compressor.call_llm") as mock_llm, \
+                 patch.object(compressor, "_generate_summary") as mock_gen:
+                mock_llm.return_value = (None, None)
+                compressor.compress(list(msgs), force=False)
+            mock_gen.assert_not_called()
+            # Mirror the boundary wrapper's bookkeeping
+            # (agent/conversation_compression.py: record_completed_compaction
+            # call after a made-progress boundary).
+            assert compressor._last_compression_made_progress is True
+            compressor.record_completed_compaction(
+                used_fallback=compressor._last_summary_fallback_used,
+                feasibility_skip=compressor._last_feasibility_skip,
+            )
+
+        assert compressor._prellm_skip_count == 2
+        assert compressor._fallback_compression_streak == 0
+        assert not compressor._automatic_compression_blocked_locally(), (
+            "two deliberate feasibility skips must not disable automatic "
+            "compression via the fallback-streak breaker"
+        )
+
+    def test_boundary_accounting_skip_does_not_reset_fallback_streak(self, compressor):
+        """A skip proves nothing about the summary model's health: an
+        existing real-fallback streak must survive a skip boundary (neither
+        incremented nor reset)."""
+        compressor.record_completed_compaction(used_fallback=True)
+        assert compressor._fallback_compression_streak == 1
+
+        compressor.record_completed_compaction(
+            used_fallback=True, feasibility_skip=True,
+        )
+
+        assert compressor._fallback_compression_streak == 1
+
+    def test_real_fallback_still_feeds_streak(self, compressor):
+        """Negative control: a genuine summary-failure fallback boundary
+        (no feasibility skip) must keep incrementing the streak breaker."""
+        compressor._ineffective_compression_count = 1
+        msgs = self._make_messages(content="filler " * 3000)  # fat middle → no skip
+
+        with patch.object(compressor, "_generate_summary", return_value=None):
+            compressor.compress(list(msgs), force=False)
+
+        assert compressor._last_feasibility_skip is False
+        assert compressor._last_summary_fallback_used is True
+        compressor.record_completed_compaction(
+            used_fallback=compressor._last_summary_fallback_used,
+            feasibility_skip=compressor._last_feasibility_skip,
+        )
+        assert compressor._fallback_compression_streak == 1

@@ -484,7 +484,8 @@ function derivePlanTiers(
 
     // A scheduled downgrade target is inert (matched by name — NAS sends no id for
     // the pending target). Name is a safe key: SubscriptionTypes.name is @unique in
-    // NAS. Checked before the downgrade branch since the target IS a lower tier.
+    // NAS, so two tiers can't collide. Checked before the downgrade branch since the
+    // target IS a lower tier.
     if (pendingName && tier.name === pendingName) {
       return { ...base, state: 'scheduled' }
     }

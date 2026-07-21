@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 import { Button } from '@/components/ui/button'
 import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink } from '@/lib/icons'
@@ -15,6 +17,16 @@ type DowngradeFlow = ReturnType<typeof useDowngradeFlow>
 // The in-card preview → confirm panel for a downgrade (mirrors the TUI confirm flow).
 function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierView }) {
   const active = flow.active
+  const panelRef = useRef<HTMLDivElement>(null)
+  const open = active?.target.tierId === tier.tierId
+
+  // Move focus into the panel on open so keyboard users land on the confirm flow;
+  // role="status"/aria-live announces the async preview text as it arrives.
+  useEffect(() => {
+    if (open) {
+      panelRef.current?.focus()
+    }
+  }, [open])
 
   if (!active || active.target.tierId !== tier.tierId) {
     return null
@@ -27,7 +39,13 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
   const caption = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
 
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background/60 p-3">
+    <div
+      aria-live="polite"
+      className="flex min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background/60 p-3 outline-none"
+      ref={panelRef}
+      role="status"
+      tabIndex={-1}
+    >
       {busy === 'preview' ? (
         <div className={caption}>Checking this change…</div>
       ) : effect === 'scheduled' ? (
@@ -67,13 +85,27 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
 function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierView }) {
   const isCurrent = tier.state === 'current'
   const confirming = flow.active?.target.tierId === tier.tierId
+  const cardRef = useRef<HTMLDivElement>(null)
+  const wasConfirming = useRef(false)
+
+  // When the confirm panel closes (cancel / scheduled), return focus to this tile
+  // so keyboard focus is never left detached on the removed panel.
+  useEffect(() => {
+    if (wasConfirming.current && !confirming) {
+      cardRef.current?.focus()
+    }
+
+    wasConfirming.current = confirming
+  }, [confirming])
 
   return (
     <div
       className={cn(
-        'flex min-w-0 flex-col gap-3 rounded-lg border p-4',
+        'flex min-w-0 flex-col gap-3 rounded-lg border p-4 outline-none',
         isCurrent ? 'border-(--ui-green)/60 bg-(--ui-green)/5' : 'border-border/70 bg-muted/20'
       )}
+      ref={cardRef}
+      tabIndex={-1}
     >
       <div className="flex min-w-0 items-center gap-3">
         <TierArt name={tier.name} />
@@ -109,7 +141,9 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
           (confirming ? (
             <DowngradeConfirm flow={flow} tier={tier} />
           ) : (
+            // Disabled while another tile's change is committing — no concurrent mutation.
             <Button
+              disabled={flow.mutating}
               onClick={() => flow.begin({ tierId: tier.tierId, tierName: tier.name })}
               size="sm"
               type="button"
@@ -142,6 +176,7 @@ export function BillingPlansView({
         <Button
           aria-label="Back to billing"
           className="size-7 p-0 text-(--ui-text-tertiary)"
+          disabled={flow.mutating}
           onClick={onBack}
           size="sm"
           type="button"

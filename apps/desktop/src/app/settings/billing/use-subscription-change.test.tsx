@@ -21,6 +21,7 @@ function wrapper({ children }: { children: ReactNode }) {
 
 afterEach(() => {
   vi.clearAllMocks()
+  vi.unstubAllEnvs()
 })
 
 describe('useDowngradeFlow', () => {
@@ -95,6 +96,52 @@ describe('useDowngradeFlow', () => {
     expect(result.current.active?.preview?.target_tier_name).toBe('Plus')
     expect(result.current.active?.preview?.effective_at).toBe('2026-08-15T00:00:00Z')
     expect(apiMocks.previewSubscriptionChange).not.toHaveBeenCalled()
+  })
+
+  it('ignores the simulate seam outside DEV — production never takes the canned branch', async () => {
+    vi.stubEnv('DEV', false)
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', ok: true, target_tier_name: 'Plus' },
+      ok: true
+    })
+
+    const { result } = renderHook(
+      () => useDowngradeFlow({ onScheduled: vi.fn(), simulate: { effectiveAt: '2026-08-15T00:00:00Z' } }),
+      { wrapper }
+    )
+
+    act(() => result.current.begin({ tierId: 't_free', tierName: 'Plus' }))
+
+    // Real RPC is called despite the simulate prop being set.
+    await waitFor(() => expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('t_free'))
+  })
+
+  it('exposes mutating only while the schedule RPC is in flight', async () => {
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+
+    let settleSchedule: (value: unknown) => void = () => {}
+    apiMocks.scheduleSubscriptionChange.mockReturnValue(
+      new Promise(resolve => {
+        settleSchedule = resolve
+      })
+    )
+
+    const { result } = renderHook(() => useDowngradeFlow({ onScheduled: vi.fn() }), { wrapper })
+
+    act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
+    await waitFor(() => expect(result.current.active?.preview?.effect).toBe('scheduled'))
+    expect(result.current.mutating).toBe(false)
+
+    act(() => {
+      void result.current.confirm()
+    })
+    await waitFor(() => expect(result.current.mutating).toBe(true))
+
+    act(() => settleSchedule({ data: { ok: true }, ok: true }))
+    await waitFor(() => expect(result.current.mutating).toBe(false))
   })
 })
 

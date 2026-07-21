@@ -363,6 +363,96 @@ describe('BillingSettings', () => {
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
   })
 
+  it('locks out the other downgrade tiles and Back while a schedule is in flight', async () => {
+    // Current = Ultra so Free/Plus/Super are all downgrades (three tiles).
+    apiMocks.fetchBillingState.mockResolvedValue(billingDevFixtures['subscriber-personal'].billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: { ...todaySubscriptionState.current, tier_id: 't_ultra', tier_name: 'Ultra' },
+        tiers: [
+          { dollars_per_month_display: '$0', is_current: false, is_enabled: true, monthly_credits: '0.1', name: 'Free', tier_id: 't_free', tier_order: 0 },
+          { dollars_per_month_display: '$20', is_current: false, is_enabled: true, monthly_credits: '22', name: 'Plus', tier_id: 't_plus', tier_order: 1 },
+          { dollars_per_month_display: '$100', is_current: false, is_enabled: true, monthly_credits: '110', name: 'Super', tier_id: 't_super', tier_order: 2 },
+          { dollars_per_month_display: '$200', is_current: true, is_enabled: true, monthly_credits: '220', name: 'Ultra', tier_id: 't_ultra', tier_order: 3 }
+        ]
+      })
+    )
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', effective_at: '2026-08-15T00:00:00Z', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+
+    let settleSchedule: (value: unknown) => void = () => {}
+    apiMocks.scheduleSubscriptionChange.mockReturnValue(
+      new Promise(resolve => {
+        settleSchedule = resolve
+      })
+    )
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    const downgrades = await screen.findAllByRole('button', { name: 'Downgrade' })
+    expect(downgrades.length).toBe(3)
+
+    fireEvent.click(downgrades[0])
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm downgrade' }))
+
+    // Scheduling in flight → the two remaining tiles + Back are disabled.
+    await waitFor(() => {
+      const remaining = screen.getAllByRole('button', { name: 'Downgrade' })
+      expect(remaining.length).toBe(2)
+      expect(remaining.every(btn => btn.hasAttribute('disabled'))).toBe(true)
+    })
+    expect(screen.getByRole('button', { name: 'Back to billing' }).hasAttribute('disabled')).toBe(true)
+
+    settleSchedule({ data: { ok: true }, ok: true })
+  })
+
+  it('disables Undo while the resume is in flight', async () => {
+    const fixture = billingDevFixtures['pending-downgrade']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    let settleResume: (value: unknown) => void = () => {}
+    apiMocks.resumeSubscription.mockReturnValue(
+      new Promise(resolve => {
+        settleResume = resolve
+      })
+    )
+
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Undoing…' }).hasAttribute('disabled')).toBe(true))
+
+    settleResume({ data: { ok: true }, ok: true })
+  })
+
+  it('moves focus into the confirm panel (role=status) when a downgrade opens', async () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', effective_at: '2026-08-15T00:00:00Z', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Downgrade' }))
+
+    const panel = await screen.findByRole('status')
+
+    expect(panel.getAttribute('aria-live')).toBe('polite')
+    expect(panel).toBe(panel.ownerDocument.activeElement)
+  })
+
   it('keeps the auto-refill edit form mounted so the row height is reserved before editing', async () => {
     renderBilling()
 

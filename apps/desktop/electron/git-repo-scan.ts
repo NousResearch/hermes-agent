@@ -3,6 +3,12 @@
 // electron-rebuild). Mirrors how GitHub Desktop scans: stop at the first `.git`
 // (don't descend into a repo), cap depth, and skip heavy non-repo trees so the
 // first scan stays fast. Results are cached by the backend after the first run.
+//
+// Configurable via options:
+//   `scanRoots`  — roots to scan (falls back to roots arg, then os.homedir())
+//   `excludePaths` — array of path prefixes to skip
+//   `enabled`    — set false to skip the scan entirely and return []
+//   `maxDepth`   — recursion depth cap (default 3)
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -37,17 +43,63 @@ async function mapLimit(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) } as any, worker))
 }
 
+// Quick check that a .git directory is a real git repo (not a broken/incomplete
+// checkout). Reads HEAD which exists in every valid repo with no subprocess
+// overhead. Deliberately shallow — we only reject obvious junk dirs, not edge
+// cases like bare repos or gitdir files (handled by the .git-isDirectory gate
+// in the caller).
+function isValidGitDir(gitDir) {
+  try {
+    const headPath = path.join(gitDir, 'HEAD')
+    const stat = fs.statSync(headPath)
+    return stat.isFile()
+  } catch {
+    return false
+  }
+}
+
+// Normalise a path: strip trailing slashes, resolve to platform-canonical form.
+// Returns null for empty/falsy input.
+function resolveRoot(root) {
+  const r = String(root || '').trim().replace(/[/\\\\]+$/, '')
+  return r || null
+}
+
 /**
- * Scan `roots` (default: the home dir) for git repositories. Returns deduped
- * `{ root, label }` entries. `options.maxDepth` caps recursion (default 3).
+ * Scan `roots` (default: the home dir) for valid git repositories.
+ * Returns deduped `{ root, label }` entries.
+ *
+ * Options:
+ *   `scanRoots`    — override roots (takes precedence over the `roots` arg)
+ *   `excludePaths` — array of path prefixes to skip
+ *   `enabled`      — set false to skip the scan and return [] (default true)
+ *   `maxDepth`     — recursion depth cap (default 3)
  */
 async function scanGitRepos(roots, options: any = {}) {
+  // Short-circuit: scan can be disabled entirely.
+  if (options.enabled === false) {
+    return []
+  }
+
   const maxDepth = Number(options.maxDepth) || DEFAULT_MAX_DEPTH
-  const searchRoots = Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()]
+  const excludePaths = Array.isArray(options.excludePaths) ? options.excludePaths.filter(Boolean).map(resolveRoot).filter(Boolean) : []
+
+  // Resolve scan roots: options > roots arg > homedir.
+  const scanRootsOption = Array.isArray(options.scanRoots) ? options.scanRoots.filter(Boolean).map(resolveRoot).filter(Boolean) : []
+  const searchRoots = scanRootsOption.length > 0
+    ? scanRootsOption
+    : (Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()])
+
   const found = new Map()
 
+  // Check if a path matches any exclude prefix.
+  function isExcluded(dir) {
+    const normalized = dir.replace(/[/\\\\]+$/, '')
+    return excludePaths.some(excluded => normalized === excluded || normalized.startsWith(excluded + path.sep))
+  }
+
   async function walk(dir, depth) {
-    if (depth > maxDepth) {
+    if (depth > maxDepth || isExcluded(dir)) {
       return
     }
 
@@ -65,8 +117,15 @@ async function scanGitRepos(roots, options: any = {}) {
     // keep descending in case a real repo sits deeper). This is what kills the
     // worktree/eval-repo duplicate explosion.
     if (entries.some(entry => entry.name === '.git' && entry.isDirectory())) {
-      const root = dir.replace(/[/\\]+$/, '')
-      found.set(root, path.basename(root) || root)
+      // Validate the .git dir: only record repos with a real HEAD file so
+      // broken/incomplete checkouts (missing HEAD, orphaned .git dirs) don't
+      // surface as auto-projects.
+      const gitDir = path.join(dir, '.git')
+
+      if (isValidGitDir(gitDir)) {
+        const root = dir.replace(/[/\\\\]+$/, '')
+        found.set(root, path.basename(root) || root)
+      }
 
       return
     }
@@ -86,7 +145,7 @@ async function scanGitRepos(roots, options: any = {}) {
     await mapLimit(subdirs, MAX_CONCURRENCY, sub => walk(sub, depth + 1))
   }
 
-  await mapLimit(searchRoots.map(root => String(root || '').trim()).filter(Boolean), MAX_CONCURRENCY, root =>
+  await mapLimit(searchRoots.map(resolveRoot).filter(Boolean), MAX_CONCURRENCY, root =>
     walk(root, 0)
   )
 

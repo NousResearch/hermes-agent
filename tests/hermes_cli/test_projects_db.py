@@ -19,30 +19,71 @@ def conn(tmp_path):
 
 
 def test_record_and_list_discovered_repos(conn):
-    n = pdb.record_discovered_repos(conn, [("/www/alpha", "alpha"), ("/www/beta", None)])
+    n = pdb.record_discovered_repos(conn, [("/www/alpha", "alpha"), ("/www/beta", None)], profile="test-profile")
     assert n == 2
 
-    rows = {r["root"]: r["label"] for r in pdb.list_discovered_repos(conn)}
+    rows = {r["root"]: r["label"] for r in pdb.list_discovered_repos(conn, profile="test-profile")}
     assert rows["/www/alpha"] == "alpha"
     # Label defaults to the basename when not given.
     assert rows["/www/beta"] == "beta"
 
 
 def test_record_discovered_repos_upserts(conn):
-    pdb.record_discovered_repos(conn, [("/www/alpha", "old")])
-    pdb.record_discovered_repos(conn, [("/www/alpha", "new")])
+    pdb.record_discovered_repos(conn, [("/www/alpha", "old")], profile="test-profile")
+    pdb.record_discovered_repos(conn, [("/www/alpha", "new")], profile="test-profile")
 
-    rows = pdb.list_discovered_repos(conn)
+    rows = pdb.list_discovered_repos(conn, profile="test-profile")
     assert len(rows) == 1
     assert rows[0]["label"] == "new"
 
 
 def test_record_discovered_repos_replace_drops_stale_rows(conn):
-    pdb.record_discovered_repos(conn, [("/www/alpha", "alpha"), ("/www/beta", "beta")])
-    pdb.record_discovered_repos(conn, [("/www/alpha", "fresh")], replace=True)
+    pdb.record_discovered_repos(conn, [("/www/alpha", "alpha"), ("/www/beta", "beta")], profile="test-profile")
+    pdb.record_discovered_repos(conn, [("/www/alpha", "fresh")], replace=True, profile="test-profile")
 
-    rows = {r["root"]: r["label"] for r in pdb.list_discovered_repos(conn)}
+    rows = {r["root"]: r["label"] for r in pdb.list_discovered_repos(conn, profile="test-profile")}
     assert rows == {"/www/alpha": "fresh"}
+
+
+def test_discovered_repos_profile_isolation(conn):
+    """Test that discovered repos are isolated by profile."""
+    # Record repos for two different profiles
+    pdb.record_discovered_repos(conn, [("/www/profile1", "P1")], profile="profile-a")
+    pdb.record_discovered_repos(conn, [("/www/profile2", "P2")], profile="profile-b")
+
+    # Each profile should only see its own repos
+    rows_a = pdb.list_discovered_repos(conn, profile="profile-a")
+    assert len(rows_a) == 1
+    assert rows_a[0]["root"] == "/www/profile1"
+
+    rows_b = pdb.list_discovered_repos(conn, profile="profile-b")
+    assert len(rows_b) == 1
+    assert rows_b[0]["root"] == "/www/profile2"
+
+    # List without profile uses _active_profile() which returns "default" in tests
+    # So it should be empty
+    rows_default = pdb.list_discovered_repos(conn, profile="default")
+    assert len(rows_default) == 0
+
+
+def test_discovered_repos_replace_scoped_to_profile(conn):
+    """Test that replace=True only affects the specified profile."""
+    # Record repos for two profiles
+    pdb.record_discovered_repos(conn, [("/www/keep", "Keep")], profile="other")
+    pdb.record_discovered_repos(conn, [("/www/old", "Old")], profile="mine")
+
+    # Replace with new data for "mine" profile
+    pdb.record_discovered_repos(conn, [("/www/new", "New")], replace=True, profile="mine")
+
+    # "mine" should have the new data, not old
+    rows_mine = pdb.list_discovered_repos(conn, profile="mine")
+    assert len(rows_mine) == 1
+    assert rows_mine[0]["root"] == "/www/new"
+
+    # "other" should still have its data untouched
+    rows_other = pdb.list_discovered_repos(conn, profile="other")
+    assert len(rows_other) == 1
+    assert rows_other[0]["root"] == "/www/keep"
 
 
 def test_create_get_list(conn):

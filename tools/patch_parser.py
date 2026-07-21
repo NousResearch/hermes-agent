@@ -178,7 +178,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 hint = hint_match.group(1) if hint_match else None
                 current_hunk = Hunk(context_hint=hint)
                 
-        elif current_op and line:
+        elif current_op and line is not None:
             # Parse hunk line
             if current_hunk is None:
                 current_hunk = Hunk()

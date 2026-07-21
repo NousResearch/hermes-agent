@@ -3283,6 +3283,39 @@ class TestCustomMessageHook:
 
         assert "hunter2" not in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_classifier_slack_error_does_not_log_token(self, caplog):
+        """Classifier failures may originate from Slack SDK calls in plugins."""
+        token = "xoxb-CLASSIFIER-SUPERSECRET"
+        a = self._make_adapter()
+        a._classify_custom_message = MagicMock(
+            side_effect=_TokenBearingSlackApiError(token)
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            await a._handle_slack_message(self._make_event("!log"))
+
+        assert token not in caplog.text
+        assert "CLASSIFIER-SUPERSECRET" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_hook_and_error_reply_failures_do_not_log_tokens(self, caplog):
+        """Both the plugin hook and its best-effort error reply stay sanitized."""
+        hook_token = "xoxb-HOOK-SUPERSECRET"
+        reply_token = "xoxb-REPLY-SUPERSECRET"
+        a = self._make_adapter(handled=True)
+        a._on_custom_message = AsyncMock(
+            side_effect=_TokenBearingSlackApiError(hook_token)
+        )
+        a.send = AsyncMock(side_effect=_TokenBearingSlackApiError(reply_token))
+
+        with caplog.at_level(logging.DEBUG):
+            await a._handle_slack_message(self._make_event("!log"))
+
+        assert hook_token not in caplog.text
+        assert reply_token not in caplog.text
+        assert "SUPERSECRET" not in caplog.text
+
     # -- context text purity ------------------------------------------------
 
     @pytest.mark.asyncio
@@ -3331,8 +3364,9 @@ class TestCustomMessageHook:
         )
 
         msg_event = a.handle_message.call_args[0][0]
-        assert msg_event.text.startswith("[Thread context]")
-        assert msg_event.text.endswith("!find blog toc")
+        assert msg_event.text == "!find blog toc"
+        assert msg_event.channel_context.startswith("[Thread context]")
+        assert "U_OTHER: earlier" in msg_event.channel_context
 
     # -- assistant thread titles -------------------------------------------
 

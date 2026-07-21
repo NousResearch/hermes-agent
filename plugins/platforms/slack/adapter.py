@@ -1391,7 +1391,8 @@ class SlackAdapter(BasePlatformAdapter):
                 self._start_socket_mode_handler()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
-                    "[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True
+                    "[Slack] Socket Mode reconnect failed: %s",
+                    _sanitized_slack_error(exc),
                 )
 
     async def _socket_watchdog_loop(self) -> None:
@@ -2316,7 +2317,9 @@ class SlackAdapter(BasePlatformAdapter):
             return True
 
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[Slack] Connection failed: %s", e, exc_info=True)
+            logger.error(
+                "[Slack] Connection failed: %s", _sanitized_slack_error(e)
+            )
             return False
         finally:
             if lock_acquired and not self._running:
@@ -3930,7 +3933,11 @@ class SlackAdapter(BasePlatformAdapter):
                 or user_id
             )
         except Exception as e:
-            logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
+            logger.debug(
+                "[Slack] users.info failed for %s: %s",
+                user_id,
+                _sanitized_slack_error(e),
+            )
             name = user_id
 
         self._user_name_cache[cache_key] = name
@@ -5989,7 +5996,7 @@ class SlackAdapter(BasePlatformAdapter):
         classification_text = classification_text.strip()
         try:
             custom_token = self._classify_custom_message(classification_text, event)
-        except Exception:
+        except Exception as exc:
             # Fail closed by CONSUMING the message, not by demoting it to
             # ordinary chat. The classifier is the only thing that knows
             # whether this was a command; if it failed we cannot know either,
@@ -5998,7 +6005,10 @@ class SlackAdapter(BasePlatformAdapter):
             # never meant to run. No reply — an error here would fire on every
             # message a broken classifier touches. No message text in the log:
             # it may carry user content.
-            logger.exception("[Slack] custom message classifier failed - dropping event")
+            logger.error(
+                "[Slack] custom message classifier failed - dropping event: %s",
+                _sanitized_slack_error(exc),
+            )
             return
 
         # Authorize the caller *before* the token buys anything. A classified
@@ -6656,21 +6666,25 @@ class SlackAdapter(BasePlatformAdapter):
                 # profile owns the process.
                 with self._profile_runtime_scope_for(source):
                     handled = await self._on_custom_message(custom_ctx)
-            except Exception:
+            except Exception as exc:
                 # Fail closed. A classified message is a side-effecting
                 # command; falling through would hand a half-run command to
                 # the LLM to improvise. Report and consume it instead.
                 # No command text in the log — it may carry user content.
-                logger.exception("[Slack] custom message hook failed")
+                logger.error(
+                    "[Slack] custom message hook failed: %s",
+                    _sanitized_slack_error(exc),
+                )
                 try:
                     await self.send(
                         channel_id,
                         "⚠️ That command failed. Please try again.",
                         metadata=custom_ctx.reply_metadata,
                     )
-                except Exception:
-                    logger.exception(
-                        "[Slack] failed to report custom message hook error"
+                except Exception as report_exc:
+                    logger.error(
+                        "[Slack] failed to report custom message hook error: %s",
+                        _sanitized_slack_error(report_exc),
                     )
                 return
             if handled:

@@ -249,17 +249,23 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
     # connected servers, start_background_mcp_discovery's
     # retry-after-zero-connected allowance kicks off a fresh discovery run
     # here instead of leaving the TUI latched MCP-less for the session.
-    if _mcp_discovery_enabled:
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
+    # Only the stdio TUI (which spawned discovery through the shared owner)
+    # should delegate to the startup wait here — for every other surface
+    # (dashboard /api/ws) _make_agent already calls
+    # hermes_cli.mcp_startup.wait_for_mcp_discovery directly, and delegating
+    # unconditionally would make that bounded wait run twice per agent build.
+    if not _mcp_discovery_enabled:
+        return
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-            start_background_mcp_discovery(
-                logger=logger, thread_name="tui-mcp-discovery"
-            )
-        except Exception:
-            logger.debug(
-                "TUI MCP discovery retry-spawn failed", exc_info=True
-            )
+        start_background_mcp_discovery(
+            logger=logger, thread_name="tui-mcp-discovery"
+        )
+    except Exception:
+        logger.debug(
+            "TUI MCP discovery retry-spawn failed", exc_info=True
+        )
     try:
         from hermes_cli.mcp_startup import (
             wait_for_mcp_discovery as _startup_wait,

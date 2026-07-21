@@ -1828,14 +1828,18 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                     return int(ctx)
                             break
 
-            # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
-            resp = client.get(f"{server_url}/v1/models/{model}")
-            if resp.status_code == 200:
-                data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
-                if ctx and isinstance(ctx, (int, float)):
-                    return int(ctx)
+            # vLLM / llama.cpp: try /v1/models/{model} for context window.
+            # Skip for unknown server types (e.g. LiteLLM proxy) that gate
+            # this endpoint behind admin auth — the /v1/models list call
+            # below works on all OpenAI-compatible servers.
+            if server_type is not None:
+                resp = client.get(f"{server_url}/v1/models/{model}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # vLLM returns max_model_len
+                    ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
+                    if ctx and isinstance(ctx, (int, float)):
+                        return int(ctx)
 
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".

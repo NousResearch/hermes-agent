@@ -152,6 +152,19 @@ _DEFAULT_PAYLOADS = {
     "on_session_end": {"session_id": "test-session"},
     "on_session_finalize": {"session_id": "test-session"},
     "on_session_reset": {"session_id": "test-session"},
+    "on_status_bar_render": {
+        "snapshot": {
+            "model_name": "anthropic/claude-sonnet-4-6",
+            "model_short": "claude-sonnet-4-6",
+            "duration": "1m 23s",
+            "context_tokens": 2048,
+            "context_length": 120000,
+            "context_percent": 2,
+            "session_total_tokens": 2560,
+            "session_api_calls": 1,
+        },
+        "telemetry_schema_version": "hermes.observer.v1",
+    },
     "pre_api_request": {
         "session_id": "test-session",
         "task_id": "test-task",

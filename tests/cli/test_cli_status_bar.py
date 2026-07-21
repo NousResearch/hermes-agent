@@ -1,10 +1,18 @@
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_mod
 from cli import HermesCLI
+from hermes_cli.plugins import (
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+)
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -13,6 +21,10 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj._status_bar_plugin_refresh_lock = threading.Lock()
+    cli_obj._status_bar_plugin_refresh_executor = None
+    cli_obj._status_bar_plugin_refresh_running = False
+    cli_obj._status_bar_plugin_refresh_thread = None
     return cli_obj
 
 
@@ -51,6 +63,724 @@ def _attach_agent(
         ),
     )
     return cli_obj
+
+
+_STATUS_BAR_WIDTHS = (51, 52, 75, 76)
+
+
+def _plugin_status_bar_snapshot():
+    """Return a deterministic snapshot that exercises all three text tiers."""
+    return {
+        "model_short": "m",
+        "context_percent": 25,
+        "context_length": 200_000,
+        "context_tokens": 50_000,
+        "duration": "9m",
+        "compressions": 0,
+        "active_background_tasks": 0,
+        "active_background_processes": 0,
+        "active_background_subagents": 0,
+        "prompt_elapsed": "⏲ 3s",
+        "idle_since": "",
+    }
+
+
+def _plugin_status_bar_baseline(width):
+    if width < 52:
+        return "⚕ m · 9m"
+    if width < 76:
+        return "⚕ m · 25% · 9m"
+    return "⚕ m │ 50K/200K │ 25% │ 9m │ ⏲ 3s"
+
+
+def _assert_hook_invoked_once_with_snapshot(hook, snapshot):
+    assert hook.call_count == 1
+    assert hook.call_args.args == ("on_status_bar_render",)
+    assert set(hook.call_args.kwargs) == {"snapshot"}
+    assert hook.call_args.kwargs["snapshot"] == snapshot
+    assert hook.call_args.kwargs["snapshot"] is not snapshot
+
+
+class _BrokenTruthValue:
+    def __bool__(self):
+        raise RuntimeError("truth-value failure")
+
+
+class _BrokenStringValue:
+    def __bool__(self):
+        return True
+
+    def __str__(self):
+        raise RuntimeError("stringification failure")
+
+
+class TestStatusBarPluginHookNormalization:
+    """Tests for _invoke_status_bar_plugin_hook.
+
+    This helper is only ever called from the background refresh path
+    (_refresh_status_bar_plugin_values) -- never from rendering. It owns
+    calling invoke_hook() and normalizing the result into display-ready
+    strings.
+    """
+
+    def test_invokes_once_and_normalizes_ordered_truthy_values(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[None, "", 0, False, "ready", 7, {"state": "ok"}],
+        ) as hook:
+            values = cli_obj._invoke_status_bar_plugin_hook(snapshot)
+
+        assert values == ["ready", "7", "{'state': 'ok'}"]
+        _assert_hook_invoked_once_with_snapshot(hook, snapshot)
+
+    def test_sanitizes_control_characters_to_keep_footer_on_one_line(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[" ready\nnow\r\x1b[31m\t "],
+        ) as hook:
+            values = cli_obj._invoke_status_bar_plugin_hook(snapshot)
+
+        assert values == ["ready now  [31m"]
+        _assert_hook_invoked_once_with_snapshot(hook, snapshot)
+
+    def test_plugin_cannot_mutate_renderer_snapshot(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+
+        def mutate_snapshot(*_args, **kwargs):
+            kwargs["snapshot"].clear()
+            return ["ready"]
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=mutate_snapshot):
+            assert cli_obj._invoke_status_bar_plugin_hook(snapshot) == ["ready"]
+
+        assert snapshot == _plugin_status_bar_snapshot()
+
+    @pytest.mark.parametrize(
+        "unsupported",
+        [
+            (),
+            (value for value in ("generated",)),
+            "string aggregate",
+            None,
+        ],
+        ids=("tuple", "generator", "string", "none"),
+    )
+    def test_rejects_non_list_aggregates_by_returning_none(self, unsupported):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch("hermes_cli.plugins.invoke_hook", return_value=unsupported) as hook:
+            assert cli_obj._invoke_status_bar_plugin_hook(snapshot) is None
+
+        _assert_hook_invoked_once_with_snapshot(hook, snapshot)
+
+    @pytest.mark.parametrize("broken", [_BrokenTruthValue(), _BrokenStringValue()])
+    def test_preserves_healthy_values_when_an_element_is_broken(self, broken):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook", return_value=["partial", broken]
+        ) as hook:
+            assert cli_obj._invoke_status_bar_plugin_hook(snapshot) == ["partial"]
+
+        _assert_hook_invoked_once_with_snapshot(hook, snapshot)
+
+    def test_invocation_failure_returns_none(self):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        with patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=RuntimeError("plugin failure")
+        ) as hook:
+            assert cli_obj._invoke_status_bar_plugin_hook(snapshot) is None
+
+        _assert_hook_invoked_once_with_snapshot(hook, snapshot)
+
+    def test_lookup_failure_returns_none(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        monkeypatch.delattr(plugins, "invoke_hook")
+
+        assert cli_obj._invoke_status_bar_plugin_hook(snapshot) is None
+
+
+class TestStatusBarPluginValueCache:
+    """_get_status_bar_plugin_values() is the repaint-path reader.
+
+    It runs on prompt_toolkit's synchronous repaint path and must never
+    call invoke_hook() -- it only reflects whatever the background refresh
+    last wrote to the cache.
+    """
+
+    def test_returns_empty_list_when_no_cache_populated(self):
+        cli_obj = _make_cli()
+        with patch("hermes_cli.plugins.invoke_hook") as hook:
+            assert cli_obj._get_status_bar_plugin_values() == []
+
+        hook.assert_not_called()
+
+    def test_returns_cached_values_without_calling_invoke_hook(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_plugin_values_cache = ("ready", "7")
+
+        with patch("hermes_cli.plugins.invoke_hook") as hook:
+            assert cli_obj._get_status_bar_plugin_values() == ["ready", "7"]
+
+        hook.assert_not_called()
+
+    def test_returned_list_is_a_copy(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_plugin_values_cache = ("ready",)
+
+        values = cli_obj._get_status_bar_plugin_values()
+        values.append("mutated")
+
+        assert cli_obj._status_bar_plugin_values_cache == ("ready",)
+
+
+class TestStatusBarPluginBackgroundRefresh:
+    """_refresh_status_bar_plugin_values() is the only caller of invoke_hook()
+    for this event. Covers the single-in-flight guard, the hard timeout, and
+    that the cache survives errors/timeouts untouched.
+    """
+
+    def test_populates_cache_from_hook_on_success(self):
+        cli_obj = _make_cli()
+        with patch("hermes_cli.plugins.invoke_hook", return_value=["ready"]):
+            cli_obj._refresh_status_bar_plugin_values()
+
+        assert cli_obj._get_status_bar_plugin_values() == ["ready"]
+
+    def test_error_preserves_existing_cache(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_plugin_values_cache = ("old",)
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=RuntimeError("boom")):
+            cli_obj._refresh_status_bar_plugin_values()
+
+        assert cli_obj._get_status_bar_plugin_values() == ["old"]
+
+    def test_single_in_flight_guard_skips_concurrent_refresh(self):
+        cli_obj = _make_cli()
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_invoke_hook(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=2)
+            return ["done"]
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=blocking_invoke_hook
+        ) as hook:
+            first = threading.Thread(target=cli_obj._refresh_status_bar_plugin_values)
+            first.start()
+            assert started.wait(timeout=2)
+
+            # A second refresh while the first is still in flight must be a
+            # no-op -- it must not call invoke_hook again.
+            cli_obj._refresh_status_bar_plugin_values()
+            assert hook.call_count == 1
+
+            release.set()
+            first.join(timeout=2)
+
+        assert cli_obj._get_status_bar_plugin_values() == ["done"]
+
+    def test_blocking_callback_does_not_freeze_the_repaint_path(self):
+        """Regression: a slow/blocking on_status_bar_render callback (e.g. a
+        configured shell hook shelling out via subprocess.run(), which
+        defaults to a 60s timeout) must never stall rendering. The refresh
+        call itself is bounded by _STATUS_BAR_PLUGIN_REFRESH_TIMEOUT, and the
+        render path never calls invoke_hook() at all, so a repaint stays
+        instant regardless of what the callback is doing.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_plugin_values_cache = ("old",)
+        cli_obj._STATUS_BAR_PLUGIN_REFRESH_TIMEOUT = 0.05
+
+        release = threading.Event()
+
+        def blocking_invoke_hook(*_args, **_kwargs):
+            # Blocks well past the refresh timeout, mirroring a stuck or
+            # slow shell hook.
+            release.wait(timeout=1.0)
+            return ["late"]
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=blocking_invoke_hook
+        ) as hook:
+            t0 = time.monotonic()
+            cli_obj._refresh_status_bar_plugin_values()
+            elapsed = time.monotonic() - t0
+
+            # The refresh call returns promptly even though the callback is
+            # still running -- bounded by the timeout, not the callback.
+            assert elapsed < 0.5
+
+            # The repaint path is untouched by any of this: it never calls
+            # invoke_hook and reflects the pre-existing cache.
+            with patch.object(
+                cli_obj, "_get_status_bar_snapshot",
+                return_value=_plugin_status_bar_snapshot(),
+            ), patch.object(cli_obj, "_is_session_yolo_active", return_value=False):
+                t1 = time.monotonic()
+                text = cli_obj._build_status_bar_text(width=120)
+                render_elapsed = time.monotonic() - t1
+
+            assert "old" in text
+            assert render_elapsed < 0.5
+
+            release.set()
+
+        # invoke_hook was only ever dispatched once, by the refresh call.
+        assert hook.call_count == 1
+
+    def test_start_triggers_periodic_refresh_and_stop_ends_it(self):
+        cli_obj = _make_cli()
+
+        with patch.object(HermesCLI, "_STATUS_BAR_PLUGIN_CACHE_TTL", 0.01), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=["ready"]
+        ):
+            cli_obj._status_bar_plugin_refresh_start()
+            try:
+                deadline = time.monotonic() + 2
+                while (
+                    cli_obj._get_status_bar_plugin_values() != ["ready"]
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+            finally:
+                cli_obj._status_bar_plugin_refresh_stop()
+
+        assert cli_obj._get_status_bar_plugin_values() == ["ready"]
+        assert cli_obj._status_bar_plugin_refresh_running is False
+        assert cli_obj._status_bar_plugin_refresh_thread is None
+
+
+class TestStatusBarPluginTierIntegration:
+    """Rendering must reflect whatever the background refresh cached -- it
+    must never dispatch invoke_hook() itself.
+    """
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_appends_cached_values_with_tier_separator(self, width):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        cli_obj._status_bar_plugin_values_cache = ("ready", "7")
+        separator = " · " if width < 76 else " │ "
+        expected = separator.join(
+            [_plugin_status_bar_baseline(width), "ready", "7"]
+        )
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch("hermes_cli.plugins.invoke_hook") as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == expected
+        hook.assert_not_called()
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_empty_cache_preserves_exact_baseline_without_trailing_separator(
+        self, width
+    ):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        separator = " · " if width < 76 else " │ "
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch("hermes_cli.plugins.invoke_hook") as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == _plugin_status_bar_baseline(width)
+        assert not text.endswith(separator)
+        hook.assert_not_called()
+
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS)
+    def test_plugin_values_are_appended_before_display_width_trimming(self, width):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        separator = " · " if width < 76 else " │ "
+        cli_obj._status_bar_plugin_values_cache = ("x" * 200,)
+        untrimmed = separator.join(
+            [_plugin_status_bar_baseline(width), "x" * 200]
+        )
+        expected = cli_obj._trim_status_bar_text(untrimmed, width)
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch("hermes_cli.plugins.invoke_hook") as hook:
+            text = cli_obj._build_status_bar_text(width=width)
+
+        assert text == expected
+        assert text.endswith("...")
+        assert cli_obj._status_bar_display_width(text) <= width
+        hook.assert_not_called()
+
+
+_RENDERERS = ("text", "fragments")
+
+
+def _render_status_bar(cli_obj, renderer, width):
+    if renderer == "text":
+        return cli_obj._build_status_bar_text(width=width)
+    cli_obj._status_bar_visible = True
+    with patch.object(cli_obj, "_get_tui_terminal_width", return_value=width):
+        return cli_obj._get_status_bar_fragments()
+
+
+def _rendered_status_bar_text(rendered):
+    if isinstance(rendered, str):
+        return rendered
+    return "".join(text for _, text in rendered)
+
+
+def _plugin_status_bar_fragment_baseline(width):
+    if width < 52:
+        return [
+            ("class:status-bar", " ⚕ "),
+            ("class:status-bar-strong", "m"),
+            ("class:status-bar-dim", " · "),
+            ("class:status-bar-dim", "9m"),
+            ("class:status-bar", " "),
+        ]
+    if width < 76:
+        return [
+            ("class:status-bar", " ⚕ "),
+            ("class:status-bar-strong", "m"),
+            ("class:status-bar-dim", " · "),
+            ("class:status-bar-good", "25%"),
+            ("class:status-bar-dim", " · "),
+            ("class:status-bar-dim", "9m"),
+            ("class:status-bar", " "),
+        ]
+    return [
+        ("class:status-bar", " ⚕ "),
+        ("class:status-bar-strong", "m"),
+        ("class:status-bar-dim", " │ "),
+        ("class:status-bar-dim", "50K/200K"),
+        ("class:status-bar-dim", " │ "),
+        ("class:status-bar-good", "[██░░░░░░░░]"),
+        ("class:status-bar-dim", " "),
+        ("class:status-bar-good", "25%"),
+        ("class:status-bar-dim", " │ "),
+        ("class:status-bar-dim", "9m"),
+        ("class:status-bar-dim", " │ "),
+        ("class:status-bar-dim", "⏲ 3s"),
+        ("class:status-bar", " "),
+    ]
+
+
+class TestStatusBarPluginCrossRendererRegression:
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS, ids=lambda value: f"width-{value}")
+    def test_fragment_renderer_reflects_cache_with_exact_styles(self, width):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        cli_obj._status_bar_plugin_values_cache = ("ready",)
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ) as get_snapshot, patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch("hermes_cli.plugins.invoke_hook") as hook:
+            fragments = _render_status_bar(cli_obj, "fragments", width)
+
+        separator = " · " if width < 76 else " │ "
+        expected = _plugin_status_bar_fragment_baseline(width)[:-1] + [
+            ("class:status-bar-dim", separator),
+            ("class:status-bar", "ready"),
+            ("class:status-bar", " "),
+        ]
+        assert fragments == expected
+        get_snapshot.assert_called_once_with()
+        hook.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "renderer", _RENDERERS, ids=lambda value: f"renderer-{value}"
+    )
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS, ids=lambda value: f"width-{value}")
+    def test_empty_cache_matches_across_renderers_without_dangling_separator(
+        self, renderer, width
+    ):
+        snapshot = _plugin_status_bar_snapshot()
+        baseline_cli = _make_cli()
+        candidate_cli = _make_cli()
+
+        with patch.object(
+            baseline_cli, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(baseline_cli, "_is_session_yolo_active", return_value=False):
+            empty_render = _render_status_bar(baseline_cli, renderer, width)
+
+        with patch.object(
+            candidate_cli, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            candidate_cli, "_is_session_yolo_active", return_value=False
+        ), patch("hermes_cli.plugins.invoke_hook") as hook:
+            candidate_render = _render_status_bar(candidate_cli, renderer, width)
+
+        empty_text = _rendered_status_bar_text(empty_render)
+        candidate_text = _rendered_status_bar_text(candidate_render)
+        separator_glyph = "·" if width < 76 else "│"
+        assert candidate_text == empty_text
+        assert candidate_text.rstrip().endswith(separator_glyph) is False
+        if renderer == "fragments":
+            assert candidate_render == empty_render
+        hook.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "renderer", _RENDERERS, ids=lambda value: f"renderer-{value}"
+    )
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS, ids=lambda value: f"width-{value}")
+    def test_cached_value_uses_tier_separator_and_strict_width_bound(
+        self, renderer, width
+    ):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        cli_obj._status_bar_plugin_values_cache = ("x",)
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(cli_obj, "_is_session_yolo_active", return_value=False):
+            rendered = _render_status_bar(cli_obj, renderer, width)
+
+        separator = " · " if width < 76 else " │ "
+        text = _rendered_status_bar_text(rendered)
+        assert separator + "x" in text
+        assert cli_obj._status_bar_display_width(text) <= width
+        if renderer == "fragments":
+            assert rendered[-3:] == [
+                ("class:status-bar-dim", separator),
+                ("class:status-bar", "x"),
+                ("class:status-bar", " "),
+            ]
+
+    @pytest.mark.parametrize(
+        "renderer", _RENDERERS, ids=lambda value: f"renderer-{value}"
+    )
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS, ids=lambda value: f"width-{value}")
+    def test_stale_or_missing_cache_preserves_baseline_and_never_calls_hook(
+        self, renderer, width
+    ):
+        """Rendering must never depend on invoke_hook succeeding: an empty
+        cache (e.g. before the first background refresh completes, or after
+        one failed) just renders without plugin values -- and it must not
+        call invoke_hook() to find out.
+        """
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_is_session_yolo_active", return_value=False
+        ), patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=RuntimeError("plugin failure")
+        ) as hook:
+            rendered = _render_status_bar(cli_obj, renderer, width)
+
+        if renderer == "text":
+            assert rendered == _plugin_status_bar_baseline(width)
+        else:
+            assert rendered == _plugin_status_bar_fragment_baseline(width)
+        assert cli_obj._status_bar_display_width(
+            _rendered_status_bar_text(rendered)
+        ) <= width
+        hook.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "renderer", _RENDERERS, ids=lambda value: f"renderer-{value}"
+    )
+    @pytest.mark.parametrize("width", _STATUS_BAR_WIDTHS, ids=lambda value: f"width-{value}")
+    def test_overflow_trims_final_combined_text_to_terminal_width(
+        self, renderer, width
+    ):
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        plugin_value = "x" * 200
+        cli_obj._status_bar_plugin_values_cache = (plugin_value,)
+        separator = " · " if width < 76 else " │ "
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(cli_obj, "_is_session_yolo_active", return_value=False):
+            rendered = _render_status_bar(cli_obj, renderer, width)
+
+        if renderer == "text":
+            untrimmed = separator.join(
+                [_plugin_status_bar_baseline(width), plugin_value]
+            )
+        else:
+            baseline = _plugin_status_bar_fragment_baseline(width)
+            untrimmed = (
+                "".join(text for _, text in baseline[:-1])
+                + separator
+                + plugin_value
+                + " "
+            )
+            assert rendered[0][0] == "class:status-bar"
+            assert len(rendered) == 1
+        text = _rendered_status_bar_text(rendered)
+        assert text == cli_obj._trim_status_bar_text(untrimmed, width)
+        assert text.endswith("...")
+        assert cli_obj._status_bar_display_width(text) <= width
+
+    @pytest.mark.parametrize(
+        "renderer", _RENDERERS, ids=lambda value: f"renderer-{value}"
+    )
+    @pytest.mark.parametrize("width", (51, 52, 76), ids=lambda value: f"width-{value}")
+    def test_truthy_non_strings_are_ordered_once_already_normalized(
+        self, renderer, width
+    ):
+        # Stringify/order/filter-falsy normalization itself is covered
+        # directly in TestStatusBarPluginHookNormalization. This confirms
+        # the renderer places already-normalized cache entries correctly
+        # relative to each width tier.
+        cli_obj = _make_cli()
+        snapshot = _plugin_status_bar_snapshot()
+        separator = " · " if width < 76 else " │ "
+        cli_obj._status_bar_plugin_values_cache = ("7", "2.5")
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(cli_obj, "_is_session_yolo_active", return_value=False):
+            rendered = _render_status_bar(cli_obj, renderer, width)
+
+        text = _rendered_status_bar_text(rendered)
+        assert separator.join(("7", "2.5")) in text
+        assert cli_obj._status_bar_display_width(text) <= width
+        if renderer == "fragments":
+            assert rendered[-5:] == [
+                ("class:status-bar-dim", separator),
+                ("class:status-bar", "7"),
+                ("class:status-bar-dim", separator),
+                ("class:status-bar", "2.5"),
+                ("class:status-bar", " "),
+            ]
+
+    @pytest.mark.parametrize(
+        ("visible", "model_picker"),
+        ((False, None), (True, object())),
+        ids=("hidden", "model-picker"),
+    )
+    def test_hidden_and_model_picker_fragment_renders_are_hook_free(
+        self, visible, model_picker
+    ):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_visible = visible
+        cli_obj._model_picker_state = model_picker
+
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as get_snapshot, patch(
+            "hermes_cli.plugins.invoke_hook"
+        ) as hook:
+            assert cli_obj._get_status_bar_fragments() == []
+
+        get_snapshot.assert_not_called()
+        hook.assert_not_called()
+
+    def test_fragment_fallback_does_not_redispatch_hook(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_visible = True
+        snapshot = _plugin_status_bar_snapshot()
+        cli_obj._status_bar_plugin_values_cache = ("x",)
+
+        with patch.object(
+            cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+        ), patch.object(
+            cli_obj, "_get_tui_terminal_width", return_value=52
+        ), patch.object(
+            cli_obj,
+            "_is_session_yolo_active",
+            side_effect=[RuntimeError("fragment failure"), False],
+        ), patch("hermes_cli.plugins.invoke_hook") as hook:
+            rendered = cli_obj._get_status_bar_fragments()
+
+        assert rendered == [("class:status-bar", " ⚕ m · 25% · 9m · x ")]
+        hook.assert_not_called()
+
+    def test_fragment_snapshot_failure_uses_live_model_and_width_bound(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_visible = True
+        cli_obj.agent = SimpleNamespace(model="fallback/live-model-with-a-long-name")
+
+        with patch.object(
+            cli_obj,
+            "_get_status_bar_snapshot",
+            side_effect=RuntimeError("snapshot failure"),
+        ), patch.object(cli_obj, "_get_tui_terminal_width", return_value=20):
+            rendered = cli_obj._get_status_bar_fragments()
+
+        text = _rendered_status_bar_text(rendered)
+        assert "fallback/live" in text
+        assert cli_obj.model not in text
+        assert cli_obj._status_bar_display_width(text) <= 20
+
+    def test_registered_plugin_callback_only_reaches_render_via_background_refresh(
+        self,
+    ):
+        """End-to-end: a real registered on_status_bar_render callback must
+        go through _refresh_status_bar_plugin_values() to reach the cache
+        the renderer reads. Calling the renderer alone (with no refresh yet)
+        must not dispatch it.
+        """
+        manager = PluginManager()
+        context = PluginContext(
+            PluginManifest(name="status-bar-renderer-regression", source="user"),
+            manager,
+        )
+        received = []
+
+        def render_status(**kwargs):
+            received.append(kwargs)
+            return "x"
+
+        context.register_hook("on_status_bar_render", render_status)
+        snapshot = _plugin_status_bar_snapshot()
+
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+            for renderer in _RENDERERS:
+                for width in _STATUS_BAR_WIDTHS:
+                    cli_obj = _make_cli()
+                    with patch.object(
+                        cli_obj, "_get_status_bar_snapshot", return_value=snapshot
+                    ), patch.object(
+                        cli_obj, "_is_session_yolo_active", return_value=False
+                    ):
+                        received_before = len(received)
+                        rendered_before = _render_status_bar(cli_obj, renderer, width)
+                        assert len(received) == received_before, (
+                            "render must not dispatch the hook"
+                        )
+                        assert rendered_before is not None
+
+                        cli_obj._refresh_status_bar_plugin_values()
+                        rendered_after = _render_status_bar(cli_obj, renderer, width)
+
+                    text = _rendered_status_bar_text(rendered_after)
+                    separator = " · " if width < 76 else " │ "
+                    assert separator + "x" in text, (renderer, width, rendered_after)
+                    if renderer == "fragments":
+                        assert ("class:status-bar", "x") in rendered_after
+
+        assert manager.has_hook("on_status_bar_render")
+        assert len(received) == len(_RENDERERS) * len(_STATUS_BAR_WIDTHS)
+        for payload in received:
+            assert set(payload) == {"snapshot", "telemetry_schema_version"}
+            assert payload["snapshot"] == snapshot
+            assert payload["snapshot"] is not snapshot
+            assert payload["telemetry_schema_version"] == "hermes.observer.v1"
 
 
 class TestCLIStatusBar:
@@ -568,7 +1298,7 @@ class TestStatusBarWidthSource:
 
             total_text = "".join(text for _, text in frags)
             display_width = cli_obj._status_bar_display_width(total_text)
-            assert display_width <= width + 4, (  # +4 for minor padding chars
+            assert display_width <= width, (
                 f"At width={width}, fragment total {display_width} cells overflows "
                 f"({total_text!r})"
             )

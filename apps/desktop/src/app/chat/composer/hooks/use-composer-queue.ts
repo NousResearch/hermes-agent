@@ -8,12 +8,16 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
+  shouldAutoDrain,
   updateQueuedPrompt
 } from '@/store/composer-queue'
+
+import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { useComposerScope } from '../scope'
@@ -61,9 +65,10 @@ export function useComposerQueue({
   const scope = useComposerScope()
 
   // Per-session queue slice: re-renders only when THIS session's queue changes.
+  const emptyQueue = useRef<QueuedPromptEntry[]>([]).current
   const queuedPrompts = useSyncExternalStore(
-    QueueManager.subscribe,
-    () => activeQueueSessionKey ? QueueManager.getAll(activeQueueSessionKey) : []
+    useCallback((cb: () => void) => QueueManager.subscribe(cb), []),
+    useCallback(() => activeQueueSessionKey ? QueueManager.getAll(activeQueueSessionKey) : emptyQueue, [activeQueueSessionKey])
   )
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
@@ -177,11 +182,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  const prevQueueKeyRef = useRef(activeQueueSessionKey)
-  const drainingQueueRef = useRef(false)
-  const prevQueueKeyRef = useRef(activeQueueSessionKey)
-  const drainingQueueRef = useRef(false)
-  const drainFailuresRef = useRef(new Map<string, number>())
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   const runDrain = useCallback(

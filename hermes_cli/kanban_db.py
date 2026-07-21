@@ -5934,16 +5934,31 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
+
+    Refuses to delete a task with an active run or live claim. Operators
+    must reclaim or archive it first so the worker lifecycle stays visible
+    and the in-flight run is closed explicitly.
     """
     with write_txn(conn):
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cur.rowcount != 1:
+        row = conn.execute(
+            "SELECT status, claim_lock, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
             return False
+        if row["status"] == "running" or row["claim_lock"] is not None or row["current_run_id"] is not None:
+            raise RuntimeError(
+                f"cannot delete {task_id}: task is currently running or has an active run. "
+                "Reclaim or archive it first."
+            )
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if cur.rowcount != 1:
+            return False
     recompute_ready(conn)
     return True
 

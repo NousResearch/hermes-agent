@@ -1579,6 +1579,20 @@ def test_delete_task_returns_false_for_missing_task(kanban_home):
         assert not kb.delete_task(conn, "t_nonexistent")
 
 
+def test_delete_task_refuses_running_task_with_active_run(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="still-running", assignee="worker")
+        kb.claim_task(conn, tid, claimer="host:worker")
+
+        with pytest.raises(RuntimeError, match="Reclaim or archive it first"):
+            kb.delete_task(conn, tid)
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert kb.latest_run(conn, tid).ended_at is None
+
+
 def test_delete_task_cascades_links(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")

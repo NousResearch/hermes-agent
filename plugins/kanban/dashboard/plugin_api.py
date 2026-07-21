@@ -945,7 +945,10 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.delete_task(conn, task_id)
+        try:
+            ok = kanban_db.delete_task(conn, task_id)
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         if not ok:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}

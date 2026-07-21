@@ -683,6 +683,22 @@ def test_delete_task_not_found(client):
     assert "not found" in r.json()["detail"]
 
 
+def test_delete_task_running_returns_409(client):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "still-running", "assignee": "worker"},
+    ).json()["task"]
+    conn = kb.connect()
+    try:
+        kb.claim_task(conn, t["id"])
+    finally:
+        conn.close()
+
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 409
+    assert "Reclaim or archive it first" in r.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------

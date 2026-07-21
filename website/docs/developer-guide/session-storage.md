@@ -15,6 +15,7 @@ Source file: `hermes_state.py`
 ├── messages              — Full message history per session
 ├── messages_fts          — FTS5 virtual table (content + tool_name + tool_calls)
 ├── messages_fts_trigram  — FTS5 virtual table with trigram tokenizer (CJK / substring search)
+├── gateway_routing       — Gateway session-key → session ID index (replaces primary use of sessions.json)
 ├── state_meta            — Key/value metadata table
 └── schema_version        — Single-row table tracking migration state
 ```

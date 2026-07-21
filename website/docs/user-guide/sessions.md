@@ -646,14 +646,18 @@ Sessions with **active background processes** are never auto-reset, regardless o
 |------|------|-------------|
 | SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
 | Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
-| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
+| Gateway routing index | `~/.hermes/state.db` (`gateway_routing` table) | Maps messaging session keys to active session IDs (origin metadata, expiry flags) |
+| Legacy routing mirror (optional) | `~/.hermes/sessions/sessions.json` | Written when `gateway.write_sessions_json: true` (default) for downgrade safety and external tooling |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
 
-:::warning `sessions.json` is not the session list
-`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
-messaging session keys (`agent:main:<platform>:...`) to active session IDs.
-It only ever contains gateway/messaging entries, so if you run a messaging
+:::warning `sessions.json` is a legacy mirror, not the primary index
+The **canonical** gateway routing index lives in the `gateway_routing` table inside
+`~/.hermes/state.db`. `~/.hermes/sessions/sessions.json` is an optional mirror
+(controlled by `gateway.write_sessions_json` in `config.yaml`, default `true`) for
+pre-migration installs and tools that still read the JSON file.
+
+The mirror only ever contains gateway/messaging entries, so if you run a messaging
 platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
 
 This is **expected** and does **not** mean your CLI sessions are missing.
@@ -681,6 +685,7 @@ Key tables in `state.db`:
 - **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
+- **gateway_routing** — gateway session-key → active session ID routing index (scoped per `~/.hermes/sessions/` directory)
 
 ## Session Expiry and Cleanup
 

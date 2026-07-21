@@ -189,6 +189,13 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# DNS64/NAT64 well-known prefix (RFC 6052).  Addresses in 64:ff9b::/96
+# embed a public IPv4 address in the low 32 bits.  Python marks the
+# entire prefix as ``is_reserved``, which causes false-positive SSRF
+# blocks on normal public sites when the resolver synthesises AAAA
+# records.  We must decode the embedded IPv4 and check *that* instead.
+_NAT64_WKP = ipaddress.ip_network("64:ff9b::/96")
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -261,6 +268,17 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     # by their embedded IPv4 address, not as IPv6
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         embedded_ip = ip.ipv4_mapped
+        return (embedded_ip.is_private or embedded_ip.is_loopback or
+                embedded_ip.is_link_local or embedded_ip.is_reserved or
+                embedded_ip.is_multicast or embedded_ip.is_unspecified or
+                embedded_ip in _CGNAT_NETWORK)
+
+    # DNS64/NAT64 well-known prefix (64:ff9b::/96) — the IPv6 address
+    # itself is ``is_reserved`` in Python, but the embedded IPv4 target
+    # may be a perfectly public host.  Evaluate the embedded IPv4
+    # instead of blocking the NAT64 wrapper wholesale.
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WKP:
+        embedded_ip = ipaddress.IPv4Address(ip.packed[-4:])
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or

@@ -313,6 +313,38 @@ class TestIsBlockedIp:
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
 
+    # ── NAT64/DNS64 well-known prefix (64:ff9b::/96) ──
+
+    @pytest.mark.parametrize("ip_str,embedded", [
+        ("64:ff9b::a9fe:a9fe", "169.254.169.254"),  # AWS metadata via NAT64
+        ("64:ff9b::0a00:0001", "10.0.0.1"),          # Private 10.x via NAT64
+        ("64:ff9b::7f00:0001", "127.0.0.1"),         # Loopback via NAT64
+        ("64:ff9b::c0a8:0001", "192.168.0.1"),        # Private 192.168.x via NAT64
+        ("64:ff9b::0000:0000", "0.0.0.0"),            # Unspecified via NAT64
+        ("64:ff9b::e000:0001", "224.0.0.1"),          # Multicast via NAT64
+        ("64:ff9b::6440:0001", "100.64.0.1"),         # CGNAT via NAT64
+    ])
+    def test_nat64_blocked(self, ip_str, embedded):
+        """NAT64 addresses wrapping private/metadata IPv4 targets must be blocked."""
+        ip = ipaddress.ip_address(ip_str)
+        assert _is_blocked_ip(ip) is True, (
+            f"{ip_str} (embeds {embedded}) should be blocked"
+        )
+
+    @pytest.mark.parametrize("ip_str,embedded", [
+        ("64:ff9b::6812:27e4", "104.18.39.228"),      # Cloudflare public IP
+        ("64:ff9b::ac40:941c", "172.64.148.28"),       # Another Cloudflare IP
+        ("64:ff9b::0808:0808", "8.8.8.8"),             # Google DNS
+        ("64:ff9b::0101:0101", "1.1.1.1"),             # Cloudflare DNS
+        ("64:ff9b::5d68:d822", "93.184.216.34"),       # example.com
+    ])
+    def test_nat64_allowed(self, ip_str, embedded):
+        """NAT64 addresses wrapping public IPv4 targets must be allowed."""
+        ip = ipaddress.ip_address(ip_str)
+        assert _is_blocked_ip(ip) is False, (
+            f"{ip_str} (embeds {embedded}) should be allowed"
+        )
+
 
 class TestGlobalAllowPrivateUrls:
     """Tests for the security.allow_private_urls config toggle."""
@@ -633,6 +665,20 @@ class TestIPv4MappedIPv6SSRF:
             (10, 1, 6, "", ("::ffff:169.254.169.254", 0, 0, 0)),
         ]):
             assert is_safe_url("http://aws-metadata.internal/") is False
+
+    def test_nat64_public_site_allowed(self):
+        """64:ff9b:: wrapping a public IPv4 should pass is_safe_url."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::6812:27e4", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://www.example.com/") is True
+
+    def test_nat64_aws_metadata_blocked(self):
+        """64:ff9b:: wrapping 169.254.169.254 must always be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::a9fe:a9fe", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://fake-metadata.internal/") is False
 
     def test_ipv4_mapped_ecs_metadata_blocked(self):
         """::ffff:169.254.170.2 (AWS ECS task metadata) must always be blocked."""

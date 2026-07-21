@@ -214,7 +214,13 @@ to find the parent assistant message, keeping groups intact.
 ### Phase 3: Generate Structured Summary
 
 :::warning Summary model context length
-The summary model must have a context window **at least as large** as the main agent model's. The entire middle section is sent to the summary model in a single `call_llm(task="compression")` call. If the summary model's context is smaller, the API returns a context-length error — `_generate_summary()` catches it, logs a warning, and returns `None`. The compressor then drops the middle turns **without a summary**, silently losing conversation context. This is the most common cause of degraded compaction quality.
+For ordinary compactions, the summary model must be able to accept the serialized
+middle section. Very large serialized inputs use hierarchical compression: Hermes
+splits turns into bounded segments without separating tool-call groups, summarizes
+each segment, and merges the segment summaries into the final checkpoint. A failed
+segment is split into smaller parts before the normal summary fallback and cooldown
+handling runs. Compression calls intentionally omit a wire-level `max_tokens` cap
+so provider-specific reasoning output cannot truncate the checkpoint.
 :::
 
 The middle turns are summarized using the auxiliary LLM with a structured

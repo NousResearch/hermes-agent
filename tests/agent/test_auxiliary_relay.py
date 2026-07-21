@@ -152,6 +152,112 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
     ]
 
 
+def test_terminal_auxiliary_failure_stays_failed_when_caller_catches_it(
+    relay_turn, monkeypatch
+):
+    _relay, turn = relay_turn
+    consumer = "test.terminal-auxiliary-failure"
+    turn.lease.host.retain_managed_execution(consumer)
+    outcomes = []
+    original_pop = turn.lease.host.relay.scope.pop
+
+    def record_pop(*args, **kwargs):
+        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        return original_pop(*args, **kwargs)
+
+    monkeypatch.setattr(turn.lease.host.relay.scope, "pop", record_pop)
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(choices=[]),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "test-model",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "test-model", "messages": []},
+                ),
+                task,
+            )
+        assert len(turn.logical_llm_calls) == 1
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "test-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        with pytest.raises(RuntimeError, match="invalid response"):
+            run("compression")
+
+        assert outcomes == ["failed"]
+        assert turn.logical_llm_calls == {}
+
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+
+        assert outcomes == ["failed", "success"]
+    finally:
+        turn.lease.host.release_managed_execution(consumer)
+
+
+@pytest.mark.asyncio
+async def test_async_terminal_auxiliary_failure_closes_logical_call(relay_turn):
+    _relay, turn = relay_turn
+    consumer = "test.async-terminal-auxiliary-failure"
+    turn.lease.host.retain_managed_execution(consumer)
+
+    async def create(**_kwargs):
+        return SimpleNamespace(choices=[])
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    @auxiliary_client._relay_auxiliary_call_async
+    async def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "anthropic",
+            "claude-test",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                await auxiliary_client._relay_async_completion(
+                    client,
+                    {"model": "claude-test", "messages": []},
+                ),
+                task,
+            )
+        assert len(turn.logical_llm_calls) == 1
+        return auxiliary_client._validate_llm_response(
+            await auxiliary_client._relay_async_completion(
+                client,
+                {"model": "claude-test", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        with pytest.raises(RuntimeError, match="invalid response"):
+            await run("title_generation")
+
+        assert turn.logical_llm_calls == {}
+    finally:
+        turn.lease.host.release_managed_execution(consumer)
+
+
 def test_auxiliary_stream_uses_streaming_relay_primitive(monkeypatch):
     captured = {}
     raw_stream = iter([{"delta": "one"}, {"delta": "two"}])

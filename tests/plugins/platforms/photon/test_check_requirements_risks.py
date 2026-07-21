@@ -221,6 +221,34 @@ def test_fix_risk3_error_log_cleared_on_success(
     )
 
 
+# ---------------------------------------------------------------------------
+# Shared predicate — status / _start_sidecar / check_requirements must agree
+# ---------------------------------------------------------------------------
+
+
+def test_cli_status_shares_adapter_sidecar_deps_check(tmp_path: Path) -> None:
+    """`hermes photon status` must use the exact same spectrum-ts check as
+    check_requirements() / _start_sidecar() — not a separate node_modules-only
+    existence check that would disagree on a partial/empty install."""
+    assert cli_mod.sidecar_deps_installed is adapter_mod.sidecar_deps_installed
+
+
+def test_sidecar_deps_installed_false_on_empty_node_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
+    (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
+    assert adapter_mod.sidecar_deps_installed() is False
+
+
+def test_sidecar_deps_installed_true_with_spectrum_ts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
+    (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
+    assert adapter_mod.sidecar_deps_installed() is True
+
+
 @_requires_node
 def test_fix_risk3_check_requirements_surfaces_npm_error_in_debug_log(
     monkeypatch: pytest.MonkeyPatch,

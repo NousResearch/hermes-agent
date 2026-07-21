@@ -56,6 +56,9 @@ _PROVIDER_ENV_HINTS = (
     "TOKENHUB_API_KEY",
 )
 
+_NPM_AUDIT_TIMEOUT_SECONDS = 10
+_ANTHROPIC_PROBE_TIMEOUT_SECONDS = 5
+
 
 from hermes_constants import is_termux as _is_termux
 
@@ -78,6 +81,35 @@ def _safe_which(cmd: str) -> str | None:
         return shutil.which(cmd)
     except Exception:
         return None
+
+
+def _run_npm_audits(
+    audit_targets: list[tuple[Path, str, list[str]]], npm_bin: str
+) -> list[tuple[subprocess.CompletedProcess | None, Exception | None]]:
+    """Run independent npm audits concurrently in stable target order."""
+    import concurrent.futures
+
+    def _run_one(target):
+        npm_dir, _, audit_extra = target
+        try:
+            result = subprocess.run(
+                [npm_bin, "audit", "--json", *audit_extra],
+                cwd=str(npm_dir),
+                capture_output=True,
+                text=True,
+                timeout=_NPM_AUDIT_TIMEOUT_SECONDS,
+            )
+            return result, None
+        except Exception as exc:
+            return None, exc
+
+    if not audit_targets:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(4, len(audit_targets)),
+        thread_name_prefix="doctor-npm-audit",
+    ) as executor:
+        return list(executor.map(_run_one, audit_targets))
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -1796,21 +1828,29 @@ def run_doctor(args):
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (_whatsapp_bridge_dir, "WhatsApp bridge", []),
         ]
+        eligible_npm_audit_targets = []
         for npm_dir, label, audit_extra in npm_audit_targets:
             # For workspace-scoped audits run from PROJECT_ROOT the
             # node_modules check must use the workspace root; standalone dirs
             # (whatsapp-bridge) check their own node_modules.
             check_dir = PROJECT_ROOT if audit_extra else npm_dir
-            if not (check_dir / "node_modules").exists():
+            if (check_dir / "node_modules").exists():
+                eligible_npm_audit_targets.append((npm_dir, label, audit_extra))
+
+        audit_results = _run_npm_audits(eligible_npm_audit_targets, _npm_bin)
+        for (npm_dir, label, audit_extra), (audit_result, audit_error) in zip(
+            eligible_npm_audit_targets, audit_results
+        ):
+            if isinstance(audit_error, subprocess.TimeoutExpired):
+                check_warn(
+                    f"{label} deps",
+                    f"(npm audit timed out after {_NPM_AUDIT_TIMEOUT_SECONDS}s)",
+                )
+                continue
+            if audit_error is not None:
+                check_warn(f"{label} deps", f"(npm audit failed: {audit_error})")
                 continue
             try:
-                # Use resolved absolute path so Windows can execute
-                # npm.cmd (CreateProcessW can't run bare .cmd names).
-                audit_result = subprocess.run(
-                    [_npm_bin, "audit", "--json", *audit_extra],
-                    cwd=str(npm_dir),
-                    capture_output=True, text=True, timeout=30,
-                )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
                 vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
@@ -1980,7 +2020,7 @@ def run_doctor(args):
                 headers["x-api-key"] = key
             r = httpx.get(
                 "https://api.anthropic.com/v1/models",
-                headers=headers, timeout=10,
+                headers=headers, timeout=_ANTHROPIC_PROBE_TIMEOUT_SECONDS,
             )
             # Reactive recovery: OAuth subscriptions without 1M context reject the
             # request with 400 "long context beta is not yet available for this
@@ -1998,7 +2038,7 @@ def run_doctor(args):
                 )
                 r = httpx.get(
                     "https://api.anthropic.com/v1/models",
-                    headers=headers, timeout=10,
+                    headers=headers, timeout=_ANTHROPIC_PROBE_TIMEOUT_SECONDS,
                 )
             if r.status_code == 200:
                 return _ConnectivityResult(

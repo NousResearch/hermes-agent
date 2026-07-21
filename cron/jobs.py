@@ -1087,6 +1087,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    feedback: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1131,6 +1132,8 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        feedback: Optional interactive response prompt and choices. Platforms that
+                  support interactive controls can render these with the delivery.
 
     Returns:
         The created job dict
@@ -1163,6 +1166,8 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    from cron.feedback import normalize_feedback_config
+    normalized_feedback = normalize_feedback_config(feedback)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1252,6 +1257,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "feedback": normalized_feedback,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1355,6 +1361,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "feedback" in updates:
+                from cron.feedback import normalize_feedback_config
+                updates["feedback"] = normalize_feedback_config(updates["feedback"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

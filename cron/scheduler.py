@@ -1664,6 +1664,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
 
+        from cron.feedback import feedback_for_job
+        route_metadata = {"job_id": job["id"]}
+        if thread_id is not None:
+            route_metadata["thread_id"] = str(thread_id)
+        reminder_feedback = feedback_for_job(job)
+        if reminder_feedback:
+            route_metadata["reminder_feedback"] = reminder_feedback
+
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
@@ -1716,6 +1724,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
+
+            # Telegram consumes this optional metadata and attaches a persistent
+            # inline keyboard. Other platform adapters safely ignore it.
+            if reminder_feedback:
+                route_metadata["reminder_feedback"] = reminder_feedback
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
@@ -1940,7 +1953,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform, pconfig, chat_id, cleaned_delivery_content,
+                thread_id=thread_id, media_files=media_files,
+                metadata=route_metadata,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -1969,8 +1986,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                        result = future.result(timeout=30)
+                        fallback_coro = _send_to_platform(
+                            platform, pconfig, chat_id, cleaned_delivery_content,
+                            thread_id=thread_id, media_files=media_files,
+                            metadata=route_metadata,
+                        )
+                        try:
+                            future = pool.submit(asyncio.run, fallback_coro)
+                        except Exception:
+                            fallback_coro.close()
+                            raise
+                        try:
+                            result = future.result(timeout=30)
+                        except concurrent.futures.TimeoutError:
+                            raise
+                        except Exception:
+                            fallback_coro.close()
+                            raise
                     finally:
                         pool.shutdown(wait=False)
                 except Exception as e:
@@ -1988,6 +2020,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     delivery_errors.extend(target_errors)
                     continue
             except Exception as e:
+                coro.close()
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                 target_errors.extend([msg])

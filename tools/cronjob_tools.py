@@ -598,6 +598,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("feedback"):
+        result["feedback"] = job["feedback"]
     return result
 
 
@@ -677,6 +679,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    feedback: Optional[Dict[str, Any]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -750,6 +753,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                feedback=feedback,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -865,6 +869,8 @@ def cronjob(
                 updates["name"] = name
             if deliver is not None:
                 updates["deliver"] = _normalize_deliver_param(deliver)
+            if feedback is not None:
+                updates["feedback"] = feedback
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -1081,6 +1087,28 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "feedback": {
+                "type": "object",
+                "description": "Optional interactive response prompt and choices for platforms that support buttons. On update, pass an empty object to clear.",
+                "properties": {
+                    "prompt": {"type": "string", "maxLength": 200},
+                    "choices": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "code": {"type": "string", "pattern": "^[a-z0-9_-]{1,24}$"},
+                                "label": {"type": "string", "minLength": 1, "maxLength": 64}
+                            },
+                            "required": ["code", "label"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
+                "additionalProperties": False
+            },
             "attach_to_session": {
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
@@ -1140,6 +1168,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        feedback=args.get("feedback"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

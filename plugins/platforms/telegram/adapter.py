@@ -25,6 +25,111 @@ from typing import Dict, List, Optional, Set, Any
 logger = logging.getLogger(__name__)
 
 
+_REMINDER_FEEDBACK_LOCK = threading.Lock()
+
+
+def _validated_reminder_feedback(metadata: Optional[Dict[str, Any]]) -> Optional[dict]:
+    """Return a safe cron-reminder feedback payload or ``None``."""
+    from cron.feedback import FEEDBACK_JOB_ID_RE, normalize_feedback_config
+
+    raw = (metadata or {}).get("reminder_feedback")
+    job_id = str((metadata or {}).get("job_id") or "").strip()
+    if not FEEDBACK_JOB_ID_RE.fullmatch(job_id):
+        return None
+    try:
+        feedback = normalize_feedback_config(raw)
+    except ValueError:
+        return None
+    if feedback is None:
+        return None
+    return {
+        "job_id": job_id,
+        **feedback,
+    }
+
+
+def _build_reminder_feedback_markup(
+    metadata: Optional[Dict[str, Any]],
+) -> tuple[Any, str]:
+    """Build a compact two-column keyboard and return it with its prompt."""
+    feedback = _validated_reminder_feedback(metadata)
+    if not feedback:
+        return None, ""
+    rows = []
+    choices = feedback["choices"]
+    for start in range(0, len(choices), 2):
+        rows.append([
+            InlineKeyboardButton(
+                choice["label"],
+                callback_data=f"rf:{feedback['job_id']}:{choice['code']}",
+            )
+            for choice in choices[start:start + 2]
+        ])
+    return InlineKeyboardMarkup(rows), feedback["prompt"]
+
+
+def _append_reminder_feedback_event(event: dict) -> bool:
+    """Append one profile-local event, returning False for a duplicate tap."""
+    from hermes_constants import get_hermes_home
+
+    ledger = get_hermes_home() / "reminder-feedback" / "events.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    dedupe_key = (
+        event.get("job_id"),
+        event.get("telegram_chat_id"),
+        event.get("telegram_message_id"),
+        event.get("telegram_user_id"),
+    )
+    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    with _REMINDER_FEEDBACK_LOCK:
+        fd = os.open(ledger, flags, 0o600)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "r+", encoding="utf-8") as handle:
+                fd = -1  # owned by ``handle`` from here
+                try:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except ImportError:  # pragma: no cover - Windows
+                    pass
+                handle.seek(0)
+                for existing_line in handle:
+                    try:
+                        existing = json.loads(existing_line)
+                    except (TypeError, ValueError):
+                        continue
+                    existing_key = (
+                        existing.get("job_id"),
+                        existing.get("telegram_chat_id"),
+                        existing.get("telegram_message_id"),
+                        existing.get("telegram_user_id"),
+                    )
+                    if existing_key == dedupe_key:
+                        return False
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    return True
+
+
+def _feedback_resolved_text(original: str, label: str) -> str:
+    """Append a status while respecting Telegram's UTF-16 4096-unit limit."""
+    from gateway.platforms.base import utf16_len
+
+    suffix = f"\n\nFeedback: {label}"
+    remaining = max(0, 4096 - utf16_len(suffix))
+    encoded = original.rstrip().encode("utf-16-le")[: remaining * 2]
+    safe_original = encoded.decode("utf-16-le", errors="ignore").rstrip()
+    return f"{safe_original}{suffix}" if safe_original else suffix.lstrip()
+
+
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
@@ -1597,6 +1702,7 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         return bool(
             not (metadata or {}).get("expect_edits")
+            and not _validated_reminder_feedback(metadata)
             and self._rich_eligible(content)
         )
 
@@ -4034,6 +4140,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        feedback_markup, feedback_prompt = _build_reminder_feedback_markup(metadata)
+        if feedback_prompt:
+            content = f"{content.rstrip()}\n\n{feedback_prompt}"
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -4140,12 +4250,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
+                        # Try Markdown first, fall back to plain text if it fails.
+                        # Feedback belongs only on the final chunk so one reminder
+                        # never renders multiple competing keyboards.
+                        reply_markup = feedback_markup if i == len(chunks) - 1 else None
                         try:
                             msg = await self._bot.send_message(
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_markup=reply_markup,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
@@ -4160,6 +4274,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     chat_id=normalize_telegram_chat_id(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
+                                    reply_markup=reply_markup,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
@@ -5933,6 +6048,99 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_chat_type=query_chat_type,
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
+            )
+            return
+
+        # --- Durable cron-reminder feedback (rf:<job_id>:<action>) ---
+        # The callback is self-contained, so buttons survive gateway restarts.
+        if data.startswith("rf:"):
+            from cron.feedback import (
+                FEEDBACK_CODE_RE,
+                FEEDBACK_JOB_ID_RE,
+                feedback_choice_label,
+            )
+
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid reminder response.")
+                return
+            job_id, action = parts[1].strip(), parts[2].strip().lower()
+            if (
+                not FEEDBACK_JOB_ID_RE.fullmatch(job_id)
+                or not FEEDBACK_CODE_RE.fullmatch(action)
+            ):
+                await query.answer(text="Invalid reminder response.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this reminder.")
+                return
+
+            label = feedback_choice_label(job_id, action)
+            if label is None:
+                await query.answer(text="Invalid reminder response.")
+                return
+
+            clicked_at = datetime.now(timezone.utc)
+            sent_at = getattr(query_message, "date", None)
+            response_seconds = None
+            if isinstance(sent_at, datetime):
+                if sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=timezone.utc)
+                response_seconds = max(0, int((clicked_at - sent_at).total_seconds()))
+            event = {
+                "schema_version": 1,
+                "job_id": job_id,
+                "action": action,
+                "action_label": label,
+                "clicked_at": clicked_at.isoformat(),
+                "sent_at": sent_at.isoformat() if isinstance(sent_at, datetime) else None,
+                "response_seconds": response_seconds,
+                "telegram_chat_id": str(query_chat_id) if query_chat_id is not None else None,
+                "telegram_message_id": getattr(query_message, "message_id", None),
+                "thread_id": str(query_thread_id) if query_thread_id is not None else None,
+                "telegram_user_id": caller_id,
+                "telegram_user_name": query_user_name,
+            }
+            try:
+                recorded = await asyncio.to_thread(_append_reminder_feedback_event, event)
+            except Exception:
+                logger.exception("Failed to persist reminder feedback for job %s", job_id)
+                await query.answer(
+                    text="Could not save that response. Please try again.",
+                    show_alert=True,
+                )
+                return
+
+            if not recorded:
+                await query.answer(text="Already recorded.")
+                return
+
+            await query.answer(text=f"Recorded: {label}")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            try:
+                original = str(getattr(query_message, "text", "") or "").rstrip()
+                resolved = _feedback_resolved_text(original, label)
+                await query.edit_message_text(
+                    text=resolved,
+                    parse_mode=None,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            logger.info(
+                "Telegram reminder feedback recorded job=%s action=%s user=%s",
+                job_id, action, caller_id,
             )
             return
 

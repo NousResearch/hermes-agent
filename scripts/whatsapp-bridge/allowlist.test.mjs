@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
@@ -120,6 +120,21 @@ test('non-open group policies reject groups unless explicitly allowlisted', () =
       `policy ${policy || '<empty>'}`,
     );
   }
+});
+
+test('bridge enforces group policy before media extraction', () => {
+  const source = readFileSync(new URL('./bridge.js', import.meta.url), 'utf8');
+  const gateComment = source.indexOf('// Apply group policy in the bridge before');
+  const extraction = source.indexOf('const event = await extractBridgeEvent({');
+
+  assert.notEqual(gateComment, -1, 'group policy gate must exist');
+  assert.notEqual(extraction, -1, 'media-capable extraction must exist');
+  assert.ok(gateComment < extraction, 'group policy gate must precede extraction');
+
+  const preExtraction = source.slice(gateComment, extraction);
+  assert.match(preExtraction, /isGroupChatAllowed\(/);
+  assert.match(preExtraction, /group_policy_rejected_before_media/);
+  assert.match(preExtraction, /continue;/);
 });
 
 test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () => {

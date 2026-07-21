@@ -7,10 +7,10 @@ long-lived bridge process therefore survived gateway restarts AND
 ``hermes update``, serving pre-update bridge.js behavior forever (e.g.
 no inbound media download → images/voice notes arrive as placeholders).
 
-The fix: bridge.js reports a hash of its own source in ``/health``
-(``scriptHash``); the adapter compares it against the bridge.js on disk
-and restarts the bridge on mismatch.  Bridges that predate the handshake
-report no hash and are treated as stale by definition.
+The fix: bridge.js reports hashes of its source and effective access policy in
+``/health`` (``scriptHash`` and ``policyHash``); the adapter compares both
+against its current code/config and restarts the bridge on mismatch. Bridges
+that predate either handshake are treated as stale by definition.
 
 Also covers the npm dependency-refresh stamp: deps are reinstalled when
 package.json changes, not only when node_modules is missing.
@@ -53,6 +53,10 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._dm_policy = "pairing"
+    adapter._allow_from = set()
+    adapter._group_policy = "pairing"
+    adapter._group_allow_from = set()
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -99,6 +103,18 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
     nm.mkdir()
     (nm / ".hermes-pkg-hash").write_text(
         _file_content_hash(bridge_dir / "package.json")
+    )
+
+
+def _default_policy_hash() -> str:
+    from plugins.platforms.whatsapp.adapter import _bridge_access_policy_hash
+
+    return _bridge_access_policy_hash(
+        mode="self-chat",
+        dm_policy="pairing",
+        allowed_users=set(),
+        group_policy="pairing",
+        group_allowed_users=set(),
     )
 
 
@@ -151,7 +167,11 @@ class TestStaleBridgeHandshake:
             session_path=tmp_path / "session",
         )
         disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health({"status": "connected", "scriptHash": disk_hash})
+        mock_client = _mock_health({
+            "status": "connected",
+            "scriptHash": disk_hash,
+            "policyHash": _default_policy_hash(),
+        })
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", mock_client), \
@@ -195,6 +215,67 @@ class TestStaleBridgeHandshake:
         assert result is False  # mock proc died; not the point of the test
         mock_popen.assert_called_once()  # stale bridge replaced, not reused
         mock_kill_port.assert_called_once_with(adapter._bridge_port)
+
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_on_policy_hash_mismatch(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health({
+            "status": "connected",
+            "scriptHash": disk_hash,
+            "policyHash": "deadbeefdeadbeef",
+        })
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            result = await adapter.connect()
+
+        assert result is False
+        mock_popen.assert_called_once()
+        mock_kill_port.assert_called_once_with(adapter._bridge_port)
+
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_without_policy_hash(self, tmp_path):
+        """Bridges without a policy fingerprint are stale even when code matches."""
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health({"status": "connected", "scriptHash": disk_hash})
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        mock_popen.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_restarts_unversioned_bridge(self, tmp_path):
@@ -317,6 +398,13 @@ class TestCacheDirEnvPassthrough:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        adapter._dm_policy = "allowlist"
+        adapter._allow_from = {"15550000002", "15550000001"}
+        adapter._group_policy = "allowlist"
+        adapter._group_allow_from = {
+            "120363009999999999@g.us",
+            "120363001234567890@g.us",
+        }
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
@@ -339,3 +427,9 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_IMAGE_CACHE_DIR"] == str(get_image_cache_dir())
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
+        assert env["WHATSAPP_DM_POLICY"] == "allowlist"
+        assert env["WHATSAPP_ALLOWED_USERS"] == "15550000001,15550000002"
+        assert env["WHATSAPP_GROUP_POLICY"] == "allowlist"
+        assert env["WHATSAPP_GROUP_ALLOWED_USERS"] == (
+            "120363001234567890@g.us,120363009999999999@g.us"
+        )

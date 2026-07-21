@@ -103,9 +103,24 @@ const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
-const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const ALLOWED_USERS_RAW = process.env.WHATSAPP_ALLOWED_USERS || '';
+const ALLOWED_USERS = parseAllowedUsers(ALLOWED_USERS_RAW);
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
-const GROUP_ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
+const GROUP_ALLOWED_USERS_RAW = process.env.WHATSAPP_GROUP_ALLOWED_USERS || '';
+const GROUP_ALLOWED_USERS = parseAllowedUsers(GROUP_ALLOWED_USERS_RAW);
+// Fingerprint settings that affect which chats reach extraction. The Python
+// adapter compares this value before reusing a long-lived bridge, preventing a
+// policy change from leaving stale media-download authorization in memory.
+const POLICY_HASH = createHash('sha256')
+  .update([
+    WHATSAPP_MODE,
+    WHATSAPP_DM_POLICY,
+    ALLOWED_USERS_RAW,
+    WHATSAPP_GROUP_POLICY,
+    GROUP_ALLOWED_USERS_RAW,
+  ].join('\0'))
+  .digest('hex')
+  .slice(0, 16);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -1093,6 +1108,7 @@ app.get('/health', (req, res) => {
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
+    policyHash: POLICY_HASH,
   });
 });
 

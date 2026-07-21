@@ -1,0 +1,24 @@
+name: suprawall-security
+version: 1.0.0
+description: >
+  Deterministic security enforcement for Hermes Agent.
+    Intercepts every tool call with ALLOW/DENY/REQUIRE_APPROVAL gating,
+      PII scrubbing, vault credential injection, and budget caps.
+      author: SupraWall Contributors
+      license: Apache-2.0
+      homepage: https://supra-wall.com
+
+      provides_tools:
+        - suprawall_check
+          - suprawall_vault_get
+
+          provides_hooks:
+            - pre_tool_call
+              - post_tool_call
+
+              provides_commands:
+                - suprawall
+
+                requires_env:
+                  - SUPRAWALL_API_KEY
+                  

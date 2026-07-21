@@ -99,6 +99,48 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_tool_search_bridge_forwards_turn_and_request_ids(self):
+        """The ``tool_call`` bridge unwraps to the underlying tool by
+        recursing into ``handle_function_call``.  That recursion must forward
+        ``turn_id`` and ``api_request_id`` so bridge-invoked tools keep the
+        same turn/request correlation as directly-invoked tools — the hooks,
+        middleware, and observability context all key on these IDs.
+        """
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch(
+                "tools.tool_search.resolve_underlying_call",
+                return_value=("web_search", {"q": "test"}, None),
+            ),
+            patch(
+                "tools.tool_search.scoped_deferrable_names",
+                return_value=frozenset({"web_search"}),
+            ),
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "tool_call",
+                {"name": "web_search", "arguments": {"q": "test"}},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+                turn_id="turn-1",
+                api_request_id="req-1",
+            )
+
+        assert result == '{"ok":true}'
+        kwargs_by_hook = {
+            c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
+        }
+        # Hooks fire against the real underlying tool, not the bridge.
+        assert kwargs_by_hook["pre_tool_call"]["tool_name"] == "web_search"
+        # And they carry the propagated turn/request IDs, not blanks.
+        for hook in ("pre_tool_call", "post_tool_call", "transform_tool_result"):
+            assert kwargs_by_hook[hook]["turn_id"] == "turn-1"
+            assert kwargs_by_hook[hook]["api_request_id"] == "req-1"
+
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
         receive a non-negative integer ``duration_ms`` kwarg measuring

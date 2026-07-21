@@ -1328,6 +1328,13 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+    # Docker terminal backend writes inside the container; remap container
+    # paths to host equivalents before the host-side filter runs. ``job["id"]``
+    # is not the job's actual terminal task_id (cron's agent.run_conversation()
+    # call doesn't pass task_id, so each run gets an unrelated random one — see
+    # NousResearch/hermes-agent#64889), so translation here degrades to
+    # mount-table-only / single-Docker-environment-only.
+    media_files = BasePlatformAdapter.translate_docker_media_paths(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     for media_path, _is_voice in media_files:
@@ -1502,9 +1509,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    # Extract MEDIA: tags so attachments are forwarded as files, not raw text.
+    # Docker terminal backend writes inside the container; remap container
+    # paths to host equivalents before the host-side filter runs. Degrades to
+    # mount-table-only / single-Docker-environment-only — see the sibling call
+    # in _send_media_via_adapter above and NousResearch/hermes-agent#64889.
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    media_files = BasePlatformAdapter.translate_docker_media_paths(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each

@@ -1851,10 +1851,18 @@ class WeixinAdapter(BasePlatformAdapter):
         last_message_id: Optional[str] = None
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
+        # Docker terminal backend writes inside the container; remap container
+        # paths to host equivalents before the host-side filters run. This
+        # generic send() path has no task_id, so translation degrades to
+        # mount-table-only / single-Docker-environment-only (see
+        # BasePlatformAdapter.translate_docker_media_paths's docstring and
+        # NousResearch/hermes-agent#64889).
         media_files, cleaned_content = self.extract_media(content)
+        media_files = self.translate_docker_media_paths(media_files)
         media_files = self.filter_media_delivery_paths(media_files)
         _, image_cleaned = self.extract_images(cleaned_content)
         local_files, final_content = self.extract_local_files(image_cleaned)
+        local_files = self.translate_docker_local_paths(local_files)
         local_files = self.filter_local_delivery_paths(local_files)
 
         _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}

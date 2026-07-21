@@ -372,18 +372,41 @@ def _handle_send(args):
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
+        resolution_failed = False
         try:
             from gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                parsed_chat_id, thread_id, _ = _parse_target_ref(
+                    platform_name, resolved
+                )
+                # Directory entries are trusted platform IDs.  Preserve an
+                # opaque plugin ID even when no built-in parser recognizes it.
+                chat_id = parsed_chat_id or resolved
         except Exception:
-            pass  # fall through to verbatim fallback
+            resolved = None
+            resolution_failed = True
 
-    # Plugin platforms and opaque IDs: pass target_ref through verbatim;
-    # the adapter validates (same pattern as _handle_react, line 234).
-    if not chat_id and target_ref:
-        chat_id = target_ref
+        if not resolved:
+            from gateway.config import Platform
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get(platform_name)
+            is_builtin = platform_name in {member.value for member in Platform}
+            if entry is not None and entry.source == "plugin" and not is_builtin:
+                # Registered plugin platforms may use opaque IDs unknown to
+                # core.  Their adapter owns final target validation.
+                chat_id = target_ref
+            elif resolution_failed:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Try using a numeric channel ID instead."
+                })
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():

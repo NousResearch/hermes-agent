@@ -749,6 +749,65 @@ class TestSessionLifecycle:
         assert SessionDB._is_fts5_unavailable_error(generic_tokenizer_err) is False
         assert SessionDB._is_fts5_unavailable_error(unrelated_err) is False
 
+    def test_trigram_fts_disabled_via_config(self, tmp_path, monkeypatch):
+        """sessions.trigram_fts=false skips the trigram index; base search survives.
+
+        Covers the three things the config knob must guarantee: (1) the trigram
+        table is never created, (2) its deliberate absence does not trip an
+        endless trigger-repair rebuild, (3) base full-text search still works
+        and substring search degrades to LIKE rather than erroring.
+        """
+        monkeypatch.setattr(
+            SessionDB, "_trigram_fts_enabled", lambda self: False
+        )
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="findable needle")
+            assert db._fts_enabled is True
+            assert db._trigram_available is False
+            assert db._fts_table_exists("messages_fts_trigram") is False
+            # base word search works without the trigram index
+            assert len(db.search_messages("needle")) == 1
+        finally:
+            db.close()
+
+        # Reopening (still disabled) must be idempotent — no rebuild loop, and
+        # the trigram triggers stay absent.
+        db2 = SessionDB(db_path=db_path)
+        try:
+            assert db2._fts_table_exists("messages_fts_trigram") is False
+            with db2._lock:
+                cur = db2._conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+                    "AND name LIKE 'messages_fts_trigram%'"
+                )
+                assert cur.fetchone()[0] == 0
+            assert len(db2.search_messages("needle")) == 1
+        finally:
+            db2.close()
+
+    def test_trigram_fts_reenable_restores_index(self, tmp_path, monkeypatch):
+        """Flipping sessions.trigram_fts back on rebuilds the trigram index."""
+        db_path = tmp_path / "state.db"
+        monkeypatch.setattr(SessionDB, "_trigram_fts_enabled", lambda self: False)
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="需要索引的内容")
+            assert db._fts_table_exists("messages_fts_trigram") is False
+        finally:
+            db.close()
+
+        monkeypatch.setattr(SessionDB, "_trigram_fts_enabled", lambda self: True)
+        db2 = SessionDB(db_path=db_path)
+        try:
+            assert db2._trigram_available is True
+            assert db2._fts_table_exists("messages_fts_trigram") is True
+        finally:
+            db2.close()
+
     def test_is_trigram_unavailable_error(self):
         """Unit test: _is_trigram_unavailable_error is scoped to trigram."""
         trigram_err = sqlite3.OperationalError("no such tokenizer: trigram")

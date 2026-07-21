@@ -3212,6 +3212,17 @@ DEFAULT_CONFIG = {
         # GBs of disk on heavy users.  Opt in only if you have an external
         # tool that consumes the JSON files directly.
         "write_json_snapshots": False,
+        # Secondary FTS5 index using the trigram tokenizer (messages_fts_trigram
+        # in hermes_state), which powers CJK and arbitrary-substring recall in
+        # session_search.  Its INSERT/UPDATE/DELETE triggers fire on every
+        # message write, so on a heavy state.db it roughly doubles FTS write
+        # cost and disk footprint.  Set false to skip creating the trigram
+        # table+triggers (and drop the triggers on the next open); CJK and
+        # substring search then fall back to LIKE — the same graceful path
+        # taken when the SQLite build lacks the trigram tokenizer.  Existing
+        # index data is reclaimed by the next optimize_fts()/VACUUM.  Default
+        # true — parity with prior behaviour.
+        "trigram_fts": True,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).

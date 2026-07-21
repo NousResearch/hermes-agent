@@ -55,7 +55,7 @@ def _get_anthropic_sdk():
 
 logger = logging.getLogger(__name__)
 
-THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+THINKING_BUDGET = {"minimal": 4000, "low": 4000, "medium": 8000, "high": 16000, "xhigh": 32000, "max": 64000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
 # Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
 # Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
@@ -2677,7 +2677,7 @@ def build_anthropic_kwargs(
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
-                kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+                kwargs["max_tokens"] = min(effective_max_tokens, budget + 4096)
 
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.

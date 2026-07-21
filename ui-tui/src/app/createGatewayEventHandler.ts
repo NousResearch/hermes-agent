@@ -130,11 +130,15 @@ export function applyConfiguredTuiTheme(raw: unknown): void {
   const current = process.env.HERMES_TUI_THEME ?? ''
 
   if (mode === 'light' || mode === 'dark') {
+    // Record config ownership BEFORE the match short-circuit — otherwise a
+    // pin that already matches (e.g. env and config agree at boot) leaves
+    // configPinnedTheme false, and a later 'auto' would refuse to clear it.
+    configPinnedTheme = true
+
     if (current === mode) {
       return
     }
 
-    configPinnedTheme = true
     process.env.HERMES_TUI_THEME = mode
   } else {
     // 'auto' clears only a pin CONFIG set — never a HERMES_TUI_THEME the user

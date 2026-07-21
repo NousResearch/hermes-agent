@@ -807,7 +807,7 @@ class BatchRunner:
         
         return filtered_dataset, skipped_indices
     
-    def run(self, resume: bool = False):
+    def run(self, resume: bool = False) -> None:
         """
         Run the batch processing pipeline.
         

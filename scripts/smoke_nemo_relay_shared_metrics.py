@@ -420,6 +420,13 @@ def _validate_packages(
     ]
     for package in packages:
         jsonschema.validate(package, schema)
+        if set(package["resource"]) != {
+            "architecture",
+            "hermes_version",
+            "install_method",
+            "os_family",
+        }:
+            raise AssertionError(f"Unexpected client resource: {package['resource']}")
 
     serialized = json.dumps(packages)
     for prohibited in (

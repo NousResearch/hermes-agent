@@ -196,6 +196,33 @@ SKILL_POST_PATCH_STATES: frozenset[str] = frozenset({
     "not_applicable",
     "reused_after_patch",
 })
+CLIENT_OS_FAMILIES: frozenset[str] = frozenset({
+    "linux",
+    "macos",
+    "unknown",
+    "windows",
+})
+CLIENT_ARCHITECTURES: frozenset[str] = frozenset({
+    "arm",
+    "arm64",
+    "unknown",
+    "x86",
+    "x86_64",
+})
+CLIENT_INSTALL_METHODS: frozenset[str] = frozenset({
+    "docker",
+    "git",
+    "homebrew",
+    "nixos",
+    "pip",
+    "unknown",
+})
+CLIENT_RESOURCE_KEYS: frozenset[str] = frozenset({
+    "architecture",
+    "hermes_version",
+    "install_method",
+    "os_family",
+})
 
 # Shared metrics use an explicit family allowlist rather than raw model IDs or
 # dynamically sourced catalog values. The latter would make the exported schema
@@ -223,6 +250,71 @@ MODEL_FAMILIES: frozenset[str] = frozenset({
     "o4",
     "unknown",
 })
+
+
+def client_os_family(value: Any) -> str:
+    """Map a platform system name to the shared-metrics OS taxonomy."""
+    normalized = str(value or "").strip().lower()
+    return {
+        "darwin": "macos",
+        "linux": "linux",
+        "macos": "macos",
+        "windows": "windows",
+    }.get(normalized, "unknown")
+
+
+def client_architecture(value: Any) -> str:
+    """Map a machine architecture to the shared-metrics taxonomy."""
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x64", "x86_64"}:
+        return "x86_64"
+    if normalized in {"aarch64", "arm64"}:
+        return "arm64"
+    if normalized in {"i386", "i486", "i586", "i686", "x86"}:
+        return "x86"
+    if normalized.startswith("armv"):
+        return "arm"
+    return "unknown"
+
+
+def client_install_method(value: Any) -> str:
+    """Return an allowlisted Hermes installation method."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in CLIENT_INSTALL_METHODS else "unknown"
+
+
+def client_resource(
+    hermes_version: Any,
+    *,
+    os_name: Any,
+    architecture: Any,
+    install_method: Any,
+) -> dict[str, str]:
+    """Build the bounded client resource attached to aggregate packages."""
+    normalized_version = str(hermes_version or "").strip()
+    if not normalized_version or len(normalized_version) > 64:
+        normalized_version = "unknown"
+    return {
+        "architecture": client_architecture(architecture),
+        "hermes_version": normalized_version,
+        "install_method": client_install_method(install_method),
+        "os_family": client_os_family(os_name),
+    }
+
+
+def client_resource_is_valid(resource: Any) -> bool:
+    """Return whether a package resource exactly matches the bounded contract."""
+    if not isinstance(resource, dict) or set(resource) != CLIENT_RESOURCE_KEYS:
+        return False
+    version = resource.get("hermes_version")
+    return (
+        isinstance(version, str)
+        and 0 < len(version) <= 64
+        and resource.get("os_family") in CLIENT_OS_FAMILIES
+        and resource.get("architecture") in CLIENT_ARCHITECTURES
+        and resource.get("install_method") in CLIENT_INSTALL_METHODS
+    )
+
 
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     MODEL_CALL_METRIC: {

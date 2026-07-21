@@ -97,7 +97,10 @@ $HERMES_HOME/telemetry/shared_metrics/outbox/*.json
 
 The database keeps transactional aggregate and package-outbox state. Package
 files are immutable delta documents that conform to a closed JSON schema and
-are written with atomic replacement.
+are written with atomic replacement. Each package records the Hermes version,
+OS family, architecture, and install method as bounded client resources.
+Unrecognized platform or installation values are exported as `unknown`; raw
+platform strings, hostnames, and paths are never included.
 
 ## Smoke Test
 

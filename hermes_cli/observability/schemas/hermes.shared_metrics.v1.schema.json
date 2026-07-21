@@ -40,13 +40,28 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "hermes_version"
+        "hermes_version",
+        "os_family",
+        "architecture",
+        "install_method"
       ],
       "properties": {
         "hermes_version": {
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "os_family": {
+          "type": "string",
+          "enum": ["linux", "macos", "unknown", "windows"]
+        },
+        "architecture": {
+          "type": "string",
+          "enum": ["arm", "arm64", "unknown", "x86", "x86_64"]
+        },
+        "install_method": {
+          "type": "string",
+          "enum": ["docker", "git", "homebrew", "nixos", "pip", "unknown"]
         }
       }
     },

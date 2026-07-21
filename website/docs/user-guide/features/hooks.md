@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Four hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and the install gates [`pre_plugin_install`](#pre_plugin_install) / [`pre_mcp_add`](#pre_mcp_add) can **reject** a plugin install or MCP server save by returning block reasons. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -395,6 +395,8 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+| [`pre_plugin_install`](#pre_plugin_install) | After a plugin is cloned, before it is promoted into `~/.hermes/plugins` | `str` or `list[str]` of block reasons to reject the install; `None` to allow |
+| [`pre_mcp_add`](#pre_mcp_add) | Before an MCP server entry is probed/saved to config.yaml | `str` or `list[str]` of block reasons to reject the save; `None` to allow |
 
 ---
 
@@ -1278,6 +1280,81 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+---
+
+### `pre_plugin_install`
+
+Install-time security gate. Fires in `hermes plugins install` (CLI, dashboard, and agent paths all route through `_install_plugin_core`) **after** the plugin repo is cloned and its manifest parsed, but **before** the clone is promoted into `~/.hermes/plugins` — so a scanner can inspect the actual files on disk while they are still untrusted.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, git_url: str, subdir: str | None, path: str, manifest: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Plugin name from the manifest |
+| `git_url` | `str` | Resolved clone URL |
+| `subdir` | `str \| None` | Sub-directory within the repo, when installing `owner/repo/path` |
+| `path` | `str` | Local directory of the freshly cloned, **not-yet-trusted** plugin |
+| `manifest` | `dict` | Parsed `plugin.yaml` contents |
+
+**Return value — reject the install:** return a non-empty `str`, or a `list`/`tuple` of strings, of block reasons. Reasons from all callbacks are merged; any reason aborts the install **fail-closed** with `PluginOperationError` and the clone is discarded. Return `None` to allow.
+
+Because `plugins install` is a built-in management command, Hermes loads the trusted plugin registry right before firing this gate — your already-installed gate plugin will run even though normal startup discovery is skipped for built-in commands. A callback that *raises* is logged and skipped (fail-open, like every hook), so gates must **return** reasons, never raise. The gate is also deliberately fail-soft on discovery itself: if plugin discovery fails, or `HERMES_SAFE_MODE=1` disables plugin loading, the gate runs with no callbacks and allows the operation — identical to having no gate plugin installed.
+
+**Use cases:** malware/secret-exfiltration scanning of plugin code before it is trusted, org allow-lists for plugin sources, license checks.
+
+```python
+def scan_plugin(name, path, **kwargs):
+    findings = my_scanner.scan_directory(path)
+    if findings:
+        return [f"security scan: {f}" for f in findings]
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_plugin_install", scan_plugin)
+```
+
+---
+
+### `pre_mcp_add`
+
+Install-time security gate for MCP servers. Fires with the fully resolved server entry (command/args/url/env/headers/connect_timeout) at every path that writes `mcp_servers` to config.yaml:
+
+- `hermes mcp add` — fired **before** the discovery probe, so a block prevents the untrusted stdio command from ever being launched, and again at save time.
+- `_save_mcp_server` — per-key upserts (agent/tool paths).
+- `_replace_mcp_servers` — dashboard whole-map edits (per entry; any block rejects the whole save so a bad paste can't partially apply).
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, server_config: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Server name (config key) |
+| `server_config` | `dict` | Fully resolved entry: `command`/`args`/`url`/`env`/`headers`/`connect_timeout` |
+
+**Return value — reject the save:** return a non-empty `str`, or a `list`/`tuple` of strings, of block reasons. Reasons merge into the same issues list as the built-in static validation (`validate_mcp_server_entry`); any issue rejects the save. Return `None` to allow. As with `pre_plugin_install`, the trusted plugin registry is loaded before the gate fires, and raising callbacks are dropped (fail-open) — **return** reasons, never raise.
+
+**Use cases:** blocking known-bad packages or hosts, enforcing an org allow-list of MCP servers, flagging suspicious env-var exfiltration patterns beyond the built-in heuristics.
+
+```python
+BLOCKED_HOSTS = {"evil.example.com"}
+
+def vet_mcp_server(name, server_config, **kwargs):
+    url = server_config.get("url", "")
+    if any(h in url for h in BLOCKED_HOSTS):
+        return f"server '{name}' points at a blocked host"
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_mcp_add", vet_mcp_server)
+```
 
 ---
 

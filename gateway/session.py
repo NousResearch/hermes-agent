@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -974,6 +974,9 @@ def build_session_key(
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     key_parts = [ns, platform, source.chat_type]
 
+    if source.platform == Platform.SLACK and source.scope_id:
+        key_parts.append(source.scope_id)
+
     if source.chat_id:
         key_parts.append(source.chat_id)
     if source.thread_id:
@@ -1422,6 +1425,24 @@ class SessionStore:
             profile=self._resolve_profile_for_key(source),
         )
 
+    @staticmethod
+    def _recovered_row_matches_source_scope(
+        recovered: Dict[str, Any], source: SessionSource
+    ) -> bool:
+        if (
+            source.platform != Platform.SLACK
+            or source.chat_type == "dm"
+            or not source.scope_id
+        ):
+            return True
+        try:
+            origin = json.loads(recovered.get("origin_json") or "")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(origin, dict):
+            return False
+        return origin.get("scope_id", origin.get("guild_id")) == source.scope_id
+
     def _create_entry_from_recovered_row(
         self,
         *,
@@ -1476,6 +1497,8 @@ class SessionStore:
             return None
         if not recovered:
             return None
+        if not self._recovered_row_matches_source_scope(recovered, source):
+            return None
         if not self._recovered_row_allowed_for_active_profile(
             requested_session_key=session_key,
             recovered=recovered,
@@ -1499,7 +1522,9 @@ class SessionStore:
             now=now,
         )
 
-    def _query_recoverable_session(self, *, session_key, source, now):
+    def _query_recoverable_session(
+        self, *, session_key, source, now, lookup_session_key=None
+    ):
         """DB-only half of _recover_session_from_db (no lock needed).
 
         Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
@@ -1509,20 +1534,23 @@ class SessionStore:
         finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
         if not callable(finder):
             return None
+        lookup_key = lookup_session_key or session_key
         try:
             recovered = finder(
                 source=source.platform.value,
                 user_id=source.user_id,
-                session_key=session_key,
+                session_key=lookup_key,
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s",
-                         session_key, exc)
+                         lookup_key, exc)
             return None
         if not isinstance(recovered, dict):
+            return None
+        if not self._recovered_row_matches_source_scope(recovered, source):
             return None
         if not self._recovered_row_allowed_for_active_profile(
             requested_session_key=session_key,
@@ -1907,6 +1935,38 @@ class SessionStore:
         session_key = self._generate_session_key(source)
         now = _now()
 
+        legacy_session_key = None
+        migrated_entry = None
+        if (
+            source.platform == Platform.SLACK
+            and source.chat_type != "dm"
+            and source.scope_id
+        ):
+            legacy_source = replace(source, scope_id=None, guild_id=None)
+            legacy_session_key = self._generate_session_key(legacy_source)
+            with self._lock:
+                self._ensure_loaded_locked()
+                legacy_entry = self._entries.get(legacy_session_key)
+                if (
+                    session_key not in self._entries
+                    and legacy_entry is not None
+                    and legacy_entry.origin is not None
+                    and legacy_entry.origin.scope_id == source.scope_id
+                ):
+                    self._entries.pop(legacy_session_key)
+                    legacy_entry.session_key = session_key
+                    legacy_entry.origin = source
+                    self._entries[session_key] = legacy_entry
+                    migrated_entry = legacy_entry
+            if migrated_entry is not None:
+                self._save_entries()
+                self._record_gateway_session_peer(
+                    migrated_entry.session_id,
+                    session_key,
+                    source,
+                    display_name=migrated_entry.display_name,
+                )
+
         db_end_session_id = None
         db_create_kwargs = None
         existing_session_id = None
@@ -2039,6 +2099,15 @@ class SessionStore:
             recovered = self._query_recoverable_session(
                 session_key=session_key, source=source, now=now,
             )
+            recovered_from_legacy = False
+            if recovered is None and legacy_session_key is not None:
+                recovered = self._query_recoverable_session(
+                    session_key=session_key,
+                    lookup_session_key=legacy_session_key,
+                    source=source,
+                    now=now,
+                )
+                recovered_from_legacy = recovered is not None
             if recovered is not None:
                 with self._lock:
                     published = self._entries.get(session_key)
@@ -2047,6 +2116,13 @@ class SessionStore:
                         published = recovered
                 entry = published
                 _needs_save = True
+                if recovered_from_legacy and published is recovered:
+                    self._record_gateway_session_peer(
+                        recovered.session_id,
+                        session_key,
+                        source,
+                        display_name=recovered.display_name,
+                    )
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another

@@ -2861,11 +2861,14 @@ def run_job(
     # the whole agent run. We pass the result into _build_job_prompt so
     # the script is only executed once.
     prerun_script = None
+    _script_failed = False
     script_path = job.get("script")
     if script_path:
         prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
         _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
+        if not _ran_ok:
+            _script_failed = True
+        elif not _parse_wake_gate(_script_output):
             logger.info(
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
                 job_name, job_id,
@@ -3581,6 +3584,19 @@ def run_job(
 
 {logged_response}
 """
+        
+        # If the pre-run script failed (non-zero exit / timeout), the agent
+        # ran successfully against an error-report prompt — but the *job*
+        # itself must still be marked failed so the operator sees the script
+        # failure in cron metadata (last_status != ok).  Without this guard
+        # the LLM fallback masks the script failure as a successful run.
+        # (issue #36845)
+        if _script_failed:
+            logger.warning(
+                "Job '%s': pre-run script failed — marking run as failed "
+                "despite successful agent fallback", job_name,
+            )
+            return False, output, final_response, "Script failed/timed out"
         
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None

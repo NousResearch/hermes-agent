@@ -1,5 +1,7 @@
 # Local secretary runtime — llama.cpp primary launcher (RTX 3060 profile)
-# Loads the configured Gemma 4 coder GGUF via local path or llama-server -hf/--hf-repo with --jinja for tool calling.
+# Loads the configured model GGUF via local path or llama-server -hf/--hf-repo with --jinja for tool calling.
+# RTX 3060 12GB optimized: ngl=99 (all layers on GPU), fa, q8_0 KV cache, 6 threads (physical cores),
+# parallel=2 (Hermes + subagent concurrent requests), batch=2048, ubatch=512.
 
 param(
     [switch]$SkipFallbackOnFailure,
@@ -57,6 +59,7 @@ $HostName = Resolve-Default "HERMES_LLAMA_HOST" "127.0.0.1"
 $Port = [int](Resolve-Default "HERMES_LLAMA_PORT" "8080")
 $Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "65536")
 $CacheK = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_K" "q8_0"
+# turbo3 = zapabob llama-turboquant custom KV type; falls back to q8_0 on standard builds via plan iteration
 $CacheV = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_V" "turbo3"
 $SpecType = Resolve-Default "HERMES_LLAMA_SPEC_TYPE" "ngram-mod"
 $SpecNgramMatch = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MATCH" "24")
@@ -65,6 +68,10 @@ $SpecNgramMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MAX" "64")
 $SpecDraftNMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_DRAFT_N_MAX" "64")
 $BatchSize = [int](Resolve-Default "HERMES_LLAMA_BATCH_SIZE" "2048")
 $UbatchSize = [int](Resolve-Default "HERMES_LLAMA_UBATCH_SIZE" "512")
+# Threads: physical core count (avoid HT contention when GPU handles inference)
+$Threads = [int](Resolve-Default "HERMES_LLAMA_THREADS" "6")
+# Parallel slots: 2 allows Hermes + subagent concurrent requests without queuing
+$Parallel = [int](Resolve-Default "HERMES_LLAMA_PARALLEL" "2")
 $Profile = Resolve-Default "HERMES_LLAMA_PROFILE" "rtx3060"
 
 if ($Ctx -lt 64000) {
@@ -124,7 +131,8 @@ function Build-ServerArgs {
         "-fa", "on",
         "-c", [string]$Ctx,
         "-ngl", [string]$GpuLayers,
-        "-np", "1"
+        "-t", [string]$Threads,
+        "-np", [string]$Parallel
     )
     if (Test-HelpFlag $helpText '--cont-batching') {
         $args += @("--cont-batching")

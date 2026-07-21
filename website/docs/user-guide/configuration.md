@@ -32,13 +32,17 @@ Run `hermes setup --portal` — one OAuth gets you a model provider and all four
 ```bash
 hermes config              # View current configuration
 hermes config edit         # Open config.yaml in your editor
+hermes config get KEY      # Print a resolved value
 hermes config set KEY VAL  # Set a specific value
+hermes config unset KEY    # Remove a user-set value
 hermes config check        # Check for missing options (after updates)
 hermes config migrate      # Interactively add missing options
 
 # Examples:
+hermes config get model
 hermes config set model anthropic/claude-opus-4
 hermes config set terminal.backend docker
+hermes config unset terminal.backend
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
@@ -97,10 +101,12 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ```yaml
 updates:
-  pre_update_backup: false       # Create a full HERMES_HOME zip before every update
-  backup_keep: 5                 # Keep this many pre-update backup zips
+  pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
+  backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
 ```
+
+`pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 
 For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
@@ -952,6 +958,10 @@ $ hermes model
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
 
+If you do not want Hermes to auto-generate titles after the first exchange, set
+`auxiliary.title_generation.enabled: false`. Manual titles still work through
+`/title` and `hermes sessions rename`.
+
 ### Video Tutorial
 
 <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
@@ -973,6 +983,24 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 | `provider` | Which provider to use for auth and routing | `"auto"` |
 | `model` | Which model to request | provider's default |
 | `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
+
+Auxiliary task blocks additionally accept a `reasoning_effort` knob:
+
+| Key | What it does | Default |
+|-----|-------------|---------|
+| `reasoning_effort` | Thinking level for that task's LLM calls: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | not set (provider default) |
+
+This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It works on every auxiliary task block (`vision`, `web_extract`, `compression`, `title_generation`, `curator`, `background_review`, ...), across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
+
+MoA is the one exception: reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](/user-guide/features/mixture-of-agents).
+
+```yaml
+auxiliary:
+  compression:
+    reasoning_effort: "low"    # summaries don't need deep thinking
+  vision:
+    reasoning_effort: "none"   # disable thinking for image description
+```
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
@@ -1046,6 +1074,7 @@ auxiliary:
   # Auto-generated session titles. Empty language follows the conversation;
   # set e.g. "English" or "Japanese" to pin titles to one language.
   title_generation:
+    enabled: true              # set false to disable auto-title generation
     provider: "auto"
     model: ""
     base_url: ""
@@ -1294,12 +1323,47 @@ native Anthropic provider already controls effort directly and is unaffected.
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
-/reasoning           # Show current effort level and display state
-/reasoning high      # Set reasoning effort to high
-/reasoning none      # Disable reasoning
-/reasoning show      # Show model thinking above each response
-/reasoning hide      # Hide model thinking
+/reasoning                # Show current effort level and display state
+/reasoning high           # Set reasoning effort to high (this session only)
+/reasoning high --global  # Set effort and persist to config.yaml
+/reasoning none           # Disable reasoning (this session only)
+/reasoning show           # Show model thinking above each response
+/reasoning hide           # Hide model thinking
 ```
+
+Effort changes are session-scoped by default; add `--global` to save the
+new level as your `agent.reasoning_effort` default.
+
+#### Per-Model Reasoning Overrides
+
+You can set different reasoning effort levels for different models. This is useful when you want high reasoning for complex models but medium for faster ones:
+
+```yaml
+agent:
+  reasoning_effort: "medium"       # global default
+  reasoning_overrides:
+    "openrouter/anthropic/claude-opus-4.5": "xhigh"
+    "openai/gpt-5": "low"
+    "claude-sonnet-4.6": "high"    # bare model name also works
+```
+
+The key matching is **spelling-tolerant** — any reasonable spelling will match:
+- `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
+- `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- Exact matches take precedence over variants
+
+:::note
+There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+:::
+
+**Resolution priority:**
+
+1. Session-scoped `/reasoning --session` override (gateway only)
+2. Per-model override from `agent.reasoning_overrides` (spelling-tolerant)
+3. Global `agent.reasoning_effort`
+4. Provider default
+
+The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
 
 ## Tool-Use Enforcement
 
@@ -1414,6 +1478,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1446,6 +1511,22 @@ Example footer:
 ```
 
 Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to suppress the footer. The verifier only fires when real failures are outstanding at turn end — a model that retries a failed patch and succeeds within the same turn will not trigger it for that file.
+
+**Trust the verifier over the model's summary.** The footer means the listed files were **not** modified on disk, even if the assistant's closing message says the task is done. Common causes:
+
+- **Write denied** — path is on the credential denylist or outside `HERMES_WRITE_SAFE_ROOT` (see [File write safety](./security.md#file-write-safety))
+- **Patch mismatch** — `old_string` did not match the file on disk
+- **Syntax gate** — candidate content failed JSON/YAML/TOML validation before write
+
+Example footer when writes are blocked:
+
+```
+⚠️ File-mutation verifier: 2 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+  • ~/.hermes/cron/jobs.json — [patch] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
+  • ~/.hermes/scripts/monitor.py — [write_file] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
+```
+
+If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are failing, check whether `HERMES_WRITE_SAFE_ROOT` is set in your environment. For cron changes, use the `cronjob` tool or `hermes cron edit` instead of patching `jobs.json` directly.
 
 ### UI language for static messages
 
@@ -1513,6 +1594,8 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
 ## Privacy
 

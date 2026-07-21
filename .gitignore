@@ -4,6 +4,8 @@
 /_pycache/
 *.pyc*
 __pycache__/
+act/
+.act-sandbox-agent.*
 .venv/
 .venv
 .vscode/
@@ -54,6 +56,10 @@ __pycache__/
 hermes_agent.egg-info/
 wandb/
 testlogs
+playwright-report/
+test-results/
+# Playwright visual regression baselines — cached from main in CI, not committed
+*-snapshots/
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
@@ -68,8 +74,19 @@ environments/benchmarks/evals/
 hermes_cli/web_dist/
 apps/desktop/build/
 apps/desktop/dist/
+
+# tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
+# resolves the stale .js OVER the .tsx — never track these)
+apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/desktop/src/**/*.d.ts
+!apps/desktop/src/global.d.ts
+!apps/desktop/src/vite-env.d.ts
+apps/shared/src/**/*.js
+apps/shared/src/**/*.js.map
+apps/shared/src/**/*.d.ts
 apps/desktop/release/
-apps/desktop/*.tsbuildinfo
+*.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).

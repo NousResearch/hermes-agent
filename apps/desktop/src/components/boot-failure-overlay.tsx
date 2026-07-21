@@ -13,7 +13,13 @@ import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
-import { deriveProviderShape, isRemoteConfig, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import {
+  deriveProviderShape,
+  isRemoteConfig,
+  isRemoteReauthFailure,
+  signInLabel,
+  sshFailureMessage
+} from './boot-failure-reauth'
 
 // The recovery "Gateway settings" view embeds the real Settings → Gateway panel
 // (identical URL/auth/test/save controls — no parallel form to drift). Lazy so
@@ -44,6 +50,7 @@ export function BootFailureOverlay() {
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
+  const [connectionConfig, setConnectionConfig] = useState<DesktopConnectionConfig | null>(null)
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
   const [remoteFailure, setRemoteFailure] = useState(false)
@@ -75,6 +82,7 @@ export function BootFailureOverlay() {
   useEffect(() => {
     if (!visible) {
       setRemoteReauth(null)
+      setConnectionConfig(null)
       setRemoteFailure(false)
       setView('recovery')
 
@@ -102,6 +110,7 @@ export function BootFailureOverlay() {
         return
       }
 
+      setConnectionConfig(config)
       setRemoteFailure(isRemoteConfig(config))
 
       if (!isRemoteReauthFailure(config, boot.error)) {
@@ -241,7 +250,13 @@ export function BootFailureOverlay() {
 
   if (remoteReauth) {
     actions = [
-      { key: 'signin', label: copy.signOutAndSignIn, onClick: () => void signInRemote(), icon: <LogIn />, busy: 'signin' },
+      {
+        key: 'signin',
+        label: copy.signOutAndSignIn,
+        onClick: () => void signInRemote(),
+        icon: <LogIn />,
+        busy: 'signin'
+      },
       { ...settingsAction, variant: 'secondary' },
       localAction
     ]
@@ -254,7 +269,14 @@ export function BootFailureOverlay() {
     // it's dropped here; keep it for remote failures where it's the fall-back.
     actions = [
       retryAction,
-      { key: 'repair', label: copy.repairInstall, onClick: () => void repair(), icon: <Wrench />, variant: 'secondary', busy: 'repair' },
+      {
+        key: 'repair',
+        label: copy.repairInstall,
+        onClick: () => void repair(),
+        icon: <Wrench />,
+        variant: 'secondary',
+        busy: 'repair'
+      },
       { ...settingsAction, variant: 'ghost' }
     ]
     hint = copy.repairHint
@@ -301,7 +323,7 @@ export function BootFailureOverlay() {
 
         <div className="grid gap-4 p-5 pt-0">
           <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-            {boot.error}
+            {sshFailureMessage(connectionConfig, boot.error, t.settings.gateway)}
           </div>
 
           <div className="grid gap-2">

@@ -94,9 +94,11 @@ class InvalidCredentialsError(Exception):
 
 
 class RefreshExpiredError(Exception):
-    """The refresh token is dead.
+    """This provider rejects the refresh token as dead or invalid.
 
-    Middleware clears cookies and forces re-login (302 → ``/login``).
+    In a multi-provider deployment this does not prove token ownership, so
+    middleware may try remaining providers. It clears cookies and forces
+    re-login only after every reachable provider rejects the token.
     """
 
 
@@ -125,9 +127,13 @@ class DashboardAuthProvider(ABC):
         raises ``ProviderError`` if the IDP is unreachable. Middleware
         treats expiry and unreachable differently (expiry → refresh;
         unreachable → 503).
-      * ``refresh_session`` raises ``RefreshExpiredError`` when the
-        refresh token is also invalid; middleware then forces re-login.
-        Raises ``ProviderError`` on network failure.
+      * ``refresh_session`` raises ``RefreshExpiredError`` when the refresh
+        token is invalid for that provider. Middleware tries the remaining
+        providers because an opaque foreign token can be indistinguishable
+        from an expired one; it forces re-login only after every reachable
+        provider rejects the token. Raises ``ProviderError`` on network
+        failure; middleware still tries remaining providers, but returns 503
+        without clearing cookies if none succeeds and any was unavailable.
       * ``revoke_session`` is best-effort and must not raise.
 
     Subclasses MUST set ``name`` (lowercase identifier, stable forever)

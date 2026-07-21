@@ -1660,6 +1660,31 @@ def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
             ac = ",".join(str(v) for v in ac)
         os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
     allowed = dingtalk_cfg.get("allowed_users")
+    if allowed is None:
+        # Fall back to the documented nested paths (#44928). The docs
+        # (website/docs/user-guide/messaging/dingtalk.md) configure the
+        # allowlist at gateway.platforms.dingtalk.extra.allowed_users; the
+        # adapter reads it from PlatformConfig.extra, but gateway
+        # authorization (_is_user_authorized in gateway/authz_mixin.py)
+        # only consults DINGTALK_ALLOWED_USERS — without this bridge a
+        # nested-only allowlist passes the adapter and is then denied at
+        # the gateway. Check this block's own extra first (the dispatch
+        # loop passes the platforms block here when no top-level
+        # ``dingtalk:`` section exists), then both nested containers.
+        _extra = dingtalk_cfg.get("extra")
+        if isinstance(_extra, dict):
+            allowed = _extra.get("allowed_users")
+        if allowed is None:
+            _gw = yaml_cfg.get("gateway")
+            _gw_platforms = _gw.get("platforms") if isinstance(_gw, dict) else None
+            for _container in (_gw_platforms, yaml_cfg.get("platforms")):
+                if not isinstance(_container, dict):
+                    continue
+                _dt = _container.get("dingtalk")
+                _dt_extra = _dt.get("extra") if isinstance(_dt, dict) else None
+                if isinstance(_dt_extra, dict) and _dt_extra.get("allowed_users") is not None:
+                    allowed = _dt_extra.get("allowed_users")
+                    break
     if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
         if isinstance(allowed, list):
             allowed = ",".join(str(v) for v in allowed)

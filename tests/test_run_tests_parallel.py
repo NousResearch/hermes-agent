@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_tests_parallel as runner
+
 
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
@@ -359,3 +361,103 @@ def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> No
     assert proc.returncode == 1, proc.stdout
     assert "deterministic regression" in proc.stdout
     assert "FLAKY file" not in proc.stdout
+
+
+def test_timeout_failures_are_separated_from_no_tests_ran() -> None:
+    """Timeouts keep their own bucket instead of being reported as no-tests-ran."""
+    assert runner._failure_bucket({"passed": 463, "failed": 0}, "1 passed in 0.01s\n", True) == "timed_out_after_partial_execution"
+    assert runner._failure_bucket({}, "collected 463 items\n", True) == "timed_out_after_partial_execution"
+    assert runner._failure_bucket({}, "", True) == "timed_out_before_collection"
+    assert runner._failure_bucket({}, "", False) == "no_tests_ran"
+    assert runner._failure_bucket({"passed": 1}, "1 passed in 0.01s\n", False) == "all_passed_but_nonzero"
+
+
+def test_timeout_status_survives_retry_aggregation(monkeypatch, tmp_path: Path) -> None:
+    """A timeout on an earlier attempt is still visible after a successful retry."""
+    probe = tmp_path / "test_timeout_probe.py"
+    probe.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    responses = [
+        (probe, 124, "(300s exceeded; process tree SIGKILL'd)\n", {}, 0.75, True),
+        (probe, 0, "1 passed in 0.01s\n", {"passed": 1}, 0.10, False),
+    ]
+
+    def fake_run_one_file_once(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(runner, "_run_one_file_once", fake_run_one_file_once)
+
+    result = runner._run_one_file(probe, [], tmp_path, file_timeout=300, retries=1)
+
+    assert result[1] == 0
+    assert result[-1] is True
+    assert "timed out on attempt 1, passed on retry" in result[2]
+
+
+def test_last_attempt_failure_bucket_ignores_earlier_timeout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An earlier timeout must not hide later real test failures."""
+    probe = tmp_path / "test_timeout_then_fail.py"
+    probe.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    responses = [
+        (probe, 124, "(300s exceeded; process tree SIGKILL'd)\n", {}, 0.75, True),
+        (
+            probe,
+            1,
+            "2 failed, 1 passed in 0.20s\n",
+            {"failed": 2, "passed": 1},
+            0.20,
+            False,
+        ),
+    ]
+
+    def fake_run_one_file_once(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(runner, "_run_one_file_once", fake_run_one_file_once)
+
+    result = runner._run_one_file(probe, [], tmp_path, file_timeout=300, retries=1)
+    _file, rc, output, summary, _wall, timed_out = result
+
+    assert rc == 1
+    assert timed_out is False
+    assert "TIMEOUT" not in output
+    assert runner._failure_bucket(summary, output, timed_out) == "test_failures"
+
+
+def test_last_attempt_timeout_is_reported_after_earlier_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A later timeout still classifies as timeout even if attempt 1 failed tests."""
+    probe = tmp_path / "test_fail_then_timeout.py"
+    probe.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    responses = [
+        (probe, 1, "1 failed in 0.10s\n", {"failed": 1}, 0.10, False),
+        (
+            probe,
+            124,
+            "(300s exceeded; process tree SIGKILL'd)\ncollected 10 items\n",
+            {},
+            0.75,
+            True,
+        ),
+    ]
+
+    def fake_run_one_file_once(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(runner, "_run_one_file_once", fake_run_one_file_once)
+
+    result = runner._run_one_file(probe, [], tmp_path, file_timeout=300, retries=1)
+    _file, rc, output, summary, _wall, timed_out = result
+
+    assert rc == 124
+    assert timed_out is True
+    assert "last attempt exceeded the per-file cap" in output
+    assert (
+        runner._failure_bucket(summary, output, timed_out)
+        == "timed_out_after_partial_execution"
+    )

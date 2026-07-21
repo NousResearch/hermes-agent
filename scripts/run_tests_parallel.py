@@ -234,10 +234,11 @@ def _run_one_file(
     repo_root: Path,
     file_timeout: float,
     retries: int = 0,
-) -> Tuple[Path, int, str, dict[str, int], float]:
+) -> Tuple[Path, int, str, dict[str, int], float, bool]:
     """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
-    Returns (file, returncode, captured_combined_output, summary_counts, subprocess_wall_seconds).
+    Returns (file, returncode, captured_combined_output, summary_counts,
+    subprocess_wall_seconds, timed_out).
 
     ``retries`` > 0 enables the one-shot flake retry: a non-zero exit is
     re-run in a fresh subprocess; if the re-run passes, the file counts as
@@ -267,27 +268,46 @@ def _run_one_file(
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
-    file, rc, output, summary, subproc_wall = _run_one_file_once(
+    file, rc, output, summary, subproc_wall, timed_out = _run_one_file_once(
         file, pytest_args, repo_root, file_timeout
     )
     attempt = 0
     while rc != 0 and attempt < retries:
         attempt += 1
         first_output = output
-        file, rc, output, summary, subproc_wall2 = _run_one_file_once(
+        first_timed_out = timed_out
+        file, rc, output, summary, subproc_wall2, retry_timed_out = _run_one_file_once(
             file, pytest_args, repo_root, file_timeout
         )
         subproc_wall += subproc_wall2
         if rc == 0:
+            # Passed on retry. Preserve earlier timeout history only for the
+            # flaky note — failure bucketing is not used when rc == 0.
+            timed_out = first_timed_out or retry_timed_out
+            timeout_note = (
+                "timed out on attempt 1, passed on retry"
+                if first_timed_out
+                else "failed on attempt 1, passed on retry"
+            )
             output = (
-                f"⚠ FLAKY: failed on attempt 1, passed on retry "
+                f"⚠ FLAKY: {timeout_note} "
                 f"(attempt {attempt + 1}). Fix the flake — do not ignore this.\n"
                 f"--- first-attempt output ---\n{first_output}\n"
                 f"--- retry output ---\n{output}"
             )
             with _flaky_lock:
                 _FLAKY_RESULTS.append((file, output))
-    return file, rc, output, summary, subproc_wall
+        else:
+            # Still failed. Classification must follow the *last* attempt so an
+            # earlier timeout cannot mask a later real test failure, and a later
+            # timeout is not hidden behind a first-attempt assertion error.
+            timed_out = retry_timed_out
+            if timed_out:
+                output = (
+                    f"⚠ TIMEOUT: last attempt exceeded the per-file cap.\n"
+                    f"--- last-attempt output ---\n{output}"
+                )
+    return file, rc, output, summary, subproc_wall, timed_out
 
 
 # Files that failed once and passed on retry, with both attempts' output.
@@ -303,10 +323,10 @@ def _run_one_file_once(
     pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
-) -> Tuple[Path, int, str, dict[str, int], float]:
+) -> Tuple[Path, int, str, dict[str, int], float, bool]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
@@ -334,10 +354,12 @@ def _run_one_file_once(
         except (ProcessLookupError, PermissionError):
             pgid = None
 
+    timed_out = False
     try:
         output, _ = proc.communicate(timeout=file_timeout)
         rc = proc.returncode
     except subprocess.TimeoutExpired:
+        timed_out = True
         _kill_tree(proc, pgid=pgid)
         try:
             output, _ = proc.communicate(timeout=10)
@@ -358,7 +380,7 @@ def _run_one_file_once(
         # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
 
-        output +=  "\n"
+        output += "\n"
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
@@ -367,7 +389,7 @@ def _run_one_file_once(
         rc = 0
     summary = _parse_pytest_summary(output)
     subproc_wall = time.monotonic() - subproc_start
-    return file, rc, output, summary, subproc_wall
+    return file, rc, output, summary, subproc_wall, timed_out
 
 
 def _parse_pytest_summary(output: str) -> dict[str, int]:
@@ -403,6 +425,31 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
         if line.startswith("FAILED") or line.startswith("SHORT TEST SUMMARY"):
             break
     return result
+
+
+def _summary_had_partial_execution(summary: dict[str, int], output: str) -> bool:
+    """Return True when pytest got far enough to report any test activity."""
+    if any(
+        summary.get(key, 0)
+        for key in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
+    ):
+        return True
+    return "collected " in output.lower()
+
+
+def _failure_bucket(summary: dict[str, int], output: str, timed_out: bool) -> str:
+    """Classify a per-file failure for the end-of-run summary."""
+    if timed_out:
+        return (
+            "timed_out_after_partial_execution"
+            if _summary_had_partial_execution(summary, output)
+            else "timed_out_before_collection"
+        )
+    if summary.get("failed", 0) > 0:
+        return "test_failures"
+    if summary.get("passed", 0) > 0:
+        return "all_passed_but_nonzero"
+    return "no_tests_ran"
 
 
 def _format_file(file: Path, repo_root: Path) -> str:
@@ -885,7 +932,7 @@ def main() -> int:
 
     # Capture and print on completion (out-of-order is fine — keeps the
     # terminal clean rather than interleaving N parallel pytest outputs).
-    failures: List[Tuple[Path, str, Dict[str, int]]] = []
+    failures: List[Tuple[Path, str, Dict[str, int], bool]] = []
     file_times: List[Tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
     started = time.monotonic()
     files_done = 0
@@ -896,17 +943,17 @@ def main() -> int:
     tests_failed = 0
     lock = threading.Lock()
 
-    def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, dict[str, int], float]]") -> None:
+    def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, dict[str, int], float, bool]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed
         n_tests = test_counts.get(file, 0)
         try:
-            fpath, rc, output, summary, subproc_wall = fut.result()
+            fpath, rc, output, summary, subproc_wall, timed_out = fut.result()
         except Exception as exc:  # noqa: BLE001 — must always advance counter
             with lock:
                 files_done += 1
                 tests_done += n_tests
                 fail_count += 1
-                failures.append((file, f"runner crashed: {exc!r}", {}))
+                failures.append((file, f"runner crashed: {exc!r}", {}, False))
                 _print_progress(
                     tests_done, approx_total_tests, file, 1,
                     time.monotonic() - started_at,
@@ -926,7 +973,7 @@ def main() -> int:
                 pass_count += 1
             else:
                 fail_count += 1
-                failures.append((fpath, output, summary))
+                failures.append((fpath, output, summary, timed_out))
             _print_progress(
                 tests_done, approx_total_tests, fpath, rc,
                 time.monotonic() - started_at,
@@ -1005,17 +1052,38 @@ def main() -> int:
     if failures:
         print()
         print("=== Failure output ===")
-        for file, output, _summary in failures:
+        for file, output, _summary, _timed_out in failures:
             print()
             print(f"--- {_format_file(file, repo_root)} ---")
             print(output.rstrip())
         print()
-        # Split: files with actual test failures vs non-zero exit for other reasons
-        test_fail_files = [(f, s) for f, _o, s in failures if s.get("failed", 0) > 0]
-        all_passed_but_nonzero = [(f, s) for f, _o, s in failures
-                                  if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
-        no_tests_ran = [(f, s) for f, _o, s in failures
-                        if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+        # Split by the actual reason a file failed so timeouts don't get
+        # lumped in with collection/import errors.
+        test_fail_files = [
+            (f, s)
+            for f, _o, s, timed_out in failures
+            if _failure_bucket(s, _o, timed_out) == "test_failures"
+        ]
+        all_passed_but_nonzero = [
+            (f, s)
+            for f, _o, s, timed_out in failures
+            if _failure_bucket(s, _o, timed_out) == "all_passed_but_nonzero"
+        ]
+        timed_out_partial = [
+            (f, s)
+            for f, _o, s, timed_out in failures
+            if _failure_bucket(s, _o, timed_out) == "timed_out_after_partial_execution"
+        ]
+        timed_out_before_collection = [
+            (f, s)
+            for f, _o, s, timed_out in failures
+            if _failure_bucket(s, _o, timed_out) == "timed_out_before_collection"
+        ]
+        no_tests_ran = [
+            (f, s)
+            for f, _o, s, timed_out in failures
+            if _failure_bucket(s, _o, timed_out) == "no_tests_ran"
+        ]
         if test_fail_files:
             total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
             print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")
@@ -1026,9 +1094,27 @@ def main() -> int:
             print(f"=== {len(all_passed_but_nonzero)} file{'s' if len(all_passed_but_nonzero) != 1 else ''} where all tests passed but pytest exited non-zero (warnings-as-errors, hook failures, etc.) ===")
             for file, s in all_passed_but_nonzero:
                 print(f"  {_format_file(file, repo_root)}  ({s.get('passed', 0)} passed)")
+        if timed_out_partial:
+            print(f"=== {len(timed_out_partial)} file{'s' if len(timed_out_partial) != 1 else ''} timed out after partial execution ===")
+            for file, s in timed_out_partial:
+                details = []
+                if s.get("passed", 0):
+                    details.append(f"{s.get('passed', 0)} passed")
+                if s.get("failed", 0):
+                    details.append(f"{s.get('failed', 0)} failed")
+                if s.get("skipped", 0):
+                    details.append(f"{s.get('skipped', 0)} skipped")
+                if s.get("errors", 0):
+                    details.append(f"{s.get('errors', 0)} errors")
+                suffix = f" ({', '.join(details)})" if details else ""
+                print(f"  {_format_file(file, repo_root)}{suffix}")
+        if timed_out_before_collection:
+            print(f"=== {len(timed_out_before_collection)} file{'s' if len(timed_out_before_collection) != 1 else ''} timed out before collection ===")
+            for file, _s in timed_out_before_collection:
+                print(f"  {_format_file(file, repo_root)}")
         if no_tests_ran:
-            print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
-            for file, s in no_tests_ran:
+            print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, no collected tests, etc.) ===")
+            for file, _s in no_tests_ran:
                 print(f"  {_format_file(file, repo_root)}")
         return 1
 

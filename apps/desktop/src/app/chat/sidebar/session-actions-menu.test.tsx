@@ -1,5 +1,5 @@
-import { atom } from 'nanostores'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionActionsMenu } from './session-actions-menu'

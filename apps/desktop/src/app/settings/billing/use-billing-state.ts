@@ -534,7 +534,6 @@ function topupCreditsValue(billing: BillingStateResponse, usage?: UsageModelData
   )
 }
 
-
 function buyCreditsDisabledReason(billing: BillingStateResponse): null | string {
   if (!billing.is_admin) {
     return resolveRefusal({ kind: 'role_required', message: '' }).message

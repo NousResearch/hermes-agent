@@ -1,7 +1,6 @@
-import type * as React from 'react'
-
-import { atom } from 'nanostores'
 import { cleanup, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
+import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'

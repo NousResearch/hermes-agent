@@ -73,6 +73,22 @@ See [Auxiliary Models](/user-guide/configuration#auxiliary-models) for the full 
 
 If you specifically need raw, unsummarized page content — for example, you're scraping a structured page where the LLM summary would drop important fields — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree without auxiliary-model rewriting (subject to its own 8 000-char snapshot cap on huge pages).
 
+## Prefer `web_extract` over the browser for simple fetches
+
+When both `browser_navigate` and `web_extract` are available, the model decides which to use. For plain content retrieval (docs, APIs, raw files) it often reaches for the browser even though `web_extract` is faster and cheaper — spinning up a headless browser adds startup/session latency and returns full accessibility trees instead of compressed markdown. `browser_navigate`'s description already says to *prefer* the web tools, but that hint is only advisory and the model can ignore it.
+
+Enable a stronger, global preference:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  prefer_fetch_over_browser: true   # default: false
+```
+
+When enabled (and `web_extract` is available), Hermes rewrites the `browser_navigate` tool description from an advisory hint into a directive: use `web_extract` for non-interactive content retrieval, and reserve `browser_navigate` for tasks the fetch tools can't do — logging in, clicking, filling/submitting forms, or JS-rendered / scroll-dependent content. The browser tools stay registered and available; only the routing guidance changes.
+
+The environment variable `HERMES_PREFER_FETCH_OVER_BROWSER=1` overrides the config value for a single run. When `web_extract` is not configured, this option is a no-op (the browser is the only fetch path).
+
 ---
 
 ## Setup

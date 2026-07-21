@@ -322,6 +322,7 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            os.environ.get("HERMES_PREFER_FETCH_OVER_BROWSER"),
             bool(skip_tool_search_assembly),
         )
         cached = _tool_defs_cache.get(cache_key)
@@ -511,6 +512,31 @@ def _compute_tool_definitions(
                         "function": {**td["function"], "description": desc},
                     }
                     break
+        elif "web_extract" in available_tool_names and _prefer_fetch_over_browser():
+            # web.prefer_fetch_over_browser (issue #34545): the static schema's
+            # "prefer web_extract" line is only advisory and the model often
+            # ignores it when both tools are present. When the user opts in,
+            # upgrade the advisory hint to a directive so non-interactive URL
+            # fetches route to the cheaper/faster web_extract path. Browser
+            # tools stay available for genuinely interactive pages.
+            directive = (
+                " IMPORTANT: this deployment is configured to prefer web_extract"
+                " for non-interactive content retrieval. Use web_extract to fetch"
+                " page or document content from a URL. Only use browser_navigate"
+                " when the task requires interaction the fetch tools cannot do —"
+                " logging in, clicking, filling/submitting forms, JS-rendered or"
+                " scroll-dependent content."
+            )
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "browser_navigate":
+                    desc = td["function"].get("description", "")
+                    if directive.strip() not in desc:
+                        desc = desc + directive
+                    filtered_tools[i] = {
+                        "type": "function",
+                        "function": {**td["function"], "description": desc},
+                    }
+                    break
 
     if not quiet_mode:
         if filtered_tools:
@@ -565,6 +591,30 @@ def _compute_tool_definitions(
         logger.warning("Tool search assembly skipped: %s", e)
 
     return filtered_tools
+
+
+def _prefer_fetch_over_browser() -> bool:
+    """Whether the user asked browser_navigate to defer to web_extract.
+
+    Reads ``web.prefer_fetch_over_browser`` from ~/.hermes/config.yaml
+    (Option A from issue #34545). The env var ``HERMES_PREFER_FETCH_OVER_BROWSER``
+    overrides config when set, matching the override convention used by the
+    rest of the tool layer. Any failure resolves to ``False`` so the default
+    behaviour (advisory-only hint) is preserved.
+    """
+    env = os.environ.get("HERMES_PREFER_FETCH_OVER_BROWSER")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from hermes_cli.config import load_config as _load
+        cfg = _load() or {}
+        web_cfg = cfg.get("web")
+        if not isinstance(web_cfg, dict):
+            return False
+        return bool(web_cfg.get("prefer_fetch_over_browser", False))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("Could not resolve web.prefer_fetch_over_browser: %s", e)
+        return False
 
 
 def _resolve_active_context_length() -> int:

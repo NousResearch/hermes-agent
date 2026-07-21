@@ -5176,6 +5176,13 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     Returns:
         List of all currently registered MCP tool names.
     """
+    # Populate per-server circuit breaker thresholds before any early
+    # returns so they are available even when MCP SDK is not loaded.
+    for srv_name, srv_cfg in servers.items():
+        bt = srv_cfg.get("breaker_threshold")
+        if isinstance(bt, int) and not isinstance(bt, bool) and bt > 0:
+            _circuit_breaker_thresholds[srv_name] = bt
+
     if not _MCP_AVAILABLE:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
@@ -5212,10 +5219,6 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
             else:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
-            # Per-server circuit breaker threshold (default: _CIRCUIT_BREAKER_THRESHOLD)
-            bt = srv_cfg.get("breaker_threshold")
-            if isinstance(bt, int) and bt > 0:
-                _circuit_breaker_thresholds[srv_name] = bt
 
     for srv in stale_cached:
         _signal_reconnect(srv)

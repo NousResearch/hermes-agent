@@ -10,6 +10,7 @@ import math
 import os
 import shlex
 import threading
+import uuid
 from pathlib import Path
 
 from tools.environments.base import (
@@ -84,11 +85,12 @@ class DaytonaEnvironment(BaseEnvironment):
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
         labels = {"hermes_task_id": task_id}
-        sandbox_name = f"hermes-{task_id}"
+        legacy_sandbox_name = f"hermes-{task_id}"
+        sandbox_name = f"{legacy_sandbox_name}-{uuid.uuid4().hex[:8]}"
 
         if self._persistent:
             try:
-                self._sandbox = self._daytona.get(sandbox_name)
+                self._sandbox = self._daytona.get(legacy_sandbox_name)
                 self._sandbox.start()
                 logger.info("Daytona: resumed sandbox %s for task %s",
                             self._sandbox.id, task_id)

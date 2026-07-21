@@ -184,6 +184,23 @@ class TestPersistence:
         env._mock_client.list.assert_not_called()
         env._mock_client.create.assert_called_once()
 
+    def test_created_sandbox_name_is_unique_but_labels_keep_task_id(
+        self, make_env, daytona_sdk, monkeypatch
+    ):
+        daytona_sdk.CreateSandboxFromImageParams = lambda **kwargs: SimpleNamespace(
+            **kwargs
+        )
+        monkeypatch.setattr(
+            "tools.environments.daytona.uuid.uuid4",
+            lambda: SimpleNamespace(hex="deadbeefcafebabe"),
+        )
+
+        env = make_env(persistent=False, task_id="default")
+
+        created_params = env._mock_client.create.call_args.args[0]
+        assert created_params.name == "hermes-default-deadbeef"
+        assert created_params.labels == {"hermes_task_id": "default"}
+
 
 # ---------------------------------------------------------------------------
 # Cleanup

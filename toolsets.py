@@ -258,6 +258,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "git": {
+        "description": "Git diff analysis - compare commits, branches, and working tree",
+        "tools": ["diff_analyze"],
+        "includes": []
+    },
+
+    "security": {
+        "description": "Security tools: secrets detection, vulnerability scanning",
+        "tools": ["secrets_detect"],
+        "includes": []
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

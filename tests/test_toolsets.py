@@ -291,3 +291,29 @@ class TestResolveToolsetIncludeRegistry:
 
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
+
+
+class TestCoreToolsetFootprint:
+    """diff_analyze and secrets_detect must NOT be in _HERMES_CORE_TOOLS.
+
+    They belong in their specific toolsets (git / security) per the
+    Footprint Ladder guidance. Regression guard for PR reviewer feedback.
+    """
+
+    def test_diff_analyze_not_in_core_tools(self):
+        from toolsets import _HERMES_CORE_TOOLS
+        assert "diff_analyze" not in _HERMES_CORE_TOOLS
+
+    def test_secrets_detect_not_in_core_tools(self):
+        from toolsets import _HERMES_CORE_TOOLS
+        assert "secrets_detect" not in _HERMES_CORE_TOOLS
+
+    def test_diff_analyze_in_git_toolset(self):
+        ts = get_toolset("git")
+        assert ts is not None
+        assert "diff_analyze" in ts["tools"]
+
+    def test_secrets_detect_in_security_toolset(self):
+        ts = get_toolset("security")
+        assert ts is not None
+        assert "secrets_detect" in ts["tools"]

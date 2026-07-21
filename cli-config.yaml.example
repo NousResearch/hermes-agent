@@ -877,6 +877,13 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   slack:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       reply_in_thread: true         # Reply in a thread (default: true)
+#       channel_context: false        # Seed first-turn top-level channel messages with recent history (default: false)
+#       channel_context_limit: 3      # How many recent messages to include (default: 3, clamped 1-50)
+#       channel_context_ttl: 10       # Cache window per channel in seconds; bounds API calls (default: 10; 0 = off)
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

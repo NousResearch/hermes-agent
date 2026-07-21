@@ -9179,3 +9179,56 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+class TestServeIndexMissingIndex:
+    """_serve_index must not raise per-request when index.html vanishes
+    (partial build, wiped dist) after mount_spa saw an existing dist dir.
+    It should return the same JSON 404 payload mount_spa emits for a
+    fully-missing dist."""
+
+    @staticmethod
+    def _client_with_dist(tmp_path, monkeypatch, *, write_index: bool):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        if write_index:
+            (dist / "index.html").write_text(
+                "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+            )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app), dist
+
+    def test_missing_index_inside_existing_dist_returns_json_404(
+        self, tmp_path, monkeypatch
+    ):
+        client, _dist = self._client_with_dist(
+            tmp_path, monkeypatch, write_index=False
+        )
+        for route in ("/", "/chat"):
+            resp = client.get(route)
+            assert resp.status_code == 404
+            assert resp.json()["error"] == (
+                "Frontend not built. Run: cd web && npm run build"
+            )
+
+    def test_index_deleted_after_mount_returns_json_404(self, tmp_path, monkeypatch):
+        client, dist = self._client_with_dist(tmp_path, monkeypatch, write_index=True)
+        assert client.get("/chat").status_code == 200  # healthy first
+        (dist / "index.html").unlink()
+        resp = client.get("/chat")
+        assert resp.status_code == 404
+        assert "Frontend not built" in resp.json()["error"]
+        # And recovers once the index reappears (e.g. a rebuild finished).
+        (dist / "index.html").write_text(
+            "<html><head></head><body>SPA-rebuilt</body></html>", encoding="utf-8"
+        )
+        resp = client.get("/chat")
+        assert resp.status_code == 200
+        assert "SPA-rebuilt" in resp.text

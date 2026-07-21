@@ -161,23 +161,26 @@ export const AvatarEditorDialog: FC<AvatarEditorDialogProps> = ({ onClose, open 
     onClose()
   }, [onClose, pendingNames, names])
 
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (!nextOpen) {
-        // User clicked ✖️ — save pending changes then close
-        handleDone()
-      }
-    },
-    [handleDone]
-  )
+  const handleClose = useCallback(() => {
+    setPendingNames({})
+    onClose()
+  }, [onClose])
 
   return (
-    <Dialog onOpenChange={handleOpenChange} open={open}>
-      <DialogContent className="max-w-sm">
+    <Dialog onOpenChange={nextOpen => { if (!nextOpen) onClose(); }} open={open}>
+      <DialogContent className="max-w-sm" showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription>{copy.description}</DialogDescription>
         </DialogHeader>
+        <button
+          aria-label={t.common.close}
+          className="absolute right-2.5 top-2.5 z-20 flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+          onClick={handleClose}
+          type="button"
+        >
+          ✕
+        </button>
 
         <div className="space-y-4 py-2">
           <ParticipantRow

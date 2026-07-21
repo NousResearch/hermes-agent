@@ -1842,6 +1842,8 @@ text-* variant utilities. */ .btn-arc {
 .message-avatar {
   border-radius: 9999px;
   overflow: hidden;
+  position: relative;
+  z-index: 50;
 }
 
 .avatar-fallback-ring {

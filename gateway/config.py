@@ -1549,6 +1549,17 @@ def load_gateway_config() -> GatewayConfig:
                         continue
                     try:
                         seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+                    except ValueError as e:
+                        # Validation errors (e.g. duplicate app_id, exceeding
+                        # app limits) must be visible — the platform will be
+                        # silently disabled if we just continue.  Log at ERROR
+                        # so the user sees it in gateway logs.
+                        logger.error(
+                            "Configuration error for %s: %s — this platform "
+                            "will be disabled.",
+                            entry.name, e,
+                        )
+                        continue
                     except Exception as e:
                         logger.debug(
                             "apply_yaml_config_fn for %s raised: %s",

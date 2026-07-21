@@ -306,6 +306,37 @@ class TestChatCompletionsBuildKwargs:
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
+        assert kw["tool_choice"] == "auto"
+
+    def test_tools_included_profile_path(self, transport):
+        """Profile path must also set tool_choice when tools are present."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="llama3", messages=msgs, tools=tools, provider_profile=profile,
+        )
+        assert kw["tools"] == tools
+        assert kw["tool_choice"] == "auto"
+
+    def test_tools_omitted_tool_choice_not_set(self, transport):
+        """When no tools are provided, tool_choice must not appear in kwargs."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs)
+        assert "tools" not in kw
+        assert "tool_choice" not in kw
+
+    def test_tool_choice_respects_request_overrides(self, transport):
+        """If request_overrides sets tool_choice explicitly, it must not be
+        overwritten by the default."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, tools=tools,
+            request_overrides={"tool_choice": "required"},
+        )
+        assert kw["tool_choice"] == "required"
 
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile

@@ -372,6 +372,14 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # tool_choice defaults to "none" in the OpenAI Chat Completions API
+            # when tools are present but tool_choice is omitted.  This causes
+            # the model to never invoke tools — it always returns
+            # finish_reason="stop" instead of "tool_calls".  vLLM (and other
+            # strict OpenAI-compatible backends) respect this default and will
+            # never call tools without an explicit tool_choice.  Set to "auto"
+            # so the model can decide when to use tools.  (#39099)
+            api_kwargs.setdefault("tool_choice", "auto")
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
@@ -559,6 +567,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            api_kwargs.setdefault("tool_choice", "auto")
 
         # max_tokens resolution — priority: ephemeral > user > profile default
         max_tokens_fn = params.get("max_tokens_param_fn")

@@ -9006,7 +9006,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 cmd_original=cmd_original,
             ) is None:
                 return True  # confirmation cancelled — command handled, keep REPL alive
-            self.new_session(title=title)
+            # /reset is an alias of /new (same session rotation). Keep the
+            # shared path but use reset-specific user-facing copy (#61422).
+            if _base_word == "reset":
+                self.new_session(title=title, silent=True)
+                print("Your session has been reset.")
+            else:
+                self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "sessions":

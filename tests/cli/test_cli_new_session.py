@@ -175,6 +175,35 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
+def test_reset_command_rotates_session_and_prints_reset_message(tmp_path, capsys):
+    """/reset shares the /new session path but uses reset-specific copy (#61422)."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    cli.process_command("/reset")
+
+    assert cli.session_id != old_session_id
+    old_session = cli._session_db.get_session(old_session_id)
+    assert old_session is not None
+    assert old_session["end_reason"] == "new_session"
+    assert cli._session_db.get_session(cli.session_id) is not None
+
+    out = capsys.readouterr().out
+    assert "Your session has been reset." in out
+    assert "New session started" not in out
+
+
+def test_new_command_still_prints_new_session_message(tmp_path, capsys):
+    """/new keeps the existing new-session success wording (#61422)."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+
+    cli.process_command("/new")
+
+    out = capsys.readouterr().out
+    assert "New session started!" in out
+    assert "Your session has been reset." not in out
+
+
 def test_new_session_queues_boundary_commit_with_snapshot(tmp_path):
     """/new hands the OLD session's history + ids to the memory manager's
     serialized boundary task instead of blocking on extraction inline."""

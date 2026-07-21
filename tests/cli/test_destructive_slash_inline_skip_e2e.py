@@ -51,7 +51,7 @@ def _make_cli_stub():
     return self_, new_session_calls
 
 
-def test_reset_now_invokes_new_session_without_modal():
+def test_reset_now_invokes_new_session_without_modal(capsys):
     """``/reset now`` runs ``new_session`` and never touches the modal."""
     self_, calls = _make_cli_stub()
 
@@ -64,6 +64,27 @@ def test_reset_now_invokes_new_session_without_modal():
     assert calls, "new_session was never invoked"
     # The /new branch passes title=None when there's no non-skip remainder.
     assert calls[0]["title"] is None
+    # /reset shares the session path with /new but uses reset-specific copy.
+    assert calls[0]["silent"] is True
+    out = capsys.readouterr().out
+    assert "Your session has been reset." in out
+    assert "New session started" not in out
+
+
+def test_new_now_does_not_print_reset_message(capsys):
+    """``/new now`` must not emit the /reset success string (#61422)."""
+    self_, calls = _make_cli_stub()
+
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"destructive_slash_confirm": True}},
+    ):
+        self_.process_command("/new now")
+
+    assert calls, "new_session was never invoked"
+    assert calls[0].get("silent", False) is False
+    out = capsys.readouterr().out
+    assert "Your session has been reset." not in out
 
 
 def test_new_yes_with_title_preserves_title():

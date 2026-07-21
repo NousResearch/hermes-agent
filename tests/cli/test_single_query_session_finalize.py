@@ -85,6 +85,7 @@ def test_kanban_sigterm_closes_agent_before_hard_exit(monkeypatch):
     monkeypatch.setattr(cli, "_arm_exit_watchdog_on_shutdown_signal", lambda: None)
     monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
+    monkeypatch.setattr(signal, "alarm", lambda _seconds: None)
     monkeypatch.setattr(cli.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
 
     with pytest.raises(SystemExit):

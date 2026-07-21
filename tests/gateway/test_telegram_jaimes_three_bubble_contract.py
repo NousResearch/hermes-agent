@@ -131,9 +131,11 @@ def test_jaimes_final_builds_pre_delivery_edit_for_current_active_card(tmp_path)
             "-1003589561528", content, "17", {"notify": True}
         )
     assert command is not None
-    assert command[2] == "update"
+    assert command[2] == "done"
     assert command[command.index("--key") + 1] == "turn-123"
-    assert command[command.index("--now") + 1] == "Final summary validated; sending now"
+    assert command[command.index("--now") + 1] == "Final summary validated; delivery starting"
+    assert command[command.index("--done") + 1] == "Final summary validated"
+    assert "--no-final-summary" in command
     assert command[command.index("--model") + 1] == "openai-codex/gpt-5.6-sol"
     assert command[command.index("--work-id") + 1] == "work-current"
     assert command[command.index("--run-id") + 1] == "run-current"
@@ -219,7 +221,7 @@ def test_jaimes_final_formatter_receives_private_payload_over_stdin(tmp_path):
         "assert payload['work_id']=='work-current'\n"
         "assert payload['run_id']=='run-current'\n"
         "assert payload['task_started_at']=='2026-07-12T23:21:59Z'\n"
-        "print('<pre>canonical final</pre>')\n"
+        "print('<pre>Model: verified\\nComplete: Yes</pre>')\n"
     )
     adapter = _adapter()
     with patch.object(telegram_adapter._Path, "home", return_value=tmp_path):
@@ -229,7 +231,7 @@ def test_jaimes_final_formatter_receives_private_payload_over_stdin(tmp_path):
             "17",
             {"notify": True},
         ))
-    assert rendered == "```\ncanonical final\n```"
+    assert rendered == "**Model:** verified\n**Complete:** Yes"
 
 
 def test_gateway_stops_typing_before_final_delivery():
@@ -295,7 +297,7 @@ def test_unbound_final_preserves_verified_why_in_private_formatter_payload(tmp_p
         rendered = asyncio.run(_adapter()._jaimes_canonical_final_before_send(
             "-1001", content, "17", {"notify": True}
         ))
-    assert rendered == "```\ncanonical final\n```"
+    assert rendered == "canonical final"
 
 
 def test_unbound_final_only_uses_literal_objective_label(tmp_path):
@@ -332,7 +334,7 @@ def test_unbound_final_only_uses_literal_objective_label(tmp_path):
             ))
             for content in contents
         ]
-    assert rendered == ["```\ncanonical final\n```"] * 3
+    assert rendered == ["canonical final"] * 3
 
 
 def test_post_delivery_command_persists_exact_adapter_message_id(tmp_path):
@@ -400,7 +402,7 @@ def test_topic17_final_skips_rich_and_closes_with_exact_ptb_message_id():
         side_effect=AssertionError("Topic 17 final must not use rich delivery")
     )
     adapter._jaimes_canonical_final_before_send = AsyncMock(
-        return_value="```\ncanonical final\n```"
+        return_value="canonical final"
     )
     adapter._jaimes_finalize_card_before_final = AsyncMock()
     adapter._jaimes_complete_card_after_final = AsyncMock()

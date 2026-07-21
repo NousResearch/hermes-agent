@@ -4175,10 +4175,16 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             formatted = stdout.decode("utf-8", errors="replace").strip()
             if proc.returncode == 0 and re.fullmatch(r"<pre>[\s\S]*</pre>", formatted, flags=re.I):
-                # The adapter sends MarkdownV2, so convert the canonical HTML
-                # wrapper to one fenced code block while preserving its body.
+                # Keep the final proportional and scannable.  The canonical
+                # formatter uses <pre> as a transport envelope, but a Telegram
+                # code block makes JAIMES look materially different from the
+                # Inbox/Codex contract and is harder to read on mobile.
                 body = _html.unescape(formatted[5:-6]).strip("\n")
-                return f"```\n{body}\n```"
+                return re.sub(
+                    r"(?m)^([A-Za-z][A-Za-z0-9 /&()_-]{1,48}:)(?=\s|$)",
+                    r"**\1**",
+                    body,
+                )
             raise RuntimeError("JAIMES final formatter returned an invalid result")
         except Exception as exc:
             logger.warning("[%s] JAIMES final formatter failed: %s", self.name, exc)
@@ -4204,11 +4210,13 @@ class TelegramAdapter(BasePlatformAdapter):
         model = model_match.group(1).strip() if model_match else "JAIMES"
         objective = str(card.get("objective") or "Complete the current Telegram task")
         command = [
-            sys.executable, str(script), "update",
+            sys.executable, str(script), "done",
             "--key", str(card["key"]),
             "--title", objective,
             "--model", model,
-            "--now", "Final summary validated; sending now",
+            "--now", "Final summary validated; delivery starting",
+            "--done", "Final summary validated",
+            "--no-final-summary",
             "--chat-id", str(chat_id),
             "--thread-id", str(thread_id),
         ]
@@ -4235,12 +4243,9 @@ class TelegramAdapter(BasePlatformAdapter):
         command = self._jaimes_pre_final_card_command(chat_id, content, thread_id, metadata)
         if not command:
             return None
-        command[2] = "done"
         now_index = command.index("--now") + 1
         command[now_index] = "Final summary delivered"
         command.extend([
-            "--done", "Final summary delivered",
-            "--no-final-summary",
             "--final-message-id", str(final_message_id),
             "--final-delivery-verified-by", "hermes-adapter-success",
         ])
@@ -4337,10 +4342,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            # Topic 17 finals are a fixed-width canonical code block. Keep
-            # them on PTB's send_message path, whose concrete message_id is
-            # required to persist the terminal delivery receipt. A rich send
-            # may succeed without returning a persistable id.
+            # Topic 17 finals stay on PTB's send_message path, whose concrete
+            # message_id is required to persist the terminal delivery receipt.
+            # A rich send may succeed without returning a persistable id.
             if (
                 not jaimes_final
                 and jaimes_reply_markup is None

@@ -220,7 +220,8 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `sessionStrategy` | string | `"per-directory"` | `"per-directory"`, `"per-session"`, `"per-repo"` (git root), `"global"` |
-| `sessionPeerPrefix` | bool | `false` | Prepend peer name to session keys |
+| `sessionPeerPrefix` | bool | `false` | Prepend the user peer name to session keys |
+| `sessionAiPeerPrefix` | bool | `false` | Prepend the AI peer (`aiPeer`) to session keys — keeps sessions disjoint when multiple AI peers share a workspace |
 | `sessions` | object | `{}` | Manual directory-to-session-name mappings |
 
 #### Session Name Resolution
@@ -239,7 +240,9 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 
 Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
 
-If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
+If `sessionPeerPrefix` is `true`, the user peer name is prepended: `alice-hermes-agent`.
+
+If `sessionAiPeerPrefix` is `true`, the AI peer (`aiPeer`) is prepended to the final name on **every** path — including priority 3. This is the symmetric counterpart to `sessionPeerPrefix` and exists because the gateway session key is AI-peer-agnostic: when several AI peers share one workspace, peer name, and gateway chat key, they would otherwise collide on a single session. With `aiPeer: ivy`, priority 3 becomes `ivy-agent-main-telegram-dm-8439114563`.
 
 #### What each strategy produces
 

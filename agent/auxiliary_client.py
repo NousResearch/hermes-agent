@@ -319,7 +319,30 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
             normalized = main_prov
         else:
             return "custom"
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    if normalized in _PROVIDER_ALIASES:
+        return _PROVIDER_ALIASES[normalized]
+    # Fall through to the shared CLI alias table so auxiliary.<task>.provider
+    # accepts the same aliases as `hermes model` (e.g. nvidia-nim → nvidia).
+    # Local table stays first: providers.py sometimes canonicalizes to
+    # models.dev ids (github-copilot) while aux/PROVIDER_REGISTRY still use
+    # Hermes ids (copilot). Only adopt a shared mapping when the registry
+    # already knows that canonical id.
+    try:
+        from hermes_cli.providers import normalize_provider
+
+        shared = normalize_provider(normalized)
+    except Exception:
+        return normalized
+    if shared == normalized:
+        return normalized
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        if shared in PROVIDER_REGISTRY:
+            return shared
+    except Exception:
+        pass
+    return normalized
 
 
 # Sentinel: when returned by _fixed_temperature_for_model(), callers must

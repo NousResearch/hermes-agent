@@ -394,6 +394,21 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_nvidia_aliases_via_shared_provider_table(self):
+        """CLI aliases (hermes_cli.providers) must resolve for aux config too.
+
+        Regression for PR #31134: auxiliary.<task>.provider: nvidia-nim used to
+        miss PROVIDER_REGISTRY (canonical key is nvidia / NVIDIA_API_KEY).
+        """
+        for alias in ("nvidia-nim", "nim", "build-nvidia", "nemotron"):
+            assert _normalize_aux_provider(alias) == "nvidia"
+        assert _normalize_aux_provider("nvidia") == "nvidia"
+
+    def test_prefers_local_aux_ids_over_models_dev_canonical(self):
+        # providers.normalize_provider("github") → github-copilot (models.dev),
+        # but aux registry still keys on copilot. Local table must win.
+        assert _normalize_aux_provider("github") == "copilot"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):
@@ -5192,6 +5207,29 @@ class TestNvidiaBillingHeaders:
         call_kwargs = mock_openai.call_args[1]
         headers = call_kwargs["default_headers"]
         assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+
+    def test_resolve_provider_client_accepts_nvidia_nim_alias(self, monkeypatch):
+        """auxiliary.<task>.provider: nvidia-nim must use NVIDIA_API_KEY.
+
+        Behavior-level gate for #31134 / sweeper review: aliased aux config
+        must build a client through the canonical nvidia credentials path.
+        """
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
+        monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="nvidia-alias-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="nvidia-nim",
+                model="nvidia/test-model",
+            )
+
+        assert client is not None
+        assert model == "nvidia/test-model"
+        call_kwargs = mock_openai.call_args[1]
+        assert call_kwargs["api_key"] == "nvidia-key"
+        assert "integrate.api.nvidia.com" in call_kwargs["base_url"]
 
     def test_resolve_provider_client_local_nim_skips_billing_origin_header(self, monkeypatch):
         monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")

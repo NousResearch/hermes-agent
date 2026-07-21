@@ -3833,6 +3833,7 @@
   // Worker log: loads lazily (one GET on mount), refresh button, tail cap.
   function WorkerLogSection(props) {
     const { t } = useI18n();
+    const logRef = useRef(null);
     const [state, setState] = useState({ loading: false, data: null, err: null });
     const load = useCallback(function () {
       setState({ loading: true, data: null, err: null });
@@ -3844,6 +3845,14 @@
     // Auto-load when the section mounts; the user opened the drawer so the
     // cost is one small HTTP round-trip.
     useEffect(function () { load(); }, [load]);
+
+    // Auto-scroll the log container to the bottom whenever data finishes loading.
+    const scrollToBottom = function () {
+      if (!state.loading && state.data && state.data.exists && logRef.current) {
+        logRef.current.scrollTop = logRef.current.scrollHeight;
+      }
+    };
+    useEffect(scrollToBottom, [state.loading, state.data]);
 
     const data = state.data;
     let body;
@@ -3857,7 +3866,7 @@
         tx(t, "noWorkerLog",
           "— no worker log yet (task hasn't spawned or log was rotated away) —"));
     } else {
-      body = h("pre", { className: "hermes-kanban-pre hermes-kanban-log" },
+      body = h("pre", { ref: logRef, className: "hermes-kanban-pre hermes-kanban-log" },
         data.content || "(empty)");
     }
 

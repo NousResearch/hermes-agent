@@ -136,8 +136,8 @@ def test_status_fn_returns_formatted_token_count(monkeypatch):
     assert "Est. tool context" in result
 
 
-def test_status_fn_deduplicates_overlapping_tools(monkeypatch):
-    """When toolsets overlap (browser includes web_search), tokens should not double-count."""
+def test_status_fn_no_overlap_after_browser_web_search_removal(monkeypatch):
+    """After removing web_search from browser toolset, web + browser should not double-count."""
     import hermes_cli.tools_config as tc
     from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
 
@@ -159,7 +159,7 @@ def test_status_fn_deduplicates_overlapping_tools(monkeypatch):
 
     # web alone
     web_only = status_fn({idx_map["web"]})
-    # browser includes web_search, so browser + web should not double-count web_search
+    # browser alone — should NOT include web_search tokens
     browser_only = status_fn({idx_map["browser"]})
     both = status_fn({idx_map["web"], idx_map["browser"]})
 
@@ -179,11 +179,11 @@ def test_status_fn_deduplicates_overlapping_tools(monkeypatch):
     browser_tok = parse_tokens(browser_only)
     both_tok = parse_tokens(both)
 
-    # Both together should be LESS than naive sum (due to web_search dedup)
+    # With no overlap, combined should equal naive sum (or very close due to rounding)
     naive_sum = web_tok + browser_tok
-    assert both_tok < naive_sum, (
-        f"Expected deduplication: web({web_tok}) + browser({browser_tok}) = {naive_sum} "
-        f"but combined = {both_tok}"
+    assert both_tok >= naive_sum * 0.99, (
+        f"Expected no double-counting: web({web_tok}) + browser({browser_tok}) = {naive_sum} "
+        f"but combined = {both_tok} (unexpectedly lower — overlap still exists?)"
     )
 
 

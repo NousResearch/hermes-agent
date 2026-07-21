@@ -171,13 +171,13 @@ TOOLSETS = {
     },
     
     "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
+        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click)",
         "tools": [
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog"
         ],
         "includes": []
     },

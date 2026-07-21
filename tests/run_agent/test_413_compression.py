@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.context_compressor import SUMMARY_PREFIX
+from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
 from run_agent import AIAgent
 import run_agent
 
@@ -599,9 +600,50 @@ class TestPreflightCompression:
         ]
         assert new_system_prompt == "You are helpful."
         build_prompt.assert_not_called()
-        assert events[0][0] == "lifecycle"
-        assert "Compacting context" in events[0][1]
-        assert events[1] == ("compress", "started")
+        assert events == [
+            ("lifecycle", COMPACTION_STATUS),
+            ("compress", "started"),
+            ("compacted", COMPACTION_DONE_STATUS),
+        ]
+
+    def test_compress_context_emits_one_terminal_status_when_lock_is_unavailable(self, agent):
+        """A rejected lock must retire the started desktop compaction phase."""
+        agent.compression_enabled = False
+        agent.session_id = "session-with-contended-lock"
+        agent._session_db = SimpleNamespace(
+            get_compression_lock_holder=lambda _session_id: "other-agent",
+            try_acquire_compression_lock=lambda *_args, **_kwargs: False,
+        )
+        events = []
+        agent.status_callback = lambda event, message: events.append((event, message))
+        messages = [{"role": "user", "content": "hello"}]
+
+        compressed, prompt = agent._compress_context(messages, "system prompt", force=True)
+
+        assert compressed is messages
+        assert prompt == "You are helpful."
+        assert [event for event, _ in events] == ["lifecycle", "warn", "compacted"]
+        assert events[-1] == ("compacted", COMPACTION_DONE_STATUS)
+
+    def test_compress_context_emits_one_terminal_status_after_an_abort(self, agent):
+        """An aborted summary must retire the started desktop compaction phase."""
+        agent.compression_enabled = False
+        events = []
+        agent.status_callback = lambda event, message: events.append((event, message))
+        messages = [{"role": "user", "content": "hello"}]
+
+        def _abort_compression(current_messages, **_kwargs):
+            agent.context_compressor._last_compress_aborted = True
+            agent.context_compressor._last_summary_error = "auxiliary model unavailable"
+            return current_messages
+
+        with patch.object(agent.context_compressor, "compress", side_effect=_abort_compression):
+            compressed, prompt = agent._compress_context(messages, "system prompt", force=True)
+
+        assert compressed is messages
+        assert prompt == "You are helpful."
+        assert [event for event, _ in events] == ["lifecycle", "warn", "compacted"]
+        assert events[-1] == ("compacted", COMPACTION_DONE_STATUS)
 
     def test_compression_reuses_cached_prompt_when_memory_snapshot_is_unchanged(self, agent):
         """A memory reload without new injected text must keep the cache prefix."""

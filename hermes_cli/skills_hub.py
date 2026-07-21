@@ -125,32 +125,42 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
     """Resolve metadata and bundle for a specific identifier."""
-    meta = None
-    bundle = None
-    matched_source = None
+    first_meta = None
+    first_meta_source = None
 
     for src in sources:
-        if meta is None:
-            try:
-                meta = src.inspect(identifier)
-                if meta:
-                    matched_source = src
-            except Exception:
-                meta = None
+        src_meta = None
+        try:
+            src_meta = src.inspect(identifier)
+        except Exception:
+            src_meta = None
+        if first_meta is None and src_meta:
+            first_meta = src_meta
+            first_meta_source = src
+
         try:
             bundle = src.fetch(identifier)
         except Exception:
             bundle = None
         if bundle:
             matched_source = src
-            if meta is None:
+            if src_meta is None:
+                bundle_identifier = getattr(bundle, "identifier", "") or identifier
                 try:
-                    meta = src.inspect(identifier)
+                    src_meta = src.inspect(bundle_identifier)
                 except Exception:
-                    meta = None
-            break
+                    src_meta = None
+            if src_meta is None:
+                src_meta = SkillMeta(
+                    name=bundle.name,
+                    description="",
+                    source=bundle.source,
+                    identifier=getattr(bundle, "identifier", "") or identifier,
+                    trust_level=bundle.trust_level,
+                )
+            return src_meta, bundle, matched_source
 
-    return meta, bundle, matched_source
+    return first_meta, None, first_meta_source
 
 
 def _derive_category_from_install_path(install_path: str) -> str:

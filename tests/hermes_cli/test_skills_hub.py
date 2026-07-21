@@ -578,6 +578,56 @@ def test_url_install_cancel_name_prompt_aborts(monkeypatch, tmp_path, hub_env):
     assert "Installation cancelled" in sink.getvalue()
 
 
+def test_resolve_source_meta_and_bundle_keeps_meta_aligned_with_bundle_source():
+    from tools.skills_hub import SkillBundle, SkillMeta
+    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+
+    official_meta = SkillMeta(
+        name="openclaw-migration",
+        description="official metadata",
+        source="official",
+        identifier="official/migration/openclaw-migration",
+        trust_level="builtin",
+    )
+    community_meta = SkillMeta(
+        name="openclaw-migration",
+        description="community metadata",
+        source="github",
+        identifier="github/someone/openclaw-migration",
+        trust_level="community",
+    )
+    community_bundle = SkillBundle(
+        name="openclaw-migration",
+        files={"SKILL.md": "# community content\n"},
+        source="github",
+        identifier="github/someone/openclaw-migration",
+        trust_level="community",
+    )
+
+    class OfficialMetaOnly:
+        def inspect(self, identifier):
+            return official_meta if identifier == official_meta.identifier else None
+
+        def fetch(self, identifier):
+            return None
+
+    class CommunityBundleSource:
+        def inspect(self, identifier):
+            return community_meta
+
+        def fetch(self, identifier):
+            return community_bundle
+
+    meta, bundle, matched_source = _resolve_source_meta_and_bundle(
+        "official/migration/openclaw-migration",
+        [OfficialMetaOnly(), CommunityBundleSource()],
+    )
+
+    assert bundle is community_bundle
+    assert meta is community_meta
+    assert matched_source.__class__.__name__ == "CommunityBundleSource"
+
+
 # ── _existing_categories ────────────────────────────────────────────────────
 
 

@@ -459,18 +459,10 @@ function deriveUsageRows(
   })
 
   const topupValue = topupCreditsValue(billing, usage)
-  const topupRemaining = topupCreditsAmount(billing, usage)
 
+  // No bar: top-ups have no denominator (the wire carries only the current
+  // balance, and the pool is open-ended), so a fill fraction would be fiction.
   rows.push({
-    bar:
-      topupRemaining != null
-        ? {
-            label: 'Top-up credits remaining',
-            state: topupRemaining > 0 ? 'ok' : 'neutral',
-            tone: 'topup',
-            value: topupRemaining > 0 ? 1 : 0
-          }
-        : undefined,
     caption: 'Does not expire',
     id: 'topup_credits',
     title: 'Top-up credits',
@@ -533,14 +525,6 @@ function topupCreditsValue(billing: BillingStateResponse, usage?: UsageModelData
   )
 }
 
-function topupCreditsAmount(billing: BillingStateResponse, usage?: UsageModelData): null | number {
-  return (
-    parseAmount(usage?.topup_bar?.remaining_display) ??
-    parseAmount(usage?.topup_remaining_display) ??
-    parseAmount(billing.balance_usd) ??
-    parseAmount(billing.balance_display)
-  )
-}
 
 function buyCreditsDisabledReason(billing: BillingStateResponse): null | string {
   if (!billing.is_admin) {

@@ -94,6 +94,75 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
     ]
 
 
+def test_auxiliary_provider_fallback_closes_one_real_logical_call(
+    relay_turn,
+    monkeypatch,
+):
+    relay, turn = relay_turn
+    consumer = "test.auxiliary-provider-fallback"
+    turn.lease.host.retain_managed_execution(consumer)
+    outcomes = []
+    original_pop = relay.scope.pop
+
+    def record_pop(*args, **kwargs):
+        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        return original_pop(*args, **kwargs)
+
+    monkeypatch.setattr(relay.scope, "pop", record_pop)
+    responses = iter([
+        SimpleNamespace(choices=[]),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="recovered"))]
+        ),
+    ])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: next(responses),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "nvidia",
+            "nvidia/test-model",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "nvidia/test-model", "messages": []},
+                ),
+                task,
+            )
+        assert len(turn.logical_llm_calls) == 1
+
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "openrouter/test-model",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "openrouter/test-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        result = run("compression")
+    finally:
+        turn.lease.host.release_managed_execution(consumer)
+
+    assert result.choices[0].message.content == "recovered"
+    assert turn.logical_llm_calls == {}
+    assert outcomes == ["success"]
+
+
 @pytest.mark.asyncio
 async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch):
     captured = {}

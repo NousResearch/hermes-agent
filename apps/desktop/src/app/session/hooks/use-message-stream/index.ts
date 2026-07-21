@@ -242,13 +242,16 @@ export function useMessageStream({
       flushQueuedDeltas()
     }
 
-    if (sinceLast >= STREAM_DELTA_FLUSH_MS && typeof window.requestAnimationFrame === 'function') {
-      flushHandleRef.current = window.requestAnimationFrame(runFlush)
-
-      return
-    }
-
-    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
+    // Do not depend on requestAnimationFrame for stream delivery. Electron
+    // throttles (and can indefinitely defer) rAF while a window is occluded,
+    // unfocused, or under renderer pressure. That stranded message deltas in
+    // this queue until the next input/focus event happened to wake a frame.
+    // A timer still coalesces markdown work to the same cadence, but guarantees
+    // the buffered task log reaches the transcript without user interaction.
+    flushHandleRef.current = window.setTimeout(
+      runFlush,
+      Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast)
+    )
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
@@ -268,11 +271,7 @@ export function useMessageStream({
   useEffect(
     () => () => {
       if (flushHandleRef.current !== null && typeof window !== 'undefined') {
-        if (typeof window.cancelAnimationFrame === 'function') {
-          window.cancelAnimationFrame(flushHandleRef.current)
-        } else {
-          window.clearTimeout(flushHandleRef.current)
-        }
+        window.clearTimeout(flushHandleRef.current)
       }
 
       flushHandleRef.current = null

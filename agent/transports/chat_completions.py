@@ -659,7 +659,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 else:
                     api_kwargs[k] = v
 
-        _native_gemini = False
+        try:
+            from agent.gemini_native_adapter import is_native_gemini_base_url
+
+            _native_gemini = is_native_gemini_base_url(params.get("base_url"))
+        except Exception:
+            _native_gemini = False
         if extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)
             # speaks Google's REST schema, not OpenAI's. OpenAI-style extra_body
@@ -671,11 +676,6 @@ class ChatCompletionsTransport(ProviderTransport):
             # Gemini base_url — typical when only Google credentials are set and
             # a fallback/aux call lands on Gemini. The native client only reads
             # thinking_config from extra_body, so drop everything else here.
-            try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
-            except Exception:
-                _native_gemini = False
             if _native_gemini:
                 extra_body = {
                     k: v for k, v in extra_body.items()

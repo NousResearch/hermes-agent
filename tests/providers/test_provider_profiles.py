@@ -158,6 +158,20 @@ class TestOpenRouterProfile:
         )
         assert "provider" not in kwargs.get("extra_body", {})
 
+    def test_transport_does_not_apply_zdr_to_native_gemini_fallback(self, monkeypatch):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        monkeypatch.setattr("hermes_cli.config.openrouter_zdr_enabled", lambda: True)
+        p = get_provider_profile("openrouter")
+        assert p is not None
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": "ping"}],
+            provider_profile=p,
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert "provider" not in kwargs.get("extra_body", {})
+
     def test_pareto_min_coding_score_emitted_for_pareto_model(self):
         """min_coding_score → plugins block when model is openrouter/pareto-code."""
         p = get_provider_profile("openrouter")

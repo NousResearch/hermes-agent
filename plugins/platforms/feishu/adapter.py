@@ -87,6 +87,7 @@ except ImportError:
 
 try:
     import lark_oapi as lark
+    from lark_oapi import AESCipher
     from lark_oapi.api.application.v6 import GetApplicationRequest
     from lark_oapi.api.im.v1 import (
         CreateFileRequest,
@@ -1554,7 +1555,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
-            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
+            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip(),
             connection_mode=str(
                 extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
             ).strip().lower(),
@@ -3548,6 +3549,35 @@ class FeishuAdapter(BasePlatformAdapter):
             self._record_webhook_anomaly(remote_ip, "400")
             return web.json_response({"code": 400, "msg": "invalid json"}, status=400)
 
+        # Timing-safe signature verification (only enforced when encrypt_key is set,
+        # performed on the raw body before any decryption).
+        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
+            logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
+            self._record_webhook_anomaly(remote_ip, "401-sig")
+            return web.Response(status=401, text="Invalid signature")
+
+        # Decrypt encrypted payload if needed (before token/challenge checks).
+        if payload.get("encrypt"):
+            if not self._encrypt_key:
+                logger.error("[Feishu] Received encrypted payload but FEISHU_ENCRYPT_KEY not set")
+                self._record_webhook_anomaly(remote_ip, "400-encrypted-no-key")
+                return web.json_response({"code": 400, "msg": "encrypt key not configured"}, status=400)
+
+            try:
+                cipher = AESCipher(self._encrypt_key)
+                decrypted_str = cipher.decrypt_str(payload["encrypt"])
+                payload = json.loads(decrypted_str)
+                logger.debug("[Feishu] Successfully decrypted webhook payload")
+            except Exception as e:
+                logger.error("[Feishu] Failed to decrypt webhook payload: %s", e)
+                self._record_webhook_anomaly(remote_ip, "400-decrypt-failed")
+                return web.json_response({"code": 400, "msg": "decryption failed"}, status=400)
+
+        # URL verification challenge — Feishu includes the verification token in
+        # challenge requests. Validate the token (below) before reflecting the
+        # challenge so an unauthenticated remote request cannot prove endpoint
+        # control by getting attacker-supplied challenge data echoed back.
+
         # Verification token check — second layer of defence beyond signature (matches openclaw).
         if self._verification_token:
             header = payload.get("header") or {}
@@ -3561,24 +3591,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._record_webhook_anomaly(remote_ip, "401-token")
                 return web.Response(status=401, text="Invalid verification token")
 
-        # URL verification challenge — Feishu includes the verification token in
-        # challenge requests. Validate the token (above) before reflecting the
-        # challenge so an unauthenticated remote request cannot prove endpoint
-        # control by getting attacker-supplied challenge data echoed back.
         if payload.get("type") == "url_verification":
             return web.json_response({"challenge": payload.get("challenge", "")})
-
-        # Timing-safe signature verification (only enforced when encrypt_key is set).
-        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
-            logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
-            self._record_webhook_anomaly(remote_ip, "401-sig")
-            return web.Response(status=401, text="Invalid signature")
-
-        if payload.get("encrypt"):
-            logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
-            self._record_webhook_anomaly(remote_ip, "400-encrypted")
-            return web.json_response({"code": 400, "msg": "encrypted webhook payloads are not supported"}, status=400)
-
         self._clear_webhook_anomaly(remote_ip)
 
         event_type = str((payload.get("header") or {}).get("event_type") or "")
@@ -4770,10 +4784,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(wait_seconds)
 
+    def _resolve_domain(self) -> Any:
+        return _resolve_feishu_domain(self._domain_name)
+
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        domain = self._resolve_domain()
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
@@ -4805,7 +4822,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        domain = self._resolve_domain()
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
@@ -5105,11 +5122,29 @@ class FeishuAdapter(BasePlatformAdapter):
 
 
 def _accounts_base_url(domain: str) -> str:
+    if domain.startswith("http"):
+        # Custom deployments host accounts/oauth on the same origin.
+        return domain.rstrip("/")
     return _ONBOARD_ACCOUNTS_URLS.get(domain, _ONBOARD_ACCOUNTS_URLS["feishu"])
 
 
 def _onboard_open_base_url(domain: str) -> str:
+    if domain.startswith("http"):
+        return domain.rstrip("/")
     return _ONBOARD_OPEN_URLS.get(domain, _ONBOARD_OPEN_URLS["feishu"])
+
+
+def _resolve_feishu_domain(domain_name: str) -> Any:
+    """Map a configured domain name to the SDK domain value.
+
+    ``domain_name`` may be:
+      - ``"feishu"`` (default) → SDK ``FEISHU_DOMAIN``
+      - ``"lark"``              → SDK ``LARK_DOMAIN``
+      - any ``http(s)://...``   → returned verbatim, for private deployments
+    """
+    if domain_name.startswith("http"):
+        return domain_name
+    return LARK_DOMAIN if domain_name == "lark" else FEISHU_DOMAIN
 
 
 def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
@@ -5282,8 +5317,12 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
 
 def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
-    """Build a lark Client for the given credentials and domain."""
-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
+    """Build a lark Client for the given credentials and domain.
+
+    ``domain`` accepts ``"feishu"``, ``"lark"``, or a full ``http(s)://`` URL
+    pointing at a private Feishu deployment.
+    """
+    sdk_domain = _resolve_feishu_domain(domain)
     return (
         lark.Client.builder()
         .app_id(app_id)
@@ -5470,9 +5509,9 @@ async def _standalone_send(
     media_files = media_files or []
     try:
         adapter = FeishuAdapter(pconfig)
-        domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
-        adapter._client = adapter._build_lark_client(domain)
+        # Resolve the SDK domain through the adapter so private deployments
+        # (FEISHU_DOMAIN set to a full URL) route to the correct host.
+        adapter._client = adapter._build_lark_client(adapter._resolve_domain())
         metadata = {"thread_id": thread_id} if thread_id else None
 
         last_result = None
@@ -5572,8 +5611,28 @@ def interactive_setup() -> None:
         if not app_secret:
             print_warning("Skipped — Feishu / Lark won't work without an App Secret.")
             return
-        domain_idx = prompt_choice("Domain", ["feishu (China)", "lark (International)"], 0)
-        domain = "lark" if domain_idx == 1 else "feishu"
+        domain_choices = [
+            "feishu (China)",
+            "lark (International)",
+            "Custom (private deployment URL)",
+        ]
+        domain_idx = prompt_choice("Domain", domain_choices, 0)
+        if domain_idx == 1:
+            domain = "lark"
+        elif domain_idx == 2:
+            while True:
+                custom = prompt(
+                    "Private Feishu base URL (e.g. https://open.example.com)",
+                    password=False,
+                ).strip().rstrip("/")
+                if custom.startswith(("http://", "https://")):
+                    domain = custom
+                    break
+                print_warning(
+                    "Enter a full URL starting with http:// or https://"
+                )
+        else:
+            domain = "feishu"
 
         bot_name = None
         try:

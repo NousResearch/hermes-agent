@@ -138,6 +138,52 @@ class TestSetupFeishuConnectionMode:
         )
         assert env["FEISHU_CONNECTION_MODE"] == "webhook"
 
+    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
+    def test_manual_path_custom_domain(self, _mock_probe):
+        """Selecting the custom-domain option saves the typed URL into FEISHU_DOMAIN."""
+        env = _run_setup_feishu(
+            qr_result=None,
+            prompt_choice_responses=[1, 2, 0, 0, 0],  # method=manual, domain=custom, connection=ws, dm=pairing, group=open
+            prompt_responses=[
+                "cli_manual",
+                "secret_manual",
+                "https://open.xfchat.iflytek.com",  # custom URL prompt
+                "",                                   # home_channel
+            ],
+        )
+        assert env["FEISHU_DOMAIN"] == "https://open.xfchat.iflytek.com"
+        assert env["FEISHU_CONNECTION_MODE"] == "websocket"
+
+    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
+    def test_manual_path_custom_domain_strips_trailing_slash(self, _mock_probe):
+        env = _run_setup_feishu(
+            qr_result=None,
+            prompt_choice_responses=[1, 2, 0, 0, 0],
+            prompt_responses=[
+                "cli_manual",
+                "secret_manual",
+                "https://open.example.com/",
+                "",
+            ],
+        )
+        assert env["FEISHU_DOMAIN"] == "https://open.example.com"
+
+    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
+    def test_manual_path_custom_domain_rejects_non_url(self, _mock_probe):
+        """A non-URL entry is rejected and the user is reprompted."""
+        env = _run_setup_feishu(
+            qr_result=None,
+            prompt_choice_responses=[1, 2, 0, 0, 0],
+            prompt_responses=[
+                "cli_manual",
+                "secret_manual",
+                "not-a-url",                       # rejected
+                "https://open.example.com",        # accepted on retry
+                "",
+            ],
+        )
+        assert env["FEISHU_DOMAIN"] == "https://open.example.com"
+
 
 # ---------------------------------------------------------------------------
 # DM security policy

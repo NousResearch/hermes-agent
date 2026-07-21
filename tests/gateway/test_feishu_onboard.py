@@ -313,6 +313,45 @@ class TestProbeBot:
         result = probe_bot("cli_app", "secret", "feishu")
         assert result is None
 
+    @patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", False)
+    @patch("plugins.platforms.feishu.adapter.urlopen")
+    def test_http_fallback_uses_custom_domain_url(self, mock_urlopen_fn):
+        """When ``domain`` is a full https:// URL, the HTTP probe targets that host."""
+        from plugins.platforms.feishu.adapter import probe_bot
+
+        token_resp = _mock_urlopen({"code": 0, "tenant_access_token": "t-123"})
+        bot_resp = _mock_urlopen({"code": 0, "bot": {"bot_name": "PrivateBot", "open_id": "ou_priv"}})
+        mock_urlopen_fn.side_effect = [token_resp, bot_resp]
+
+        result = probe_bot("cli_app", "secret", "https://open.example.com")
+        assert result is not None
+        assert result["bot_name"] == "PrivateBot"
+
+        # Both calls must hit open.example.com, not open.feishu.cn
+        called_urls = [call.args[0].full_url for call in mock_urlopen_fn.call_args_list]
+        assert all(u.startswith("https://open.example.com/") for u in called_urls), called_urls
+
+
+class TestResolveFeishuDomain:
+    """Tests for the shared domain resolver used by both runtime and onboarding."""
+
+    def test_returns_url_verbatim(self):
+        from plugins.platforms.feishu.adapter import _resolve_feishu_domain
+        assert _resolve_feishu_domain("https://open.xfchat.iflytek.com") == "https://open.xfchat.iflytek.com"
+
+    def test_http_url_passes_through(self):
+        from plugins.platforms.feishu.adapter import _resolve_feishu_domain
+        assert _resolve_feishu_domain("http://internal.example.com") == "http://internal.example.com"
+
+    def test_onboard_open_base_url_strips_trailing_slash(self):
+        from plugins.platforms.feishu.adapter import _onboard_open_base_url
+        assert _onboard_open_base_url("https://open.example.com/") == "https://open.example.com"
+
+    def test_onboard_open_base_url_named_domains(self):
+        from plugins.platforms.feishu.adapter import _onboard_open_base_url
+        assert _onboard_open_base_url("feishu") == "https://open.feishu.cn"
+        assert _onboard_open_base_url("lark") == "https://open.larksuite.com"
+
 
 class TestQrRegister:
     """Tests for the public qr_register entry point."""

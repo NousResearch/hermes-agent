@@ -11,6 +11,15 @@ instead of rebuilding).  Covers:
       - Row has system_prompt=NULL → WARNING + fresh build
       - Row has system_prompt="" → WARNING + fresh build
       - DB write fails → WARNING (subsequent turns will miss cache)
+  * Managed-context-input fingerprint gate (issue #68563):
+      - stale fingerprint → INFO + fresh build, even with matching runtime
+      - NULL/legacy fingerprint → treated as a mismatch, self-heals
+      - fingerprint compute failure → fails open (runtime check only)
+
+Real filesystem-based fingerprint computation is patched out via the
+``_FP`` sentinel + the ``fixed_fingerprint`` autouse fixture below, so
+these tests stay hermetic and don't depend on this checkout's actual
+SOUL.md/AGENTS.md contents.
 """
 
 from __future__ import annotations
@@ -20,7 +29,33 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import agent.conversation_loop as conversation_loop
 from agent.conversation_loop import _restore_or_build_system_prompt
+
+# Sentinel current-fingerprint value used across tests unless a test
+# overrides ``conversation_loop._compute_current_context_fingerprint``
+# itself (e.g. to simulate drift or a compute failure).
+_FP = "fingerprint-current"
+
+# Captured before the autouse fixture below ever patches the module
+# attribute, so the one test that exercises the REAL helper (failure →
+# fail-open) can restore it deliberately.
+_real_compute_current_context_fingerprint = (
+    conversation_loop._compute_current_context_fingerprint
+)
+
+
+@pytest.fixture(autouse=True)
+def fixed_fingerprint(monkeypatch):
+    """Make ``_compute_current_context_fingerprint`` deterministic.
+
+    Without this, the helper would hit the real filesystem (SOUL.md,
+    AGENTS.md, ...) via ``agent.prompt_builder.compute_context_fingerprint``,
+    making these tests depend on this checkout's actual files.
+    """
+    monkeypatch.setattr(
+        conversation_loop, "_compute_current_context_fingerprint", lambda agent: _FP
+    )
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -46,7 +81,7 @@ class TestStoredPromptReuse:
         """Continuing session with a stored prompt → reuse byte-for-byte."""
         stored = "Stored prompt from turn 1 — byte-identical reuse"
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {"system_prompt": stored, "system_prompt_fingerprint": _FP}
         agent = _make_agent(session_db=db)
 
         with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
@@ -62,7 +97,7 @@ class TestStoredPromptReuse:
         """Non-ASCII bytes in the stored prompt are not mangled."""
         stored = "Stored prompt with unicode: ☤ ⚗ ◆ — and emoji 🦊"
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {"system_prompt": stored, "system_prompt_fingerprint": _FP}
         agent = _make_agent(session_db=db)
 
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
@@ -105,7 +140,7 @@ class TestStoredPromptReuse:
         )
         agent._build_system_prompt.assert_called_once_with(None)
         db.update_system_prompt.assert_called_once_with(
-            agent.session_id, agent._cached_system_prompt
+            agent.session_id, agent._cached_system_prompt, _FP
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
@@ -128,8 +163,8 @@ class TestLegitimateFreshBuild:
         db.get_session.assert_not_called()
         agent._build_system_prompt.assert_called_once_with(None)
         assert agent._cached_system_prompt == "BUILT_PROMPT"
-        # Persisted to DB
-        db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT")
+        # Persisted to DB, alongside the current input fingerprint
+        db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT", _FP)
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_no_db_skips_persistence(self):
@@ -249,7 +284,7 @@ class TestPromptStabilityInvariant:
             "Session ID: 20260517_153500_abc123\n"
         )
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {"system_prompt": stored, "system_prompt_fingerprint": _FP}
         agent = _make_agent(session_db=db)
 
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
@@ -259,6 +294,119 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt == stored
         # Byte-level check
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Managed-context-input fingerprint gate (issue #68563)
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprintGate:
+    def test_stale_fingerprint_rebuilds_despite_matching_runtime(self, caplog, monkeypatch):
+        """SOUL.md (etc.) changed since this durable session's prompt was
+        cached — the Model/Provider lines still match, but the stored
+        prompt no longer reflects the current managed context inputs, so it
+        must NOT be reused verbatim (the core bug in #68563)."""
+        stored = "You are Hermes Agent.\n\nModel: test-model\nProvider: openrouter"
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "system_prompt_fingerprint": "fingerprint-OLD",
+        }
+        agent = _make_agent(session_db=db)
+        monkeypatch.setattr(
+            conversation_loop, "_compute_current_context_fingerprint", lambda a: "fingerprint-NEW"
+        )
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once_with(None)
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, "BUILT_PROMPT", "fingerprint-NEW"
+        )
+        assert any("stale" in r.getMessage().lower() for r in caplog.records)
+
+    def test_null_stored_fingerprint_is_treated_as_mismatch_and_self_heals(self, caplog):
+        """Legacy session predating this column (system_prompt_fingerprint
+        is NULL) → treated as stale even though the prompt itself and the
+        runtime identity both look fine. Rebuilding persists the
+        fingerprint, so the NEXT restore on this session is a clean hit."""
+        stored = "You are Hermes Agent.\n\nModel: test-model\nProvider: openrouter"
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "system_prompt_fingerprint": None,
+        }
+        agent = _make_agent(session_db=db)
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT", _FP)
+
+    def test_fingerprint_compute_failure_fails_open_and_reuses_stored_prompt(
+        self, caplog, monkeypatch
+    ):
+        """A bug/IO error while computing the CURRENT fingerprint must never
+        break the session — fall back to the pre-existing runtime-identity
+        check alone, exactly like before this feature existed."""
+        stored = "You are Hermes Agent.\n\nModel: test-model\nProvider: openrouter"
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "system_prompt_fingerprint": "fingerprint-OLD",
+        }
+        agent = _make_agent(session_db=db)
+        monkeypatch.setattr(
+            conversation_loop, "_compute_current_context_fingerprint", lambda a: None
+        )
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
+    def test_compute_current_context_fingerprint_failure_logs_warning_and_returns_none(
+        self, monkeypatch, caplog
+    ):
+        """Unit-level check of the helper itself: an exception from
+        ``compute_context_fingerprint`` must be caught, logged at WARNING,
+        and surfaced to the caller as ``None`` (fail open)."""
+
+        monkeypatch.setattr(
+            conversation_loop,
+            "_compute_current_context_fingerprint",
+            _real_compute_current_context_fingerprint,
+        )
+
+        def _boom(*a, **kw):
+            raise OSError("disk full")
+
+        # Patch the sys.modules-cached module object directly rather than
+        # via monkeypatch's dotted-string form: the latter resolves through
+        # the ``agent`` package's own ``prompt_builder`` attribute (see
+        # ``_pytest.monkeypatch.resolve``), which can go stale relative to
+        # sys.modules if an earlier test reloads the submodule in place
+        # (e.g. TestPromptBuilderImports in test_prompt_builder.py) without
+        # updating the parent package's attribute to match. The lazy
+        # ``from agent.prompt_builder import ...`` inside the real helper
+        # resolves via sys.modules, so that's what must be patched.
+        import importlib as _importlib
+
+        prompt_builder_module = _importlib.import_module("agent.prompt_builder")
+        monkeypatch.setattr(prompt_builder_module, "compute_context_fingerprint", _boom)
+        agent = _make_agent()
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            result = conversation_loop._compute_current_context_fingerprint(agent)
+
+        assert result is None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("Failed to compute" in m and "disk full" in m for m in warnings)
 
 
 if __name__ == "__main__":

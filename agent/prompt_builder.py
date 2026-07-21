@@ -4,6 +4,7 @@ All functions are stateless. AIAgent._build_system_prompt() calls these to
 assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -2075,3 +2076,77 @@ def build_context_files_prompt(
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def compute_context_fingerprint(
+    cwd: Optional[str] = None,
+    context_length: Optional[int] = None,
+    allow_install_tree_fallback: bool = False,
+) -> str:
+    """SHA-256 fingerprint over every managed context input the builder can
+    inject into the system prompt: SOUL.md, .hermes.md/HERMES.md,
+    AGENTS.md/agents.md, CLAUDE.md/claude.md, and .cursorrules (+
+    .cursor/rules/*.mdc).
+
+    Used by the gateway durable-session restore guard
+    (``agent.conversation_loop._stored_prompt_matches_runtime``) to detect
+    when a persisted ``system_prompt`` is stale relative to what these
+    files look like RIGHT NOW, even when the cheap Model/Provider check
+    still matches (issue #68563) — e.g. SOUL.md was edited after the
+    session's system prompt was cached, so the stale identity kept being
+    served forever.
+
+    Reuses the exact loader helpers ``build_context_files_prompt`` uses so
+    the fingerprint always reflects what a real rebuild would inject.
+    Deliberately does NOT short-circuit on the project-context priority
+    chain the way ``build_context_files_prompt`` does: every candidate
+    source is probed independently and keyed by its own identifier, so a
+    file appearing/disappearing changes the fingerprint even when it is
+    shadowed by a higher-priority file in the rendered prompt. That is
+    intentionally more conservative than the rendered prompt — a spurious
+    one-time rebuild is harmless, a missed drift is not.
+
+    Must NOT be fed volatile per-turn data (timestamps, credit/token
+    counts, session ids) — those belong in the volatile prompt tier, not
+    here; mixing them in would make every turn look "stale".
+
+    Raises on unexpected failures (e.g. an unreadable HERMES_HOME); callers
+    that need the fail-open behavior from the issue's contract ("a
+    fingerprint bug must never break sessions") must catch and treat a
+    failure as a mismatch-tolerant no-op, not swallow it here.
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+        cwd_is_fallback = True
+    else:
+        cwd_is_fallback = False
+    cwd_path = Path(cwd).resolve()
+
+    from agent.runtime_cwd import _is_install_tree
+
+    project_context_disabled = (
+        cwd_is_fallback
+        and not allow_install_tree_fallback
+        and _is_install_tree(cwd_path)
+    )
+
+    # (source-identifier, content) pairs, in a stable order. The identifier
+    # is hashed alongside the content so an absent file (content == "") is
+    # still a distinct, addressable slot in the digest — that's what makes
+    # add/remove detectable even for a shadowed lower-priority candidate.
+    entries = [("SOUL.md", load_soul_md(context_length) or "")]
+    if project_context_disabled:
+        entries.append(("project_context:disabled", "1"))
+    else:
+        entries.append((".hermes.md/HERMES.md", _load_hermes_md(cwd_path, context_length)))
+        entries.append(("AGENTS.md/agents.md", _load_agents_md(cwd_path, context_length)))
+        entries.append(("CLAUDE.md/claude.md", _load_claude_md(cwd_path, context_length)))
+        entries.append((".cursorrules", _load_cursorrules(cwd_path, context_length)))
+
+    hasher = hashlib.sha256()
+    for source_id, content in entries:
+        hasher.update(source_id.encode("utf-8"))
+        hasher.update(b"\x00")
+        hasher.update(content.encode("utf-8"))
+        hasher.update(b"\x01")
+    return hasher.hexdigest()

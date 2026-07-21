@@ -853,6 +853,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    system_prompt_fingerprint TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -2865,12 +2866,32 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(
+        self,
+        session_id: str,
+        system_prompt: str,
+        fingerprint: Optional[str] = None,
+    ) -> None:
+        """Store the full assembled system prompt snapshot and, optionally,
+        its input fingerprint (SHA-256 over SOUL.md/AGENTS.md/etc. — see
+        ``agent.prompt_builder.compute_context_fingerprint``).
+
+        Both columns are written in the SAME UPDATE statement so they can
+        never be observed out of sync: a failed write leaves neither column
+        changed, and a successful write updates both atomically (issue
+        #68563 — the restore guard compares the fingerprint alongside the
+        prompt and must never see a fingerprint that describes a different
+        prompt than the one actually stored).
+
+        ``fingerprint`` defaults to ``None`` (column stays/becomes NULL) so
+        existing callers that only ever persisted the prompt keep working
+        unchanged.
+        """
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET system_prompt = ? WHERE id = ?",
-                (system_prompt, session_id),
+                "UPDATE sessions SET system_prompt = ?, "
+                "system_prompt_fingerprint = ? WHERE id = ?",
+                (system_prompt, fingerprint, session_id),
             )
         self._execute_write(_do)
 

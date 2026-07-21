@@ -235,6 +235,26 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
 
+    def test_update_system_prompt_defaults_fingerprint_to_null(self, db):
+        """Backward-compat callers that don't pass a fingerprint (issue
+        #68563) must leave the column NULL, not raise."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_system_prompt("s1", "You are a helpful assistant.")
+
+        session = db.get_session("s1")
+        assert session["system_prompt_fingerprint"] is None
+
+    def test_update_system_prompt_persists_fingerprint_atomically(self, db):
+        """The prompt snapshot and its input fingerprint are written in the
+        SAME UPDATE statement (issue #68563) so they can never be observed
+        out of sync with each other."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_system_prompt("s1", "You are a helpful assistant.", "abc123fingerprint")
+
+        session = db.get_session("s1")
+        assert session["system_prompt"] == "You are a helpful assistant."
+        assert session["system_prompt_fingerprint"] == "abc123fingerprint"
+
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_token_counts("s1", input_tokens=200, output_tokens=100)

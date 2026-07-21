@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    compute_context_fingerprint,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
@@ -1706,3 +1707,116 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+# =========================================================================
+# compute_context_fingerprint (issue #68563)
+# =========================================================================
+
+
+class TestComputeContextFingerprint:
+    """SHA-256 fingerprint over every managed context input the prompt
+    builder can inject (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md,
+    .cursorrules), keyed by source identifier — used by the gateway
+    durable-session restore guard to detect when a stored ``system_prompt``
+    is stale relative to the CURRENT files on disk, even though the
+    Model/Provider lines still match (issue #68563).
+    """
+
+    def test_returns_a_sha256_hexdigest(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        fp = compute_context_fingerprint(cwd=str(tmp_path))
+        assert isinstance(fp, str)
+        assert len(fp) == 64
+        int(fp, 16)  # raises ValueError if not hex
+
+    def test_deterministic_for_identical_inputs(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
+        fp1 = compute_context_fingerprint(cwd=str(tmp_path))
+        fp2 = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp1 == fp2
+
+    def test_changes_when_soul_md_content_changes(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "SOUL.md").write_text("Be concise.", encoding="utf-8")
+        fp1 = compute_context_fingerprint(cwd=str(tmp_path))
+        (hermes_home / "SOUL.md").write_text("Be verbose.", encoding="utf-8")
+        fp2 = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp1 != fp2
+
+    def test_changes_when_agents_md_content_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Version 1.")
+        fp1 = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / "AGENTS.md").write_text("Version 2.")
+        fp2 = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp1 != fp2
+
+    def test_changes_when_agents_md_is_added(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / "AGENTS.md").write_text("New project rules.")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before != fp_after
+
+    def test_changes_when_agents_md_is_removed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        agents_md = tmp_path / "AGENTS.md"
+        agents_md.write_text("Project rules.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        agents_md.unlink()
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before != fp_after
+
+    def test_lower_priority_file_addition_changes_fingerprint_even_when_shadowed(
+        self, tmp_path, monkeypatch
+    ):
+        """AGENTS.md always wins over .cursorrules in the assembled prompt,
+        but the fingerprint must still change when .cursorrules appears —
+        the source-identity slot for a lower-priority candidate flips from
+        absent to present even though it never reaches the actual prompt.
+        This is deliberately more conservative than the rendered prompt: a
+        spurious one-time rebuild is harmless, a missed drift is not.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Agent guidelines.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / ".cursorrules").write_text("Cursor rules - shadowed by AGENTS.md.")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        # Sanity: the actual rendered prompt is unaffected by the shadowed file.
+        rendered_before = "Agent guidelines" in build_context_files_prompt(
+            cwd=str(tmp_path), skip_soul=True
+        )
+        assert rendered_before
+        assert fp_before != fp_after
+
+    def test_unrelated_directory_does_not_affect_fingerprint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        fp_a = compute_context_fingerprint(cwd=str(dir_a))
+        fp_b = compute_context_fingerprint(cwd=str(dir_b))
+        assert fp_a == fp_b
+
+    def test_install_tree_fallback_skip_mirrors_build_context_files_prompt(
+        self, monkeypatch, tmp_path
+    ):
+        """When cwd falls back into the install tree (no explicit cwd, not
+        CLI/TUI), discovery is skipped exactly like
+        ``build_context_files_prompt`` — the fingerprint must not react to
+        files inside that tree, matching what actually gets rendered.
+        """
+        import agent.runtime_cwd as rt
+
+        monkeypatch.setattr(rt, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.chdir(tmp_path)
+        fp_before = compute_context_fingerprint(cwd=None, allow_install_tree_fallback=False)
+        (tmp_path / "AGENTS.md").write_text("Never give up on the right solution.")
+        fp_after = compute_context_fingerprint(cwd=None, allow_install_tree_fallback=False)
+        assert fp_before == fp_after

@@ -110,3 +110,15 @@ class TestCoalesceSessionNameArgs:
         assert _coalesce_session_name_args(
             ["-c", "my", "setup"]
         ) == ["-c", "my", "setup"]
+
+    def test_stops_at_context_subcommand(self):
+        """hermes -c my context audit → 'context' is a subcommand boundary."""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "context", "audit"]
+        ) == ["-c", "my", "context", "audit"]
+
+    def test_stops_at_smoke_subcommand(self):
+        """hermes -c my smoke → 'smoke' is a subcommand boundary."""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "smoke"]
+        ) == ["-c", "my", "smoke"]

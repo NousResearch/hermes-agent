@@ -4748,6 +4748,32 @@ class AIAgent:
             self._client_kwargs["default_headers"] = merged
 
     def _swap_credential(self, entry) -> None:
+        """Rotate the active credential to a pool-provided entry.
+
+        Updates ``self.api_key``, ``self.base_url``, and
+        ``self._client_kwargs`` in-place, then rebuilds the shared OpenAI
+        client so the refreshed token is visible to every subsequent API
+        call (including per-request clients created by
+        ``_create_request_openai_client``, which shallow-copy
+        ``self._client_kwargs``).
+
+        Propagation chain for non-Anthropic providers (xai-oauth, etc.)::
+
+            _swap_credential(entry)
+              → self._client_kwargs["api_key"]  = new_key
+              → self._client_kwargs["base_url"] = new_url
+              → self._replace_primary_openai_client(reason="credential_rotation")
+                  → self.client = OpenAI(**self._client_kwargs)
+
+        On the next API call, ``_create_request_openai_client`` does
+        ``dict(self._client_kwargs)`` → the new key flows into the fresh
+        per-request client.  No propagation gap exists.
+
+        (#29344 follow-up: SmelterLabs suspected the live client might not
+        receive the refreshed token.  Traced the full chain and confirmed
+        propagation is correct — the stale-token issue was purely at the
+        classifier layer, fixed by cc93053b.)
+        """
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 

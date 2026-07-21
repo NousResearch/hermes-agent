@@ -116,23 +116,62 @@ class CodexAppServerClient:
             writable_roots = [kanban_root]
             workspace = os.path.abspath(workspace_cwd or os.getcwd())
             git_marker = os.path.join(workspace, ".git")
-            if os.path.isfile(git_marker):
-                try:
-                    marker = open(git_marker, encoding="utf-8").readline().strip()
+            try:
+                if (
+                    os.path.isfile(git_marker)
+                    and not os.path.islink(git_marker)
+                    and os.path.realpath(git_marker) == git_marker
+                ):
+                    with open(git_marker, encoding="utf-8") as marker_file:
+                        marker = marker_file.read().strip()
                     if marker.startswith("gitdir:"):
                         git_dir = marker.removeprefix("gitdir:").strip()
-                        if not os.path.isabs(git_dir):
-                            git_dir = os.path.join(workspace, git_dir)
-                        git_dir = os.path.realpath(git_dir)
-                        commondir_file = os.path.join(git_dir, "commondir")
-                        if os.path.isfile(commondir_file):
-                            common = open(
-                                commondir_file, encoding="utf-8"
-                            ).read().strip()
-                            git_dir = os.path.realpath(os.path.join(git_dir, common))
-                        writable_roots.append(git_dir)
-                except OSError:
-                    pass
+                        if git_dir:
+                            git_dir = os.path.abspath(
+                                git_dir
+                                if os.path.isabs(git_dir)
+                                else os.path.join(workspace, git_dir)
+                            )
+                            commondir_file = os.path.join(git_dir, "commondir")
+                            backlink_file = os.path.join(git_dir, "gitdir")
+                            if (
+                                os.path.isdir(git_dir)
+                                and not os.path.islink(git_dir)
+                                and os.path.realpath(git_dir) == git_dir
+                                and os.path.isfile(commondir_file)
+                                and not os.path.islink(commondir_file)
+                                and os.path.realpath(commondir_file) == commondir_file
+                                and os.path.isfile(backlink_file)
+                                and not os.path.islink(backlink_file)
+                                and os.path.realpath(backlink_file) == backlink_file
+                            ):
+                                with open(commondir_file, encoding="utf-8") as common_file:
+                                    common = common_file.read().strip()
+                                with open(backlink_file, encoding="utf-8") as backlink_file:
+                                    backlink = backlink_file.read().strip()
+                                if common and backlink:
+                                    common = os.path.abspath(
+                                        common
+                                        if os.path.isabs(common)
+                                        else os.path.join(git_dir, common)
+                                    )
+                                    backlink = os.path.abspath(
+                                        backlink
+                                        if os.path.isabs(backlink)
+                                        else os.path.join(git_dir, backlink)
+                                    )
+                                    if (
+                                        os.path.isdir(common)
+                                        and not os.path.islink(common)
+                                        and os.path.realpath(common) == common
+                                        and os.path.dirname(git_dir)
+                                        == os.path.join(common, "worktrees")
+                                        and os.path.realpath(backlink)
+                                        == os.path.realpath(git_marker)
+                                    ):
+                                        writable_roots.append(common)
+            except (OSError, UnicodeError, ValueError):
+                pass
             app_server_args.extend(
                 [
                     "-c",

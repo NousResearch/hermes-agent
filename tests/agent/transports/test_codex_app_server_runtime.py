@@ -7,6 +7,8 @@ covered by a separate live test gated on `codex --version`.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from hermes_cli.runtime_provider import (
@@ -241,6 +243,50 @@ class TestSpawnEnvIsolation:
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
 
+    @staticmethod
+    def _spawn_kanban_client(monkeypatch, workspace):
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB",
+            "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
+        )
+        client = cas.CodexAppServerClient(codex_bin="codex", workspace_cwd=str(workspace))
+        client._closed = True
+        return json.loads(
+            next(
+                part.split("=", 1)[1]
+                for part in captured["cmd"]
+                if part.startswith("sandbox_workspace_write.writable_roots=")
+            )
+        )
+
     def test_kanban_linked_worktree_adds_board_and_git_writable_roots(
         self, monkeypatch, tmp_path
     ):
@@ -258,6 +304,7 @@ class TestSpawnEnvIsolation:
         git_dir.mkdir(parents=True)
         (workspace / ".git").write_text(f"gitdir: {git_dir}\n")
         (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{workspace / '.git'}\n")
 
         class FakePopen:
             def __init__(self, cmd, *args, **kwargs):
@@ -305,6 +352,59 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+    @pytest.mark.parametrize(
+        "case",
+        (
+            "root_gitdir",
+            "symlink_marker",
+            "symlink_commondir",
+            "symlink_backlink",
+            "malformed_metadata",
+            "unreadable_metadata",
+            "foreign_backlink",
+        ),
+    )
+    def test_kanban_linked_worktree_rejects_untrusted_git_metadata(
+        self, monkeypatch, tmp_path, case
+    ):
+        """Untrusted worktree metadata cannot widen Codex's writable roots."""
+        repo = tmp_path / "repo"
+        workspace = repo / ".worktrees" / "t_smoke"
+        git_dir = repo / ".git" / "worktrees" / "t_smoke"
+        marker = workspace / ".git"
+        workspace.mkdir(parents=True)
+        git_dir.mkdir(parents=True)
+        marker.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{marker}\n")
+
+        if case == "root_gitdir":
+            marker.write_text("gitdir: /\n")
+        elif case == "symlink_marker":
+            marker.unlink()
+            symlink_target = tmp_path / "marker-target"
+            symlink_target.write_text(f"gitdir: {git_dir}\n")
+            marker.symlink_to(symlink_target)
+        elif case == "symlink_commondir":
+            (git_dir / "commondir").unlink()
+            (git_dir / "commondir").symlink_to(repo / ".git")
+        elif case == "symlink_backlink":
+            (git_dir / "gitdir").unlink()
+            (git_dir / "gitdir").symlink_to(marker)
+        elif case == "malformed_metadata":
+            (git_dir / "commondir").write_text("\n")
+        elif case == "unreadable_metadata":
+            (git_dir / "commondir").chmod(0)
+        elif case == "foreign_backlink":
+            foreign_marker = tmp_path / "foreign" / ".git"
+            foreign_marker.parent.mkdir()
+            foreign_marker.write_text("gitdir: ignored\n")
+            (git_dir / "gitdir").write_text(f"{foreign_marker}\n")
+
+        assert self._spawn_kanban_client(monkeypatch, workspace) == [
+            "/users/alice/.hermes/kanban/boards/smoke"
+        ]
 
 
 class TestSpawnEnvSecretStripping:

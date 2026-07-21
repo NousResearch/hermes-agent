@@ -5145,16 +5145,21 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                 if not isinstance(repaired.get("properties"), dict):
                     repaired["properties"] = {}
 
-            # Prune required to only include names that exist in properties
-            required = repaired.get("required")
-            if isinstance(required, list):
+            # Prune required to only include names that exist in properties.
+            # Also drop ``required: null`` which some MCP servers / proxies
+            # emit; it serializes to ``"required": null`` and fails
+            # metaschema validation on strict gateways (e.g. New API).
+            req = repaired.get("required")
+            if isinstance(req, list):
                 props = repaired.get("properties") or {}
-                valid = [r for r in required if isinstance(r, str) and r in props]
-                if len(valid) != len(required):
+                valid = [r for r in req if isinstance(r, str) and r in props]
+                if len(valid) != len(req):
                     if valid:
                         repaired["required"] = valid
                     else:
                         repaired.pop("required", None)
+            elif req is None and "required" in repaired:
+                repaired.pop("required", None)
 
         return repaired
 

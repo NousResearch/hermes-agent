@@ -3145,9 +3145,10 @@ def _is_connection_error(exc: Exception) -> bool:
     """Detect connection/network errors that warrant provider fallback.
 
     Returns True for errors indicating the provider endpoint is unreachable
-    (DNS failure, connection refused, TLS errors, timeouts).  These are
-    distinct from API errors (4xx/5xx) which indicate the provider IS
-    reachable but returned an error.
+    or transiently unavailable (DNS failure, connection refused, TLS errors,
+    timeouts, or gateway-level 502/503/504 responses).  These are distinct
+    from logical API errors (e.g. 400, 401, 422, 500) where the provider is
+    reachable and returned a determinate error.
     """
     try:
         from openai import APIConnectionError, APITimeoutError
@@ -3155,6 +3156,12 @@ def _is_connection_error(exc: Exception) -> bool:
             return True
     except ImportError:
         pass
+    # Provider/gateway unavailability is surfaced by OpenAI-compatible SDKs as
+    # an API error (not APIConnectionError), but it is still transient capacity
+    # failure for our purposes and should use the configured fallback_chain.
+    status = getattr(exc, "status_code", None)
+    if status in {502, 503, 504}:
+        return True
     # urllib3 / httpx / httpcore connection errors
     err_type = type(exc).__name__
     if any(kw in err_type for kw in ("Connection", "Timeout", "DNS", "SSL")):

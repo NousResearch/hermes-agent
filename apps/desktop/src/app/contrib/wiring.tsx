@@ -25,7 +25,6 @@ import { emitGatewayEvent } from '@/contrib/events'
 import { getSessionMessages, triggerCronJob } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
-import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
@@ -126,7 +125,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
-  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
+  const transcriptSignatureRef = useRef(new Map<string, string>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
@@ -301,10 +300,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
-  // Refresh the open messaging transcript (inbound platform turns arrive via
-  // the background gateway, not the desktop websocket). Signature-gated so a
-  // no-change poll doesn't churn the thread.
-  const refreshActiveMessagingTranscript = useCallback(async () => {
+  // Refresh the open persisted transcript. Besides messaging turns, local cron
+  // delivery can be appended by a sibling scheduler process and therefore does
+  // not arrive on this Desktop websocket. Signature-gated so a no-change poll
+  // does not churn the thread.
+  const refreshActiveStoredTranscript = useCallback(async () => {
     const storedSessionId = selectedStoredSessionIdRef.current
     const runtimeSessionId = activeSessionIdRef.current
 
@@ -312,9 +312,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+    const stored = [...$sessions.get(), ...$messagingSessions.get()].find(s =>
+      sessionMatchesStoredId(s, storedSessionId)
+    )
 
-    if (!stored || !isMessagingSource(stored.source)) {
+    if (!stored) {
       return
     }
 
@@ -323,11 +325,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
       const sig = sessionMessagesSignature(latest.messages)
 
-      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
+      if (transcriptSignatureRef.current.get(signatureKey) === sig) {
         return
       }
 
-      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
+      transcriptSignatureRef.current.set(signatureKey, sig)
       const messages = toChatMessages(latest.messages)
 
       updateSessionState(
@@ -652,21 +654,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshSessions
   })
 
-  // Only the open messaging transcript needs its own poll — local chats are
-  // live over the websocket already.
-  const activeIsMessaging =
-    !!selectedStoredSessionId &&
-    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+  // Every selected persisted session is eligible: messaging writes and local
+  // cron delivery can both happen outside this window's websocket.
+  const activeTranscriptPollEnabled = !!selectedStoredSessionId
 
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
     activeGatewayProfile,
-    activeIsMessaging,
+    activeTranscriptPollEnabled,
     activeSessionId,
     freshDraftReady,
     gatewayState,
-    refreshActiveMessagingTranscript,
+    refreshActiveStoredTranscript,
     refreshCronJobs,
     refreshCurrentModel,
     refreshHermesConfig,

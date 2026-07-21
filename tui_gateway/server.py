@@ -2312,9 +2312,19 @@ def _set_session_context(
                 if sess.get("session_key") == session_key:
                     source = _session_source(sess)
                     break
+        # Local GUI surfaces use the durable conversation id as their return
+        # address. Unlike a messaging chat, there is no external channel id:
+        # the SessionDB row itself is the delivery surface. TUI stays local-only
+        # because it has no transcript poll/live GUI to surface an unattended
+        # result. ``session_id`` is still populated for every surface so tools
+        # never lose the durable identity behind an explicitly-empty ContextVar.
+        local_session_origin = source in {"desktop", "webui"}
         return set_session_vars(
+            platform=source if local_session_origin else "",
             session_key=session_key,
+            session_id=session_key,
             source=source,
+            chat_id=session_key if local_session_origin else "",
             cwd=resolved,
             ui_session_id=ui_session_id,
         )
@@ -2331,6 +2341,79 @@ def _clear_session_context(tokens: list) -> None:
         clear_session_vars(tokens)
     except Exception:
         pass
+
+
+def _merge_observed_session_messages(session: dict) -> int:
+    """Merge externally persisted local-session deliveries into live history.
+
+    A cron scheduler may run in a sibling process and append an ``observed``
+    delivery directly to the Desktop/WebUI session row. The renderer can poll
+    that row, but the long-lived TUI gateway keeps its own in-memory history.
+    Without this pre-turn merge, the next prompt would omit the cron result and
+    could overwrite it when the agent flushes its stale transcript.
+
+    Only observed rows are imported, and only when missing by occurrence. This
+    makes the merge additive and fail-closed: ordinary DB edits or a divergent
+    transcript can never clobber live state.
+    """
+    if _session_source(session) not in {"desktop", "webui"}:
+        return 0
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return 0
+
+    try:
+        with _session_db(session) as db:
+            if db is None or not db.get_session(session_key):
+                return 0
+            stored = db.get_messages_as_conversation(session_key)
+    except Exception:
+        logger.debug(
+            "failed to load observed local-session messages for %s",
+            session_key,
+            exc_info=True,
+        )
+        return 0
+
+    def identity(message: dict) -> tuple[str, str, str]:
+        try:
+            content = json.dumps(
+                message.get("content"),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception:
+            content = str(message.get("content"))
+        return (
+            str(message.get("role") or ""),
+            content,
+            str(message.get("timestamp") or ""),
+        )
+
+    with session["history_lock"]:
+        known = [identity(message) for message in session.get("history", []) if message.get("observed")]
+        missing = []
+        for message in stored:
+            if not message.get("observed"):
+                continue
+            marker = identity(message)
+            if marker in known:
+                known.remove(marker)
+                continue
+            missing.append(dict(message))
+        if not missing:
+            return 0
+        session["history"].extend(missing)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+
+    logger.info(
+        "Merged %d observed delivery message(s) into live %s session %s",
+        len(missing),
+        _session_source(session),
+        session_key,
+    )
+    return len(missing)
 
 
 def _enable_gateway_prompts() -> None:
@@ -9422,6 +9505,11 @@ def _(rid, params: dict) -> dict:
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
         # queue whose drain already ran.
+
+    # Cron/local-session delivery is persisted outside this live gateway
+    # record. Import any new observed rows before snapshotting history for the
+    # next turn, so the agent sees exactly what Desktop/WebUI just displayed.
+    _merge_observed_session_messages(session)
 
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn, so its own running

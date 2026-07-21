@@ -756,6 +756,72 @@ def _maybe_mirror_cron_delivery(
         )
 
 
+def _deliver_to_local_session(
+    job: dict,
+    platform_name: str,
+    session_id: str,
+    content: str,
+) -> Optional[str]:
+    """Persist a cron delivery into a local WebUI/Desktop session.
+
+    Local GUI surfaces have no messaging adapter to push through — the
+    ``SessionDB`` row *is* their durable delivery surface. Appends a labelled USER-role
+    message (same alternation rationale as ``_maybe_mirror_cron_delivery``: a
+    cron delivery is not the agent speaking, and a user-role turn merges
+    safely on every provider instead of landing assistant→assistant). The
+    client picks it up on its transcript poll or next reload.
+
+    A target may name a compression parent — the session that existed before
+    context compression forked a continuation child (see
+    ``resolve_resume_session_id``). Local clients read through that redirect, so
+    appending to the parent would land the cron message somewhere the active
+    conversation never looks. Resolve the live continuation tip before
+    appending, same as the WebUI/gateway resume path does.
+
+    Returns ``None`` on success, or an error string on failure — never
+    raises, matching the other delivery paths in ``_deliver_result``.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            resolve = getattr(db, "resolve_session_id", None)
+            sid = (resolve(session_id) if callable(resolve) else None) or session_id
+            resolve_resume = getattr(db, "resolve_resume_session_id", None)
+            sid = (resolve_resume(sid) if callable(resolve_resume) else None) or sid
+            session = db.get_session(sid)
+            if not session:
+                return f"{platform_name} session '{session_id}' not found"
+            source = str(session.get("source") or "").strip().lower()
+            if source != platform_name:
+                return (
+                    f"{platform_name} session '{session_id}' has source "
+                    f"'{source or 'unknown'}'"
+                )
+            label = job.get("name") or job.get("id") or "cron"
+            db.append_message(
+                sid,
+                "user",
+                f"[Cron delivery: {label}]\n{text}",
+                observed=True,
+            )
+            logger.info(
+                "Job '%s': delivered to %s session %s",
+                job.get("id", "?"), platform_name, sid,
+            )
+            return None
+        finally:
+            db.close()
+    except Exception as e:
+        msg = f"{platform_name} delivery to {session_id} failed: {e}"
+        logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+        return msg
+
+
 def _open_continuable_cron_thread(
     job: dict,
     adapter,
@@ -1133,6 +1199,35 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
+# WebUI and Desktop are local session-store surfaces, not gateway platforms.
+# They must never reach ``gateway.config.Platform(...)``. Tag their targets so
+# ``_deliver_result`` can split them out before the messaging-adapter loop.
+_LOCAL_SESSION_PLATFORMS = frozenset({"desktop", "webui"})
+_LOCAL_SESSION_TARGET_KIND = "local_session"
+
+
+def _local_session_platform(origin: Optional[dict]) -> Optional[str]:
+    if not origin:
+        return None
+    platform_name = str(origin.get("platform", "")).strip().lower()
+    return platform_name if platform_name in _LOCAL_SESSION_PLATFORMS else None
+
+
+def _local_session_delivery_target(
+    platform_name: str,
+    session_id: str,
+    thread_id: Optional[str] = None,
+) -> dict:
+    sid = str(session_id)
+    return {
+        "kind": _LOCAL_SESSION_TARGET_KIND,
+        "platform": platform_name,
+        "chat_id": sid,
+        "session_id": sid,
+        "thread_id": thread_id,
+    }
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -1141,7 +1236,24 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if deliver_value == "local":
         return None
 
+    explicit_platform, separator, explicit_session_id = deliver_value.partition(":")
+    explicit_platform = explicit_platform.strip().lower()
+    if separator and explicit_platform in _LOCAL_SESSION_PLATFORMS:
+        session_id = explicit_session_id.strip()
+        return (
+            _local_session_delivery_target(explicit_platform, session_id)
+            if session_id
+            else None
+        )
+
     if deliver_value == "origin":
+        local_platform = _local_session_platform(origin)
+        if origin and local_platform:
+            return _local_session_delivery_target(
+                local_platform,
+                origin["chat_id"],
+                origin.get("thread_id"),
+            )
         if origin:
             return {
                 "platform": origin["platform"],
@@ -1520,16 +1632,36 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
 
+    # Local-session targets are not gateway platforms. Split them out before
+    # touching gateway config, so a Desktop/WebUI-only
+    # delivery never depends on (or fails because of) gateway setup.
+    local_targets = [t for t in targets if t.get("kind") == _LOCAL_SESSION_TARGET_KIND]
+    gateway_targets = [t for t in targets if t.get("kind") != _LOCAL_SESSION_TARGET_KIND]
+
+    delivery_errors = []
+
+    for target in local_targets:
+        err = _deliver_to_local_session(
+            job,
+            target["platform"],
+            target.get("session_id") or target["chat_id"],
+            content,
+        )
+        if err:
+            delivery_errors.append(err)
+
+    if not gateway_targets:
+        return "; ".join(delivery_errors) if delivery_errors else None
+
     try:
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
         logger.error("Job '%s': %s", job["id"], msg)
-        return msg
+        delivery_errors.append(msg)
+        return "; ".join(delivery_errors)
 
-    delivery_errors = []
-
-    for target in targets:
+    for target in gateway_targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")

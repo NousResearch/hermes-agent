@@ -91,11 +91,11 @@ export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse
 
 interface BackgroundSyncParams {
   activeGatewayProfile: string
-  activeIsMessaging: boolean
+  activeTranscriptPollEnabled: boolean
   activeSessionId: null | string
   freshDraftReady: boolean
   gatewayState: string
-  refreshActiveMessagingTranscript: () => Promise<unknown> | unknown
+  refreshActiveStoredTranscript: () => Promise<unknown> | unknown
   refreshCronJobs: () => Promise<unknown> | unknown
   refreshCurrentModel: (force?: boolean) => Promise<unknown> | unknown
   refreshHermesConfig: () => Promise<unknown> | unknown
@@ -130,11 +130,11 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
  */
 export function useBackgroundSync({
   activeGatewayProfile,
-  activeIsMessaging,
+  activeTranscriptPollEnabled,
   activeSessionId,
   freshDraftReady,
   gatewayState,
-  refreshActiveMessagingTranscript,
+  refreshActiveStoredTranscript,
   refreshCronJobs,
   refreshCurrentModel,
   refreshHermesConfig,
@@ -231,22 +231,20 @@ export function useBackgroundSync({
     return visiblePoll(MESSAGING_POLL_INTERVAL_MS, () => void refreshMessagingSessions())
   }, [gatewayState, refreshMessagingSessions])
 
-  // Only the open messaging transcript needs its own poll — local chats are
-  // live over the websocket already.
+  // Poll the open persisted transcript. Messaging turns arrive through the
+  // background gateway; local Desktop/WebUI cron deliveries are appended by a
+  // scheduler process and likewise do not ride this window's websocket.
   useEffect(() => {
-    if (gatewayState !== 'open' || !activeIsMessaging) {
+    if (gatewayState !== 'open' || !activeTranscriptPollEnabled) {
       return
     }
 
-    const dispose = visiblePoll(
-      ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
-      () => void refreshActiveMessagingTranscript()
-    )
+    const dispose = visiblePoll(ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS, () => void refreshActiveStoredTranscript())
 
-    void refreshActiveMessagingTranscript()
+    void refreshActiveStoredTranscript()
 
     return dispose
-  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
+  }, [activeTranscriptPollEnabled, gatewayState, refreshActiveStoredTranscript])
 
   // A fresh new-session draft (gateway open, no active session) re-pulls the
   // model + config so the composer pill reflects the profile default.

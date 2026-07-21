@@ -16,7 +16,7 @@
     "spectrum-ts": "^8.2.2"
   },
   "overrides": {
-    "protobufjs": "8.6.1",
+    "protobufjs": "^8.7.1",
     "@opentelemetry/core": "2.8.0",
     "@opentelemetry/otlp-transformer": "0.219.0",
     "@opentelemetry/otlp-exporter-base": "0.219.0",

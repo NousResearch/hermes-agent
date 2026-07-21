@@ -21624,6 +21624,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
                     return f"[user did not respond within {int(timeout / 60)}m]"
+
+                # User answered.  Reopen the typing indicator IMMEDIATELY —
+                # don't wait for the LLM's first post-answer token.  On native
+                # streaming (WeCom) the typing bubble is driven by the stream
+                # seed frame, and the reopen path otherwise re-seeds lazily on
+                # the first delta (measured ~48s of dead air).  request_reopen_seed
+                # is a no-op unless we're in the reopen-pending native state, so
+                # it's safe to call unconditionally here.  resume_typing_for_chat
+                # covers non-native platforms (their pause was set before the
+                # prompt) — the WeCom send_typing is a no-op, harmless here.
+                _sc_reopen = stream_consumer_holder[0] if stream_consumer_holder else None
+                if _sc_reopen is not None:
+                    try:
+                        _sc_reopen.request_reopen_seed()
+                    except Exception:
+                        logger.debug(
+                            "request_reopen_seed after clarify answer failed",
+                            exc_info=True,
+                        )
+                try:
+                    _status_adapter.resume_typing_for_chat(_status_chat_id)
+                except Exception:
+                    logger.debug(
+                        "resume_typing_for_chat after clarify answer failed",
+                        exc_info=True,
+                    )
                 return response
 
             agent.clarify_callback = _clarify_callback_sync

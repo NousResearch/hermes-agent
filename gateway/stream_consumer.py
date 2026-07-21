@@ -60,6 +60,15 @@ _FLUSH = object()
 # and let post-interaction output go via send().
 _APPROVAL_BOUNDARY = object()
 
+# Sentinel to request an EAGER native re-seed after a clarify-reopen boundary.
+# Posted the moment the user answers a clarify (before the LLM produces any
+# post-answer delta), so the WeCom typing bubble reappears immediately instead
+# of waiting for the first token.  On WeCom, typing is driven by the stream
+# seed frame (send_typing is a no-op), and the reopen path otherwise re-seeds
+# lazily on the first delta — measured 48s of dead air in one turn.  Handled
+# serially in run(); see request_reopen_seed() and the run-loop handler.
+_REOPEN_SEED = object()
+
 # Default finalize text shown at an interaction boundary when no content has
 # accumulated yet.  Callers may override per-boundary (e.g. clarify passes its
 # own) via close_for_approval_prompt(placeholder=...).
@@ -361,6 +370,12 @@ class GatewayStreamConsumer:
         # re-seeding a fresh stream just to emit a lone "✅" placeholder when
         # the agent produced nothing after the prompt.
         self._awaiting_reopen_after_boundary = False
+        # Marks that an EAGER re-seed (via _REOPEN_SEED) already opened a fresh
+        # native stream after a clarify answer, BEFORE any post-answer content.
+        # Unlike the lazy path, the typing bubble is already on screen, so
+        # got_done must actively finalize it (not silently skip) when the agent
+        # produces no content — otherwise a blank typing bubble hangs forever.
+        self._reopen_seeded_eagerly = False
 
 
     def _metadata_for_send(
@@ -574,6 +589,27 @@ class GatewayStreamConsumer:
         except Exception:
             return False
         return evt.wait(timeout=max(0.0, float(timeout)))
+
+    def request_reopen_seed(self) -> None:
+        """Request an EAGER native re-seed after a clarify-reopen boundary.
+
+        Called (thread-safe, like on_commentary / close_for_approval_prompt)
+        the instant the user answers a clarify — BEFORE the LLM emits any
+        post-answer delta. Posts _REOPEN_SEED so run() immediately sends an
+        empty seed frame, which is what makes the WeCom typing bubble reappear
+        without waiting for the first token (measured 48s of dead air otherwise).
+
+        No-op unless we're in the reopen-pending state on a native stream: only
+        after a clarify boundary (`_awaiting_reopen_after_boundary`) with native
+        still enabled and no stream currently open. This keeps a stray call from
+        opening a spurious bubble mid-stream or on the approval path.
+        """
+        if (
+            self._use_native_streaming
+            and self._awaiting_reopen_after_boundary
+            and not self._native_stream_opened
+        ):
+            self._queue.put(_REOPEN_SEED)
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -1024,6 +1060,7 @@ class GatewayStreamConsumer:
                 got_flush = False
                 flush_event = None
                 got_approval_boundary = False
+                got_reopen_seed = False
                 approval_boundary_future = None
                 approval_boundary_cancelled = None
                 commentary_text = None
@@ -1035,6 +1072,9 @@ class GatewayStreamConsumer:
                             break
                         if item is _NEW_SEGMENT:
                             got_segment_break = True
+                            break
+                        if item is _REOPEN_SEED:
+                            got_reopen_seed = True
                             break
                         if isinstance(item, tuple) and len(item) == 3 and item[0] is _APPROVAL_BOUNDARY:
                             got_approval_boundary = True
@@ -1063,6 +1103,52 @@ class GatewayStreamConsumer:
                     await self._handle_approval_boundary(
                         approval_boundary_future, approval_boundary_cancelled
                     )
+                    continue
+
+                # Handle eager re-seed: the user just answered a clarify prompt.
+                # Open a fresh native stream NOW (empty seed frame) so the WeCom
+                # typing bubble reappears immediately, without waiting for the
+                # LLM's first post-answer delta.  Only meaningful in the
+                # reopen-pending state with native still live and no stream open;
+                # request_reopen_seed() already gates on that, and we re-check
+                # here because state may have advanced between put and dequeue.
+                if got_reopen_seed:
+                    if (
+                        self._use_native_streaming
+                        and self._awaiting_reopen_after_boundary
+                        and not self._native_stream_opened
+                    ):
+                        try:
+                            seed_ok = await self.adapter.send_stream_frame(
+                                "",
+                                chat_id=self.chat_id,
+                                reply_to=self._initial_reply_to_id,
+                                turn_id=self._turn_id,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Eager reopen seed raised, disabling native: %s", e,
+                            )
+                            seed_ok = False
+                        if seed_ok:
+                            self._native_stream_opened = True
+                            self._native_last_pushed_len = 0
+                            self._awaiting_reopen_after_boundary = False
+                            self._reopen_seeded_eagerly = True
+                            logger.info(
+                                "[latency] Eager re-seed after clarify answer "
+                                "(typing bubble reopened immediately, turn=%s)",
+                                self._turn_id,
+                            )
+                        else:
+                            # Seed failed — degrade to a single buffered send()
+                            # so the post-answer content still lands as one
+                            # bubble (not per-tick fragments on a non-editable
+                            # platform).  Mirrors the approval-boundary degrade.
+                            self._use_native_streaming = False
+                            self._native_stream_opened = False
+                            self._native_last_pushed_len = 0
+                            self.cfg.buffer_only = True
                     continue
 
                 # Flush any held-back partial-tag buffer on stream end
@@ -1286,16 +1372,51 @@ class GatewayStreamConsumer:
                         and not self._native_stream_opened
                         and not self._accumulated
                     ):
-                        # Clarify reopen boundary, but the agent produced no
-                        # post-prompt content.  The pre-prompt stream was already
-                        # finalized into a stable bubble at the boundary, so there
-                        # is nothing left to deliver.  Do NOT re-seed a fresh
-                        # stream just to emit a lone "✅" placeholder — that would
-                        # leave a meaningless empty bubble below the question.
-                        # Close quietly; the finalized pre-prompt bubble stands.
+                        # Clarify reopen boundary (LAZY path), but the agent
+                        # produced no post-prompt content.  The pre-prompt stream
+                        # was already finalized into a stable bubble at the
+                        # boundary, and no fresh stream was ever re-seeded, so
+                        # there is nothing on screen to close.  Do NOT re-seed a
+                        # fresh stream just to emit a lone "✅" placeholder — that
+                        # would leave a meaningless empty bubble below the
+                        # question.  Close quietly; the finalized bubble stands.
                         logger.debug(
                             "Clarify reopen boundary with no post-prompt content "
                             "— skipping lone-placeholder finalize (turn=%s)",
+                            self._turn_id,
+                        )
+                    elif (
+                        self._reopen_seeded_eagerly
+                        and self._native_stream_opened
+                        and not self._accumulated
+                        and not current_update_visible
+                    ):
+                        # EAGER-seed path: the typing bubble is ALREADY on screen
+                        # (opened the instant the user answered), but the agent
+                        # then produced no content.  Unlike the lazy case we
+                        # cannot skip — an open, empty typing bubble would hang
+                        # forever.  Close it with an empty finalize (NOT a lone
+                        # "✅", which would be a meaningless bubble below the
+                        # question).  Leave the delivery flags as-is: nothing
+                        # substantive was delivered, so the gateway's own
+                        # whole-response filter still governs any fallback.
+                        try:
+                            await self.adapter.send_stream_frame(
+                                "",
+                                finalize=True,
+                                chat_id=self.chat_id,
+                                reply_to=self._initial_reply_to_id,
+                                turn_id=self._turn_id,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Eager-seed empty finalize failed: %s", e,
+                            )
+                        self._native_stream_opened = False
+                        self._native_last_pushed_len = 0
+                        logger.debug(
+                            "Eager reopen seed but no post-answer content — "
+                            "closed empty typing bubble (turn=%s)",
                             self._turn_id,
                         )
                     elif self._use_native_streaming:
@@ -2305,6 +2426,29 @@ class GatewayStreamConsumer:
         send happens either.  ``_already_sent`` is likewise cleared so the
         gateway's ``already_sent`` short-circuits do not fire.
         """
+        # Native-stream bubbles (e.g. WeCom) are NOT deletable messages — they
+        # are an open stream closed by a finalize frame, not delete_message.
+        # If a stream is open (notably one opened by an EAGER re-seed after a
+        # clarify answer, where the typing bubble is already on screen with no
+        # content), close it with an empty finalize so it doesn't hang forever.
+        # Do this before the delete loop; keep the delivery flags False below.
+        if self._native_stream_opened:
+            try:
+                await self.adapter.send_stream_frame(
+                    "",
+                    finalize=True,
+                    chat_id=self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                    turn_id=self._turn_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Silence-marker native stream close failed: %s", e,
+                )
+            self._native_stream_opened = False
+            self._native_last_pushed_len = 0
+            self._reopen_seeded_eagerly = False
+
         stale_ids = set(self._preview_message_ids)
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)

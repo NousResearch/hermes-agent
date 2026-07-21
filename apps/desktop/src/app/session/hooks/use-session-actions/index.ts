@@ -958,7 +958,7 @@ export function useSessionActions({
             messages: messagesForView,
             busy: resumedRunning,
             awaitingResponse: resumedRunning,
-            turnStartedAt: resumedRunning ? (resumedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
+            turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
           }),
           storedSessionId
         )

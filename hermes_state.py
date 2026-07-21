@@ -981,6 +981,64 @@ END;
 """
 
 
+
+def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100) -> bool:
+    """Detect the #68474 zeroed state.db signature (size>0, NUL header).
+
+    Prefer ``hermes_cli.backup.is_zeroed_sqlite_file`` when available; this
+    local copy keeps SessionDB openable without importing the CLI package
+    in constrained embed paths.
+    """
+    try:
+        from hermes_cli.backup import is_zeroed_sqlite_file
+
+        return is_zeroed_sqlite_file(path, probe_bytes=probe_bytes)
+    except Exception:
+        pass
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= 0:
+        return False
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(max(16, probe_bytes))
+    except OSError:
+        return False
+    if not head or head.startswith(b"SQLite format 3"):
+        return False
+    return all(byte == 0 for byte in head)
+
+
+def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
+    """Move a zeroed state.db aside (preserve bytes) and return quarantine path."""
+    try:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+    except Exception:
+        ts = "unknown"
+    dest = path.with_name(f"{path.name}.zeroed-{ts}.bak")
+    # Avoid clobbering a prior quarantine
+    n = 0
+    while dest.exists():
+        n += 1
+        dest = path.with_name(f"{path.name}.zeroed-{ts}-{n}.bak")
+    try:
+        path.rename(dest)
+    except OSError as exc:
+        logger.error("Failed to quarantine zeroed %s: %s", path, exc)
+        return None
+    # Also move empty WAL/SHM if present so a fresh open is clean
+    for suffix in ("-wal", "-shm"):
+        side = Path(str(path) + suffix)
+        if side.exists():
+            try:
+                side.rename(Path(str(dest) + suffix))
+            except OSError:
+                pass
+    return dest
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -1060,6 +1118,35 @@ class SessionDB:
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # #68474: zeroed state.db (size>0, all-NUL header) used to fail as a
+            # generic "file is not a database" with no recovery path. Quarantine
+            # the bytes (do not delete) and continue so a fresh DB can open;
+            # point the operator at pre-update snapshots.
+            if (
+                not read_only
+                and self.db_path.exists()
+                and is_zeroed_state_db(self.db_path)
+            ):
+                try:
+                    zsize = self.db_path.stat().st_size
+                except OSError:
+                    zsize = -1
+                qpath = quarantine_zeroed_state_db(self.db_path)
+                snaps = self.db_path.parent / "state-snapshots"
+                msg = (
+                    f"state.db looks ZEROED ({zsize} bytes, no SQLite header). "
+                    f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
+                    f"Restore from {snaps} via `hermes snapshot list` / "
+                    f"`hermes snapshot restore <id>` if available. "
+                    "Opening a fresh empty database so the agent can start."
+                )
+                logger.error(msg)
+                _set_last_init_error(msg)
+                # If quarantine failed, do not open the zeroed file (would fail
+                # opaquely or risk further damage). Raise with the clear message.
+                if qpath is None and self.db_path.exists() and is_zeroed_state_db(self.db_path):
+                    raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
                 self._conn = sqlite3.connect(

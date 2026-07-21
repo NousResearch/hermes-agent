@@ -67,11 +67,16 @@ def _resolve_command() -> str:
     )
 
 
-def _resolve_args() -> list[str]:
+def _resolve_args(command: str = "") -> list[str]:
     raw = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    if not raw:
-        return ["--acp", "--stdio"]
-    return shlex.split(raw)
+    if raw:
+        return shlex.split(raw)
+    # Copilot CLI uses flag-style: copilot --acp --stdio
+    # OpenCode uses subcommand-style: opencode acp
+    cmd_name = os.path.basename(command) if command else _resolve_command()
+    if cmd_name == "opencode":
+        return ["acp"]
+    return ["--acp", "--stdio"]
 
 
 def _resolve_home_dir() -> str:
@@ -413,7 +418,7 @@ class CopilotACPClient:
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        self._acp_args = list(acp_args or args or _resolve_args(self._acp_command))
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False

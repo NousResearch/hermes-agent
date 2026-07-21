@@ -317,3 +317,33 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── _resolve_args() tests (OpenCode ACP auto-detection) ─────────────
+
+from agent.copilot_acp_client import _resolve_args
+
+
+def test_resolve_args_defaults_to_copilot_flags(monkeypatch):
+    """No command, no env var → returns Copilot CLI style flags."""
+    monkeypatch.delenv("HERMES_COPILOT_ACP_ARGS", raising=False)
+    assert _resolve_args() == ["--acp", "--stdio"]
+
+
+def test_resolve_args_detects_opencode(monkeypatch):
+    """opencode command → returns subcommand-style args."""
+    monkeypatch.delenv("HERMES_COPILOT_ACP_ARGS", raising=False)
+    assert _resolve_args(command="opencode") == ["acp"]
+    assert _resolve_args(command="/usr/local/bin/opencode") == ["acp"]
+
+
+def test_resolve_args_env_var_overrides(monkeypatch):
+    """HERMES_COPILOT_ACP_ARGS takes priority over auto-detection."""
+    monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --model claude-sonnet-4")
+    assert _resolve_args(command="opencode") == ["--acp", "--stdio", "--model", "claude-sonnet-4"]
+
+
+def test_resolve_args_copilot_explicit(monkeypatch):
+    """Explicit copilot command still returns flag-style args."""
+    monkeypatch.delenv("HERMES_COPILOT_ACP_ARGS", raising=False)
+    assert _resolve_args(command="copilot") == ["--acp", "--stdio"]

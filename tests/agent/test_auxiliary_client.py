@@ -1802,6 +1802,29 @@ class TestIsModelNotFoundError:
         exc.status_code = 500
         assert _is_model_not_found_error(exc) is False
 
+    # ── 410 Gone — retired model (#48269) ────────────────────────────────────
+
+    def test_410_bare_is_model_not_found(self):
+        """HTTP 410 Gone means the model has been permanently retired.
+        The stale-model self-heal must fire so we retry with a fresh
+        Portal recommendation instead of surfacing a cryptic 'Gone' error."""
+        exc = Exception("Gone")
+        exc.status_code = 410
+        assert _is_model_not_found_error(exc) is True
+
+    def test_410_with_model_gone_body(self):
+        """410 with a 'model has been removed' body is a model-not-found error."""
+        exc = Exception("qwen3-vl:235b-instruct has been removed from the catalog")
+        exc.status_code = 410
+        assert _is_model_not_found_error(exc) is True
+
+    def test_410_with_billing_keywords_is_not_model_not_found(self):
+        """A 410 that also contains billing language belongs to _is_payment_error,
+        not the model-not-found predicate (billing guard fires first)."""
+        exc = Exception("Model gone: insufficient credits for remaining access")
+        exc.status_code = 410
+        assert _is_model_not_found_error(exc) is False
+
 
 class TestIsModelIncompatibleError:
     """_is_model_incompatible_error detects 400s where the route cannot run

@@ -3288,7 +3288,7 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
 
 
 def _is_model_not_found_error(exc: Exception) -> bool:
-    """Detect "the requested model doesn't exist" errors (404 / invalid model).
+    """Detect "the requested model doesn't exist" errors (404 / 410 / invalid model).
 
     This fires when a resolved model name is no longer served by the endpoint
     — most commonly when a long-lived process pinned a Portal-recommended model
@@ -3298,10 +3298,17 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         Model 'gpt-5.4-mini' not found. The requested model does not exist
         in our configuration or OpenRouter catalog.
 
+    It can also return 410 Gone when a model is permanently retired (#48269):
+    providers use 410 to signal that the resource is gone and will not return.
+    Both 404 and 410 trigger the stale-model self-heal in call_llm /
+    async_call_llm so callers automatically retry with the Portal's current
+    recommendation instead of propagating a cryptic HTTP error.
+
     Distinct from :func:`_is_payment_error` (which also matches some 404s for
     free-tier/credit language) — this one keys on "does not exist / not found /
     not a valid model" phrasing, and explicitly excludes the billing keywords
     that the payment path already owns so the two predicates don't overlap.
+    A 410 with billing keywords is also excluded and left to _is_payment_error.
     """
     status = getattr(exc, "status_code", None)
     err_lower = str(exc).lower()
@@ -3312,8 +3319,16 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "not available on the free tier",
     )):
         return False
-    if status not in {404, 400, None}:
+    # 404 = model not found, 400 = invalid model ID, 410 = model retired/gone.
+    # 410 Gone is the status providers return when a model has been permanently
+    # removed from the catalog — treat it the same as 404 so the Nous
+    # stale-model self-heal fires and retries with the current recommendation
+    # instead of surfacing a cryptic "Gone" error to the user (#48269).
+    if status not in {404, 400, 410, None}:
         return False
+    # 410 with no body keywords: still a model-not-found condition.
+    if status == 410:
+        return True
     return any(kw in err_lower for kw in (
         "model does not exist",
         "does not exist in our configuration",
@@ -3324,6 +3339,7 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found",
         "unknown model",
+        "gone",                   # 410 Gone body text from some providers
     ))
 
 

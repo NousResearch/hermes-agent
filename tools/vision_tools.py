@@ -50,10 +50,18 @@ logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
-# Configurable HTTP download timeout for _download_image().
-# Separate from auxiliary.vision.timeout which governs the LLM API call.
-# Resolution: config.yaml auxiliary.vision.download_timeout → env var → 30s default.
-def _resolve_download_timeout() -> float:
+def _get_download_timeout() -> float:
+    """Return the image HTTP download timeout, resolved fresh from config.yaml.
+
+    Resolution order:
+      1. HERMES_VISION_DOWNLOAD_TIMEOUT env var (process-lifetime override).
+      2. config.yaml auxiliary.vision.download_timeout (read each call so a
+         running gateway picks up changes without a restart).
+      3. 30 s hard-coded default.
+
+    Evaluated per-call (not at module import) so a config.yaml edit takes
+    effect on the next vision_analyze call in the same process (#48269).
+    """
     env_val = os.getenv("HERMES_VISION_DOWNLOAD_TIMEOUT", "").strip()
     if env_val:
         try:
@@ -69,8 +77,6 @@ def _resolve_download_timeout() -> float:
     except Exception:
         pass
     return 30.0
-
-_VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 
 # Hard cap on downloaded image file size (50 MB). Prevents OOM from
 # attacker-hosted multi-gigabyte files or decompression bombs.
@@ -428,7 +434,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
             # SSRF: event_hooks validates each redirect target against private IP ranges
             async with httpx.AsyncClient(
-                timeout=_VISION_DOWNLOAD_TIMEOUT,
+                timeout=_get_download_timeout(),
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:

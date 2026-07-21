@@ -2672,9 +2672,15 @@ DEFAULT_CONFIG = {
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
+    #
+    # timeout — seconds to wait for the user's approve/deny before failing
+    # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
+    # Messaging approvals arrive as a push notification the user may not see
+    # immediately — 60s proved too tight on Telegram/Discord (the prompt
+    # expired before the user reached their phone), so the default is 300.
     "approvals": {
         "mode": "smart",
-        "timeout": 60,
+        "timeout": 300,
         "cron_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
@@ -3449,6 +3455,11 @@ DEFAULT_CONFIG = {
     # Hermes Desktop (Electron app) launch options. These only affect
     # `hermes desktop`; they do not touch the CLI/gateway.
     "desktop": {
+        # Git repository discovery for the Desktop Projects sidebar. Empty
+        # roots preserve the historical bounded scan of the user's home.
+        "repo_scan_enabled": True,
+        "repo_scan_roots": [],
+        "repo_scan_exclude_paths": [],
         # Extra Electron command-line flags appended to every desktop launch,
         # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
         # explicit ozone backend, or GPU workaround flags. A list of strings;

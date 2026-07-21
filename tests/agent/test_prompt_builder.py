@@ -1169,6 +1169,11 @@ class TestPromptBuilderConstants:
         assert "Matrix" in hint
         assert "MEDIA:" in hint
         assert "Markdown" in hint
+        # Regression (#52552): the hint must steer models away from Markdown
+        # tables — popular Matrix clients don't render HTML tables and the
+        # cells collapse into one continuous line.
+        assert "table" in hint.lower()
+        assert "Do NOT use Markdown tables" in hint
 
     def test_platform_hints_feishu(self):
         hint = PLATFORM_HINTS["feishu"]

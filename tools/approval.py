@@ -4234,6 +4234,13 @@ _EXEC_CODE_DANGEROUS_CALLS = frozenset({
     ("os", "remove"),
     ("os", "unlink"),
     ("shutil", "rmtree"),
+    # File / directory write (config write bypass, #49578)
+    ("shutil", "copy"),
+    ("shutil", "copy2"),
+    ("shutil", "move"),
+    ("shutil", "copytree"),
+    ("os", "rename"),
+    ("os", "replace"),
     # Arbitrary command execution (bypasses terminal() DANGEROUS_PATTERNS)
     ("os", "system"),
     ("os", "popen"),
@@ -4248,6 +4255,12 @@ _EXEC_CODE_DANGEROUS_CALLS = frozenset({
 # specific functions).  ctypes qualifies — ``ctypes.CDLL(None).unlink(...)``
 # requires no os.remove to bypass every check.
 _EXEC_CODE_SUSPICIOUS_IMPORTS = frozenset({"ctypes"})
+
+# Builtin functions that can write or destroy files without going through
+# imported-module APIs.  ``open(path, "w")`` writes arbitrary local files
+# and its mode argument cannot be statically determined; any call to
+# ``open`` inside execute_code therefore triggers the guard.
+_EXEC_CODE_DANGEROUS_BUILTINS = frozenset({"open"})
 
 
 def _execute_code_has_dangerous_ops(code: str) -> bool:
@@ -4302,6 +4315,10 @@ def _execute_code_has_dangerous_ops(code: str) -> bool:
 
         # Aliased name:  from os import remove  →  remove(x)
         if isinstance(func, ast.Name):
+            # Builtin danger: open() etc. — not an import, statically
+            # undetectable intent (mode arg).  Any call triggers guard.
+            if func.id in _EXEC_CODE_DANGEROUS_BUILTINS:
+                return True
             if func.id in imports:
                 resolved = imports[func.id]
                 if resolved in _EXEC_CODE_DANGEROUS_CALLS:

@@ -208,6 +208,43 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
+def test_persistent_home_mount_respects_docker_env_home(monkeypatch):
+    """Persistent Docker home should mount at docker_env.HOME when configured."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        persistent_filesystem=True,
+        task_id="test-persistent-home",
+        env={"HOME": "/home/custom"},
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "/sandboxes/docker/test-persistent-home/home:/home/custom" in run_args_str
+    assert "/sandboxes/docker/test-persistent-home/home:/root" not in run_args_str
+
+
+def test_persistent_home_mount_ignores_invalid_docker_env_home(monkeypatch, caplog):
+    """Invalid HOME values should not become Docker bind mount targets."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env(
+            persistent_filesystem=True,
+            task_id="test-invalid-home",
+            env={"HOME": "relative/path"},
+        )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "/sandboxes/docker/test-invalid-home/home:/root" in run_args_str
+    assert any("Ignoring docker_env.HOME" in rec.getMessage() for rec in caplog.records)
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persist_across_processes=false, cleanup() must docker stop AND
     docker rm so containers don't leak across hermes processes.

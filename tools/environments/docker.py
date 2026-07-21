@@ -36,6 +36,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CONTAINER_ABSOLUTE_PATH_RE = re.compile(r"^/[^\0:\n\r]*$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -91,6 +92,21 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
         normalized[key] = value
 
     return normalized
+
+
+def _resolve_home_mount_target(env: dict[str, str]) -> str:
+    """Return the container path for the persistent home bind mount."""
+    home = (env.get("HOME") or "").strip()
+    if not home:
+        return "/root"
+    if not _CONTAINER_ABSOLUTE_PATH_RE.match(home) or home == "/":
+        logger.warning(
+            "Ignoring docker_env.HOME=%r for persistent Docker home mount; "
+            "expected an absolute container path like /root or /home/hermes.",
+            home,
+        )
+        return "/root"
+    return home
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
@@ -573,8 +589,8 @@ class DockerEnvironment(BaseEnvironment):
     boundary — the filesystem inside is writable so agents can install packages
     (pip, npm, apt) as needed. Writable workspace via tmpfs or bind mounts.
 
-    Persistence: when enabled, bind mounts preserve /workspace and /root
-    across container restarts.
+    Persistence: when enabled, bind mounts preserve /workspace and the
+    configured container home directory across container restarts.
     """
 
     def __init__(
@@ -681,8 +697,9 @@ class DockerEnvironment(BaseEnvironment):
             sandbox = get_sandbox_dir() / "docker" / task_id
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
+            home_mount_target = _resolve_home_mount_target(self._env)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", f"{self._home_dir}:{home_mount_target}",
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")

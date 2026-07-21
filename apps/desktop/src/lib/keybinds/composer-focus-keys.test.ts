@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $workspaceIsPage } from '@/app/routes'
-import { closeSwitcher, $switcherOpen } from '@/store/session-switcher'
+import { $switcherOpen, closeSwitcher } from '@/store/session-switcher'
 
 import {
   composerFocusBlockedBySurface,

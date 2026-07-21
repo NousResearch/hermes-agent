@@ -366,8 +366,9 @@ class GatewayStreamConsumer:
 
         After overflow, earlier chunks are immutable separate posts. For
         prefix-preserving transforms, strip that sealed prefix and edit only
-        the last continuation. If an earlier chunk was rewritten, return False
-        so the caller can use its normal full-response fallback.
+        the last continuation when it still fits one post; otherwise append
+        only the new suffix. If an earlier chunk was rewritten, send a plain
+        replacement before best-effort cleanup of the obsolete active segment.
         """
         if not self._message_id:
             return False

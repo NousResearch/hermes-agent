@@ -1,6 +1,6 @@
 import { Component, type ReactNode } from 'react'
 
-// `@assistant-ui/store`'s index-keyed child-scope lookup (`tapClientLookup`)
+// `@assistant-ui/store`'s index-keyed child-scope lookup (`useClientLookup`)
 // throws — rather than returning undefined — when a subscriber reads an index
 // that the message/parts list no longer has. This races during high-frequency
 // store replacement (session switch mid-stream, gateway reconnect replay): a
@@ -10,7 +10,7 @@ import { Component, type ReactNode } from 'react'
 // without a local boundary it unwinds to the root and blanks the whole app.
 // Upstream-tracked: assistant-ui/assistant-ui#4051, #3652.
 const isTransientLookupError = (error: unknown): boolean =>
-  error instanceof Error && /tapClient(Lookup|Resource).*out of bounds/.test(error.message)
+  error instanceof Error && /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/.test(error.message)
 
 interface Props {
   // Changes whenever the message list mutates; remounting clears the caught

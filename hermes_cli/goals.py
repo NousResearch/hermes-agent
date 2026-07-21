@@ -66,6 +66,11 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# Transport failures (API auth errors 401, timeouts, DNS, etc.) are also
+# tracked and auto-pause the loop after this many consecutive failures.
+# A broken/invalid API key returns 401 every call — the loop must not
+# run until the turn budget, wasting every turn on an unreachable judge.
+DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -74,6 +79,23 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "Continue working toward this goal. Take the next concrete step. "
     "If you believe the goal is complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly and stop."
+)
+
+# Used when the goal carries a structured completion contract. The contract
+# block tells the agent exactly what "done" means, how to prove it, what not
+# to break, what's in scope, and when to stop and ask — so it targets the
+# verification surface instead of declaring victory loosely.
+CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
+    "[Continuing toward your standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Completion contract:\n"
+    "{contract_block}\n\n"
+    "Continue working toward the outcome above. Take the next concrete step. "
+    "Stay within the stated boundaries and do not violate the constraints. "
+    "Before claiming the goal is done, satisfy the Verification criterion and "
+    "show the concrete evidence (command output, file contents, test result). "
+    "If you hit the stated stop condition or are otherwise blocked and need "
+    "user input, say so clearly and stop."
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
@@ -170,6 +192,199 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 )
 
 
+# Used when the goal carries a structured completion contract. The judge
+# decides DONE strictly against the Verification criterion and refuses to
+# accept completion when a constraint was violated.
+JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "Completion contract (the authoritative definition of done):\n"
+    "{contract_block}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
+    "{background_block}"
+    "Current time: {current_time}\n\n"
+    "Decision rules:\n"
+    "- The goal is DONE only when the Verification criterion is satisfied AND "
+    "the response shows concrete evidence of it (a command result, file "
+    "contents excerpt, test/benchmark output) — not a claim like 'done' or "
+    "'all tests pass' without evidence.\n"
+    "- If any stated Constraint was violated, the goal is NOT done — CONTINUE.\n"
+    "- If the response shows the agent is waiting on a listed background "
+    "process to satisfy the Verification criterion (e.g. CI is the "
+    "verification and it's still running), return WAIT on that process "
+    "instead of re-poking — re-poking now would be pure busy-work.\n"
+    "- If the response explains the work is blocked / unachievable / needs "
+    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
+    "with the reason describing the block.\n"
+    "- Otherwise the goal is NOT done — CONTINUE.\n\n"
+    "Is the goal satisfied per its completion contract — done, continue, or wait?"
+)
+
+
+# System prompt for /goal draft — turns a plain-language objective into a
+# structured completion contract the user can review before activating.
+# Adapted from Codex's "let Codex draft the goal" guidance.
+DRAFT_CONTRACT_SYSTEM_PROMPT = (
+    "You turn a user's plain-language objective into a structured completion "
+    "contract for an autonomous coding agent. The contract has five fields:\n"
+    "- outcome: the single end state that must be true when done\n"
+    "- verification: the specific test / command / artifact that PROVES the "
+    "outcome (must be concrete and checkable)\n"
+    "- constraints: what must NOT change or regress\n"
+    "- boundaries: which files, dirs, tools, or systems are in scope\n"
+    "- stop_when: the condition under which the agent should stop and ask "
+    "for human input instead of pushing on\n\n"
+    "Infer sensible, specific values from the objective and any project "
+    "context implied by it. Prefer concrete verification (a named test "
+    "command, a build, a benchmark) over vague phrases. Keep each field to "
+    "one or two sentences. If a field genuinely cannot be inferred, use an "
+    "empty string for it.\n\n"
+    "Reply ONLY with a single JSON object on one line:\n"
+    '{"outcome": "...", "verification": "...", "constraints": "...", '
+    '"boundaries": "...", "stop_when": "..."}'
+)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Completion contract
+# ──────────────────────────────────────────────────────────────────────
+
+# The five contract fields, in display order. Adapted from OpenAI Codex's
+# "strong goal" guidance: a durable objective works best when it names what
+# "done" means, how to prove it, what must not regress, what tools/paths are
+# in bounds, and when to stop and ask. A bare free-form goal (no contract)
+# stays fully supported — every field defaults empty and is simply omitted
+# from the prompts when unset.
+_CONTRACT_FIELDS = ("outcome", "verification", "constraints", "boundaries", "stop_when")
+
+# Human labels for rendering and for the inline `field: value` parser.
+_CONTRACT_LABELS = {
+    "outcome": "Outcome",
+    "verification": "Verification",
+    "constraints": "Constraints",
+    "boundaries": "Boundaries",
+    "stop_when": "Stop when blocked",
+}
+
+# Inline-input aliases the user may type before a value, mapped to the
+# canonical field name. e.g. `verify: tests pass` or `done when: ...`.
+_CONTRACT_ALIASES = {
+    "outcome": "outcome",
+    "goal": "outcome",
+    "done": "outcome",
+    "done when": "outcome",
+    "verification": "verification",
+    "verify": "verification",
+    "verified by": "verification",
+    "evidence": "verification",
+    "proof": "verification",
+    "constraints": "constraints",
+    "constraint": "constraints",
+    "preserve": "constraints",
+    "must not": "constraints",
+    "do not change": "constraints",
+    "boundaries": "boundaries",
+    "boundary": "boundaries",
+    "scope": "boundaries",
+    "allowed": "boundaries",
+    "files": "boundaries",
+    "stop when": "stop_when",
+    "stop_when": "stop_when",
+    "blocked": "stop_when",
+    "stop if blocked": "stop_when",
+    "give up when": "stop_when",
+}
+
+
+@dataclass
+class GoalContract:
+    """Optional structured completion contract for a goal.
+
+    Each field is free-form prose the user (or :func:`draft_contract`)
+    supplies. Empty fields are omitted everywhere — a goal with no contract
+    behaves exactly like the original free-form goal. The contract is woven
+    into both the continuation prompt (so the agent targets the verification
+    surface and respects constraints) and the judge prompt (so "done" is
+    decided against evidence, not vibes).
+    """
+
+    outcome: str = ""
+    verification: str = ""
+    constraints: str = ""
+    boundaries: str = ""
+    stop_when: str = ""
+
+    def is_empty(self) -> bool:
+        return not any(getattr(self, f).strip() for f in _CONTRACT_FIELDS)
+
+    def to_dict(self) -> Dict[str, str]:
+        return {f: getattr(self, f) for f in _CONTRACT_FIELDS}
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalContract":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS})
+
+    def render_block(self) -> str:
+        """Render non-empty contract fields as a labelled block. Empty
+        contract → empty string (callers skip the section entirely)."""
+        lines = []
+        for f in _CONTRACT_FIELDS:
+            val = getattr(self, f).strip()
+            if val:
+                lines.append(f"- {_CONTRACT_LABELS[f]}: {val}")
+        return "\n".join(lines)
+
+
+def parse_contract(text: str) -> Tuple[str, GoalContract]:
+    """Split user-typed goal text into a headline + structured contract.
+
+    Supports inline ``field: value`` lines so power users can type a full
+    contract in one shot, e.g.::
+
+        Migrate auth to JWT
+        verify: the auth test suite passes
+        constraints: keep the public /login response shape unchanged
+        boundaries: only touch services/auth and its tests
+        stop when: a schema change needs product sign-off
+
+    The first non-field line(s) become the goal headline; recognized
+    ``field:`` lines populate the contract. Lines for the same field are
+    joined. Unrecognized prefixes stay part of the headline, so a plain
+    free-form goal with an incidental colon (``Fix bug: the parser``)
+    is NOT mangled — only lines whose prefix matches a known alias are
+    pulled out. Returns ``(headline, contract)``.
+    """
+    if not text:
+        return "", GoalContract()
+
+    headline_parts: List[str] = []
+    fields: Dict[str, List[str]] = {f: [] for f in _CONTRACT_FIELDS}
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        matched = False
+        if ":" in line:
+            prefix, _, value = line.partition(":")
+            key = _CONTRACT_ALIASES.get(prefix.strip().lower())
+            if key is not None and value.strip():
+                fields[key].append(value.strip())
+                matched = True
+        if not matched:
+            headline_parts.append(line)
+
+    headline = " ".join(headline_parts).strip()
+    contract = GoalContract(
+        **{f: " ".join(v).strip() for f, v in fields.items()}
+    )
+    # If a headline was given but no explicit `outcome:` field, the headline
+    # IS the outcome — don't duplicate it into the contract block (the goal
+    # text already carries it), so leave outcome empty in that case.
+    return headline, contract
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Dataclass
 # ──────────────────────────────────────────────────────────────────────
@@ -189,6 +404,10 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Transport failures are API/auth/network errors.  Broken API keys return
+    # 401 every call — track them separately so the loop auto-pauses instead
+    # of burning every turn budget slot on an unreachable judge.
+    consecutive_transport_failures: int = 0   # judge API/transport errors in a row
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -219,9 +438,15 @@ class GoalState:
     waiting_until: float = 0.0
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
+    # Optional structured completion contract (outcome / verification /
+    # constraints / boundaries / stop_when). Empty by default; a goal with
+    # no contract behaves exactly like the original free-form goal.
+    contract: GoalContract = field(default_factory=GoalContract)
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        data = asdict(self)
+        # asdict already recursed GoalContract into a plain dict.
+        return json.dumps(data, ensure_ascii=False)
 
     @classmethod
     def from_json(cls, raw: str) -> "GoalState":
@@ -241,13 +466,20 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            consecutive_transport_failures=int(data.get("consecutive_transport_failures", 0) or 0),
             subgoals=subgoals,
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_until=float(data.get("waiting_until", 0.0) or 0.0),
             waiting_reason=data.get("waiting_reason"),
             waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
+            contract=GoalContract.from_dict(data.get("contract")),
         )
+
+    # --- contract helpers -------------------------------------------------
+
+    def has_contract(self) -> bool:
+        return self.contract is not None and not self.contract.is_empty()
 
     # --- subgoals helpers -------------------------------------------------
 
@@ -618,17 +850,24 @@ def judge_goal(
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
-) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
+    contract: Optional[GoalContract] = None,
+) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
-    Returns ``(verdict, reason, parse_failed, wait_directive)`` where verdict
+    Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)`` where verdict
     is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
     judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
     (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
 
     ``parse_failed`` is True only when the judge call succeeded but its output
     was unusable (empty or non-JSON). API/transport errors return False — they
-    are transient and should fail-open silently. Callers use this flag to
+    are transient and should fail-open silently.
+
+    ``transport_failed`` is True only when the judge couldn't reach the API at
+    all (auth 401, timeout, DNS, connection error).  Repeated transport
+    failures signal a permanent config problem (e.g. invalid API key).  Callers
+    use this flag to auto-pause after N consecutive transport failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``). Callers use this flag to
     auto-pause after N consecutive parse failures (see
     ``DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES``).
 
@@ -637,37 +876,55 @@ def judge_goal(
     live ``process_registry.list_sessions()`` snapshot; when the agent is
     waiting on one (a CI poller, build, etc.) the judge can return a ``wait``
     verdict naming its pid, parking the loop instead of re-poking.
+    ``contract`` is an optional structured completion contract; when present
+    the judge decides DONE strictly against its Verification criterion and
+    refuses completion when a Constraint was violated. All three are additive
+    — a contract, subgoals, and a background-process list can coexist in one
+    judge prompt; when none are set, behavior is identical to the original
+    free-form judge.
 
-    This is deliberately fail-open: any error returns ``("continue", ..., False, None)``
-    so a broken judge doesn't wedge progress — the turn budget and the
-    consecutive-parse-failures auto-pause are the backstops.
+    This is deliberately fail-open: transport errors return ``("continue", ..., ..., None, True)``
+    — the ``transport_failed=True`` flag lets callers track and auto-pause after
+    N consecutive transport failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``) so a permanently broken
+    judge doesn't burn the entire turn budget.
     """
     if not goal.strip():
-        return "skipped", "empty goal", False, None
+        return "skipped", "empty goal", False, None, False
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
-        return "continue", "empty response (nothing to evaluate)", False, None
+        return "continue", "empty response (nothing to evaluate)", False, None, False
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import call_llm
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False, None
+        return "continue", "auxiliary client unavailable", False, None, False
 
-    try:
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception as exc:
-        logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False, None
-
-    if client is None or not model:
-        return "continue", "no auxiliary client configured", False, None
-
-    # Build the prompt — pick the with-subgoals variant when applicable.
+    # Build the prompt. Priority: contract > subgoals > plain. When both a
+    # contract and subgoals exist, the subgoals are appended into the
+    # contract block as extra criteria so the judge sees a single source of
+    # truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
     background_block = _render_background_block(background_processes)
     current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    if clean_subgoals:
+
+    if contract is not None and not contract.is_empty():
+        contract_block = contract.render_block()
+        if clean_subgoals:
+            extra = "\n".join(
+                f"- Extra criterion {i}: {text}"
+                for i, text in enumerate(clean_subgoals, start=1)
+            )
+            contract_block = f"{contract_block}\n{extra}"
+        prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            contract_block=_truncate(contract_block, 2500),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
+            current_time=current_time,
+        )
+    elif clean_subgoals:
         subgoals_block = "\n".join(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
         )
@@ -687,8 +944,11 @@ def judge_goal(
         )
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
+        # Route through call_llm so auxiliary.goal_judge.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the direct-create path dropped extra_body (#35566).
+        resp = call_llm(
+            task="goal_judge",
             messages=[
                 {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -696,11 +956,10 @@ def judge_goal(
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False, None
+        return "continue", f"judge error: {type(exc).__name__}", False, None, True
 
     try:
         raw = resp.choices[0].message.content or ""
@@ -713,7 +972,7 @@ def judge_goal(
         verdict, _truncate(reason, 120),
         f" wait={wait_directive}" if wait_directive else "",
     )
-    return verdict, reason, parse_failed, wait_directive
+    return verdict, reason, parse_failed, wait_directive, False
 
 
 def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -734,6 +993,82 @@ def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str,
         logger.debug("gather_background_processes failed: %s", exc)
         return []
     return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+
+
+def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) -> Optional[GoalContract]:
+    """Expand a plain-language objective into a structured completion contract.
+
+    Uses the ``goal_judge`` auxiliary task (main-model-first, cache-safe — it
+    is a side LLM call, not a conversation turn). Returns a populated
+    :class:`GoalContract` on success, or ``None`` when the auxiliary client is
+    unavailable or the model's reply can't be parsed. Callers fall back to a
+    bare free-form goal in that case, so a missing/weak aux model never blocks
+    setting a goal.
+    """
+    objective = (objective or "").strip()
+    if not objective:
+        return None
+
+    try:
+        from agent.auxiliary_client import call_llm
+    except Exception as exc:
+        logger.debug("goal draft: auxiliary client import failed: %s", exc)
+        return None
+
+    try:
+        # Route through call_llm — same #35566 fix as the judge call above.
+        resp = call_llm(
+            task="goal_judge",
+            messages=[
+                {"role": "system", "content": DRAFT_CONTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Objective:\n{_truncate(objective, 4000)}"},
+            ],
+            temperature=0,
+            max_tokens=_goal_judge_max_tokens(),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.info("goal draft: API call failed (%s)", exc)
+        return None
+
+    try:
+        raw = resp.choices[0].message.content or ""
+    except Exception:
+        raw = ""
+
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        logger.debug("goal draft: reply was not JSON: %r", _truncate(raw, 200))
+        return None
+    contract = GoalContract.from_dict(data)
+    return None if contract.is_empty() else contract
+
+
+def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
+    """Best-effort: pull the first JSON object out of a model reply.
+
+    Shares the fence-stripping + first-object fallback logic used by the
+    judge parser, but returns the dict (or None) rather than a verdict.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+    try:
+        data = json.loads(text)
+    except Exception:
+        match = _JSON_OBJECT_RE.search(text)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -775,34 +1110,39 @@ class GoalManager:
     def has_goal(self) -> bool:
         return self._state is not None and self._state.status in {"active", "paused"}
 
+    def has_contract(self) -> bool:
+        return self._state is not None and self._state.has_contract()
+
     def status_line(self) -> str:
         s = self._state
         if s is None or s.status in {"cleared",}:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
+        con = ", contract" if self.has_contract() else ""
+        meta = f"{turns}{sub}{con}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 wr = s.waiting_reason or f"session {s.waiting_on_session}"
-                return f"⏳ Goal (parked on {wr}, {turns}{sub}): {s.goal}"
+                return f"⏳ Goal (parked on {wr}, {meta}): {s.goal}"
             if s.waiting_on_pid and _pid_alive(s.waiting_on_pid):
                 wr = s.waiting_reason or f"pid {s.waiting_on_pid}"
-                return f"⏳ Goal (parked on {wr}, {turns}{sub}): {s.goal}"
+                return f"⏳ Goal (parked on {wr}, {meta}): {s.goal}"
             if s.waiting_until and time.time() < s.waiting_until:
                 remaining = int(s.waiting_until - time.time())
                 wr = s.waiting_reason or f"{remaining}s"
-                return f"⏳ Goal (parked {remaining}s — {wr}, {turns}{sub}): {s.goal}"
-            return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
+                return f"⏳ Goal (parked {remaining}s — {wr}, {meta}): {s.goal}"
+            return f"⊙ Goal (active, {meta}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {turns}{sub}{extra}): {s.goal}"
+            return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
         if s.status == "done":
-            return f"✓ Goal done ({turns}{sub}): {s.goal}"
-        return f"Goal ({s.status}, {turns}{sub}): {s.goal}"
+            return f"✓ Goal done ({meta}): {s.goal}"
+        return f"Goal ({s.status}, {meta}): {s.goal}"
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None) -> GoalState:
+    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
@@ -813,10 +1153,22 @@ class GoalManager:
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
+            contract=contract if contract is not None else GoalContract(),
         )
         self._state = state
         save_goal(self.session_id, state)
         return state
+
+    def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
+        """Attach or replace the completion contract on the active goal.
+
+        Returns the updated state, or None when there is no goal to attach to.
+        """
+        if self._state is None:
+            return None
+        self._state.contract = contract or GoalContract()
+        save_goal(self.session_id, self._state)
+        return self._state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
@@ -1091,11 +1443,12 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed, wait_directive = judge_goal(
+        verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal,
             last_response,
             subgoals=state.subgoals or None,
             background_processes=background_processes,
+            contract=state.contract if state.has_contract() else None,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -1107,6 +1460,16 @@ class GoalManager:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        # Track consecutive transport failures separately — persistent API
+        # errors (401 auth, DNS, timeout) signal a broken config, not
+        # transient network flakiness.  Auto-pause after N consecutive
+        # transport failures so a permanently broken judge doesn't burn
+        # every turn budget slot on an unreachable API.
+        if transport_failed:
+            state.consecutive_transport_failures += 1
+        else:
+            state.consecutive_transport_failures = 0
 
         # WAIT verdict: the judge decided the agent is blocked on async work
         # and re-poking now would be busy-work. Set the barrier and park —
@@ -1143,6 +1506,36 @@ class GoalManager:
                 "verdict": "done",
                 "reason": reason,
                 "message": f"✓ Goal achieved: {reason}",
+            }
+
+        # Auto-pause when the judge cannot reach the API at all N turns in a
+        # row (401 auth, DNS failure, timeout).  Persistent transport failures
+        # signal a broken configuration (e.g. invalid API key), not transient
+        # flakiness.  Without this guard, a permanently broken judge burns
+        # every turn budget slot on an unreachable API.
+        if state.consecutive_transport_failures >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            state.status = "paused"
+            state.paused_reason = (
+                f"judge API unreachable {state.consecutive_transport_failures} turns in a row "
+                f"(check auxiliary.goal_judge provider/key in config.yaml)"
+            )
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "message": (
+                    f"⏸ Goal paused — judge API returned errors "
+                    f"({state.consecutive_transport_failures} turns). "
+                    "Check the goal_judge provider/key in ~/.hermes/config.yaml:\n"
+                    "  auxiliary:\n"
+                    "    goal_judge:\n"
+                    "      provider: deepseek\n"
+                    "      model: deepseek-v4-flash\n"
+                    "Then /goal resume to continue."
+                ),
             }
 
         # Auto-pause when the judge model can't produce the expected JSON
@@ -1206,12 +1599,35 @@ class GoalManager:
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
             return None
+        # Contract takes priority: it carries the verification surface and
+        # constraints the agent must target. Subgoals fold in as extra
+        # criteria appended to the contract block.
+        if self._state.has_contract():
+            contract_block = self._state.contract.render_block()
+            if self._state.subgoals:
+                extra = "\n".join(
+                    f"- Extra criterion {i}: {text}"
+                    for i, text in enumerate(self._state.subgoals, start=1)
+                )
+                contract_block = f"{contract_block}\n{extra}"
+            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+                goal=self._state.goal,
+                contract_block=contract_block,
+            )
         if self._state.subgoals:
             return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
                 goal=self._state.goal,
                 subgoals_block=self._state.render_subgoals_block(),
             )
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
+
+    def render_contract(self) -> str:
+        """Public helper for the /goal show + /goal draft slash commands."""
+        if self._state is None:
+            return "(no active goal)"
+        if not self._state.has_contract():
+            return "(no completion contract — set one with /goal draft <objective> or inline field: value lines)"
+        return self._state.contract.render_block()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1321,7 +1737,7 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -1368,11 +1784,17 @@ def run_kanban_goal_loop(
 
 __all__ = [
     "GoalState",
+    "GoalContract",
     "GoalManager",
+    "parse_contract",
+    "draft_contract",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "DRAFT_CONTRACT_SYSTEM_PROMPT",
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",

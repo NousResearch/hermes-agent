@@ -1,18 +1,12 @@
-import {
-  type PointerEvent as ReactPointerEvent,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useRef,
-  useState
-} from 'react'
+import { type PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   POPOUT_ESTIMATED_HEIGHT,
   POPOUT_WIDTH_REM,
-  setComposerPopoutPosition,
   type PopoutPosition,
-  type PopoutSize
+  type PopoutSize,
+  readPopoutBounds,
+  setComposerPopoutPosition
 } from '@/store/composer-popout'
 
 // Floating surface long-press before it becomes draggable (the 5px platform drags
@@ -79,6 +73,7 @@ function dockProximityOf(rect: DOMRect) {
   const verticalGap = window.innerHeight - DOCK_ZONE_BOTTOM_PX - rect.bottom
 
   const v = verticalGap <= 0 ? 1 : Math.max(0, 1 - verticalGap / DOCK_VERTICAL_FALLOFF_PX)
+
   const h =
     horizontalDist <= DOCK_ZONE_CENTER_TOLERANCE_PX
       ? 1
@@ -147,7 +142,7 @@ export function useComposerPopoutGestures({
   const beginFloatDrag = useCallback(
     (state: PressState, clientX: number, clientY: number, next: PopoutPosition, size?: PopoutSize) => {
       clearTimer()
-      const clamped = setComposerPopoutPosition(next, { size })
+      const clamped = setComposerPopoutPosition(next, { area: readPopoutBounds(composerRef.current), size })
       liveRef.current = clamped
 
       state.mode = 'float'
@@ -159,7 +154,7 @@ export function useComposerPopoutGestures({
 
       setDragging(true)
     },
-    [clearTimer]
+    [clearTimer, composerRef]
   )
 
   const peelOffFromDock = useCallback(
@@ -265,7 +260,7 @@ export function useComposerPopoutGestures({
           bottom: state.startBottom - (pending.y - state.startY),
           right: state.startRight - (pending.x - state.startX)
         },
-        { size }
+        { area: readPopoutBounds(composer), size }
       )
 
       if (composer) {
@@ -327,7 +322,7 @@ export function useComposerPopoutGestures({
         } else {
           // Persist the resting position once, on release — never per move.
           const size = composer ? { height: composer.offsetHeight, width: composer.offsetWidth } : undefined
-          setComposerPopoutPosition(liveRef.current, { persist: true, size })
+          setComposerPopoutPosition(liveRef.current, { area: readPopoutBounds(composer), persist: true, size })
         }
       }
 

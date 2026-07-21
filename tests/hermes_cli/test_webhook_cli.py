@@ -8,6 +8,7 @@ from argparse import Namespace
 
 from hermes_cli.webhook import (
     webhook_command,
+    _get_webhook_base_url,
     _load_subscriptions,
     _save_subscriptions,
     _subscriptions_path,
@@ -35,9 +36,27 @@ def _make_args(**kwargs):
         "deliver_chat_id": "",
         "secret": "",
         "payload": "",
+        "script": "",
     }
     defaults.update(kwargs)
     return Namespace(**defaults)
+
+
+@pytest.mark.parametrize("host", [None, "", "0.0.0.0", "::"])
+def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
+    monkeypatch.setattr(
+        "hermes_cli.webhook._get_webhook_config",
+        lambda: {"extra": {"host": host, "port": 9123}},
+    )
+    assert _get_webhook_base_url() == "http://localhost:9123"
+
+
+def test_webhook_base_url_brackets_pinned_ipv6_host(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.webhook._get_webhook_config",
+        lambda: {"extra": {"host": "::1", "port": 9123}},
+    )
+    assert _get_webhook_base_url() == "http://[::1]:9123"
 
 
 class TestSubscribe:
@@ -71,6 +90,12 @@ class TestSubscribe:
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
+
+    def test_script_option_is_persisted(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="s", script="todoist_filter.py"
+        ))
+        assert _load_subscriptions()["s"]["script"] == "todoist_filter.py"
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))

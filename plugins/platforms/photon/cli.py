@@ -380,11 +380,12 @@ def _install_sidecar() -> int:
         return 1
     # spectrum-ts is pinned exactly in package.json/package-lock.json because
     # the SDK ships breaking majors (v2 removed defineFusorPlatform; v3
-    # reworked space construction). Upgrades are deliberate: bump the pin,
-    # migrate sidecar/index.mjs, re-run the photon tests — never `@latest`
-    # (see README "Upgrading spectrum-ts"). `npm ci` installs the committed
-    # lockfile verbatim; fall back to `npm install` when the lockfile is
-    # missing or drifted (e.g. a dev checkout mid-upgrade).
+    # reworked space construction; v5 split it into @spectrum-ts/* packages).
+    # Upgrades are deliberate: bump the pin, migrate sidecar/index.mjs, re-run
+    # the photon tests — never `@latest` (see README "Upgrading spectrum-ts").
+    # `npm ci` installs the committed lockfile verbatim; fall back to
+    # `npm install` when the lockfile is missing or drifted (e.g. a dev
+    # checkout mid-upgrade).
     print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
     # stdout is not captured so npm progress prints to the terminal in real
     # time. stderr is captured so we can persist the failure reason for

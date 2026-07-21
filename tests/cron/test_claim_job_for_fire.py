@@ -14,10 +14,7 @@ import pytest
 def temp_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # NOTE: cron.jobs resolves its store paths (JOBS_FILE, CRON_DIR) from
-    # get_default_hermes_root() at IMPORT time, so setting HERMES_HOME here does
-    # not re-point an already-imported module's store. These tests exercise the
-    # claim logic on in-memory job dicts and don't depend on the on-disk path.
+    # cron.jobs caches no home at import; get_hermes_home() reads the env live.
     yield tmp_path
 
 

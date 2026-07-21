@@ -132,7 +132,9 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     assert turn.logical_llm_calls == {}
 
 
-def test_stream_preserves_provider_error_and_keeps_logical_scope_for_retry(relay_turn):
+def test_deferred_stream_preserves_provider_error_and_logical_scope_for_retry(
+    relay_turn,
+):
     _relay, turn = relay_turn
 
     class ProviderError(Exception):
@@ -158,6 +160,7 @@ def test_stream_preserves_provider_error_and_keeps_logical_scope_for_retry(relay
             "api_mode": "chat_completions",
             "api_request_id": "request-2",
         },
+        defer_logical_completion=True,
     )
 
     with pytest.raises(ProviderError) as caught:

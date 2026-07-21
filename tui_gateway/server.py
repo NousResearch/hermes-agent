@@ -12925,7 +12925,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 )
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
-    ("/compact", "Toggle compact display mode", "TUI"),
+    ("/density", "Toggle display density", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     (
         "/mouse",
@@ -14150,9 +14150,9 @@ def _(rid, params: dict) -> dict:
         text_lower = text.lower()
         extras = [
             {
-                "text": "/compact",
-                "display": "/compact",
-                "meta": "Toggle compact display mode",
+                "text": "/density",
+                "display": "/density",
+                "meta": "Toggle display density",
             },
             {
                 "text": "/details",

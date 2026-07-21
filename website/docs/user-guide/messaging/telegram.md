@@ -242,6 +242,9 @@ The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the
 
 Anything on this list is delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
 
+For conversion, compression, trimming, audio extraction, and other FFmpeg-based
+preparation before sending, use the bundled `media-delivery-prep` skill.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.

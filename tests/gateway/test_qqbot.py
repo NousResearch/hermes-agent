@@ -31,10 +31,53 @@ class TestQQRequirements:
 
 
 # ---------------------------------------------------------------------------
-# QQAdapter.__init__
+# get_api_base — QQ_SANDBOX environment variable
 # ---------------------------------------------------------------------------
 
-class TestQQAdapterInit:
+class TestGetApiBase:
+    """Regression: get_api_base() must respect QQ_SANDBOX env var at call time."""
+
+    def test_production_by_default(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert get_api_base() == "https://api.sgroup.qq.com"
+
+    def test_sandbox_true(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {"QQ_SANDBOX": "true"}, clear=True):
+            assert get_api_base() == "https://sandbox.api.sgroup.qq.com"
+
+    def test_sandbox_one(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {"QQ_SANDBOX": "1"}, clear=True):
+            assert get_api_base() == "https://sandbox.api.sgroup.qq.com"
+
+    def test_sandbox_yes(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {"QQ_SANDBOX": "yes"}, clear=True):
+            assert get_api_base() == "https://sandbox.api.sgroup.qq.com"
+
+    def test_sandbox_false(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {"QQ_SANDBOX": "false"}, clear=True):
+            assert get_api_base() == "https://api.sgroup.qq.com"
+
+    def test_sandbox_empty(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {"QQ_SANDBOX": ""}, clear=True):
+            assert get_api_base() == "https://api.sgroup.qq.com"
+
+    def test_sandbox_case_insensitive(self):
+        from gateway.platforms.qqbot.constants import get_api_base
+        with mock.patch.dict(os.environ, {"QQ_SANDBOX": "TRUE"}, clear=True):
+            assert get_api_base() == "https://sandbox.api.sgroup.qq.com"
+
+    def test_api_base_constant_is_static(self):
+        """Module-level API_BASE is evaluated once at import time."""
+        from gateway.platforms.qqbot.constants import API_BASE
+        # Should be a string (either production or sandbox depending on import-time env)
+        assert isinstance(API_BASE, str)
+        assert "sgroup.qq.com" in API_BASE
     def _make(self, **extra):
         from gateway.platforms.qqbot import QQAdapter
         return QQAdapter(_make_config(**extra))

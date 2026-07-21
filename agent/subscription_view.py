@@ -327,17 +327,89 @@ def subscription_manage_url(
     except Exception:
         return None
 
-    if not parts.scheme or not parts.netloc:
+    if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
 
-    # Insertion order (org_id before plan) is the emitted query order.
-    params: dict[str, str] = {}
+    from urllib.parse import parse_qsl
+
+    # Preserve unrelated portal query params; org_id / plan are contract-owned
+    # (org_id before plan — insertion order is the emitted query order).
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    params.pop("org_id", None)
+    params.pop("plan", None)
     if state.org_id:
         params["org_id"] = state.org_id
     if tier_id:
         params["plan"] = tier_id
-    query = urlencode(params) if params else ""
+    query = urlencode(params)
     return urlunsplit((parts.scheme, parts.netloc, "/manage-subscription", query, ""))
+
+
+# =============================================================================
+# Shared plan-catalog helpers (consumed by the CLI Free catalog + paid picker)
+# =============================================================================
+
+
+def _format_dollars_grouped(value: Optional[Decimal]) -> str:
+    """``$1,000`` / ``$1,234.50`` — the whole-vs-fractional rule of
+    ``billing_view.format_money`` but thousands-grouped, matching the TUI's
+    ``toLocaleString('en-US')``.
+
+    The shared ``format_money`` is intentionally ungrouped (and asserted so across
+    other surfaces), so plan-catalog rows group locally to mirror the TUI.
+    """
+    if value is None:
+        return "—"
+    if value == value.to_integral_value():
+        return f"${format(value.to_integral_value(), ',f')}"
+    return f"${format(value.quantize(Decimal('0.01')), ',f')}"
+
+
+def selectable_tiers(state: SubscriptionState) -> list[SubscriptionTier]:
+    """Enabled paid tiers other than the current plan, cheapest first.
+
+    One derivation shared by the CLI Free catalog and the paid change picker:
+    ``is_enabled and not is_current and tier_order > 0`` (free / no-sub excluded —
+    dropping to free is a cancellation), sorted by ``tier_order``.
+    """
+    return sorted(
+        (
+            t
+            for t in (state.tiers or ())
+            if t.is_enabled and not t.is_current and (t.tier_order or 0) > 0
+        ),
+        key=lambda t: t.tier_order or 0,
+    )
+
+
+def format_tier_row(tier: SubscriptionTier) -> str:
+    """``name · $X/mo[ · $Y credits/mo]`` — the shared plan-catalog row.
+
+    Mirrors the TUI Free rows (``subscriptionOverlay.tsx``): thousands-grouped
+    money, and the ``$Y credits/mo`` suffix ONLY when monthly credits are present
+    and > 0 (a ``None`` / zero-credits tier hides it — never ``· — credits/mo`` or
+    ``· $0 credits/mo``).
+    """
+    row = f"{tier.name} · {_format_dollars_grouped(tier.dollars_per_month)}/mo"
+    mc = tier.monthly_credits
+    if mc is not None and mc > 0:
+        row += f" · {_format_dollars_grouped(mc)} credits/mo"
+    return row
+
+
+def is_upgrade(state: SubscriptionState, tier_id: str) -> bool:
+    """True when ``tier_id`` ranks above the current plan by ``tier_order``.
+
+    Prefers the active subscription's tier; falls back to the ``tiers[]``
+    ``is_current`` marker (what the picker derives from), else 0 (free).
+    """
+    orders = {t.tier_id: (t.tier_order or 0) for t in (state.tiers or ())}
+    cur_id = state.current.tier_id if state.current else None
+    if cur_id is not None and cur_id in orders:
+        cur_order = orders[cur_id]
+    else:
+        cur_order = next((t.tier_order or 0 for t in (state.tiers or ()) if t.is_current), 0)
+    return orders.get(tier_id, 0) > cur_order
 
 
 # =============================================================================

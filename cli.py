@@ -4169,6 +4169,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
+        self._command_blocks_input = False
         self._command_status = ""
         # Petdex mascot (opt-in via display.pet). The base CLI mirrors the TUI's
         # PetPane: a half-block sprite above the prompt that reacts to agent
@@ -6182,9 +6183,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return _COMMAND_SPINNER_FRAMES[frame_idx]
 
     @contextmanager
-    def _busy_command(self, status: str):
-        """Expose a temporary busy state in the TUI while a slash command runs."""
+    def _busy_command(self, status: str, *, blocks_input: bool = True):
+        """Expose a temporary busy state in the TUI while a slash command runs.
+
+        Most synchronous slash commands must reserve the composer because their
+        completion changes the active session state. Manual compression is safe
+        to draft through: the queued input is processed against the compacted
+        history after the command completes.
+        """
+        previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
+        self._command_blocks_input = blocks_input
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
@@ -6192,6 +6201,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             yield
         finally:
             self._command_running = False
+            self._command_blocks_input = previous_blocks_input
             self._command_status = ""
             self._invalidate(min_interval=0.0)
 
@@ -10010,7 +10020,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
 
         original_count = len(self.conversation_history)
-        with self._busy_command("Compressing context..."):
+        with self._busy_command("Compressing context...", blocks_input=False):
             try:
                 from agent.model_metadata import estimate_request_tokens_rough
                 from agent.manual_compression_feedback import summarize_manual_compression
@@ -13436,6 +13446,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Slash command loading state
         self._command_running = False
+        self._command_blocks_input = False
         self._command_status = ""
 
         # Secure secret capture state for skill setup
@@ -14397,7 +14408,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
-            read_only=Condition(lambda: bool(cli_ref._command_running)),
+            read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
             history=FileHistory(str(self._history_file)),
             # complete_while_typing fires the completer on every keystroke. The
             # completer does blocking work — fuzzy @-file indexing shells out to
@@ -14608,8 +14619,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if cli_ref._command_running:
                 frame = cli_ref._command_spinner_frame()
+                detail = "input temporarily disabled" if cli_ref._command_blocks_input else "input stays active; Enter queues"
                 return [
-                    ('class:hint', f'  {frame} command in progress · input temporarily disabled'),
+                    ('class:hint', f'  {frame} command in progress · {detail}'),
                 ]
 
             return []

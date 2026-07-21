@@ -14,6 +14,35 @@ def _make_history() -> list[dict[str, str]]:
     ]
 
 
+def test_manual_compress_keeps_tui_composer_editable(capsys):
+    """A follow-up can be drafted and queued while /compress runs."""
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = shell.session_id
+
+    observed = {}
+
+    def compress(*_args, **_kwargs):
+        # The classic TUI's TextArea consults this state for its read_only
+        # condition. Compression must retain its status spinner without
+        # preventing the user from drafting the next prompt.
+        observed["running"] = shell._command_running
+        observed["blocks_input"] = getattr(shell, "_command_blocks_input", shell._command_running)
+        return list(history), ""
+
+    shell.agent._compress_context.side_effect = compress
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    assert observed == {"running": True, "blocks_input": False}
+
+
 def test_manual_compress_reports_noop_without_success_banner(capsys):
     shell = _make_cli()
     history = _make_history()

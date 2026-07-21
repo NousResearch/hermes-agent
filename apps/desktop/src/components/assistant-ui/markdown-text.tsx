@@ -285,7 +285,18 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   )
 }
 
-function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+export function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+  // Generated/inline media often arrives as image markdown — `![clip](clip.mp4)`.
+  // A raw <img> with a video/audio source renders a broken-image icon (the file
+  // is valid, the browser just can't paint it as an image), so route those
+  // sources to MediaAttachment, which picks the right <video>/<audio> element
+  // (with the streaming protocol + open-externally fallback) by media kind.
+  // Detection is extension-based via mediaKind(); an extension-less/data/blob
+  // video URL still resolves to 'file' and falls through to <img> as before.
+  if (typeof src === 'string' && (mediaKind(src) === 'video' || mediaKind(src) === 'audio')) {
+    return <MediaAttachment path={src} />
+  }
+
   return (
     <ZoomableImage
       alt={alt}

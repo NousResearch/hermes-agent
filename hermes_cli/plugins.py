@@ -2068,6 +2068,41 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
+def collect_hook_block_reasons(hook_name: str, **kwargs: Any) -> List[str]:
+    """Fire an install-gate hook and flatten returned block reasons.
+
+    Built-in management commands (``plugins install``, ``mcp add``) skip
+    startup plugin discovery, so load the trusted registry first — otherwise
+    the gate would fire against an empty registry and never block.
+
+    Deliberately fail-soft on discovery itself: a discovery failure (or
+    ``HERMES_SAFE_MODE``, which skips plugin loading entirely) means the gate
+    runs with no plugin callbacks and allows the operation — the same behavior
+    as having no gate plugin installed. Failing closed here would brick
+    ``mcp add``/``plugins install`` for every user on any discovery hiccup.
+    Callbacks that raise are dropped by invoke_hook (also fail-open), so gates
+    must RETURN a block reason, not raise.
+    """
+    try:
+        discover_plugins()
+    except Exception:
+        logger.warning(
+            "plugin discovery failed before %s gate — gate runs without "
+            "plugin callbacks (fail-open)",
+            hook_name,
+            exc_info=True,
+        )
+    reasons: List[str] = []
+    for ret in invoke_hook(hook_name, **kwargs):
+        # `if ret`: an empty string is not a block reason (matches the
+        # non-empty filter in the list branch below).
+        if isinstance(ret, str) and ret:
+            reasons.append(ret)
+        elif isinstance(ret, (list, tuple)):
+            reasons.extend(str(x) for x in ret if x)
+    return reasons
+
+
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     """Invoke registered middleware callbacks.
 

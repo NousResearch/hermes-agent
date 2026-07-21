@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
-from hermes_cli.plugins import invoke_hook
+from hermes_cli.plugins import collect_hook_block_reasons
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
@@ -504,20 +504,16 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         # artifact before it is promoted into ~/.hermes/plugins. A returned
         # reason aborts the install (fail-closed), same contract as
         # validate_mcp_server_entry for MCP servers.
-        gate_reasons: list[str] = []
-        # invoke_hook drops a callback that raises (fail-open), so gates must RETURN a block reason, not raise.
-        for ret in invoke_hook(
+        # collect_hook_block_reasons also loads the trusted plugin registry:
+        # `plugins install` is a built-in command that skips startup discovery.
+        gate_reasons = collect_hook_block_reasons(
             "pre_plugin_install",
             name=plugin_name,
             git_url=git_url,
             subdir=subdir,
             path=str(tmp_target),
             manifest=manifest,
-        ):
-            if isinstance(ret, str):
-                gate_reasons.append(ret)
-            elif isinstance(ret, (list, tuple)):
-                gate_reasons.extend(str(x) for x in ret if x)
+        )
         if gate_reasons:
             raise PluginOperationError(
                 f"Plugin '{plugin_name}' blocked by an install gate:\n"

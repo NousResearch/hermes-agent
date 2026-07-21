@@ -26,7 +26,7 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
-from hermes_cli.plugins import invoke_hook
+from hermes_cli.plugins import collect_hook_block_reasons
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 
 logger = logging.getLogger(__name__)
@@ -95,12 +95,11 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     so this blocks shell+egress payloads rather than whitelisting command families.
     """
     issues = validate_mcp_server_entry(name, server_config)
-    # invoke_hook drops a callback that raises (fail-open), so gates must RETURN a block reason, not raise.
-    for ret in invoke_hook("pre_mcp_add", name=name, server_config=server_config):
-        if isinstance(ret, str):
-            issues.append(ret)
-        elif isinstance(ret, (list, tuple)):
-            issues.extend(str(x) for x in ret if x)
+    # collect_hook_block_reasons also loads the trusted plugin registry — this
+    # runs from built-in commands that skip startup discovery.
+    issues.extend(
+        collect_hook_block_reasons("pre_mcp_add", name=name, server_config=server_config)
+    )
     if issues:
         for issue in issues:
             _warning(issue)
@@ -145,6 +144,11 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
             issues.append(f"Server '{name}': expected an object")
             continue
         issues.extend(validate_mcp_server_entry(name, cfg))
+        # Same pre_mcp_add gate as _save_mcp_server — dashboard whole-map
+        # edits land here, not through the per-key upsert.
+        issues.extend(
+            collect_hook_block_reasons("pre_mcp_add", name=name, server_config=cfg)
+        )
 
     if issues:
         return False, issues
@@ -483,13 +487,10 @@ def cmd_mcp_add(args):
     issues = validate_mcp_server_entry(name, server_config)
     # Fire the install gate BEFORE discovery: `_probe_single_server` below
     # connects to (and for stdio, launches) the untrusted server, so a
-    # save-time-only gate would run only after that execution. invoke_hook drops
-    # a callback that raises (fail-open), so gates must RETURN a block reason.
-    for ret in invoke_hook("pre_mcp_add", name=name, server_config=server_config):
-        if isinstance(ret, str):
-            issues.append(ret)
-        elif isinstance(ret, (list, tuple)):
-            issues.extend(str(x) for x in ret if x)
+    # save-time-only gate would run only after that execution.
+    issues.extend(
+        collect_hook_block_reasons("pre_mcp_add", name=name, server_config=server_config)
+    )
     if issues:
         for issue in issues:
             _warning(issue)

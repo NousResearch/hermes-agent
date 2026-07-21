@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import hermes_cli.plugins as plugins_mod
 from hermes_cli import mcp_config
 
 
@@ -17,11 +18,13 @@ def test_pre_mcp_add_blocks_before_probe(monkeypatch):
 
     monkeypatch.setattr(mcp_config, "_get_mcp_servers", lambda: {})
     monkeypatch.setattr(mcp_config, "_probe_single_server", _fake_probe)
+    # Gate goes through plugins.collect_hook_block_reasons — patch at the
+    # plugins module, whose globals the helper resolves.
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda force=False: None)
     monkeypatch.setattr(
-        mcp_config,
+        plugins_mod,
         "invoke_hook",
         lambda hook, **kw: [["blocked by test"]] if hook == "pre_mcp_add" else [],
-        raising=False,
     )
     monkeypatch.setattr(
         mcp_config,

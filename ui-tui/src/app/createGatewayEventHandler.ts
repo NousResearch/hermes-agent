@@ -68,7 +68,12 @@ const themeForSkin = (s: GatewaySkin) => {
 let lastCommittedTheme: Theme | null = null
 
 const commitTheme = (theme: Theme) => {
-  const changed = lastCommittedTheme !== null && !themesEqual(lastCommittedTheme, theme)
+  // First commit compares against the SEED uiStore mounted with (boot cache
+  // or default), not null — otherwise a first resolve that differs from the
+  // boot-cached theme skips the anti-tearing repaint (the exact seed≠skin
+  // case: cold start defaults dark, then resolves to a light skin).
+  const prev = lastCommittedTheme ?? getUiState().theme
+  const changed = !themesEqual(prev, theme)
 
   lastCommittedTheme = theme
   patchUiState({ theme })
@@ -113,6 +118,10 @@ export function reapplyTheme(): void {
  * regardless of the painted background when the editor theme leaves the
  * terminal background unset.
  */
+// True once CONFIG (via light/dark) owns the HERMES_TUI_THEME env pin, so an
+// 'auto' hydrate knows not to clobber a user's shell-exported pin.
+let configPinnedTheme = false
+
 export function applyConfiguredTuiTheme(raw: unknown): void {
   const mode = String(raw ?? '')
     .trim()
@@ -125,12 +134,17 @@ export function applyConfiguredTuiTheme(raw: unknown): void {
       return
     }
 
+    configPinnedTheme = true
     process.env.HERMES_TUI_THEME = mode
   } else {
-    if (!current) {
+    // 'auto' clears only a pin CONFIG set — never a HERMES_TUI_THEME the user
+    // exported in their shell, which is an explicit override that outranks
+    // auto-detection (see detectLightMode's priority order).
+    if (!current || !configPinnedTheme) {
       return
     }
 
+    configPinnedTheme = false
     delete process.env.HERMES_TUI_THEME
   }
 

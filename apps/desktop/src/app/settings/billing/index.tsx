@@ -331,8 +331,11 @@ function AutoReloadRow({
     setter(event.target.value)
   }
 
-  // Swap-in-place: the LEFT swap region reserves the tallest (editing) height so
-  // toggling Manage never moves the action buttons or the Usage section below.
+  // Zero-shift by exact reservation, not a magic min-height: the edit form is
+  // ALWAYS rendered and both states share a single grid cell (`[grid-area:stack]`),
+  // so the row's height always equals the tallest state at EVERY container width —
+  // no breakpoint math that under-reserves when the two inputs stack on narrow
+  // panes. The form is `invisible` + `aria-hidden` when not editing.
   return (
     <div className="@container">
       <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-start">
@@ -343,68 +346,80 @@ function AutoReloadRow({
           <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {row.description}
           </div>
-          {/* Reserved height for the tallest (editing) state — held in every state. */}
-          <div className="mt-3 min-h-28">
-            {editing ? (
-              <div className="space-y-2">
-                <div className="grid gap-2 @2xl:grid-cols-2">
-                  <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    Threshold
-                    <Input
-                      aria-label="Auto-refill threshold"
-                      className="mt-1 h-8"
-                      disabled={busy}
-                      inputMode="decimal"
-                      max={maxBound}
-                      min={minBound}
-                      onChange={onField(setThreshold)}
-                      step="0.01"
-                      type="number"
-                      value={threshold}
-                    />
-                  </label>
-                  <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    Reload to
-                    <Input
-                      aria-label="Auto-refill reload-to amount"
-                      className="mt-1 h-8"
-                      disabled={busy}
-                      inputMode="decimal"
-                      max={maxBound}
-                      min={minBound}
-                      onChange={onField(setReloadTo)}
-                      step="0.01"
-                      type="number"
-                      value={reloadTo}
-                    />
-                  </label>
-                </div>
-                {/* Pre-allocated error line — occupies height whether or not shown. */}
-                <div className="min-h-4 text-[length:var(--conversation-caption-font-size)] text-destructive">
-                  {showErrors && validation.error ? validation.error : ''}
-                </div>
-                {confirmDisable ? (
-                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    <span>Turn off auto-refill?</span>
-                    <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
-                      Turn off
-                    </Button>
-                    <Button disabled={busy} onClick={() => setConfirmDisable(false)} size="sm" type="button" variant="ghost">
-                      Cancel
-                    </Button>
-                  </div>
-                ) : (
-                  <Button disabled={busy} onClick={() => setConfirmDisable(true)} size="sm" type="button" variant="outline">
-                    Disable
-                  </Button>
-                )}
-                <BillingRefusalInline refusal={refusal} />
+          <div className="mt-3 grid [grid-template-areas:'stack']">
+            {/* EDIT layer — always in layout (reserves exact height); hidden until editing. */}
+            <div
+              aria-hidden={!editing}
+              className={cn('space-y-2 [grid-area:stack]', !editing && 'invisible')}
+            >
+              <div className="grid gap-2 @2xl:grid-cols-2">
+                <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  Threshold
+                  <Input
+                    aria-label="Auto-refill threshold"
+                    className="mt-1 h-8"
+                    disabled={busy || !editing}
+                    inputMode="decimal"
+                    max={maxBound}
+                    min={minBound}
+                    onChange={onField(setThreshold)}
+                    step="0.01"
+                    tabIndex={editing ? undefined : -1}
+                    type="number"
+                    value={threshold}
+                  />
+                </label>
+                <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  Reload to
+                  <Input
+                    aria-label="Auto-refill reload-to amount"
+                    className="mt-1 h-8"
+                    disabled={busy || !editing}
+                    inputMode="decimal"
+                    max={maxBound}
+                    min={minBound}
+                    onChange={onField(setReloadTo)}
+                    step="0.01"
+                    tabIndex={editing ? undefined : -1}
+                    type="number"
+                    value={reloadTo}
+                  />
+                </label>
               </div>
-            ) : (
-              <>
-                <BillingRefusalInline refusal={refusal} />
-                {message && <InlineMessage kind={message.kind}>{message.text}</InlineMessage>}
-              </>
+              {/* Pre-allocated error line — occupies height whether or not shown. */}
+              <div className="min-h-4 text-[length:var(--conversation-caption-font-size)] text-destructive">
+                {showErrors && validation.error ? validation.error : ''}
+              </div>
+              {confirmDisable ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  <span>Turn off auto-refill?</span>
+                  <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
+                    Turn off
+                  </Button>
+                  <Button disabled={busy} onClick={() => setConfirmDisable(false)} size="sm" type="button" variant="ghost">
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  disabled={busy}
+                  onClick={() => setConfirmDisable(true)}
+                  size="sm"
+                  tabIndex={editing ? undefined : -1}
+                  type="button"
+                  variant="outline"
+                >
+                  Disable
+                </Button>
+              )}
+              {/* Refusal stays INSIDE the reserved layer so it never pushes Usage. */}
+              <BillingRefusalInline refusal={refusal} />
+            </div>
+            {/* VIEW layer — success feedback overlaid in the same cell when not editing. */}
+            {!editing && message && (
+              <div className="[grid-area:stack]">
+                <InlineMessage kind={message.kind}>{message.text}</InlineMessage>
+              </div>
             )}
           </div>
         </div>
@@ -869,9 +884,10 @@ function BillingSettingsContent({
   const topupRow = view.accountRows.find(row => row.id === 'buy_credits')
   const refillRow = view.accountRows.find(row => row.id === 'auto_reload')
 
-  // The plans sub-view is only meaningful with a catalog; a stale/deep-linked
-  // `bview=plans` on an account without tiers falls back to the overview.
-  const showPlans = subView === 'plans' && view.status === 'normal' && view.tiers.length > 0
+  // Gate the plans sub-view on the SAME capability that renders the in-app button
+  // (`plan.action`): a team / non-changer deep-linking `bview=plans` must never
+  // reach a grid of live Choose buttons — it falls back to the overview.
+  const showPlans = subView === 'plans' && view.status === 'normal' && Boolean(view.plan?.action)
 
   if (showPlans) {
     return (

@@ -171,7 +171,7 @@ describe('deriveBillingView', () => {
     expect(view.accountRows).toEqual([])
   })
 
-  it('keeps subscription unavailable as a plan-card degradation when billing.state succeeds', () => {
+  it('keeps subscription unavailable as a plan-card degradation with a live portal link', () => {
     const view = deriveBillingView(okBilling(todayBillingState), endpointUnavailableSubscription)
 
     expect(view.status).toBe('normal')
@@ -180,7 +180,11 @@ describe('deriveBillingView', () => {
       tierName: 'Ultra'
     })
     expect(view.plan?.action).toBeUndefined()
-    expect(view.plan?.link).toBeUndefined()
+    // The caption promises the portal is still reachable — so the link must exist.
+    expect(view.plan?.link).toMatchObject({
+      label: 'Adjust plan ↗',
+      url: 'https://portal.nousresearch.com/manage-subscription'
+    })
   })
 
   it('clamps overdrawn subscription credits to $0 and names the overage', () => {
@@ -310,14 +314,63 @@ describe('derivePlanCard (current-plan card)', () => {
     })
   })
 
-  it('gives non-changing members neither an in-app button nor a portal link', () => {
+  it('gives non-changing members a portal link but no in-app button', () => {
     const view = deriveBillingView(
       okBilling(todayBillingState),
       okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
     )
 
     expect(view.plan?.action).toBeUndefined()
-    expect(view.plan?.link).toBeUndefined()
+    expect(view.plan?.link).toMatchObject({
+      label: 'Adjust plan ↗',
+      url: 'https://portal.nousresearch.com/manage-subscription?org_id=sid-5'
+    })
+  })
+
+  it('withholds the in-app button (no dead click) and offers the portal link when nothing is actionable', () => {
+    // A subscriber whose only enabled tier is the one they are already on: the grid
+    // would show a single inert card, so the "Change plan" button must not appear.
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: { ...todaySubscriptionState.current, tier_id: 'solo', tier_name: 'Solo' },
+        tiers: [
+          {
+            dollars_per_month_display: '$10',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '10',
+            name: 'Solo',
+            tier_id: 'solo',
+            tier_order: 0
+          }
+        ]
+      })
+    )
+
+    expect(view.tiers.map(tier => tier.state)).toEqual(['current'])
+    expect(view.plan?.action).toBeUndefined()
+    expect(view.plan?.link?.label).toBe('Adjust plan ↗')
+  })
+
+  it('offers only the portal link when the tier catalog is empty', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: null,
+        tiers: []
+      })
+    )
+
+    expect(view.tiers).toEqual([])
+    expect(view.plan?.action).toBeUndefined()
+    expect(view.plan?.link?.label).toBe('Adjust plan ↗')
   })
 })
 
@@ -392,6 +445,96 @@ describe('derivePlanTiers (plans grid)', () => {
     expect(view.tiers.find(tier => tier.name === 'Mystery')?.state).toBe('upgrade')
   })
 
+  it('keeps a grandfathered (is_enabled:false) CURRENT tier inert and orders downgrades against it', () => {
+    // NAS marks a grandfathered current tier is_enabled:false. It must still appear
+    // (inert "Current plan") and define the order boundary — lower enabled tiers are
+    // downgrades, higher ones are Choose.
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        context: 'personal',
+        current: { ...todaySubscriptionState.current, tier_id: 'legacy_mid', tier_name: 'Legacy' },
+        tiers: [
+          {
+            dollars_per_month_display: '$5',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '5',
+            name: 'Basic',
+            tier_id: 'basic',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$15',
+            is_current: true,
+            is_enabled: false,
+            monthly_credits: '15',
+            name: 'Legacy',
+            tier_id: 'legacy_mid',
+            tier_order: 1
+          },
+          {
+            dollars_per_month_display: '$40',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '40',
+            name: 'Ultra',
+            tier_id: 'ultra',
+            tier_order: 2
+          }
+        ]
+      })
+    )
+
+    const byName = Object.fromEntries(view.tiers.map(tier => [tier.name, tier]))
+
+    expect(view.tiers.map(tier => tier.name)).toEqual(['Basic', 'Legacy', 'Ultra'])
+    expect(byName.Legacy.state).toBe('current')
+    expect(byName.Legacy.action).toBeUndefined()
+    expect(byName.Basic.state).toBe('downgrade')
+    expect(byName.Basic.action).toBeUndefined()
+    expect(byName.Ultra.state).toBe('upgrade')
+    expect(byName.Ultra.action?.label).toBe('Choose ↗')
+  })
+
+  it('backs Choose URLs with billing.portal_url (org_id + plan intact) when the subscription has no portal_url', () => {
+    const view = deriveBillingView(
+      okBilling({ ...todayBillingState, portal_url: 'https://billing.example.com/x' }),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: null,
+        portal_url: null,
+        tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 'free0',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 'plus1',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    expect(view.tiers.find(tier => tier.name === 'Plus')?.action?.url).toBe(
+      'https://billing.example.com/manage-subscription?org_id=sid-5&plan=plus1'
+    )
+  })
+
   it('drops grandfathered (is_enabled: false) tiers from the grid', () => {
     const view = deriveBillingView(
       okBilling(todayBillingState),
@@ -450,5 +593,13 @@ describe('buildManageSubscriptionUrl', () => {
     expect(
       buildManageSubscriptionUrl({ org_id: 'org_123', portal_url: 'https://portal.nousresearch.com/billing' }, null)
     ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123')
+  })
+
+  it('applies org_id + plan to the hard-coded portal fallback when no portal_url resolves', () => {
+    // Regression: the fallback must be the last-resort ORIGIN, not a bare return that
+    // silently drops org_id/plan.
+    expect(buildManageSubscriptionUrl({ org_id: 'org_z', portal_url: null }, null, 'tier_q')).toBe(
+      'https://portal.nousresearch.com/manage-subscription?org_id=org_z&plan=tier_q'
+    )
   })
 })

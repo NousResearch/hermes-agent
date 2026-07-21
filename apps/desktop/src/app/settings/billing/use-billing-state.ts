@@ -5,12 +5,7 @@ import { fmtDate } from '@/lib/time'
 import type { BillingRefusal, BillingResult } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type {
-  BillingStateResponse,
-  SubscriptionStateResponse,
-  SubscriptionTierOption,
-  UsageModelData
-} from './types'
+import type { BillingStateResponse, SubscriptionStateResponse, UsageModelData } from './types'
 
 export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
@@ -187,9 +182,11 @@ export function deriveBillingView(
     }
   }
 
+  const tiers = derivePlanTiers(subscription, billing.portal_url)
+
   return {
     accountRows: deriveAccountRows(billing),
-    plan: derivePlanCard(billing, subscription, subscriptionResult),
+    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers),
     status: 'normal',
     summary: [
       { label: 'Balance', value: displayBalance(billing) },
@@ -200,7 +197,7 @@ export function deriveBillingView(
         value: billing.auto_reload ? (billing.auto_reload.enabled ? 'Enabled' : 'Off') : EMPTY_BILLING_VALUE
       }
     ],
-    tiers: derivePlanTiers(subscription),
+    tiers,
     usageRows: deriveUsageRows(billing, subscription)
   }
 }
@@ -212,7 +209,10 @@ export function buildManageSubscriptionUrl(
   // (validated server-side by the NAS reader, draft #748).
   tierId?: null | string
 ): string {
-  const portalUrls = [subscription?.portal_url, fallbackPortalUrl].filter(
+  // The hard-coded portal is the LAST-RESORT origin, not a bare early return:
+  // org_id / plan must still be applied to it so a null portal_url never silently
+  // strips the params that route the user to the right org + pre-selected tier.
+  const portalUrls = [subscription?.portal_url, fallbackPortalUrl, FALLBACK_PORTAL_BILLING_URL].filter(
     (url): url is string => typeof url === 'string' && url.length > 0
   )
 
@@ -294,12 +294,6 @@ function deriveAccountRows(billing: BillingStateResponse): BillingAccountRowView
   return [paymentMethodRow(billing), buyCreditsRow(billing), autoReloadRow(billing)]
 }
 
-// Selectable, enabled tiers sorted low→high, free tier included. Shared by the
-// plan-card price lookup and the plans grid so both read the same catalog.
-function enabledTiers(subscription: null | SubscriptionStateResponse): SubscriptionTierOption[] {
-  return (subscription?.tiers ?? []).filter(tier => tier.is_enabled).sort((a, b) => a.tier_order - b.tier_order)
-}
-
 // Monthly credits are dollars; NAS sends a bare decimal string. Never render a
 // bare number — always "$110 credits/mo" (mirrors the retired subscriptionTierChips).
 function creditsPerMonthDisplay(monthlyCredits: null | string): string | undefined {
@@ -309,22 +303,27 @@ function creditsPerMonthDisplay(monthlyCredits: null | string): string | undefin
 }
 
 /**
- * The current-plan card. One button at most: free/no-sub + can_change_plan →
- * "View plans"; subscriber + can_change_plan → "Change plan". Teams and accounts
- * that cannot change plans get no button (info only) but keep a portal link so
- * they can still reach billing.
+ * The current-plan card. It offers the in-app "View plans" / "Change plan" button
+ * ONLY when the account can change plans AND the plans grid actually has an
+ * actionable (non-current) tier to show — otherwise the button would open an empty
+ * grid and silently no-op. In every no-button case (teams, non-changers, refused
+ * subscription, empty catalog) the card ALWAYS carries the portal escape-hatch link
+ * so the user is never stranded on an info-only card.
  */
 function derivePlanCard(
   billing: BillingStateResponse,
   subscription: null | SubscriptionStateResponse,
-  subscriptionResult?: BillingResult<SubscriptionStateResponse>
+  subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined,
+  tiers: BillingPlanTierView[]
 ): BillingPlanCardView {
   const current = subscription?.current
   const tierName = current?.tier_name ?? billing.usage?.plan_name ?? 'Free'
+  // Resolve price against the UNFILTERED catalog so a grandfathered (is_enabled:false)
+  // current tier still shows its price.
   const currentTier = subscription?.tiers?.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
   const price = currentTier?.dollars_per_month_display
   const renewal = formatBillingDate(current?.cycle_ends_at ?? billing.usage?.renews_at)
-  const unavailable = subscriptionResult && !subscriptionResult.ok
+  const unavailable = subscriptionResult ? !subscriptionResult.ok : false
 
   const caption = unavailable
     ? 'Subscription details are unavailable; opening the portal is still available.'
@@ -333,7 +332,8 @@ function derivePlanCard(
       : 'No active subscription — paid models draw down top-up credits.'
 
   const isTeam = subscription?.context === 'team'
-  const canChange = subscription?.can_change_plan && !isTeam && !unavailable
+  const hasActionableTier = tiers.some(tier => tier.state !== 'current')
+  const canChange = Boolean(subscription?.can_change_plan) && !isTeam && !unavailable && hasActionableTier
 
   if (canChange) {
     return {
@@ -344,12 +344,16 @@ function derivePlanCard(
     }
   }
 
-  // Teams keep the portal escape hatch so they are not stranded on an info card.
-  const link = isTeam
-    ? { label: 'Adjust plan ↗', url: buildManageSubscriptionUrl(subscription, subscription?.portal_url ?? billing.portal_url) }
-    : undefined
-
-  return { caption, link, price, tierName }
+  return {
+    caption,
+    // No in-app action → always hand off to the portal so the user isn't stranded.
+    link: {
+      label: 'Adjust plan ↗',
+      url: buildManageSubscriptionUrl(subscription, subscription?.portal_url ?? billing.portal_url)
+    },
+    price,
+    tierName
+  }
 }
 
 /**
@@ -359,25 +363,42 @@ function derivePlanCard(
  * moving in-app (ticket 11 wires the gateway pending-change flow). With no active
  * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
  * there is no "subscribe to Free" upgrade and no downgrade state.
+ *
+ * `fallbackPortalUrl` (billing.portal_url) backs the Choose URLs when the
+ * subscription payload has no portal_url, so org_id + plan are never dropped.
  */
-function derivePlanTiers(subscription: null | SubscriptionStateResponse): BillingPlanTierView[] {
-  const tiers = enabledTiers(subscription)
+function derivePlanTiers(
+  subscription: null | SubscriptionStateResponse,
+  fallbackPortalUrl: null | string
+): BillingPlanTierView[] {
+  const allTiers = subscription?.tiers ?? []
+  const current = subscription?.current
 
-  if (tiers.length === 0) {
+  // Identity + ordering resolve against the UNFILTERED list: NAS marks a
+  // grandfathered current tier is_enabled:false (wire contract), and dropping it
+  // here would leave currentOrder undefined and misclassify every lower tier as a
+  // "Choose ↗" upgrade.
+  const explicitCurrent = allTiers.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
+
+  // The grid shows the enabled catalog plus the grandfathered current tier (so it
+  // still renders as the inert "Current plan" card), sorted low→high.
+  const gridTiers = allTiers
+    .filter(tier => tier.is_enabled || tier.tier_id === explicitCurrent?.tier_id)
+    .slice()
+    .sort((a, b) => a.tier_order - b.tier_order)
+
+  if (gridTiers.length === 0) {
     return []
   }
 
-  const current = subscription?.current
-  const explicitCurrent = tiers.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
   // No active subscription → the lowest-order ($0 / free) tier stands in as the
-  // current plan: it renders inert ("Current plan"), never as a "subscribe to
-  // Free" upgrade. Because it is the lowest order, no tier can be a downgrade,
-  // so every paid tier is a "Choose ↗" upgrade (spec ruling).
-  const currentTier = explicitCurrent ?? (current == null ? tiers[0] : undefined)
+  // current plan: inert, never a "subscribe to Free" upgrade, and (being lowest)
+  // never leaving room for a downgrade.
+  const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
   const currentOrder = currentTier?.tier_order
-  const manageBase = subscription?.portal_url ?? null
+  const manageBase = subscription?.portal_url ?? fallbackPortalUrl
 
-  return tiers.map(tier => {
+  return gridTiers.map(tier => {
     const shared = {
       creditsDisplay: creditsPerMonthDisplay(tier.monthly_credits),
       name: tier.name,
@@ -389,9 +410,7 @@ function derivePlanTiers(subscription: null | SubscriptionStateResponse): Billin
       return { ...shared, state: 'current' as const }
     }
 
-    // Downgrade = strictly below the current tier's order. Everything else
-    // (every tier above the stand-in free tier when there is no subscription)
-    // is an upgrade.
+    // Downgrade = strictly below the current tier's order.
     if (currentOrder != null && tier.tier_order < currentOrder) {
       return {
         ...shared,

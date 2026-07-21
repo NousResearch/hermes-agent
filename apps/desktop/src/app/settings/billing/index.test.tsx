@@ -233,6 +233,44 @@ describe('BillingSettings', () => {
     expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(2)
   })
 
+  it('falls back to overview (no live Choose grid) when a team deep-links bview=plans', async () => {
+    // Default beforeEach uses todaySubscriptionState (context: 'team') — no in-app
+    // plans capability, so the URL must not surface a grid of Choose buttons.
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Payment')).toBeTruthy()
+    expect(screen.queryByText('Plans')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
+  })
+
+  it('falls back to overview when a non-changer personal account deep-links bview=plans', async () => {
+    apiMocks.fetchSubscriptionState.mockResolvedValue(
+      okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
+    )
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Payment')).toBeTruthy()
+    expect(screen.queryByText('Plans')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
+  })
+
+  it('keeps the auto-refill edit form mounted so the row height is reserved before editing', async () => {
+    renderBilling()
+
+    await screen.findByRole('button', { name: 'Manage' })
+
+    // Not editing: the inputs are already in the DOM (height reserved) but aria-hidden,
+    // so the accessible query finds nothing while the hidden-inclusive query does.
+    expect(screen.queryByRole('spinbutton', { name: 'Auto-refill threshold' })).toBeNull()
+    expect(screen.getByRole('spinbutton', { name: 'Auto-refill threshold', hidden: true })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage' }))
+
+    // Editing reveals the same reserved input.
+    expect(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' })).toBeTruthy()
+  })
+
   it('renders auto-refill mutation refusals and step-up affordance', async () => {
     renderBilling()
 

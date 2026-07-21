@@ -366,6 +366,45 @@ def test_resolve_xai_runtime_credentials_refreshes_expiring_token(tmp_path, monk
     assert creds["api_key"] == new_access
 
 
+def test_resolve_xai_runtime_credentials_rediscovers_retired_token_endpoint(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    expiring = _jwt_with_exp(int(time.time()) - 10)
+    auth_file = _setup_hermes_auth(
+        hermes_home,
+        access_token=expiring,
+        discovery={"token_endpoint": "https://auth.x.ai/oauth/token"},
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_discovery",
+        lambda _timeout: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    holder = _patch_httpx_client(
+        monkeypatch,
+        _StubHTTPResponse(200, {"access_token": new_access, "refresh_token": "rt-new"}),
+    )
+
+    creds = resolve_xai_oauth_runtime_credentials()
+
+    assert creds["api_key"] == new_access
+    client = holder["client"]
+    assert client is not None
+    _method, args, _kwargs = client.last_call
+    assert args[0] == "https://auth.x.ai/oauth2/token"
+    persisted = json.loads(auth_file.read_text())
+    assert (
+        persisted["providers"]["xai-oauth"]["discovery"]["token_endpoint"]
+        == "https://auth.x.ai/oauth2/token"
+    )
+
+
 def test_resolve_xai_runtime_credentials_force_refresh(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
@@ -787,6 +826,33 @@ def test_refresh_xai_oauth_pure_returns_updated_tokens(monkeypatch):
     assert kwargs["data"]["grant_type"] == "refresh_token"
     assert kwargs["data"]["refresh_token"] == "rt-old"
     assert kwargs["data"]["client_id"] == XAI_OAUTH_CLIENT_ID
+
+
+def test_refresh_xai_oauth_pure_rediscovers_retired_token_endpoint(monkeypatch):
+    new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    holder = _patch_httpx_client(
+        monkeypatch,
+        _StubHTTPResponse(200, {"access_token": new_access, "refresh_token": "rt-new"}),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_discovery",
+        lambda _timeout: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    updated = refresh_xai_oauth_pure(
+        "at",
+        "rt-old",
+        token_endpoint="https://auth.x.ai/oauth/token",
+    )
+
+    assert updated["access_token"] == new_access
+    client = holder["client"]
+    assert client is not None
+    _method, args, _kwargs = client.last_call
+    assert args[0] == "https://auth.x.ai/oauth2/token"
 
 
 def test_refresh_xai_oauth_pure_keeps_refresh_token_when_response_omits_it(monkeypatch):

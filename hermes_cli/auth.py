@@ -4335,6 +4335,21 @@ def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     }
 
 
+def _xai_resolve_token_endpoint(token_endpoint: str, timeout_seconds: float) -> str:
+    """Resolve missing or retired xAI token endpoints through OIDC discovery."""
+    endpoint = token_endpoint.strip()
+    parsed = urlparse(endpoint)
+    uses_retired_endpoint = (
+        parsed.scheme == "https"
+        and parsed.netloc.lower() in {"auth.x.ai", "auth.x.ai:443"}
+        and parsed.path.rstrip("/") == "/oauth/token"
+    )
+    if not endpoint or uses_retired_endpoint:
+        endpoint = _xai_oauth_discovery(timeout_seconds)["token_endpoint"]
+    _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
+    return endpoint
+
+
 def refresh_xai_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -4350,13 +4365,12 @@ def refresh_xai_oauth_pure(
             code="xai_auth_missing_refresh_token",
             relogin_required=True,
         )
-    endpoint = token_endpoint.strip() or _xai_oauth_discovery(timeout_seconds)["token_endpoint"]
+    endpoint = _xai_resolve_token_endpoint(token_endpoint, timeout_seconds)
     # Re-validate cached endpoints on the refresh hot path: an auth.json
     # written by an older Hermes (or hand-edited) may carry a non-xAI
     # token_endpoint that would receive every future refresh_token in
     # plaintext if we trusted it blindly. Cheap suffix check; fast-fail
     # with a clear error so the user can re-run `hermes model` to refetch.
-    _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
         response = client.post(
@@ -4512,8 +4526,10 @@ def resolve_xai_oauth_runtime_credentials(
             if (not should_refresh) and refresh_if_expiring:
                 should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
             if should_refresh:
-                if not token_endpoint:
-                    token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
+                token_endpoint = _xai_resolve_token_endpoint(
+                    token_endpoint,
+                    refresh_timeout_seconds,
+                )
                 try:
                     tokens = _refresh_xai_oauth_tokens(
                         tokens,

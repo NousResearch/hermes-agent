@@ -5180,13 +5180,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Only attempt servers that aren't already connected (or currently
+    # connecting) and are enabled.  Checking ``_server_connecting`` prevents
+    # duplicate subprocess spawns when ``discover_mcp_tools()`` is called
+    # from multiple entry-points before the first batch finishes (#58862).
     with _lock:
+        connecting = set(_server_connecting)
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if k not in _servers
+            and k not in connecting
+            and _parse_boolish(v.get("enabled", True), default=True)
         }
         # Cached entries with no live session are parked or mid-reconnect.
         # Their tools are deregistered, so nothing else can reach
@@ -5258,6 +5263,28 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         _set_interrupt(False)
     try:
         _run_on_mcp_loop(_discover_all, timeout=120)
+    except (TimeoutError, InterruptedError) as _e:
+        # When the outer timeout fires or the user interrupts,
+        # _discover_all's gather may not have finished, leaving
+        # entries stranded in _server_connecting.  Those stale
+        # entries would block future reconnection attempts (#58862).
+        with _lock:
+            stale = [n for n in new_servers if n in _server_connecting]
+            if stale:
+                logger.warning(
+                    "MCP discovery %s while %d server(s) were still "
+                    "connecting; clearing stale connecting set: %s",
+                    "timed out" if isinstance(_e, TimeoutError) else "interrupted",
+                    len(stale),
+                    ", ".join(stale),
+                )
+                _server_connecting.difference_update(stale)
+                for _sn in stale:
+                    _server_connect_errors.setdefault(
+                        _sn,
+                        f"Connection attempt {'timed out' if isinstance(_e, TimeoutError) else 'interrupted'} during discovery",
+                    )
+        raise
     finally:
         if _was_interrupted:
             _set_interrupt(True)
@@ -5301,10 +5328,13 @@ def discover_mcp_tools() -> List[str]:
         return []
 
     with _lock:
+        connecting = set(_server_connecting)
         new_server_names = [
             name
             for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+            if name not in _servers
+            and name not in connecting
+            and _parse_boolish(cfg.get("enabled", True), default=True)
         ]
 
     tool_names = register_mcp_servers(servers)

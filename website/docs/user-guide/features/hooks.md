@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, while [`pre_llm_call`](#pre_llm_call) and [`pre_api_request`](#pre_api_request) can **inject context** into an LLM request. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -381,6 +381,8 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_api_request`](#pre_api_request) | Before each provider request, including retries | `{"context": str}` to append request-scoped context to the latest user message |
+| [`post_api_request`](#post_api_request) | After each provider response | ignored |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -587,6 +589,35 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+---
+
+### `pre_api_request`
+
+Fires before each provider request inside the tool loop, including retries and tool-loop follow-ups. Middleware runs first, so the hook observes the prepared request. A callback may return `{"context": "..."}` or a non-empty string to append ephemeral context to the latest user message for that request only.
+
+Callbacks receive the standard correlation fields plus `user_message`, `conversation_history`, `is_first_turn`, request/model/provider metadata, request sizing fields, `request_messages`, `middleware_trace`, and the sanitized `request` view. Accept `**kwargs` for forward compatibility.
+
+```python
+def inject_live_state(api_call_count, conversation_history, **kwargs):
+    return {
+        "context": (
+            f"Live state before request {api_call_count}: "
+            f"{len(conversation_history)} messages"
+        )
+    }
+
+def register(ctx):
+    ctx.register_hook("pre_api_request", inject_live_state)
+```
+
+The injection never mutates conversation history or retry recovery state. If a provider rejection causes Hermes to repair the retry payload, that repaired payload is retained while the hook context is rebuilt for the next attempt.
+
+---
+
+### `post_api_request`
+
+Fires after each provider response. It receives correlation, timing, usage, prepared response, and request metadata. Its return value is ignored.
 
 ---
 

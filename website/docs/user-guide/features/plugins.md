@@ -194,6 +194,8 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes |
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the LLM loop — can return `{"context": "..."}` to [inject context into the user message](/user-guide/features/hooks#pre_llm_call) |
+| [`pre_api_request`](/user-guide/features/hooks#pre_api_request) | Before each provider request — can return `{"context": "..."}` to inject request-scoped context |
+| [`post_api_request`](/user-guide/features/hooks#post_api_request) | After each provider response |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |

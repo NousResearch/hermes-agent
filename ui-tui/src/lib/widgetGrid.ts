@@ -52,7 +52,11 @@ const columnCountForWidth = (width: number, minColumnWidth: number, gap: number,
 }
 
 const buildColumnWidths = (width: number, columnCount: number, gap: number) =>
-  resolveGridTracks(width, gap, Array.from({ length: Math.max(1, toInt(columnCount, 1)) }, () => ({ fr: 1 })))
+  resolveGridTracks(
+    width,
+    gap,
+    Array.from({ length: Math.max(1, toInt(columnCount, 1)) }, () => ({ fr: 1 }))
+  )
 
 const spanWidth = (columns: number[], colStart: number, span: number, gap: number) => {
   const end = Math.min(columns.length, colStart + span)
@@ -229,7 +233,10 @@ export function resolveGridTracks(total: number, gap: number, tracks: GridTrackS
   })
 
   while (unpinned.length) {
-    const shares = distributeByWeight(Math.max(0, remaining), unpinned.map(idx => trackFr(tracks[idx]!)))
+    const shares = distributeByWeight(
+      Math.max(0, remaining),
+      unpinned.map(idx => trackFr(tracks[idx]!))
+    )
     const violating = unpinned.filter((idx, i) => shares[i]! < trackMin(tracks[idx]!))
 
     if (!violating.length) {
@@ -467,10 +474,7 @@ export function layoutGridAreas({
   const explicitRowTracks = rows === undefined ? [] : normalizeTracks(rows, 1)
   const rowCount = Math.max(1, explicitRowTracks.length, placedRowCount)
 
-  const rowTracks: GridTrackSize[] = Array.from(
-    { length: rowCount },
-    (_, idx) => explicitRowTracks[idx] ?? { fr: 1 }
-  )
+  const rowTracks: GridTrackSize[] = Array.from({ length: rowCount }, (_, idx) => explicitRowTracks[idx] ?? { fr: 1 })
 
   const columnSizes = resolveGridTracks(safeWidth, safeGap, columnTracks)
   const rowSizes = resolveGridTracks(safeHeight, safeRowGap, rowTracks)

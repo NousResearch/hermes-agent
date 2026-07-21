@@ -116,7 +116,11 @@ export function MenuRow({ active, index, label, t }: { active: boolean; index: n
 
   return (
     <Text>
-      <Text backgroundColor={row.backgroundColor} bold={active} color={active ? (row.color ?? t.color.label) : t.color.muted}>
+      <Text
+        backgroundColor={row.backgroundColor}
+        bold={active}
+        color={active ? (row.color ?? t.color.label) : t.color.muted}
+      >
         {active ? '▸ ' : '  '}
         {index}. {label}
       </Text>

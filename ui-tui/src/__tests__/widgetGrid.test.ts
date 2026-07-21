@@ -193,11 +193,7 @@ describe('layoutGridAreas', () => {
       columns: 2,
       gap: 0,
       height: 12,
-      items: [
-        { col: 1, id: 'pinned', row: 2 },
-        { id: 'auto-a' },
-        { id: 'auto-b' }
-      ],
+      items: [{ col: 1, id: 'pinned', row: 2 }, { id: 'auto-a' }, { id: 'auto-b' }],
       rowGap: 0,
       rows: 2,
       width: 10

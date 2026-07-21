@@ -929,6 +929,40 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
+        max_task_starts_per_hour = None
+        raw_starts_cap = kanban_cfg.get("max_task_starts_per_hour", None)
+        if raw_starts_cap is not None:
+            try:
+                max_task_starts_per_hour = int(raw_starts_cap)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_task_starts_per_hour=%r; ignoring",
+                    raw_starts_cap,
+                )
+                max_task_starts_per_hour = None
+            else:
+                if max_task_starts_per_hour < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.max_task_starts_per_hour=%r "
+                        "is below 1; ignoring",
+                        raw_starts_cap,
+                    )
+                    max_task_starts_per_hour = None
+                else:
+                    logger.info(
+                        "kanban dispatcher: max_task_starts_per_hour=%d",
+                        max_task_starts_per_hour,
+                    )
+
+        spend_config = _kb.spend_admission_config_from_kanban_config(kanban_cfg)
+        if spend_config.cap_usd is not None:
+            logger.info(
+                "kanban dispatcher: daily_spend_cap_usd=%s timezone=%s unknown_cost_policy=%s",
+                spend_config.cap_usd,
+                spend_config.timezone_name,
+                spend_config.unknown_cost_policy,
+            )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -1022,6 +1056,8 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    max_task_starts_per_hour=max_task_starts_per_hour,
+                    spend_config=spend_config,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

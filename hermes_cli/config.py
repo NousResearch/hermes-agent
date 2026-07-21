@@ -2897,6 +2897,27 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
+        # Global dispatcher concurrency caps. Unset (None) preserves
+        # historical uncapped behavior.
+        "max_in_progress": None,
+        "max_spawn": None,
+        # Rolling task-start admission cap. When set to a positive int, the
+        # dispatcher allows at most N native task_runs starts in the trailing
+        # hour. Held tasks stay ready/review and failure counters are untouched.
+        "max_task_starts_per_hour": None,
+        # Daily known-metered spend admission cap in USD. Unset disables the
+        # check. The cap reads local state.db session_model_usage ledgers across
+        # installed profiles using read-only SQLite connections. Actual dollars
+        # take precedence over estimated dollars; unknown-cost rows are visible
+        # in telemetry but do not count toward the cap unless held by policy.
+        "daily_spend_cap_usd": None,
+        # IANA timezone for the daily spend boundary. Invalid values fall back
+        # to UTC; DST boundaries are local-midnight to local-midnight.
+        "daily_spend_timezone": "UTC",
+        # Unknown-cost policy for daily spend admission: "allow" (default,
+        # report telemetry only) or "hold" (defer spawns while today's ledger
+        # has unknown-cost rows).
+        "unknown_cost_policy": "allow",
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or

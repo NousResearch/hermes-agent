@@ -74,6 +74,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import random
 import secrets
@@ -86,8 +87,11 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import unquote, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -6413,6 +6417,69 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    skipped_rolling_start_capped: list[tuple[str, int, int]] = field(default_factory=list)
+    """Ready/review task ids deferred by ``kanban.max_task_starts_per_hour``.
+    Entries are ``(task_id, starts_in_window, cap)``. Tasks stay ready/review
+    and failure counters are not touched."""
+    skipped_daily_spend_capped: list[tuple[str, float, float]] = field(default_factory=list)
+    """Ready/review task ids deferred by ``kanban.daily_spend_cap_usd``.
+    Entries are ``(task_id, known_metered_spend_usd, cap_usd)``."""
+    skipped_spend_ledger_unavailable: list[str] = field(default_factory=list)
+    """Ready/review task ids held fail-closed because a positive daily spend
+    cap was configured but no canonical local usage ledger could be read."""
+    skipped_unknown_cost_policy: list[tuple[str, int]] = field(default_factory=list)
+    """Ready/review task ids held by ``kanban.unknown_cost_policy: hold``
+    because today's ledger contains unmetered/unknown-cost rows."""
+    spend_telemetry: dict[str, Any] = field(default_factory=dict)
+    """Sanitized spend-admission telemetry. Contains aggregate dollars/counts
+    only; never prompt, message, or session content."""
+
+
+@dataclass(frozen=True)
+class SpendAdmissionConfig:
+    cap_usd: Optional[float] = None
+    timezone_name: str = "UTC"
+    unknown_cost_policy: str = "allow"
+
+
+@dataclass(frozen=True)
+class SpendLedgerSummary:
+    ledger_readable: bool
+    known_metered_cost_usd: float = 0.0
+    actual_cost_usd: float = 0.0
+    estimated_cost_usd: float = 0.0
+    unknown_cost_rows: int = 0
+    known_cost_rows: int = 0
+    included_cost_rows: int = 0
+    explicit_included_cost_rows: int = 0
+    transport_inferred_included_rows: int = 0
+    profiles_read: int = 0
+    ledgers_read: int = 0
+    ledgers_unavailable: int = 0
+    day_start_ts: float = 0.0
+    day_end_ts: float = 0.0
+    timezone_name: str = "UTC"
+    errors: tuple[str, ...] = ()
+
+    def telemetry(self) -> dict[str, Any]:
+        return {
+            "ledger_readable": self.ledger_readable,
+            "known_metered_cost_usd": round(self.known_metered_cost_usd, 8),
+            "actual_cost_usd": round(self.actual_cost_usd, 8),
+            "estimated_cost_usd": round(self.estimated_cost_usd, 8),
+            "unknown_cost_rows": self.unknown_cost_rows,
+            "known_cost_rows": self.known_cost_rows,
+            "included_cost_rows": self.included_cost_rows,
+            "explicit_included_cost_rows": self.explicit_included_cost_rows,
+            "transport_inferred_included_rows": self.transport_inferred_included_rows,
+            "profiles_read": self.profiles_read,
+            "ledgers_read": self.ledgers_read,
+            "ledgers_unavailable": self.ledgers_unavailable,
+            "day_start_ts": self.day_start_ts,
+            "day_end_ts": self.day_end_ts,
+            "timezone": self.timezone_name,
+            "errors": list(self.errors[:5]),
+        }
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7770,6 +7837,270 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _positive_optional_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _positive_optional_float(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def spend_admission_config_from_kanban_config(kanban_cfg: Optional[dict]) -> SpendAdmissionConfig:
+    cfg = kanban_cfg or {}
+    tz_name = str(cfg.get("daily_spend_timezone") or "UTC").strip() or "UTC"
+    policy = str(cfg.get("unknown_cost_policy") or "allow").strip().lower()
+    if policy not in {"allow", "hold"}:
+        policy = "allow"
+    return SpendAdmissionConfig(
+        cap_usd=_positive_optional_float(cfg.get("daily_spend_cap_usd")),
+        timezone_name=tz_name,
+        unknown_cost_policy=policy,
+    )
+
+
+def _day_bounds_for_timezone(
+    tz_name: str, *, now: Optional[float] = None,
+) -> tuple[float, float, str]:
+    try:
+        tz = ZoneInfo(tz_name)
+        canonical_name = tz_name
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = timezone.utc
+        canonical_name = "UTC"
+    dt = datetime.fromtimestamp(time.time() if now is None else now, tz)
+    start = datetime.combine(dt.date(), datetime_time.min, tzinfo=tz)
+    end = datetime.combine(dt.date() + timedelta(days=1), datetime_time.min, tzinfo=tz)
+    return start.timestamp(), end.timestamp(), canonical_name
+
+
+def _is_native_chatgpt_codex_subscription_transport(base_url: Any) -> bool:
+    """Return True only for Hermes' native ChatGPT Codex subscription endpoint.
+
+    This trusts endpoint shape only, not provider labels or model names. It
+    rejects userinfo, non-HTTPS schemes, and hostname suffix/substr tricks so
+    arbitrary OpenAI-compatible/custom metered endpoints stay fail-closed under
+    ``unknown_cost_policy: hold``.
+    """
+    raw = str(base_url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https":
+        return False
+    if parsed.username or parsed.password:
+        return False
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if hostname != "chatgpt.com":
+        return False
+    decoded_path = unquote(parsed.path or "/")
+    normalized_path = posixpath.normpath("/" + decoded_path.lstrip("/"))
+    return normalized_path == "/backend-api/codex" or normalized_path.startswith(
+        "/backend-api/codex/"
+    )
+
+
+def _installed_profile_homes_for_spend() -> list[Path]:
+    from hermes_constants import get_default_hermes_root
+
+    root = get_default_hermes_root()
+    homes = [root]
+    profiles_dir = root / "profiles"
+    try:
+        homes.extend(child for child in sorted(profiles_dir.iterdir()) if child.is_dir())
+    except OSError:
+        pass
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for home in homes:
+        try:
+            key = str(home.resolve())
+        except OSError:
+            key = str(home)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(home)
+    return unique
+
+
+def _sqlite_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def read_daily_spend_ledger(
+    config: SpendAdmissionConfig,
+    *,
+    now: Optional[float] = None,
+    profile_homes: Optional[list[Path]] = None,
+) -> SpendLedgerSummary:
+    """Aggregate known metered spend from installed profiles' state.db files.
+
+    Read-only by construction. Explicit subscription-included telemetry always
+    wins first and does not contribute to the spend cap. Otherwise actual
+    dollars win over estimated dollars. Zero-cost blank rows are unknown unless
+    their endpoint is the strict native ChatGPT Codex subscription transport, in
+    which case they are counted separately as transport-inferred included rows.
+    """
+    start_ts, end_ts, tz_name = _day_bounds_for_timezone(config.timezone_name, now=now)
+    homes = profile_homes if profile_homes is not None else _installed_profile_homes_for_spend()
+    known = actual = estimated = 0.0
+    unknown_rows = known_rows = included_rows = ledgers_read = unavailable = 0
+    explicit_included_rows = transport_inferred_included_rows = 0
+    errors: list[str] = []
+    for home in homes:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_model_usage'"
+            ).fetchone():
+                unavailable += 1
+                errors.append(f"{db_path}:missing session_model_usage")
+                continue
+            usage_columns = _sqlite_table_columns(conn, "session_model_usage")
+            has_sessions = bool(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+                ).fetchone()
+            )
+            session_columns = _sqlite_table_columns(conn, "sessions") if has_sessions else set()
+
+            seen_terms: list[str] = []
+            if "last_seen" in usage_columns:
+                seen_terms.append("u.last_seen")
+            if has_sessions:
+                if "ended_at" in session_columns:
+                    seen_terms.append("s.ended_at")
+                if "started_at" in session_columns:
+                    seen_terms.append("s.started_at")
+            if not seen_terms:
+                unavailable += 1
+                errors.append(f"{db_path}:missing timestamp columns")
+                continue
+
+            seen_expr = (
+                seen_terms[0]
+                if len(seen_terms) == 1
+                else "COALESCE(" + ", ".join(seen_terms) + ")"
+            )
+            actual_expr = (
+                "u.actual_cost_usd" if "actual_cost_usd" in usage_columns else "NULL"
+            )
+            estimated_expr = (
+                "u.estimated_cost_usd"
+                if "estimated_cost_usd" in usage_columns
+                else "NULL"
+            )
+            billing_mode_expr = (
+                "u.billing_mode" if "billing_mode" in usage_columns else "NULL"
+            )
+            cost_status_expr = (
+                "u.cost_status" if "cost_status" in usage_columns else "NULL"
+            )
+            billing_base_url_expr = (
+                "u.billing_base_url" if "billing_base_url" in usage_columns else "NULL"
+            )
+            join_clause = "LEFT JOIN sessions s ON s.id = u.session_id" if has_sessions else ""
+            source_filter = ""
+            if has_sessions and "source" in session_columns:
+                source_filter = "AND COALESCE(s.source, '') NOT IN ('_health_probe')"
+            ledgers_read += 1
+            rows = conn.execute(
+                f"""SELECT {actual_expr} AS actual_cost_usd,
+                          {estimated_expr} AS estimated_cost_usd,
+                          {billing_mode_expr} AS billing_mode,
+                          {cost_status_expr} AS cost_status,
+                          {billing_base_url_expr} AS billing_base_url,
+                          {seen_expr} AS seen_at
+                   FROM session_model_usage u
+                   {join_clause}
+                   WHERE {seen_expr} >= ?
+                     AND {seen_expr} < ?
+                     {source_filter}""",
+                (start_ts, end_ts),
+            ).fetchall()
+            for row in rows:
+                billing_mode = str(row["billing_mode"] or "").strip().lower()
+                cost_status = str(row["cost_status"] or "").strip().lower()
+                if billing_mode == "subscription_included" or cost_status == "included":
+                    explicit_included_rows += 1
+                    included_rows += 1
+                    continue
+                try:
+                    act = float(row["actual_cost_usd"] or 0.0)
+                    est = float(row["estimated_cost_usd"] or 0.0)
+                except (TypeError, ValueError):
+                    unknown_rows += 1
+                    continue
+                if act > 0:
+                    actual += act
+                    known += act
+                    known_rows += 1
+                elif est > 0:
+                    estimated += est
+                    known += est
+                    known_rows += 1
+                elif (
+                    not billing_mode
+                    and not cost_status
+                    and _is_native_chatgpt_codex_subscription_transport(row["billing_base_url"])
+                ):
+                    transport_inferred_included_rows += 1
+                    included_rows += 1
+                else:
+                    unknown_rows += 1
+        except sqlite3.DatabaseError as exc:
+            unavailable += 1
+            errors.append(f"{db_path}:{type(exc).__name__}")
+        finally:
+            if conn is not None:
+                conn.close()
+    return SpendLedgerSummary(
+        ledger_readable=ledgers_read > 0,
+        known_metered_cost_usd=known,
+        actual_cost_usd=actual,
+        estimated_cost_usd=estimated,
+        unknown_cost_rows=unknown_rows,
+        known_cost_rows=known_rows,
+        included_cost_rows=included_rows,
+        explicit_included_cost_rows=explicit_included_rows,
+        transport_inferred_included_rows=transport_inferred_included_rows,
+        profiles_read=len(homes),
+        ledgers_read=ledgers_read,
+        ledgers_unavailable=unavailable,
+        day_start_ts=start_ts,
+        day_end_ts=end_ts,
+        timezone_name=tz_name,
+        errors=tuple(errors),
+    )
+
+
+def _task_start_count_last_hour(conn: sqlite3.Connection, *, now: Optional[int] = None) -> int:
+    cutoff = int(time.time() if now is None else now) - 3600
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE started_at >= ?",
+            (cutoff,),
+        ).fetchone()[0]
+    )
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -7783,6 +8114,9 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_task_starts_per_hour: Optional[int] = None,
+    spend_config: Optional[SpendAdmissionConfig] = None,
+    spend_ledger_reader=None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7817,6 +8151,9 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_task_starts_per_hour=max_task_starts_per_hour,
+            spend_config=spend_config,
+            spend_ledger_reader=spend_ledger_reader,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7833,6 +8170,9 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_task_starts_per_hour=max_task_starts_per_hour,
+            spend_config=spend_config,
+            spend_ledger_reader=spend_ledger_reader,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -7853,6 +8193,9 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_task_starts_per_hour: Optional[int] = None,
+    spend_config: Optional[SpendAdmissionConfig] = None,
+    spend_ledger_reader=None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7919,7 +8262,7 @@ def _dispatch_once_locked(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_spawn is not None or max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -7931,20 +8274,55 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    review_rows = conn.execute(
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = 'review' AND claim_lock IS NULL "
+        "ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    pending_admission_ids = [r["id"] for r in ready_rows] + [r["id"] for r in review_rows]
+
+    spend_cfg = spend_config or SpendAdmissionConfig()
+    if spend_cfg.cap_usd is not None and pending_admission_ids:
+        ledger_reader = spend_ledger_reader or read_daily_spend_ledger
+        spend_summary = ledger_reader(spend_cfg)
+        result.spend_telemetry = spend_summary.telemetry()
+        result.spend_telemetry["cap_usd"] = spend_cfg.cap_usd
+        result.spend_telemetry["unknown_cost_policy"] = spend_cfg.unknown_cost_policy
+        if not spend_summary.ledger_readable:
+            result.skipped_spend_ledger_unavailable.extend(pending_admission_ids)
+            return result
+        if spend_cfg.unknown_cost_policy == "hold" and spend_summary.unknown_cost_rows > 0:
+            result.skipped_unknown_cost_policy.extend(
+                (tid, spend_summary.unknown_cost_rows) for tid in pending_admission_ids
+            )
+            return result
+        if spend_summary.known_metered_cost_usd >= spend_cfg.cap_usd:
+            result.skipped_daily_spend_capped.extend(
+                (tid, spend_summary.known_metered_cost_usd, spend_cfg.cap_usd)
+                for tid in pending_admission_ids
+            )
+            return result
+
+    rolling_cap = _positive_optional_int(max_task_starts_per_hour)
+    rolling_starts = _task_start_count_last_hour(conn) if rolling_cap is not None else 0
+    if rolling_cap is not None and rolling_starts >= rolling_cap and pending_admission_ids:
+        result.skipped_rolling_start_capped.extend(
+            (tid, rolling_starts, rolling_cap) for tid in pending_admission_ids
+        )
+        return result
+
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
+    if max_in_progress is not None and pending_admission_ids:
+        if running_count >= max_in_progress:
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        # ``max_spawn`` is also interpreted as a live cap in the loops below
+        # (``running_count + spawned >= max_spawn``), so clamp it to the
+        # global live cap rather than to the remaining slot count.
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -7985,6 +8363,11 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        if rolling_cap is not None and rolling_starts + spawned >= rolling_cap:
+            result.skipped_rolling_start_capped.append(
+                (row["id"], rolling_starts + spawned, rolling_cap)
+            )
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -8088,6 +8471,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
+            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -8168,14 +8552,14 @@ def _dispatch_once_locked(
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
-    review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        if rolling_cap is not None and rolling_starts + spawned >= rolling_cap:
+            result.skipped_rolling_start_capped.append(
+                (row["id"], rolling_starts + spawned, rolling_cap)
+            )
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
@@ -8186,8 +8570,20 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row["assignee"], 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row["assignee"], current)
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
+            if _per_profile_cap is not None and row["assignee"]:
+                _per_profile_running[row["assignee"]] = (
+                    _per_profile_running.get(row["assignee"], 0) + 1
+                )
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -8232,6 +8628,10 @@ def _dispatch_once_locked(
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

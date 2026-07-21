@@ -226,7 +226,23 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
+  max_spawn: null                  # optional live global worker cap
+  max_in_progress: null            # optional live global running-task cap
+  max_in_progress_per_profile: null # optional live cap per assignee profile
+  max_task_starts_per_hour: null   # optional rolling native task-start cap
+  daily_spend_cap_usd: null        # optional known-metered local spend cap
+  daily_spend_timezone: UTC        # IANA day boundary for spend cap
+  unknown_cost_policy: allow       # allow | hold unknown-cost rows
 ```
+
+Admission caps apply to both `ready` implementation work and `review`
+handoffs. Global and per-profile caps share one accounting path, so review
+agents cannot bypass `max_in_progress` or `max_in_progress_per_profile` when
+the ready queue is empty. Spend admission reads local `state.db` usage ledgers
+read-only across installed profiles: explicit `subscription_included` rows and
+Hermes' native ChatGPT Codex subscription transport are not metered, positive
+actual/estimated API costs are counted, and unknown-cost rows can either be
+reported (`allow`) or held fail-closed (`hold`).
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway

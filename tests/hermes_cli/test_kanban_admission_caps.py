@@ -218,6 +218,11 @@ def _write_state_db(home: Path, rows, *, include_billing_columns: bool = True):
         conn.close()
 
 
+def _write_corrupt_state_db(home: Path):
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "state.db").write_bytes(b"not a sqlite database")
+
+
 def test_daily_spend_actual_wins_over_estimated_and_multi_profile(isolated_kanban_home):
     home, kb = isolated_kanban_home
     profile_home = home / "profiles" / "alpha"
@@ -601,6 +606,142 @@ def test_daily_spend_cap_holds_without_state_mutation(isolated_kanban_home):
         assert [h[0] for h in res.skipped_daily_spend_capped] == task_ids
         assert not res.spawned
         assert [r["status"] for r in conn.execute("SELECT status FROM tasks ORDER BY created_at")] == ["ready", "ready"]
+
+
+def test_partial_unreadable_spend_ledger_fails_closed_without_start_mutation(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(home, [{"seen": now, "estimated": 3, "actual": 0}])
+    _write_corrupt_state_db(home / "profiles" / "alpha")
+
+    with kb.connect_closing() as conn:
+        task_ids = _make_ready_tasks(kb, conn, 2)
+        monkeypatch_time = pytest.MonkeyPatch()
+        monkeypatch_time.setattr(kb.time, "time", lambda: now)
+        try:
+            res = kb.dispatch_once(
+                conn,
+                spawn_fn=_fake_spawn,
+                spend_config=kb.SpendAdmissionConfig(cap_usd=25, timezone_name="UTC"),
+            )
+        finally:
+            monkeypatch_time.undo()
+
+        assert res.skipped_spend_ledger_unavailable == task_ids
+        assert not res.skipped_daily_spend_capped
+        assert not res.spawned
+        assert res.spend_telemetry["ledger_readable"] is False
+        assert res.spend_telemetry["ledgers_read"] == 1
+        assert res.spend_telemetry["ledgers_unavailable"] == 1
+        assert res.spend_telemetry["known_metered_cost_usd"] == pytest.approx(3.0)
+        assert res.spend_telemetry["errors"] == ["ledger_1:DatabaseError"]
+        assert conn.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0] == 0
+        statuses = conn.execute("SELECT status FROM tasks ORDER BY created_at").fetchall()
+        assert [row["status"] for row in statuses] == ["ready", "ready"]
+
+
+def test_unreadable_ledger_takes_precedence_over_over_cap_healthy_ledger(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(home, [{"seen": now, "estimated": 30, "actual": 0}])
+    _write_corrupt_state_db(home / "profiles" / "alpha")
+
+    with kb.connect_closing() as conn:
+        task_ids = _make_ready_tasks(kb, conn, 1)
+        monkeypatch_time = pytest.MonkeyPatch()
+        monkeypatch_time.setattr(kb.time, "time", lambda: now)
+        try:
+            res = kb.dispatch_once(
+                conn,
+                spawn_fn=_fake_spawn,
+                spend_config=kb.SpendAdmissionConfig(cap_usd=25, timezone_name="UTC"),
+            )
+        finally:
+            monkeypatch_time.undo()
+
+    assert res.skipped_spend_ledger_unavailable == task_ids
+    assert not res.skipped_daily_spend_capped
+    assert not res.spawned
+    assert res.spend_telemetry["ledger_readable"] is False
+    assert res.spend_telemetry["known_metered_cost_usd"] == pytest.approx(30.0)
+
+
+def test_query_failing_ledger_schema_fails_closed_even_with_healthy_ledger(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(home, [{"seen": now, "estimated": 2, "actual": 0}])
+    profile_home = home / "profiles" / "alpha"
+    profile_home.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(profile_home / "state.db")
+    try:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with kb.connect_closing() as board_conn:
+        task_ids = _make_ready_tasks(kb, board_conn, 1)
+        monkeypatch_time = pytest.MonkeyPatch()
+        monkeypatch_time.setattr(kb.time, "time", lambda: now)
+        try:
+            res = kb.dispatch_once(
+                board_conn,
+                spawn_fn=_fake_spawn,
+                spend_config=kb.SpendAdmissionConfig(cap_usd=25, timezone_name="UTC"),
+            )
+        finally:
+            monkeypatch_time.undo()
+
+    assert res.skipped_spend_ledger_unavailable == task_ids
+    assert not res.spawned
+    assert res.spend_telemetry["ledger_readable"] is False
+    assert res.spend_telemetry["ledgers_unavailable"] == 1
+    assert res.spend_telemetry["errors"] == ["ledger_1:missing session_model_usage"]
+
+
+def test_duplicate_spend_ledger_paths_are_counted_once(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(home, [{"seen": now, "estimated": 2, "actual": 0}])
+
+    summary = kb.read_daily_spend_ledger(
+        kb.SpendAdmissionConfig(cap_usd=25, timezone_name="UTC"),
+        now=now,
+        profile_homes=[home, home.resolve(), home],
+    )
+
+    assert summary.ledger_readable is True
+    assert summary.profiles_read == 1
+    assert summary.ledgers_read == 1
+    assert summary.known_metered_cost_usd == pytest.approx(2.0)
+
+
+def test_all_healthy_multi_profile_spend_ledgers_allow_dispatch(isolated_kanban_home):
+    home, kb = isolated_kanban_home
+    now = 1_700_000_000
+    _write_state_db(home, [{"seen": now, "estimated": 2, "actual": 0}])
+    _write_state_db(home / "profiles" / "alpha", [{"seen": now, "estimated": 3, "actual": 0}])
+
+    with kb.connect_closing() as conn:
+        task_ids = _make_ready_tasks(kb, conn, 1)
+        monkeypatch_time = pytest.MonkeyPatch()
+        monkeypatch_time.setattr(kb.time, "time", lambda: now)
+        try:
+            res = kb.dispatch_once(
+                conn,
+                spawn_fn=_fake_spawn,
+                dry_run=True,
+                spend_config=kb.SpendAdmissionConfig(cap_usd=25, timezone_name="UTC"),
+            )
+        finally:
+            monkeypatch_time.undo()
+
+    assert [row[0] for row in res.spawned] == task_ids
+    assert not res.skipped_spend_ledger_unavailable
+    assert res.spend_telemetry["ledger_readable"] is True
+    assert res.spend_telemetry["ledgers_read"] == 2
+    assert res.spend_telemetry["ledgers_unavailable"] == 0
+    assert res.spend_telemetry["known_metered_cost_usd"] == pytest.approx(5.0)
 
 
 def test_positive_spend_cap_fails_closed_when_no_ledger_readable(isolated_kanban_home):

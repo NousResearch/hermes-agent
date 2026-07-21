@@ -7920,9 +7920,14 @@ def _installed_profile_homes_for_spend() -> list[Path]:
         homes.extend(child for child in sorted(profiles_dir.iterdir()) if child.is_dir())
     except OSError:
         pass
+    return _unique_profile_homes_for_spend(homes)
+
+
+def _unique_profile_homes_for_spend(homes: list[Path]) -> list[Path]:
     seen: set[str] = set()
     unique: list[Path] = []
     for home in homes:
+        home = Path(home)
         try:
             key = str(home.resolve())
         except OSError:
@@ -7954,15 +7959,20 @@ def read_daily_spend_ledger(
     which case they are counted separately as transport-inferred included rows.
     """
     start_ts, end_ts, tz_name = _day_bounds_for_timezone(config.timezone_name, now=now)
-    homes = profile_homes if profile_homes is not None else _installed_profile_homes_for_spend()
+    homes = (
+        _unique_profile_homes_for_spend(profile_homes)
+        if profile_homes is not None
+        else _installed_profile_homes_for_spend()
+    )
     known = actual = estimated = 0.0
     unknown_rows = known_rows = included_rows = ledgers_read = unavailable = 0
     explicit_included_rows = transport_inferred_included_rows = 0
     errors: list[str] = []
-    for home in homes:
+    for ledger_index, home in enumerate(homes):
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
+        error_prefix = f"ledger_{ledger_index}"
         conn = None
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
@@ -7971,7 +7981,7 @@ def read_daily_spend_ledger(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_model_usage'"
             ).fetchone():
                 unavailable += 1
-                errors.append(f"{db_path}:missing session_model_usage")
+                errors.append(f"{error_prefix}:missing session_model_usage")
                 continue
             usage_columns = _sqlite_table_columns(conn, "session_model_usage")
             has_sessions = bool(
@@ -7991,7 +8001,7 @@ def read_daily_spend_ledger(
                     seen_terms.append("s.started_at")
             if not seen_terms:
                 unavailable += 1
-                errors.append(f"{db_path}:missing timestamp columns")
+                errors.append(f"{error_prefix}:missing timestamp columns")
                 continue
 
             seen_expr = (
@@ -8067,12 +8077,12 @@ def read_daily_spend_ledger(
                     unknown_rows += 1
         except sqlite3.DatabaseError as exc:
             unavailable += 1
-            errors.append(f"{db_path}:{type(exc).__name__}")
+            errors.append(f"{error_prefix}:{type(exc).__name__}")
         finally:
             if conn is not None:
                 conn.close()
     return SpendLedgerSummary(
-        ledger_readable=ledgers_read > 0,
+        ledger_readable=ledgers_read > 0 and unavailable == 0,
         known_metered_cost_usd=known,
         actual_cost_usd=actual,
         estimated_cost_usd=estimated,

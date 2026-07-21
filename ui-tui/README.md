@@ -235,7 +235,7 @@ The following commands are handled directly by the TUI client. Unrecognized comm
 
 ### Session (`session.ts`)
 `/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
-`/background` (aliases `/bg`, `/btw`), `/image`, `/personality`,
+`/background` (aliases `/bg`, `/btw`), `/detach`, `/image`, `/personality`,
 `/compress`, `/branch` (alias `/fork`), `/voice`, `/skin`,
 `/indicator`, `/yolo`, `/reasoning`, `/fast`, `/busy`, `/verbose`, `/usage`
 
@@ -285,12 +285,12 @@ Primary event types the client handles today:
 | `tool.progress`            | `{ name, preview }`                                                         |
 | `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |
 | `clarify.request`          | `{ question, choices?, request_id }`                                        |
-| `approval.request`         | `{ command, description, allow_permanent? }`                                |
+| `approval.request`         | `{ command, description, request_id, allow_permanent? }`                    |
 | `sudo.request`             | `{ request_id }`                                                            |
 | `sudo.expire`              | `{ request_id }` clears a timed-out sudo prompt                             |
 | `secret.request`           | `{ prompt, env_var, request_id }`                                           |
 | `secret.expire`            | `{ request_id }` clears a timed-out secret prompt                           |
-| `background.complete`      | `{ task_id, text }`                                                         |
+| `background.complete`      | `{ task_id, text, status?, source_session_id?, source_session_key? }`       |
 | `billing.step_up.verification` | `{ verification_url, user_code }`                                       |
 | `review.summary`           | `{ text }`                                                                  |
 | `browser.progress`         | `{ message }`                                                               |

@@ -18,6 +18,7 @@ import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { consumeDetachedTask } from './detachedTasks.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
@@ -39,14 +40,6 @@ const applySkin = (s: GatewaySkin) =>
       s.tool_prefix ?? '',
       s.help_header ?? ''
     )
-  })
-
-const dropBgTask = (taskId: string) =>
-  patchUiState(state => {
-    const next = new Set(state.bgTasks)
-    next.delete(taskId)
-
-    return { ...state, bgTasks: next }
   })
 
 const pushUnique =
@@ -80,7 +73,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
+  const { STARTUP_RESUME_ID, activateLiveSession, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
@@ -404,7 +397,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
+    const recoveryForVisibleSession =
+      ev.type === 'background.detach_recovery' &&
+      (ev.session_id === sid || ev.payload.source_session_id === sid)
+
+    if (
+      ev.session_id &&
+      sid &&
+      ev.session_id !== sid &&
+      !ev.type.startsWith('gateway.') &&
+      !recoveryForVisibleSession
+    ) {
       return
     }
 
@@ -791,6 +794,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             choices: ev.payload.choices,
             command: String(ev.payload.command ?? ''),
             description,
+            requestId: ev.payload.request_id,
             smartDenied: ev.payload.smart_denied === true
           }
         })
@@ -824,8 +828,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'background.complete':
-        dropBgTask(ev.payload.task_id)
-        sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
+        consumeDetachedTask(
+          {
+            source_session_id: ev.payload.source_session_id ?? '',
+            source_session_key: ev.payload.source_session_key,
+            status: ev.payload.status ?? 'complete',
+            task_id: ev.payload.task_id,
+            text: ev.payload.text
+          },
+          ev.session_id ?? sid ?? '',
+          rpc,
+          sys
+        )
+
+        return
+
+      case 'background.detach_recovery':
+        activateLiveSession(
+          ev.payload.source_session_id,
+          `background detach recovered: ${ev.payload.message}`
+        )
 
         return
       case 'review.summary': {

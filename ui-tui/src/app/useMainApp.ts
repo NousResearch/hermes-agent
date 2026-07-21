@@ -45,7 +45,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, patchOverlayState, resolveAnsweredPrompt } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -638,12 +638,17 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const { choices, question, requestId } = clarify
       const label = toolTrailLabel('clarify')
 
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', {
+        answer,
+        request_id: requestId,
+        session_id: ui.sid
+      }).then(r => {
         if (!r) {
           return
         }
@@ -654,24 +659,27 @@ export function useMainApp(gw: GatewayClient) {
             kind: 'trail',
             role: 'system',
             text: '',
-            tools: [buildToolTrailLine('clarify', clarify.question)]
+            tools: [buildToolTrailLine('clarify', question)]
           })
           appendMessage({ role: 'user', text: answer })
-          patchUiState({ status: 'running…' })
+          // Clear our own clarify prompt and flip back to running only if a
+          // newer clarify prompt hasn't already taken the slot in the meantime.
+          resolveAnsweredPrompt('clarify', requestId)
         } else {
           // Esc / Ctrl+C cancel: persist the question + options as a system
           // line (not a transient "prompt cancelled" flash) so the prompt
           // survives on screen as standard output, matching the timeout path.
           appendMessage({
             role: 'system',
-            text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+            text: formatAbandonedClarify(question, choices, 'cancelled')
           })
+          // Drop only our own overlay; the cancel path never resets the status
+          // and must leave a newer clarify prompt untouched.
+          resolveAnsweredPrompt('clarify', requestId, { resetStatus: false })
         }
-
-        patchOverlayState({ clarify: null })
       })
     },
-    [appendMessage, overlay.clarify, rpc]
+    [appendMessage, overlay.clarify, rpc, ui.sid]
   )
 
   const paste = useCallback(
@@ -763,6 +771,7 @@ export function useMainApp(gw: GatewayClient) {
         gateway,
         session: {
           STARTUP_RESUME_ID,
+          activateLiveSession: session.activateLiveSession,
           colsRef,
           newSession: session.newSession,
           recoverSidRef,
@@ -786,6 +795,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions.setInput,
       gateway,
       panel,
+      session.activateLiveSession,
       session.newSession,
       session.resetSession,
       session.resumeById,
@@ -871,6 +881,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         session: {
+          activateDetachedSession: session.activateDetachedSession,
           closeSession: session.closeSession,
           die,
           dieWithCode,
@@ -912,13 +923,20 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const answerApproval = useCallback(
-    (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
-        patchOverlayState({ approval: null })
+    (choice: string) => {
+      const requestId = overlay.approval?.requestId
+
+      return respondWith('approval.respond', { choice, request_id: requestId, session_id: ui.sid }, () => {
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
-        patchUiState({ status: 'running…' })
-      }),
-    [respondWith, ui.sid]
+
+        // Clear our own approval + resume running only if a newer approval
+        // prompt hasn't superseded A while its respond RPC was in flight.
+        if (requestId) {
+          resolveAnsweredPrompt('approval', requestId)
+        }
+      })
+    },
+    [overlay.approval?.requestId, respondWith, ui.sid]
   )
 
   const answerSudo = useCallback(
@@ -930,15 +948,16 @@ export function useMainApp(gw: GatewayClient) {
       const requestId = overlay.sudo.requestId
 
       if (!pw) {
-        patchOverlayState({ sudo: null })
+        // Empty password = user declined: dismiss our own prompt immediately,
+        // race-safe so a newer sudo prompt isn't swept away.
+        resolveAnsweredPrompt('sudo', requestId, { resetStatus: false })
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
-        patchOverlayState({ sudo: null })
-        patchUiState({ status: 'running…' })
+      return respondWith('sudo.respond', { password: pw, request_id: requestId, session_id: ui.sid }, () => {
+        resolveAnsweredPrompt('sudo', requestId)
       })
     },
-    [overlay.sudo, respondWith]
+    [overlay.sudo, respondWith, ui.sid]
   )
 
   const answerSecret = useCallback(
@@ -950,15 +969,16 @@ export function useMainApp(gw: GatewayClient) {
       const requestId = overlay.secret.requestId
 
       if (!value) {
-        patchOverlayState({ secret: null })
+        // Empty value = user declined: dismiss our own prompt immediately,
+        // race-safe so a newer secret prompt survives.
+        resolveAnsweredPrompt('secret', requestId, { resetStatus: false })
       }
 
-      return respondWith('secret.respond', { request_id: requestId, value }, () => {
-        patchOverlayState({ secret: null })
-        patchUiState({ status: 'running…' })
+      return respondWith('secret.respond', { request_id: requestId, session_id: ui.sid, value }, () => {
+        resolveAnsweredPrompt('secret', requestId)
       })
     },
-    [overlay.secret, respondWith]
+    [overlay.secret, respondWith, ui.sid]
   )
 
   const onModelSelect = useCallback((value: string) => {

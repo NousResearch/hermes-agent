@@ -4,9 +4,14 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  acknowledgeDetachedTask,
+  registerDetachedTasks,
+  resetDetachedTaskTrackingForTests
+} from '../app/detachedTasks.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
@@ -75,6 +80,98 @@ describe('live session activation in-flight state', () => {
 
     expect(turnController.bufRef).toBe('')
     expect(getTurnState().streaming).toBe('')
+  })
+})
+
+describe('detached task registration retries', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    resetUiState()
+    resetDetachedTaskTrackingForTests()
+  })
+
+  afterEach(() => {
+    resetDetachedTaskTrackingForTests()
+    vi.useRealTimers()
+  })
+
+  it('retries a null ACK and consumes a later terminal snapshot once', async () => {
+    const task = {
+      source_session_id: 'source-sid',
+      status: 'running' as const,
+      task_id: 'bg_turn_retry'
+    }
+
+    patchUiState({ sid: 'owner-sid' })
+    registerDetachedTasks([task])
+
+    let ackCalls = 0
+
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'session.detach_turn_ack') {
+        ackCalls += 1
+
+        return ackCalls === 1
+          ? null
+          : {
+              task: {
+                ...task,
+                status: 'complete' as const,
+                text: 'terminal snapshot'
+              }
+            }
+      }
+
+      if (method === 'session.detach_turn_consumed') {
+        return { consumed: true }
+      }
+
+      return null
+    })
+
+    const sys = vi.fn()
+
+    const pending = acknowledgeDetachedTask(task, 'owner-sid', rpc as any, sys)
+    await Promise.resolve()
+    expect(ackCalls).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(50)
+    await pending
+    await Promise.resolve()
+
+    expect(ackCalls).toBe(2)
+    expect(sys).toHaveBeenCalledTimes(1)
+    expect(sys).toHaveBeenCalledWith('[bg bg_turn_retry] terminal snapshot')
+    expect(rpc).toHaveBeenCalledWith('session.detach_turn_consumed', {
+      session_id: 'owner-sid',
+      task_id: 'bg_turn_retry'
+    })
+    expect(getUiState().bgTasks.has('bg_turn_retry')).toBe(false)
+  })
+
+  it('cancels retries silently when the presentation owner switches', async () => {
+    const task = {
+      source_session_id: 'source-sid',
+      status: 'running' as const,
+      task_id: 'bg_turn_switched'
+    }
+
+    patchUiState({ sid: 'owner-sid' })
+    registerDetachedTasks([task])
+    const rpc = vi.fn(async () => null)
+    const sys = vi.fn()
+
+    const pending = acknowledgeDetachedTask(task, 'owner-sid', rpc as any, sys)
+    await Promise.resolve()
+    expect(rpc).toHaveBeenCalledTimes(1)
+
+    patchUiState({ sid: 'other-sid' })
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(sys).not.toHaveBeenCalled()
+    expect(getUiState().bgTasks.has('bg_turn_switched')).toBe(true)
   })
 })
 

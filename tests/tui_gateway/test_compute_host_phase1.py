@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -74,6 +75,1313 @@ def test_compute_host_frame_protocol_round_trip():
             "turn.end",
         ]
     finally:
+        host.close()
+
+
+@pytest.mark.parametrize(
+    ("event", "method", "value_key", "value"),
+    [
+        ("clarify.request", "clarify.respond", "answer", "clarified"),
+        ("input.request", "clarify.respond", "answer", "input"),
+        ("sudo.request", "sudo.respond", "password", "sudo-value"),
+        ("secret.request", "secret.respond", "value", "secret-value"),
+        (
+            "terminal.read.request",
+            "terminal.read.respond",
+            "text",
+            '{"lines":["terminal"]}',
+        ),
+    ],
+)
+def test_compute_host_interactive_response_reaches_real_child_waiter(
+    monkeypatch, event, method, value_key, value
+):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    sid = f"child-{event}"
+    server._sessions[sid] = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": f"key-{event}",
+        "transport": host._transport,
+    }
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    answer: dict[str, str] = {}
+    waiter = threading.Thread(
+        target=lambda: answer.setdefault(
+            "value", server._block(event, sid, {"prompt": event}, timeout=2)
+        )
+    )
+    try:
+        waiter.start()
+        request = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.request"
+            and frame.get("event") == event,
+        )
+        assert request["source_sid"] == sid
+        assert request["request_id"]
+
+        host.handle_frame(
+            {
+                "type": "interactive.response",
+                "sid": sid,
+                "request_id": f"response-{event}",
+                "interactive_request_id": request["request_id"],
+                "method": method,
+                "params": {value_key: value},
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.response.ack"
+            and frame.get("request_id") == f"response-{event}",
+        )
+        assert ack["interactive_request_id"] == request["request_id"]
+        _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.complete"
+            and frame.get("request_id") == request["request_id"],
+        )
+        waiter.join(2)
+        assert answer == {"value": value}
+    finally:
+        server._clear_pending(sid)
+        waiter.join(2)
+        server._sessions.pop(sid, None)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+        host.close()
+
+
+def test_compute_host_interactive_response_reaches_real_approval_resolver(
+    monkeypatch,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    sid = "child-approval"
+    session_key = "child-approval-key"
+    server._sessions[sid] = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": session_key,
+        "transport": host._transport,
+    }
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 2)
+    result: dict[str, dict] = {}
+    waiter = threading.Thread(
+        target=lambda: result.setdefault(
+            "value",
+            approval._await_gateway_decision(
+                session_key,
+                lambda data: server._emit_approval_request(sid, data),
+                {
+                    "command": "dangerous",
+                    "description": "needs approval",
+                    "pattern_key": "test",
+                    "pattern_keys": ["test"],
+                },
+            ),
+        )
+    )
+    try:
+        waiter.start()
+        request = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.request"
+            and frame.get("event") == "approval.request",
+        )
+        host.handle_frame(
+            {
+                "type": "interactive.response",
+                "sid": sid,
+                "request_id": "approval-response",
+                "interactive_request_id": request["request_id"],
+                "method": "approval.respond",
+                "params": {"choice": "once"},
+            }
+        )
+        _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.response.ack"
+            and frame.get("request_id") == "approval-response",
+        )
+        waiter.join(2)
+        assert result["value"]["resolved"] is True
+        assert result["value"]["choice"] == "once"
+        assert not approval.has_blocking_approval(session_key)
+    finally:
+        approval.resolve_gateway_approval(session_key, "deny", resolve_all=True)
+        server._drop_pending_approvals(sid)
+        waiter.join(2)
+        server._sessions.pop(sid, None)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+        host.close()
+
+
+@pytest.mark.parametrize("init_fails", [False, True])
+def test_compute_host_remote_profile_is_bound_through_session_init_and_fallback(
+    monkeypatch, tmp_path, init_fails
+):
+    """Agent, _init_session, and fallback config reads share one profile."""
+    from tui_gateway import server
+
+    host = ComputeHost(stdout=io.StringIO(), max_workers=1, heartbeat_secs=0)
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    sid = f"remote-profile-{'fallback' if init_fails else 'init'}"
+    captured: dict[str, Any] = {"fallback_homes": []}
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            assert db_path is not None
+            captured["db_path"] = Path(db_path)
+
+    def make_agent(*_args, session_db=None, **_kwargs):
+        captured["agent_home"] = server.get_hermes_home_override()
+        captured["agent_db"] = session_db
+        return object()
+
+    def init_session(target_sid, key, agent, history, **kwargs):
+        captured["init_home"] = server.get_hermes_home_override()
+        captured["init_kwargs"] = kwargs
+        if init_fails:
+            raise RuntimeError("force minimal fallback")
+        server._sessions[target_sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": list(history),
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "profile_home": str(kwargs["profile_home"]),
+        }
+
+    def profile_config(value):
+        captured["fallback_homes"].append(server.get_hermes_home_override())
+        return value
+
+    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_init_session", init_session)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: profile_config(True))
+    monkeypatch.setattr(
+        server, "_load_tool_progress_mode", lambda: profile_config("verbose")
+    )
+    monkeypatch.setattr(server, "_resolve_session_source", lambda value: value or "tui")
+
+    try:
+        session = host._ensure_server_session(
+            server,
+            {
+                "sid": sid,
+                "session_key": "remote-key",
+                "history": [{"role": "user", "content": "hello"}],
+                "history_version": 3,
+                "profile_home": str(profile_home),
+                "source": "tui",
+            },
+        )
+
+        assert captured["db_path"] == profile_home / "state.db"
+        assert Path(captured["agent_home"]) == profile_home
+        assert captured["agent_db"].__class__ is ProfileDB
+        assert Path(captured["init_home"]) == profile_home
+        assert captured["init_kwargs"]["session_db"] is captured["agent_db"]
+        assert captured["init_kwargs"]["profile_home"] == str(profile_home)
+        assert session["profile_home"] == str(profile_home)
+        assert session["history_version"] == 3
+        if init_fails:
+            assert [Path(home) for home in captured["fallback_homes"]] == [
+                profile_home,
+                profile_home,
+            ]
+            assert session["show_reasoning"] is True
+            assert session["tool_progress_mode"] == "verbose"
+        else:
+            assert captured["fallback_homes"] == []
+        assert server.get_hermes_home_override() is None
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
+
+def test_compute_host_real_turn_end_serializes_authoritative_history(monkeypatch):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    initial = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+    session = {
+        "agent": object(),
+        "history": list(initial),
+        "history_lock": threading.Lock(),
+        "history_version": 6,
+        "running": False,
+        "session_key": "history-key",
+    }
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            target["history"] = [
+                *target["history"],
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": "second answer"},
+            ]
+            target["history_version"] += 1
+            target["running"] = False
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _server, _frame: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    try:
+        host._run_real_turn(
+            {
+                "sid": "history-sid",
+                "request_id": "history-turn",
+                "session_key": "history-key",
+                "history": initial,
+                # A persistent child can be authoritative at a newer version
+                # than a stale parent frame. The CAS base must be the version
+                # the child actually ran from (6), not this value.
+                "history_version": 5,
+                "text": "second",
+            }
+        )
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "history-turn",
+        )
+        # Parse the emitted line again: this is the real wire serialization,
+        # not a shared in-memory list handed to the assertion.
+        encoded = json.dumps(end)
+        decoded = json.loads(encoded)
+        assert decoded["base_history_version"] == 6
+        assert decoded["history_version"] == 7
+        assert [message["role"] for message in decoded["history"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert decoded["history"][-1]["content"] == "second answer"
+    finally:
+        host.close()
+
+
+def test_compute_host_real_turn_waits_for_chained_successor_before_settling(
+    monkeypatch,
+):
+    """turn.end must not snapshot until a chained successor turn settles.
+
+    server._run_prompt_submit runs a turn on session["_run_thread"] and, in
+    that thread's tail, can chain a successor (queued prompt / goal
+    continuation / post-turn completion) by calling _run_prompt_submit again —
+    installing a FRESH _run_thread and re-setting running=True before the first
+    thread exits. The old compute-host code joined the first thread once and
+    snapshotted immediately, racing the live successor: turn.end carried
+    partial history and the source was marked idle mid-successor. This test
+    installs+starts such a successor from the first dispatcher and asserts the
+    host does not emit turn.end / snapshot history until the successor settles,
+    and that the final history includes the successor's turn.
+    """
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "chain-key",
+        "_run_thread": None,
+    }
+
+    first_dispatch_done = threading.Event()
+    release_successor = threading.Event()
+    first_may_proceed = threading.Event()
+
+    class JoinObservedThread(threading.Thread):
+        """Release the dispatcher only after the host starts joining it."""
+
+        def join(self, timeout=None):
+            first_may_proceed.set()
+            return super().join(timeout)
+
+    def run_prompt(_rid, _sid, target, text):
+        # Emulate server._run_prompt_submit: start the turn on a background
+        # thread, set session["_run_thread"], and return immediately.
+        def _first_turn():
+            # Hold session["_run_thread"] == first until the host has observed
+            # and begun joining it, so the buggy single-join path deterministically
+            # captures the FIRST thread (as it does in production, where the turn
+            # runs before the tail swaps in a successor).
+            first_may_proceed.wait(5)
+            with target["history_lock"]:
+                target["history"] = [
+                    *target["history"],
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": "first answer"},
+                ]
+                target["history_version"] += 1
+                # The first turn releases running in its finally...
+                target["running"] = False
+
+            # ...then, exactly like _drain_queued_prompt -> _run_prompt_submit,
+            # it claims running again and installs a SUCCESSOR thread that
+            # replaces session["_run_thread"] BEFORE this first thread exits.
+            def _successor_turn():
+                release_successor.wait(5)
+                with target["history_lock"]:
+                    target["history"] = [
+                        *target["history"],
+                        {"role": "user", "content": "successor"},
+                        {"role": "assistant", "content": "final answer"},
+                    ]
+                    target["history_version"] += 1
+                    target["running"] = False
+
+            with target["history_lock"]:
+                target["running"] = True
+            successor = threading.Thread(target=_successor_turn, daemon=True)
+            target["_run_thread"] = successor
+            successor.start()
+            first_dispatch_done.set()
+
+        first = JoinObservedThread(target=_first_turn, daemon=True)
+        target["_run_thread"] = first
+        first.start()
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+
+    real_turn = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "chain-sid",
+                "request_id": "chain-turn",
+                "session_key": "chain-key",
+                "text": "hello",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        real_turn.start()
+
+        # Wait until the first dispatcher has installed + started the successor
+        # and exited. The OLD code would already have joined the first thread
+        # and emitted turn.end here.
+        assert first_dispatch_done.wait(5)
+        # Shutdown may stop waiting for the worker future, but it must not
+        # manufacture a terminal frame from partial history while the chained
+        # daemon thread still owns the turn.
+        host._closed.set()
+        # Give a buggy (settle-early) path a chance to wrongly emit turn.end.
+        time.sleep(0.15)
+        assert not any(
+            frame.get("type") == "turn.end"
+            and frame.get("request_id") == "chain-turn"
+            for frame in _json_lines(out)
+        ), "turn.end emitted before the chained successor settled"
+        assert session["running"] is True
+
+        # Let the successor finish; only now may the host settle.
+        release_successor.set()
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "chain-turn",
+        )
+        # Final history includes BOTH the first turn and the successor turn,
+        # and reflects the successor's version.
+        decoded = json.loads(json.dumps(end))
+        assert decoded["history_version"] == 2
+        assert [message["role"] for message in decoded["history"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert decoded["history"][-1]["content"] == "final answer"
+        assert decoded["message_count"] == 4
+        assert decoded["interrupted"] is False
+        real_turn.join(5)
+        assert not real_turn.is_alive()
+    finally:
+        release_successor.set()
+        real_turn.join(5)
+        host.close()
+
+
+def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
+    monkeypatch,
+):
+    """A successor waits for terminal serialization, then runs exactly once."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=2, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "barrier-key",
+        "_run_thread": None,
+    }
+    emit_entered = threading.Event()
+    release_emit = threading.Event()
+    original_emit = host.emit
+    run_texts: list[str] = []
+    control_calls: list[str] = []
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            run_texts.append(text)
+            target["history"].extend(
+                [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": "done"},
+                ]
+            )
+            target["history_version"] += 1
+            target["running"] = False
+
+    def blocking_emit(frame):
+        if (
+            frame.get("type") == "turn.end"
+            and frame.get("request_id") == "barrier-turn"
+            and frame.get("history_version") == 1
+        ):
+            assert session.get("_compute_host_terminal_pending") == "barrier-turn"
+            # Put the terminal frame on the wire first. The parent can process
+            # it and dispatch a queued successor before this emit call returns
+            # and the child reaches its barrier cleanup.
+            original_emit(frame)
+            emit_entered.set()
+            assert release_emit.wait(5)
+            return
+        original_emit(frame)
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(
+        server,
+        "_mirror_slash_side_effects",
+        lambda _sid, _session, command: control_calls.append(command),
+    )
+    monkeypatch.setattr(host, "emit", blocking_emit)
+    server._sessions["barrier-sid"] = session
+
+    first = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "barrier-sid",
+                "request_id": "barrier-turn",
+                "session_key": "barrier-key",
+                "text": "hello",
+            }
+        ),
+        daemon=True,
+    )
+    poller_claimed: list[bool] = []
+
+    def competing_poller():
+        assert release_emit.wait(5)
+        with session["history_lock"]:
+            if (
+                session.get("running")
+                or session.get("_compute_host_terminal_pending")
+                or session.get("_compute_host_terminal_successor_pending")
+                or session.get("_compute_host_turn_admission")
+                or session.get("_compute_host_control_pending")
+            ):
+                return
+            session["running"] = True
+            poller_claimed.append(True)
+
+    poller = threading.Thread(target=competing_poller, daemon=True)
+    try:
+        first.start()
+        assert emit_entered.wait(5)
+        assert session["running"] is False
+        assert session["_compute_host_terminal_pending"] == "barrier-turn"
+
+        # An idle-gated history mutator must not invalidate the authoritative
+        # snapshot while its terminal frame is still being serialized.
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "barrier-sid",
+                "request_id": "compress-during-terminal",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        control_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.error"
+            and frame.get("request_id") == "compress-during-terminal",
+        )
+        assert control_error["message"] == "session busy"
+        assert control_calls == []
+
+        # A fresh prompt can also arrive with a new request id immediately after
+        # the parent receives turn.end. Admission reserves that one successor
+        # before its executor worker waits, so a poller cannot overtake it.
+        host._handle_turn_start(
+            {
+                "sid": "barrier-sid",
+                "request_id": "fresh-successor",
+                "session_key": "barrier-key",
+                "text": "overlap",
+            }
+        )
+        time.sleep(0.05)
+        assert session.get("_compute_host_terminal_successor_pending")
+        assert not any(
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "fresh-successor"
+            and frame.get("message") == "session busy"
+            for frame in _json_lines(out)
+        )
+        assert session["history_version"] == 1
+
+        poller.start()
+        release_emit.set()
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "barrier-turn",
+        )
+        assert end["history_version"] == 1
+        overlap_end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "fresh-successor"
+            and frame.get("history_version") == 2,
+        )
+        assert overlap_end["history_version"] == 2
+        first.join(5)
+        poller.join(5)
+        assert not first.is_alive()
+        assert not poller.is_alive()
+        assert poller_claimed == []
+        assert run_texts == ["hello", "overlap"]
+        assert "_compute_host_terminal_pending" not in session
+        assert "_compute_host_terminal_accepting_successor" not in session
+        assert "_compute_host_terminal_successor_pending" not in session
+        assert "_compute_host_turn_admission" not in session
+    finally:
+        release_emit.set()
+        first.join(5)
+        if poller.ident is not None:
+            poller.join(5)
+        server._sessions.pop("barrier-sid", None)
+        host.close()
+
+
+def test_compute_host_terminal_barrier_survives_turn_end_emit_failure(monkeypatch):
+    """The barrier spans replacement turn.error serialization after end fails."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=2, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "error-barrier-key",
+        "_run_thread": None,
+    }
+    error_emit_entered = threading.Event()
+    release_error_emit = threading.Event()
+    original_emit = host.emit
+    run_texts: list[str] = []
+    parent_session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "session_key": "error-barrier-key",
+    }
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            run_texts.append(text)
+            target["history"].extend(
+                [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": "done"},
+                ]
+            )
+            target["history_version"] += 1
+            target["running"] = False
+
+    def failing_terminal_emit(frame):
+        is_failed_end = (
+            frame.get("type") == "turn.end"
+            and frame.get("request_id") == "failing-end"
+            and frame.get("history_version") == 1
+        )
+        is_replacement_error = (
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "failing-end"
+            and "forced turn.end write failure" in str(frame.get("message") or "")
+        )
+        if is_failed_end or is_replacement_error:
+            assert session.get("_compute_host_terminal_pending") == "failing-end"
+            if is_failed_end:
+                # Model a flush/write wrapper that makes the line readable and
+                # only then reports failure to the emitting worker.
+                original_emit(frame)
+                raise OSError("forced turn.end write failure")
+            # The replacement terminal frame is now readable by the parent, but
+            # the emitting worker has not returned to barrier cleanup yet.
+            original_emit(frame)
+            error_emit_entered.set()
+            assert release_error_emit.wait(5)
+            return
+        original_emit(frame)
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(host, "emit", failing_terminal_emit)
+    server._sessions["error-barrier-sid"] = session
+
+    first = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "error-barrier-sid",
+                "request_id": "failing-end",
+                "session_key": "error-barrier-key",
+                "text": "first",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        first.start()
+        assert error_emit_entered.wait(5)
+        assert session["_compute_host_terminal_pending"] == "failing-end"
+
+        first_end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "failing-end",
+        )
+        assert first_end["history_version"] == 1
+        server._apply_compute_host_metadata_mirror(parent_session, first_end)
+
+        first_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "failing-end",
+        )
+        assert "forced turn.end write failure" in first_error["message"]
+        assert first_error["base_history_version"] == 0
+        assert first_error["history_version"] == 1
+        server._apply_compute_host_metadata_mirror(parent_session, first_error)
+        assert parent_session["history_version"] == 1
+        assert parent_session["history"] == session["history"]
+
+        # The parent preserves its RPC id separately but assigns every child
+        # submission a unique wire id before dispatching the mirrored successor.
+        host._handle_turn_start(
+            {
+                "sid": "error-barrier-sid",
+                "request_id": "error-successor",
+                "session_key": "error-barrier-key",
+                "history": list(parent_session["history"]),
+                "history_version": parent_session["history_version"],
+                "text": "second",
+            }
+        )
+        time.sleep(0.05)
+        assert session.get("_compute_host_terminal_successor_pending")
+        assert run_texts == ["first"]
+        assert not any(
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "error-successor"
+            and frame.get("message") == "session busy"
+            for frame in _json_lines(out)
+        )
+
+        release_error_emit.set()
+        successor_end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "error-successor"
+            and frame.get("history_version") == 2,
+        )
+        assert successor_end["base_history_version"] == 1
+        server._apply_compute_host_metadata_mirror(parent_session, successor_end)
+        assert parent_session["history_version"] == 2
+        assert parent_session["history"] == session["history"]
+        first.join(5)
+        assert not first.is_alive()
+        assert run_texts == ["first", "second"]
+        assert "_compute_host_terminal_pending" not in session
+        assert "_compute_host_terminal_accepting_successor" not in session
+        assert "_compute_host_terminal_successor_pending" not in session
+        assert "_compute_host_turn_admission" not in session
+    finally:
+        release_error_emit.set()
+        first.join(5)
+        server._sessions.pop("error-barrier-sid", None)
+        host.close()
+
+
+def test_compute_host_wire_admission_rejects_genuine_concurrent_turn():
+    """Executor delay cannot reclassify a request received while running."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": True,
+        "session_key": "busy-key",
+    }
+    server._sessions["busy-sid"] = session
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "busy-sid",
+                "request_id": "genuine-overlap",
+                "session_key": "busy-key",
+                "text": "must not run later",
+            }
+        )
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "genuine-overlap",
+        )
+        assert error["message"] == "session busy"
+        assert "_compute_host_turn_admission" not in session
+        assert not host._turn_futures
+    finally:
+        server._sessions.pop("busy-sid", None)
+        host.close()
+
+
+def test_compute_host_initial_admission_rejects_second_turn_before_session_exists(
+    monkeypatch,
+):
+    """The first wire frame owns a new SID even while its worker is queued."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_executor = threading.Event()
+    first_ran = threading.Event()
+    run_ids: list[str] = []
+
+    blocker = host._executor.submit(lambda: release_executor.wait(5))
+
+    def fake_run(frame):
+        run_ids.append(frame["request_id"])
+        host._release_real_turn_admission(frame)
+        first_ran.set()
+
+    monkeypatch.setattr(host, "_run_real_turn", fake_run)
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "new-sid",
+                "request_id": "first-new",
+                "session_key": "new-key",
+                "text": "first",
+            }
+        )
+        assert host._real_turn_admissions.get("new-sid")
+
+        host._handle_turn_start(
+            {
+                "sid": "new-sid",
+                "request_id": "second-new",
+                "session_key": "new-key",
+                "text": "second",
+            }
+        )
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "second-new",
+        )
+        assert error["message"] == "session busy"
+        assert run_ids == []
+
+        release_executor.set()
+        assert first_ran.wait(5)
+        assert run_ids == ["first-new"]
+        assert "new-sid" not in host._real_turn_admissions
+    finally:
+        release_executor.set()
+        blocker.result(timeout=5)
+        host.close()
+
+
+def test_compute_host_close_releases_cancelled_queued_initial_admission(monkeypatch):
+    """Executor cancellation cannot leak a host-level new-session reservation."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_executor = threading.Event()
+    blocker = host._executor.submit(lambda: release_executor.wait(5))
+    ran: list[bool] = []
+    monkeypatch.setattr(host, "_run_real_turn", lambda _frame: ran.append(True))
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "cancelled-queue-sid",
+                "request_id": "cancelled-queue-turn",
+                "session_key": "cancelled-queue-key",
+                "text": "must not run",
+            }
+        )
+        assert host._real_turn_admissions.get("cancelled-queue-sid")
+        host.close()
+        deadline = time.monotonic() + 2
+        while (
+            "cancelled-queue-sid" in host._real_turn_admissions
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert "cancelled-queue-sid" not in host._real_turn_admissions
+        assert ran == []
+    finally:
+        release_executor.set()
+        blocker.result(timeout=5)
+        host.close()
+
+
+def test_compute_host_interrupt_cancels_initial_admission_before_session_exists(
+    monkeypatch,
+):
+    """Stop can expire a new-SID admission while its executor worker is queued."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_executor = threading.Event()
+    blocker = host._executor.submit(lambda: release_executor.wait(5))
+    created: dict[str, dict] = {}
+
+    def ensure_session(_server, frame):
+        session = {
+            "agent": object(),
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "session_key": "cancel-initial-key",
+            "_compute_host_turn_admission": frame[
+                "_compute_host_admission_token"
+            ],
+        }
+        created["session"] = session
+        server._sessions["cancel-initial"] = session
+        return session
+
+    monkeypatch.setattr(host, "_ensure_server_session", ensure_session)
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "cancel-initial",
+                "request_id": "initial-to-cancel",
+                "session_key": "cancel-initial-key",
+                "text": "must not run",
+            }
+        )
+        assert host._real_turn_admissions.get("cancel-initial")
+        host._handle_interrupt(
+            {
+                "sid": "cancel-initial",
+                "request_id": "stop-initial",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interrupt.ack"
+            and frame.get("request_id") == "stop-initial",
+        )
+        assert ack["applied"] is True
+        assert "cancel-initial" not in host._real_turn_admissions
+
+        release_executor.set()
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "initial-to-cancel",
+        )
+        assert error["message"] == "turn admission expired"
+        assert created["session"]["running"] is False
+        assert "_compute_host_turn_admission" not in created["session"]
+    finally:
+        release_executor.set()
+        blocker.result(timeout=5)
+        server._sessions.pop("cancel-initial", None)
+        host.close()
+
+
+def test_compute_host_turn_admission_blocks_later_idle_control(monkeypatch):
+    """A wire-admitted turn cannot be overtaken before its worker runs."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "admission-key",
+        "_run_thread": None,
+    }
+    control_calls: list[str] = []
+
+    def occupy_executor():
+        blocker_started.set()
+        assert release_blocker.wait(5)
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            target["history"] = [{"role": "assistant", "content": text}]
+            target["history_version"] = 1
+            target["running"] = False
+
+    blocker = host._executor.submit(occupy_executor)
+    assert blocker_started.wait(5)
+    server._sessions["admission-sid"] = session
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(
+        server,
+        "_mirror_slash_side_effects",
+        lambda _sid, _session, command: control_calls.append(command),
+    )
+
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "admission-sid",
+                "request_id": "admitted-turn",
+                "session_key": "admission-key",
+                "text": "turn",
+            }
+        )
+        assert session.get("_compute_host_turn_admission")
+
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "admission-sid",
+                "request_id": "late-compress",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        control_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.error"
+            and frame.get("request_id") == "late-compress",
+        )
+        assert control_error["message"] == "session busy"
+        assert control_calls == []
+
+        release_blocker.set()
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "admitted-turn",
+        )
+        assert end["history_version"] == 1
+        assert "_compute_host_turn_admission" not in session
+    finally:
+        release_blocker.set()
+        blocker.result(timeout=5)
+        server._sessions.pop("admission-sid", None)
+        host.close()
+
+
+def test_compute_host_idle_control_rejects_live_tail_and_snapshot_waits_for_control(
+    monkeypatch,
+):
+    """A live run tail and an active control both exclude terminal snapshotting."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_tail = threading.Event()
+    tail = threading.Thread(target=lambda: release_tail.wait(5), daemon=True)
+    tail.start()
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "tail-key",
+        "_run_thread": tail,
+    }
+    mutations: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_mirror_slash_side_effects",
+        lambda _sid, _session, command: mutations.append(command),
+    )
+    server._sessions["tail-sid"] = session
+    try:
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "tail-sid",
+                "request_id": "control-during-tail",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.error"
+            and frame.get("request_id") == "control-during-tail",
+        )
+        assert error["message"] == "session busy"
+        assert mutations == []
+
+        release_tail.set()
+        tail.join(5)
+        with session["history_lock"]:
+            session["_compute_host_control_pending"] = "held-control"
+        snapshot_done = threading.Event()
+        snapshots: list[dict] = []
+
+        def await_snapshot():
+            snapshots.append(host._await_turn_quiescence(session, "tail-turn"))
+            snapshot_done.set()
+
+        waiter = threading.Thread(target=await_snapshot, daemon=True)
+        waiter.start()
+        time.sleep(0.05)
+        assert not snapshot_done.is_set()
+        assert "_compute_host_terminal_pending" not in session
+
+        with session["history_lock"]:
+            session.pop("_compute_host_control_pending", None)
+        assert snapshot_done.wait(5)
+        assert snapshots[0]["history_version"] == 0
+        assert session["_compute_host_terminal_pending"] == "tail-turn"
+        with session["history_lock"]:
+            session.pop("_compute_host_terminal_pending", None)
+        waiter.join(5)
+    finally:
+        release_tail.set()
+        tail.join(5)
+        server._sessions.pop("tail-sid", None)
+        host.close()
+
+
+def test_compute_host_interrupt_cancels_reserved_terminal_successor(monkeypatch):
+    """Stop expires a successor reservation before it can claim running=True."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+
+    class Agent:
+        def __init__(self):
+            self.interrupted = False
+
+        def interrupt(self):
+            self.interrupted = True
+
+    agent = Agent()
+    session = {
+        "agent": agent,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 1,
+        "running": False,
+        "session_key": "interrupt-key",
+        "_compute_host_terminal_pending": "owner",
+        "_compute_host_terminal_accepting_successor": "owner",
+    }
+    server._sessions["interrupt-sid"] = session
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_clear_pending", lambda *_a, **_k: None)
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "interrupt-sid",
+                "request_id": "reserved-next",
+                "session_key": "interrupt-key",
+                "text": "must not run",
+            }
+        )
+        assert session.get("_compute_host_terminal_successor_pending")
+
+        host._handle_interrupt(
+            {
+                "sid": "interrupt-sid",
+                "request_id": "stop-reserved",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interrupt.ack"
+            and frame.get("request_id") == "stop-reserved",
+        )
+        assert ack["applied"] is True
+        assert agent.interrupted is True
+        assert "_compute_host_terminal_successor_pending" not in session
+
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "reserved-next",
+        )
+        assert error["message"] == "turn admission expired"
+        assert session["running"] is False
+        assert session["history_version"] == 1
+    finally:
+        with session["history_lock"]:
+            session.pop("_compute_host_terminal_pending", None)
+            session.pop("_compute_host_terminal_accepting_successor", None)
+        server._sessions.pop("interrupt-sid", None)
+        host.close()
+
+
+def test_compute_host_idle_control_reserves_mutation_against_turn_and_poller(
+    monkeypatch,
+):
+    """The idle gate covers the full mutation, not only its pre-check."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    mutation_started = threading.Event()
+    release_mutation = threading.Event()
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "control-key",
+    }
+    poller_claimed: list[bool] = []
+
+    def mutate(_sid, target, _command):
+        mutation_started.set()
+        assert release_mutation.wait(5)
+        with target["history_lock"]:
+            target["history"] = [{"role": "summary", "content": "compressed"}]
+            target["history_version"] = 1
+        return "compressed"
+
+    monkeypatch.setattr(server, "_mirror_slash_side_effects", mutate)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    server._sessions["control-sid"] = session
+    control_thread = threading.Thread(
+        target=lambda: host._handle_control(
+            {
+                "type": "control",
+                "sid": "control-sid",
+                "request_id": "compress-held",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        control_thread.start()
+        assert mutation_started.wait(5)
+        assert session.get("_compute_host_control_pending")
+
+        host._handle_turn_start(
+            {
+                "sid": "control-sid",
+                "request_id": "turn-during-control",
+                "session_key": "control-key",
+                "text": "must not run",
+            }
+        )
+        turn_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "turn-during-control",
+        )
+        assert turn_error["message"] == "session busy"
+
+        with session["history_lock"]:
+            if not (
+                session.get("running")
+                or session.get("_compute_host_terminal_pending")
+                or session.get("_compute_host_terminal_successor_pending")
+                or session.get("_compute_host_turn_admission")
+                or session.get("_compute_host_control_pending")
+            ):
+                session["running"] = True
+                poller_claimed.append(True)
+        assert poller_claimed == []
+
+        release_mutation.set()
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.ack"
+            and frame.get("request_id") == "compress-held",
+        )
+        assert ack["history_version"] == 1
+        control_thread.join(5)
+        assert not control_thread.is_alive()
+        assert "_compute_host_control_pending" not in session
+        assert session["running"] is False
+    finally:
+        release_mutation.set()
+        control_thread.join(5)
+        server._sessions.pop("control-sid", None)
         host.close()
 
 
@@ -334,3 +1642,158 @@ for raw in sys.stdin:
         assert supervisor.is_running()
     finally:
         supervisor.shutdown()
+
+
+def test_supervisor_pipe_proxies_detached_interaction_bidirectionally(
+    tmp_path, monkeypatch
+):
+    """Exercise the server proxy through real supervisor stdin/stdout pipes."""
+    from tui_gateway import server
+
+    script = tmp_path / "interactive_host.py"
+    script.write_text(
+        """
+import json, os, sys
+print(json.dumps({'type':'hello','host_pid':os.getpid(),'boot_id':'interactive','build_sha':'test','hermes_home':os.environ.get('HERMES_HOME','')}), flush=True)
+turn = None
+for raw in sys.stdin:
+    frame = json.loads(raw)
+    if frame.get('type') == 'shutdown':
+        print(json.dumps({'type':'shutdown.ack','request_id':frame.get('request_id')}), flush=True)
+        break
+    if frame.get('type') == 'turn.start':
+        turn = frame
+        print(json.dumps({
+            'type':'interactive.request',
+            'sid':frame.get('sid'),
+            'source_sid':frame.get('sid'),
+            'request_id':'child-clarify-1',
+            'event':'clarify.request',
+            'payload':{'request_id':'child-clarify-1','question':'from child','choices':[]},
+        }), flush=True)
+    if frame.get('type') == 'interactive.response':
+        assert frame.get('sid') == turn.get('sid')
+        assert frame.get('interactive_request_id') == 'child-clarify-1'
+        assert frame.get('method') == 'clarify.respond'
+        assert frame.get('params', {}).get('answer') == 'through pipe'
+        print(json.dumps({
+            'type':'interactive.response.ack',
+            'sid':frame.get('sid'),
+            'request_id':frame.get('request_id'),
+            'interactive_request_id':'child-clarify-1',
+            'response':{'jsonrpc':'2.0','id':frame.get('request_id'),'result':{'status':'ok'}},
+        }), flush=True)
+        print(json.dumps({
+            'type':'interactive.complete',
+            'sid':frame.get('sid'),
+            'source_sid':frame.get('sid'),
+            'request_id':'child-clarify-1',
+            'event':'clarify.request',
+            'reason':'answered',
+        }), flush=True)
+        print(json.dumps({
+            'type':'turn.end',
+            'sid':turn.get('sid'),
+            'request_id':turn.get('request_id'),
+            'history_version':1,
+            'message_count':0,
+        }), flush=True)
+""".strip(),
+        encoding="utf-8",
+    )
+    registry = tmp_path / "dashboard-compute-host.json"
+    emitted: list[tuple[str, str, dict]] = []
+    completed: list[dict] = []
+    source = {
+        "detached_turn_task_id": "pipe-task",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "pipe-source-key",
+    }
+    owner = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": "pipe-owner-key",
+    }
+    server._sessions.update({"pipe-source": source, "pipe-owner": owner})
+    server._detached_turns["pipe-task"] = {
+        "owner_session_id": "pipe-owner",
+        "source_session_id": "pipe-source",
+        "status": "running",
+        "task_id": "pipe-task",
+    }
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append(
+            (event, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    supervisor = HostSupervisor(
+        registry_path=registry,
+        argv=[sys.executable, str(script)],
+        interactive_sink=server._compute_host_interactive_sink,
+        respawn_max=0,
+        heartbeat_secs=1,
+        expected_build_sha="test",
+        autostart=False,
+    )
+    old_supervisor = server._compute_host_supervisor
+    server._compute_host_supervisor = supervisor
+    try:
+        supervisor.submit_turn(
+            {
+                "sid": "pipe-source",
+                "request_id": "pipe-turn",
+                "text": "hello",
+            },
+            on_complete=completed.append,
+        )
+        deadline = time.monotonic() + 3
+        while not emitted and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert emitted
+        event, presentation_sid, payload = emitted[0]
+        assert (event, presentation_sid) == ("clarify.request", "pipe-owner")
+        assert payload["request_id"] == "host:pipe-source:child-clarify-1"
+
+        denied = server._methods["clarify.respond"](
+            "wrong-owner",
+            {
+                "answer": "wrong",
+                "request_id": payload["request_id"],
+                "session_id": "pipe-source",
+            },
+        )
+        assert denied["error"]["code"] == 4043
+        assert completed == []
+
+        accepted = server._methods["clarify.respond"](
+            "right-owner",
+            {
+                "answer": "through pipe",
+                "request_id": payload["request_id"],
+                "session_id": "pipe-owner",
+            },
+        )
+        assert accepted["result"]["status"] == "ok"
+        deadline = time.monotonic() + 3
+        while not completed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert completed and completed[0]["type"] == "turn.end"
+        with server._prompt_lock:
+            assert payload["request_id"] not in server._compute_host_interactions
+            assert server._interactive_prompt_queues == {}
+    finally:
+        supervisor.shutdown()
+        server._compute_host_supervisor = old_supervisor
+        server._sessions.pop("pipe-source", None)
+        server._sessions.pop("pipe-owner", None)
+        server._detached_turns.pop("pipe-task", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_prompt_payloads.clear()
+            server._pending_prompt_presentations.clear()
+            server._interactive_prompt_queues.clear()

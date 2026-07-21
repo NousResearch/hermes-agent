@@ -134,6 +134,7 @@ class HostSupervisor:
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         rpc_sink: Callable[[dict], None] | None = None,
+        interactive_sink: Callable[[dict], None] | None = None,
         respawn_max: int = 3,
         heartbeat_secs: int = 15,
         expected_build_sha: str | None = None,
@@ -145,6 +146,7 @@ class HostSupervisor:
         self.cwd = Path(cwd) if cwd is not None else _repo_root()
         self.env = env
         self.rpc_sink = rpc_sink or (lambda _obj: None)
+        self.interactive_sink = interactive_sink or (lambda _frame: None)
         self.respawn_max = max(0, int(respawn_max))
         self.heartbeat_secs = max(1, int(heartbeat_secs))
         self.expected_build_sha = expected_build_sha if expected_build_sha is not None else _build_sha()
@@ -272,6 +274,52 @@ class HostSupervisor:
             payload={"type": "reload_mcp", "sid": sid, "request_id": request_id or uuid.uuid4().hex},
             wait=True,
         )
+
+    def respond_interactive(
+        self,
+        sid: str,
+        *,
+        request_id: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+        wait: bool = True,
+        timeout: float = 30.0,
+    ) -> dict:
+        """Resolve one child-owned interactive waiter over the control pipe.
+
+        ``request_id`` is the stable id allocated by the child waiter.  The
+        envelope gets its own id so retries remain idempotent without aliasing
+        the pending-control queue entry for an earlier attempt.
+        """
+        self.start()
+        control_id = uuid.uuid4().hex
+        frame = {
+            "type": "interactive.response",
+            "sid": str(sid or ""),
+            "request_id": control_id,
+            "interactive_request_id": str(request_id or ""),
+            "method": str(method or ""),
+            "params": dict(params or {}),
+        }
+        q: queue.Queue[dict] | None = None
+        if wait:
+            q = queue.Queue(maxsize=1)
+            with self._lock:
+                self._pending_controls[control_id] = q
+        try:
+            self._send_frame(frame)
+        except Exception:
+            if wait:
+                with self._lock:
+                    self._pending_controls.pop(control_id, None)
+            raise
+        if not wait or q is None:
+            return {"status": "sent", "request_id": control_id}
+        try:
+            return q.get(timeout=timeout)
+        finally:
+            with self._lock:
+                self._pending_controls.pop(control_id, None)
 
     def control(
         self,
@@ -417,10 +465,24 @@ class HostSupervisor:
             if isinstance(message, dict):
                 self.rpc_sink(message)
             return
+        if ftype in {"interactive.request", "interactive.complete"}:
+            try:
+                self.interactive_sink(frame)
+            except Exception:
+                logger.exception("compute host interactive frame sink failed")
+            return
         if ftype in {"turn.end", "turn.error"}:
             self._complete_turn(frame)
             return
-        if ftype in {"control.ack", "control.error", "interrupt.ack", "reload_mcp.ack", "shutdown.ack"}:
+        if ftype in {
+            "control.ack",
+            "control.error",
+            "interactive.response.ack",
+            "interactive.response.error",
+            "interrupt.ack",
+            "reload_mcp.ack",
+            "shutdown.ack",
+        }:
             request_id = str(frame.get("request_id") or "")
             with self._lock:
                 q = self._pending_controls.get(request_id)
@@ -463,6 +525,9 @@ class HostSupervisor:
             self._proc = None
         self._remove_registry()
         self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
+        self._fail_pending_controls(
+            reason="crash", message=f"compute host exited with code {code}"
+        )
         self._maybe_respawn_after_crash()
 
     def _fail_pending_turns(self, *, reason: str, message: str) -> None:
@@ -493,6 +558,23 @@ class HostSupervisor:
                     cb(frame)
                 except Exception:
                     logger.exception("compute host error callback failed")
+
+    def _fail_pending_controls(self, *, reason: str, message: str) -> None:
+        """Wake synchronous control callers when the child disappears."""
+        with self._lock:
+            pending = list(self._pending_controls.items())
+        for request_id, q in pending:
+            try:
+                q.put_nowait(
+                    {
+                        "type": "control.error",
+                        "request_id": request_id,
+                        "reason": reason,
+                        "message": message,
+                    }
+                )
+            except queue.Full:
+                pass
 
     def _maybe_respawn_after_crash(self) -> None:
         now = time.monotonic()

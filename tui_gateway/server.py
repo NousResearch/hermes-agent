@@ -126,9 +126,26 @@ except Exception:
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+# Presentation-only records for foreground turns detached from their source
+# Ink session.  The source session remains the sole owner of the AIAgent, run
+# thread, tool state, history, and durable transcript; these records only route
+# one retained terminal notification to the fresh owner session.
+_detached_turns: dict[str, dict] = {}
+_detached_turns_lock = threading.RLock()
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
+_pending_prompt_presentations: dict[str, str] = {}
+_pending_approvals: dict[str, dict] = {}
+# Parent-side presentation proxies for waiters that physically live in the
+# compute-host child.  The proxy id is shown to the UI; ``request_id`` inside
+# each record remains the child's stable waiter id for the reverse control
+# frame.
+_compute_host_interactions: dict[str, dict] = {}
+# A client has one overlay slot per interactive event kind. Queue request ids
+# by presentation session + kind so concurrent source/owner prompts cannot
+# overwrite one another and strand a waiter.
+_interactive_prompt_queues: dict[tuple[str, str], list[str]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
@@ -163,8 +180,17 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+_DETACHED_RECOVERY_GRACE_S = 10.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+_COMPUTE_HOST_INTERACTIVE_RESPONSES = {
+    "approval.request": ("approval.respond", "choice", "deny"),
+    "clarify.request": ("clarify.respond", "answer", ""),
+    "input.request": ("clarify.respond", "answer", ""),
+    "secret.request": ("secret.respond", "value", ""),
+    "sudo.request": ("sudo.respond", "password", ""),
+    "terminal.read.request": ("terminal.read.respond", "text", ""),
+}
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -480,6 +506,31 @@ def _claim_active_session_slot(
         return None, None
 
 
+def _claim_active_session_slot_for_profile(
+    session_key: str,
+    *,
+    live_session_id: str,
+    surface: str = "tui",
+    profile_home: str | Path | None = None,
+) -> tuple[Any, str | None]:
+    """Claim an active-session slot under the given profile's HERMES_HOME.
+
+    The registry claim must read the same profile's cap/config and create its
+    entry in that profile's registry, so the config override and the claim
+    itself have to share one profile for the duration of the call.
+    """
+    token = set_hermes_home_override(str(profile_home)) if profile_home else None
+    try:
+        return _claim_active_session_slot(
+            session_key,
+            live_session_id=live_session_id,
+            surface=surface,
+        )
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def _release_active_session_slot(session: dict | None) -> None:
     if not session:
         return
@@ -520,11 +571,16 @@ def _transfer_active_session_slot(
     # old one, so a concurrent gateway at the session cap cannot grab the freed
     # slot in a release-then-reacquire window and leave this session with no
     # lease at all (#49041 review). If the reserve fails, KEEP the old lease.
-    new_lease, limit_message = _claim_active_session_slot(
-        new_session_id,
-        live_session_id=sid,
-        surface=_session_source(session),
-    )
+    # Preserve the original lease's profile boundary even on the rare
+    # reserve-before-release fallback.  The lease itself pins its registry
+    # paths, while this context makes the replacement claim read the same
+    # profile's cap/config and create its entry in that registry.
+    with _session_profile_context(session):
+        new_lease, limit_message = _claim_active_session_slot(
+            new_session_id,
+            live_session_id=sid,
+            surface=_session_source(session),
+        )
     if new_lease is not None:
         old_lease = session.pop("active_session_lease", None)
         if old_lease is not None:
@@ -726,6 +782,105 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         pass
 
 
+def _detached_dispatch_is_protected(session: dict | None) -> bool:
+    """Return whether tearing down ``session`` could kill a detached turn.
+
+    Presentation state can be consumed or abandoned before the source turn's
+    dispatcher has finished its post-turn work.  Keep dispatch protection on
+    the source session itself, independently of the presentation registry.
+    """
+    if not session:
+        return False
+    return bool(
+        session.get("detaching_turn")
+        or session.get("detached_dispatch_active")
+        or session.get("detached_replacement_pending")
+        or float(session.get("detached_recovery_until") or 0.0) > time.time()
+        or (
+            session.get("running")
+            and (
+                session.get("detached_turn_task_id")
+                or session.get("detached_turn_abandoned")
+            )
+        )
+    )
+
+
+def _cleanup_detached_turns_for_session(sid: str) -> None:
+    """Drop or retain presentation records as one endpoint is removed."""
+    removed: list[dict] = []
+    abandoned_sources: list[tuple[str, str]] = []
+    orphan_candidates: set[str] = set()
+    with _sessions_lock:
+        with _detached_turns_lock:
+            for task_id, task in list(_detached_turns.items()):
+                source_sid = str(task.get("source_session_id") or "")
+                owner_sid = str(task.get("owner_session_id") or "")
+                # The source transcript is authoritative, but the presentation
+                # record is also the owner's retained terminal notification.
+                # Once the exact source turn has settled, closing/reaping that
+                # source must not discard an unconsumed result while its owner
+                # is still live. Owner close remains the explicit cleanup path.
+                if (
+                    sid == source_sid
+                    and task.get("status") != "running"
+                    and (owner := _sessions.get(owner_sid)) is not None
+                    and not owner.get("_finalized")
+                ):
+                    continue
+                if sid in {
+                    source_sid,
+                    owner_sid,
+                }:
+                    removed.append(task)
+                    _detached_turns.pop(task_id, None)
+
+        for task in removed:
+            source_sid = str(task.get("source_session_id") or "")
+            owner_sid = str(task.get("owner_session_id") or "")
+            orphan_candidates.update((source_sid, owner_sid))
+            task_id = str(task.get("task_id") or "")
+            source = _sessions.get(source_sid)
+            if source is not None and source_sid != sid:
+                with source["history_lock"]:
+                    if source.get("detached_turn_task_id") == task_id:
+                        source.pop("detached_turn_task_id", None)
+                        source.pop("detached_replacement_pending", None)
+                        if not task.get("recovery_pending"):
+                            source.pop("detached_recovery_until", None)
+                        if source.get("running") or source.get(
+                            "detached_dispatch_active"
+                        ):
+                            if not task.get("recovery_pending"):
+                                source["detached_turn_abandoned"] = True
+                                abandoned_sources.append(
+                                    (
+                                        source_sid,
+                                        str(source.get("session_key") or ""),
+                                    )
+                                )
+            owner = _sessions.get(owner_sid)
+            if owner is not None and owner_sid != sid:
+                restore = owner.pop("restore_close_on_disconnect", None)
+                if restore is not None:
+                    owner["close_on_disconnect"] = bool(restore)
+
+    # No UI owns source interaction after its presentation owner is removed.
+    # Release generic waiters and deny approval queues so an abandoned source
+    # cannot keep a worker/lease alive until a long prompt timeout expires.
+    for source_sid, source_key in abandoned_sources:
+        _clear_pending(source_sid)
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            if source_key:
+                resolve_gateway_approval(source_key, "deny", resolve_all=True)
+        except Exception:
+            pass
+        _drop_pending_approvals(source_sid)
+    _reschedule_detached_orphans(*orphan_candidates)
+
+
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
     """Fully tear down a session: finalize, unregister, close agent + worker.
 
@@ -738,6 +893,11 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     """
     if not session:
         return
+    closing_sid = str(session.get("_sid") or "")
+    if closing_sid:
+        _cleanup_detached_turns_for_session(closing_sid)
+        _clear_pending(closing_sid)
+        _drop_pending_approvals(closing_sid)
     _finalize_session(session, end_reason=end_reason)
     try:
         from tools.approval import unregister_gateway_notify
@@ -769,7 +929,9 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
-def _pop_session_by_id(sid: str) -> dict | None:
+def _pop_session_by_id(
+    sid: str, *, allow_running_detached: bool = False
+) -> dict | None:
     """Atomically detach one live session from the registry.
 
     Detaching is the ownership claim for teardown: once the record is no
@@ -780,6 +942,13 @@ def _pop_session_by_id(sid: str) -> dict | None:
     the global ``_session_resume_lock``.
     """
     with _sessions_lock:
+        session = _sessions.get(sid)
+        if (
+            session is not None
+            and _detached_dispatch_is_protected(session)
+            and not allow_running_detached
+        ):
+            return None
         session = _sessions.pop(sid, None)
     if session is None:
         return None
@@ -800,7 +969,12 @@ def _teardown_popped_session(
     return True
 
 
-def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+def _close_session_by_id(
+    sid: str,
+    *,
+    end_reason: str = "tui_close",
+    allow_running_detached: bool = False,
+) -> bool:
     """Single idempotent teardown funnel for callers needing no resume race.
 
     Resume-sensitive callers first pop under ``_session_resume_lock`` and then
@@ -809,7 +983,10 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     ownership claim, so concurrent/repeat close attempts stay harmless.
     """
     return _teardown_popped_session(
-        _pop_session_by_id(sid), end_reason=end_reason
+        _pop_session_by_id(
+            sid, allow_running_detached=allow_running_detached
+        ),
+        end_reason=end_reason,
     )
 
 
@@ -822,7 +999,7 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     """
     if not session or session.get("_finalized"):
         return False
-    if session.get("running"):
+    if session.get("running") or _detached_dispatch_is_protected(session):
         return False
     return session.get("transport") is _detached_ws_transport
 
@@ -849,14 +1026,29 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
-                return
-            session = _pop_session_by_id(sid)
+            with _sessions_lock:
+                session = _sessions.get(sid)
+                if not _ws_session_is_orphaned(session):
+                    return
+                session = _pop_session_by_id(sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True
     timer.start()
+
+
+def _reschedule_detached_orphans(*sids: str) -> None:
+    """Re-arm parked-session cleanup after detach protection is released."""
+    for sid in dict.fromkeys(filter(None, sids)):
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            should_schedule = bool(
+                session is not None
+                and session.get("transport") is _detached_ws_transport
+            )
+        if should_schedule:
+            _schedule_ws_orphan_reap(sid)
 
 
 def _close_sessions_for_transport(
@@ -875,32 +1067,49 @@ def _close_sessions_for_transport(
     independent reap loop in ``handle_ws``.
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
+    teardown: list[dict] = []
+    parked: list[str] = []
+    # session.activate/session.resume rebind under the same lock. The ownership
+    # check and transition are therefore linearizable: a stale disconnect can
+    # never overwrite a newer transport.
     with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
-    reaped = 0
-    detached = 0
-    for sid, session in owned:
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
-            reaped += 1
-        else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
+        for sid, session in list(_sessions.items()):
+            if (
+                _sessions.get(sid) is not session
+                or session.get("transport") is not transport
+            ):
+                continue
+            if session.get("close_on_disconnect") and not _detached_dispatch_is_protected(
+                session
+            ):
+                popped = _sessions.pop(sid, None)
+                if popped is session:
+                    session["_sid"] = sid
+                    teardown.append(session)
+                continue
+
             session["transport"] = _detached_ws_transport
-            detached += 1
-            try:
-                _schedule_ws_orphan_reap(sid)
-            except Exception:
-                pass
-    return reaped, detached
+            parked.append(sid)
+
+    for session in teardown:
+        _teardown_session(session, end_reason=end_reason)
+    for sid in parked:
+        try:
+            _schedule_ws_orphan_reap(sid)
+        except Exception:
+            pass
+    return len(teardown), len(parked)
 
 
 def _shutdown_sessions() -> None:
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
-        _close_session_by_id(sid, end_reason="tui_shutdown")
+        _close_session_by_id(
+            sid,
+            end_reason="tui_shutdown",
+            allow_running_detached=True,
+        )
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is
@@ -925,7 +1134,11 @@ def _transport_is_dead(transport) -> bool:
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
-    if session.get("running") or _session_pending_kind(sid):
+    if (
+        session.get("running")
+        or _detached_dispatch_is_protected(session)
+        or _session_pending_kind(sid)
+    ):
         return False
     ready = session.get("agent_ready")
     # Lazy watch sessions (subagent spectator windows) never start a build,
@@ -976,7 +1189,11 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     # Same hard exemptions as the TTL reaper (never evict a session mid-turn,
     # awaiting input, or still building), but WITHOUT the hours-scale age gate:
     # a detached session is eligible the moment it loses its client.
-    if session.get("running") or _session_pending_kind(sid):
+    if (
+        session.get("running")
+        or _detached_dispatch_is_protected(session)
+        or _session_pending_kind(sid)
+    ):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
@@ -1082,6 +1299,18 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
+
+
+@contextlib.contextmanager
+def _session_profile_context(session: dict | None):
+    """Bind config reads to a live session's profile, when it has one."""
+    profile_home = (session or {}).get("profile_home")
+    token = set_hermes_home_override(str(profile_home)) if profile_home else None
+    try:
+        yield
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 def _profile_scoped(handler):
@@ -1208,11 +1437,314 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
-    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    return write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _prompt_presentation_sid(source_sid: str) -> str:
+    """Return the live session that should present source-owned interaction."""
+    with _sessions_lock:
+        source = _sessions.get(source_sid)
+        task_id = str((source or {}).get("detached_turn_task_id") or "")
+        if not task_id:
+            return source_sid
+        with _detached_turns_lock:
+            task = _detached_turns.get(task_id)
+            owner_sid = str((task or {}).get("owner_session_id") or "")
+        return owner_sid if owner_sid in _sessions else source_sid
+
+
+def _interactive_payload_locked(request_id: str) -> tuple[str, str, dict] | None:
+    approval = _pending_approvals.get(request_id)
+    if approval is not None:
+        return (
+            "approval.request",
+            str(approval.get("presentation_sid") or ""),
+            dict(approval.get("payload") or {}),
+        )
+    pending = _pending_prompt_payloads.get(request_id)
+    if pending is None:
+        return None
+    event, payload = pending
+    return (
+        event,
+        str(_pending_prompt_presentations.get(request_id) or ""),
+        dict(payload),
+    )
+
+
+def _enqueue_interactive_locked(
+    request_id: str, event: str, presentation_sid: str
+) -> bool:
+    """Queue once and return True iff this request may be exposed now."""
+    queue = _interactive_prompt_queues.setdefault((presentation_sid, event), [])
+    if request_id in queue:
+        return False
+    queue.append(request_id)
+    return len(queue) == 1
+
+
+def _remove_interactive_locked(
+    request_id: str, event: str, presentation_sid: str
+) -> tuple[str, str, dict] | None:
+    """Remove one request and return the next newly-unblocked prompt."""
+    key = (presentation_sid, event)
+    queue = _interactive_prompt_queues.get(key)
+    if not queue or request_id not in queue:
+        return None
+    was_head = queue[0] == request_id
+    queue.remove(request_id)
+    if not queue:
+        _interactive_prompt_queues.pop(key, None)
+        return None
+    return _interactive_payload_locked(queue[0]) if was_head else None
+
+
+def _emit_interactive(next_prompt: tuple[str, str, dict] | None) -> None:
+    if next_prompt is not None:
+        event, presentation_sid, payload = next_prompt
+        _emit(event, presentation_sid, payload)
 
 
 _compute_host_supervisor = None
 _compute_host_supervisor_lock = threading.Lock()
+
+
+def _compute_host_proxy_request_id(source_sid: str, request_id: str) -> str:
+    """Return the stable, collision-free id exposed by the serving process."""
+    return f"host:{source_sid}:{request_id}"
+
+
+def _remove_compute_host_interactions(request_ids: list[str]) -> None:
+    """Forget child proxies and expose only the final FIFO heads they unblock."""
+    unblocked_keys: set[tuple[str, str]] = set()
+    with _prompt_lock:
+        for proxy_id in dict.fromkeys(request_ids):
+            interaction = _compute_host_interactions.pop(proxy_id, None)
+            if interaction is None:
+                continue
+            event = str(interaction.get("event") or "")
+            presentation_sid = str(interaction.get("presentation_sid") or "")
+            key = (presentation_sid, event)
+            queue_ids = _interactive_prompt_queues.get(key) or []
+            if queue_ids and queue_ids[0] == proxy_id:
+                unblocked_keys.add(key)
+            if event == "approval.request":
+                _pending_approvals.pop(proxy_id, None)
+            else:
+                _pending_prompt_payloads.pop(proxy_id, None)
+                _pending_prompt_presentations.pop(proxy_id, None)
+            _remove_interactive_locked(proxy_id, event, presentation_sid)
+
+        unblocked = []
+        for key in unblocked_keys:
+            queue_ids = _interactive_prompt_queues.get(key) or []
+            if queue_ids and (next_prompt := _interactive_payload_locked(queue_ids[0])):
+                unblocked.append(next_prompt)
+    for next_prompt in unblocked:
+        _emit_interactive(next_prompt)
+
+
+def _retire_compute_host_interactions(source_sid: str) -> None:
+    """Drop stale parent proxies after the corresponding host turn ends.
+
+    Normal child waiters emit ``interactive.complete`` before ``turn.end`` on
+    the ordered stdout pipe.  This terminal sweep covers child crashes and
+    exceptional turn exits, where no child remains to send that final frame.
+    It deliberately does not send a response back through the supervisor: a
+    crash callback runs on the supervisor's drain/wait machinery and must not
+    accidentally spawn a fresh host merely to cancel a dead waiter's id.
+    """
+    with _prompt_lock:
+        request_ids = [
+            proxy_id
+            for proxy_id, interaction in _compute_host_interactions.items()
+            if interaction.get("source_sid") == source_sid
+        ]
+    _remove_compute_host_interactions(request_ids)
+
+
+def _cancel_compute_host_interactions(
+    source_sid: str | None = None,
+    *,
+    events: set[str] | frozenset[str] | None = None,
+) -> None:
+    """Release child waiters when their real source is genuinely abandoned."""
+    with _prompt_lock:
+        interactions = [
+            (proxy_id, dict(interaction))
+            for proxy_id, interaction in _compute_host_interactions.items()
+            if source_sid is None or interaction.get("source_sid") == source_sid
+            if events is None or interaction.get("event") in events
+        ]
+    supervisor = _compute_host_supervisor
+    for _proxy_id, interaction in interactions:
+        event = str(interaction.get("event") or "")
+        response_spec = _COMPUTE_HOST_INTERACTIVE_RESPONSES.get(event)
+        if response_spec is None or supervisor is None:
+            continue
+        method, value_key, default_value = response_spec
+        try:
+            supervisor.respond_interactive(
+                str(interaction.get("source_sid") or ""),
+                request_id=str(interaction.get("request_id") or ""),
+                method=method,
+                params={value_key: default_value},
+                wait=False,
+            )
+        except Exception:
+            logger.debug("could not cancel compute-host interaction", exc_info=True)
+    _remove_compute_host_interactions([proxy_id for proxy_id, _ in interactions])
+
+
+def _compute_host_interactive_sink(frame: dict) -> None:
+    """Register or retire one child-owned interaction in the parent FIFO."""
+    frame_type = str(frame.get("type") or "")
+    source_sid = str(frame.get("source_sid") or frame.get("sid") or "")
+    request_id = str(frame.get("request_id") or "")
+    if not source_sid or not request_id:
+        return
+    proxy_id = _compute_host_proxy_request_id(source_sid, request_id)
+    if frame_type == "interactive.complete":
+        _remove_compute_host_interactions([proxy_id])
+        return
+    if frame_type != "interactive.request":
+        return
+    event = str(frame.get("event") or "")
+    response_spec = _COMPUTE_HOST_INTERACTIVE_RESPONSES.get(event)
+    if response_spec is None:
+        return
+
+    payload = dict(frame.get("payload") or {})
+    payload["request_id"] = proxy_id
+    presentation_sid = ""
+    expose = False
+    source_accepts_interaction = False
+    with _sessions_lock:
+        source = _sessions.get(source_sid)
+        if source is not None:
+            # Serialize registration against terminal turn cleanup. Whichever
+            # side acquires history_lock first wins cleanly: an interaction
+            # registered first is swept after running flips false; a terminal
+            # turn first makes the late/buffered child frame ineligible.
+            with source.get("history_lock", threading.Lock()):
+                source_accepts_interaction = bool(
+                    not source.get("_finalized") and source.get("running")
+                )
+                if source_accepts_interaction:
+                    presentation_sid = _prompt_presentation_sid(source_sid)
+                    with _prompt_lock:
+                        existing = _compute_host_interactions.get(proxy_id)
+                        if existing is not None:
+                            # Pipe retries are idempotent: refresh safe
+                            # presentation data without enqueueing/exposing the
+                            # same request twice.
+                            existing["payload"] = dict(payload)
+                            if event == "approval.request":
+                                pending = _pending_approvals.get(proxy_id)
+                                if pending is not None:
+                                    pending["payload"] = dict(payload)
+                            else:
+                                _pending_prompt_payloads[proxy_id] = (
+                                    event,
+                                    dict(payload),
+                                )
+                            return
+                        interaction = {
+                            "event": event,
+                            "payload": dict(payload),
+                            "presentation_sid": presentation_sid,
+                            "request_id": request_id,
+                            "source_sid": source_sid,
+                        }
+                        _compute_host_interactions[proxy_id] = interaction
+                        if event == "approval.request":
+                            _pending_approvals[proxy_id] = {
+                                "compute_host": True,
+                                "payload": dict(payload),
+                                "presentation_sid": presentation_sid,
+                                "source_sid": source_sid,
+                            }
+                        else:
+                            _pending_prompt_payloads[proxy_id] = (
+                                event,
+                                dict(payload),
+                            )
+                            _pending_prompt_presentations[proxy_id] = (
+                                presentation_sid
+                            )
+                        expose = _enqueue_interactive_locked(
+                            proxy_id, event, presentation_sid
+                        )
+    if not source_accepts_interaction:
+        # The stdout-drain thread must never wait for an ACK that only that same
+        # thread can read. Send a best-effort cancellation only while the same
+        # host is alive; a buffered request from a crashed child must not spawn
+        # a fresh host merely to reject a dead waiter id.
+        supervisor = _compute_host_supervisor
+        is_running = getattr(supervisor, "is_running", None)
+        if supervisor is not None and (
+            not callable(is_running) or bool(is_running())
+        ):
+            method, value_key, default_value = response_spec
+            try:
+                supervisor.respond_interactive(
+                    source_sid,
+                    request_id=request_id,
+                    method=method,
+                    params={value_key: default_value},
+                    wait=False,
+                )
+            except Exception:
+                logger.debug("could not reject orphan host interaction", exc_info=True)
+        return
+    if expose:
+        _emit(event, presentation_sid, payload)
+
+
+def _proxy_compute_host_interaction_response(
+    rid: Any,
+    interaction: dict,
+    *,
+    method: str,
+    params: dict,
+    resolve_all: bool = False,
+) -> dict:
+    """Forward one ownership-checked response and retire its parent proxy."""
+    try:
+        ack = _get_compute_host_supervisor().respond_interactive(
+            str(interaction.get("source_sid") or ""),
+            request_id=str(interaction.get("request_id") or ""),
+            method=method,
+            params=params,
+            wait=True,
+        )
+    except Exception as exc:
+        return _err(rid, 5020, f"compute-host interaction response failed: {exc}")
+    if not isinstance(ack, dict) or ack.get("type") != "interactive.response.ack":
+        message = (
+            str(ack.get("message") or "") if isinstance(ack, dict) else ""
+        ) or "compute-host interaction response was not acknowledged"
+        return _err(rid, 5020, message)
+
+    proxy_id = _compute_host_proxy_request_id(
+        str(interaction.get("source_sid") or ""),
+        str(interaction.get("request_id") or ""),
+    )
+    if resolve_all and interaction.get("event") == "approval.request":
+        with _prompt_lock:
+            completed = [
+                candidate_id
+                for candidate_id, candidate in _compute_host_interactions.items()
+                if candidate.get("source_sid") == interaction.get("source_sid")
+                and candidate.get("event") == "approval.request"
+            ]
+    else:
+        completed = [proxy_id]
+    _remove_compute_host_interactions(completed)
+    response = ack.get("response")
+    if isinstance(response, dict) and isinstance(response.get("result"), dict):
+        return _ok(rid, dict(response["result"]))
+    return _ok(rid, {"status": "ok"})
 
 
 def _inside_compute_host_child() -> bool:
@@ -1245,11 +1777,65 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
             from tui_gateway.host_supervisor import HostSupervisor
 
             _compute_host_supervisor = HostSupervisor(
-                rpc_sink=write_json,
+                rpc_sink=_compute_host_rpc_sink,
+                interactive_sink=_compute_host_interactive_sink,
                 heartbeat_secs=int(isolation_cfg.get("compute_host_heartbeat_secs") or 15),
                 respawn_max=int(isolation_cfg.get("compute_host_respawn_max") or 3),
             )
-        return _compute_host_supervisor
+    return _compute_host_supervisor
+
+
+def _compute_host_rpc_sink(message: dict) -> bool:
+    """Mirror host terminal state before forwarding its JSON-RPC event.
+
+    The compute-host child remains the exact AIAgent/thread owner. Its
+    ``message.complete`` precedes ``turn.end`` on the same pipe, so retaining
+    the terminal payload here lets the serving process settle a detached
+    presentation without copying or replaying any agent state.
+    """
+    try:
+        if message.get("method") == "event":
+            params = message.get("params") or {}
+            event_type = str(params.get("type") or "")
+            if event_type in {"secret.expire", "sudo.expire"}:
+                source_sid = str(params.get("session_id") or "")
+                payload = params.get("payload") or {}
+                child_request_id = str(payload.get("request_id") or "")
+                proxy_id = _compute_host_proxy_request_id(
+                    source_sid, child_request_id
+                )
+                with _prompt_lock:
+                    interaction = _compute_host_interactions.get(proxy_id)
+                    presentation_sid = str(
+                        (interaction or {}).get("presentation_sid") or ""
+                    )
+                if not interaction or not presentation_sid:
+                    return True
+                message = copy.deepcopy(message)
+                rewritten_params = message.setdefault("params", {})
+                rewritten_params["session_id"] = presentation_sid
+                rewritten_payload = rewritten_params.setdefault("payload", {})
+                rewritten_payload["request_id"] = proxy_id
+                params = rewritten_params
+            if event_type in {"error", "message.complete"}:
+                sid = str(params.get("session_id") or "")
+                payload = params.get("payload") or {}
+                status = "error" if event_type == "error" else str(
+                    payload.get("status") or "complete"
+                )
+                default_text = "error" if status == "error" else "complete"
+                text = str(payload.get("text") or payload.get("message") or default_text)
+                with _sessions_lock:
+                    session = _sessions.get(sid)
+                    if session is not None:
+                        with session["history_lock"]:
+                            session["_compute_host_terminal"] = {
+                                "status": status,
+                                "text": text,
+                            }
+    except Exception:
+        logger.debug("could not mirror compute-host terminal event", exc_info=True)
+    return write_json(message)
 
 
 def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> dict:
@@ -1293,17 +1879,39 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
     with session.get("history_lock", threading.Lock()):
         if frame.get("session_key"):
             session["session_key"] = str(frame.get("session_key"))
-        if frame.get("history_version") is not None:
-            try:
-                session["history_version"] = max(
-                    int(session.get("history_version", 0)),
-                    int(frame.get("history_version") or 0),
-                )
-            except Exception:
-                pass
+        current_version = int(session.get("history_version", 0))
+        try:
+            incoming_version = int(frame.get("history_version"))
+        except (TypeError, ValueError):
+            incoming_version = None
+        try:
+            base_version = int(frame.get("base_history_version"))
+        except (TypeError, ValueError):
+            base_version = None
+        incoming_history = frame.get("history")
+        history_applied = False
+        if (
+            isinstance(incoming_history, list)
+            and incoming_version is not None
+            and base_version is not None
+            and current_version == base_version
+            and all(isinstance(message, dict) for message in incoming_history)
+        ):
+            # The pipe has already JSON-serialized this data, but deepcopy also
+            # keeps direct/in-process protocol tests from sharing nested values.
+            session["history"] = copy.deepcopy(incoming_history)
+            session["history_version"] = incoming_version
+            history_applied = True
+        elif incoming_version is not None and not isinstance(incoming_history, list):
+            # Older hosts carried metadata only. Preserve that compatibility,
+            # while never moving a newer serving-process version backwards.
+            session["history_version"] = max(current_version, incoming_version)
         if frame.get("message_count") is not None:
             try:
-                session["_metadata_message_count"] = int(frame.get("message_count") or 0)
+                if history_applied or incoming_version is None or current_version <= incoming_version:
+                    session["_metadata_message_count"] = int(
+                        frame.get("message_count") or 0
+                    )
             except Exception:
                 pass
     info = frame.get("session_info")
@@ -1314,38 +1922,75 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
         session["_metadata_mirror_updated_at"] = time.time()
 
 
-def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+def _on_compute_host_turn_done(
+    rid: str,
+    sid: str,
+    session: dict,
+    frame: dict,
+    *,
+    host_request_id: str | None = None,
+) -> None:
+    if host_request_id is not None:
+        # Claim only the generation this callback submitted. A late/busy/error
+        # terminal frame from an older host request must never settle a newer
+        # source turn that happens to use the same parent JSON-RPC request id.
+        if str(frame.get("request_id") or "") != host_request_id:
+            return
+        with session["history_lock"]:
+            if session.get("_compute_host_request_id") != host_request_id:
+                return
+            session.pop("_compute_host_request_id", None)
     is_error = frame.get("type") == "turn.error"
+    # Mirror the authoritative child transcript before the source is marked
+    # idle or a detached terminal notification can expose source activation.
+    _apply_compute_host_metadata_mirror(session, frame)
     with session["history_lock"]:
-        if frame.get("session_key"):
-            session["session_key"] = str(frame.get("session_key"))
-        if frame.get("history_version") is not None:
-            try:
-                session["history_version"] = max(
-                    int(session.get("history_version", 0)),
-                    int(frame.get("history_version") or 0),
-                )
-            except Exception:
-                pass
+        terminal = session.pop("_compute_host_terminal", None)
         session["running"] = False
+        session["turn_settled"] = True
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
+    _retire_compute_host_interactions(sid)
     if is_error:
         message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
-    _apply_compute_host_metadata_mirror(session, frame)
+        status = "error"
+        text = f"Error: {message}"
+        _emit("message.complete", sid, {"text": text, "status": status})
+    elif frame.get("interrupted"):
+        status = "interrupted"
+        text = str((terminal or {}).get("text") or status)
+    else:
+        status = str((terminal or {}).get("status") or "complete")
+        text = str((terminal or {}).get("text") or status)
+    _settle_detached_turn(session, status, text)
     try:
         info = _session_info(session.get("agent"), session)
     except TypeError:
         info = _session_info(session.get("agent"))
     if not frame.get("session_info_emitted"):
         _emit("session.info", sid, info)
-    _drain_queued_prompt(rid, sid, session)
+    if (
+        not _drain_queued_prompt(rid, sid, session)
+        and _detached_dispatch_is_protected(session)
+    ):
+        _finish_detached_dispatch(sid, session, only_if_idle=True)
+
+
+def _compute_host_dispatch_lock(session: dict) -> threading.RLock:
+    """Return the per-session lock that orders child turn/interrupt writes."""
+    with session["history_lock"]:
+        lock = session.get("_compute_host_dispatch_lock")
+        if lock is None:
+            lock = threading.RLock()
+            session["_compute_host_dispatch_lock"] = lock
+        return lock
 
 
 def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
     cfg = _load_dashboard_process_isolation_config()
-    frame = _compute_host_turn_frame(rid, sid, session, text)
+    host_request_id = uuid.uuid4().hex
+    frame = _compute_host_turn_frame(host_request_id, sid, session, text)
+    dispatch_lock = _compute_host_dispatch_lock(session)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure through the callback
@@ -1354,15 +1999,40 @@ def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any)
         # duplicate terminal error.
         if done.get("reason") == "send_failed":
             return
-        _on_compute_host_turn_done(rid, sid, session, done)
+        _on_compute_host_turn_done(
+            rid,
+            sid,
+            session,
+            done,
+            host_request_id=host_request_id,
+        )
 
-    try:
-        _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
-    except Exception as exc:
-        return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
-    with session["history_lock"]:
-        session["_compute_host_active"] = True
-        session["attached_images"] = []
+    with dispatch_lock:
+        with session["history_lock"]:
+            if session.get("_turn_cancel_requested"):
+                session["running"] = False
+                session["turn_settled"] = True
+                _clear_inflight_turn(session)
+                return _ok(
+                    rid, {"status": "interrupted", "turn_isolation": True}
+                )
+            session["_compute_host_request_id"] = host_request_id
+        try:
+            # Keep the dispatch lock through the pipe write. session.interrupt
+            # and busy-input interrupts use the same lock, so either turn.start
+            # is written first and stop follows, or cancellation wins and this
+            # submission never reaches the child.
+            _get_compute_host_supervisor(cfg).submit_turn(
+                frame, on_complete=_complete
+            )
+        except Exception as exc:
+            with session["history_lock"]:
+                if session.get("_compute_host_request_id") == host_request_id:
+                    session.pop("_compute_host_request_id", None)
+            return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
+        with session["history_lock"]:
+            session["_compute_host_active"] = True
+            session["attached_images"] = []
     return _ok(rid, {"status": "streaming", "turn_isolation": True})
 
 
@@ -1404,7 +2074,20 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         from gateway.run import _redact_approval_command
 
         payload["command"] = _redact_approval_command(payload.get("command"))
-    _emit("approval.request", sid, payload)
+    request_id = uuid.uuid4().hex[:8]
+    payload["request_id"] = request_id
+    presentation_sid = _prompt_presentation_sid(sid)
+    with _prompt_lock:
+        _pending_approvals[request_id] = {
+            "payload": dict(payload),
+            "presentation_sid": presentation_sid,
+            "source_sid": sid,
+        }
+        expose = _enqueue_interactive_locked(
+            request_id, "approval.request", presentation_sid
+        )
+    if expose:
+        _emit("approval.request", presentation_sid, payload)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -1545,6 +2228,117 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _recover_failed_detached_replacement(
+    sid: str, session: dict, message: str
+) -> bool:
+    """Make a lazy detached-owner build failure recoverable.
+
+    A failure before detach publication is observed synchronously by the
+    detach RPC and rolled back. A later failure emits a recovery event naming
+    the still-live exact source session, then removes the unusable owner.
+    """
+    source_sid = ""
+    source_key = ""
+    task_id = ""
+    recovery_source = None
+    recovery_until = 0.0
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return False
+        source_sid = str(session.get("detach_source_session_id") or "")
+        if not source_sid:
+            return False
+        session["detached_replacement_error"] = message
+        published = bool(session.get("detached_replacement_published"))
+        task_id = str(session.get("detached_replacement_task_id") or "")
+        source_key = str(session.get("detached_replacement_source_key") or "")
+        with _detached_turns_lock:
+            task = next(
+                (
+                    candidate
+                    for candidate in _detached_turns.values()
+                    if candidate.get("owner_session_id") == sid
+                ),
+                None,
+            )
+            if task is not None:
+                task_id = str(task.get("task_id") or "")
+                source_sid = str(task.get("source_session_id") or source_sid)
+                source_key = str(task.get("source_session_key") or source_key)
+                task["recovery_pending"] = True
+
+        source = _sessions.get(source_sid)
+        if source is not None:
+            source.pop("detached_replacement_pending", None)
+            if published:
+                recovery_source = source
+                recovery_until = time.time() + _DETACHED_RECOVERY_GRACE_S
+                source["detached_recovery_until"] = recovery_until
+
+    if not task_id and not published:
+        return True
+
+    if recovery_source is not None:
+        # The source agent/turn is healthy. Move every queued presentation back
+        # before announcing recovery so a fast source activation can replay it;
+        # do not answer, cancel, or deny anything during this ownership move.
+        _restore_pending_prompts(
+            source_sid,
+            source_sid,
+            replay_visible=False,
+            emit_moved=False,
+        )
+
+    try:
+        _emit(
+            "background.detach_recovery",
+            sid,
+            {
+                "message": message,
+                "source_session_id": source_sid,
+                "source_session_key": source_key,
+                "task_id": task_id,
+            },
+        )
+    finally:
+        _close_session_by_id(sid, end_reason="detach_replacement_failed")
+        try:
+            _reschedule_detached_orphans(source_sid)
+        except Exception:
+            pass
+        if recovery_source is not None:
+            def _rearm_after_recovery_grace() -> None:
+                with _sessions_lock:
+                    current = _sessions.get(source_sid)
+                    if (
+                        current is not recovery_source
+                        or current.get("detached_recovery_until") != recovery_until
+                    ):
+                        return
+                _reschedule_detached_orphans(source_sid)
+
+            timer = threading.Timer(
+                _DETACHED_RECOVERY_GRACE_S,
+                _rearm_after_recovery_grace,
+            )
+            timer.daemon = True
+            timer.start()
+    return True
+
+
+def _mark_detached_replacement_ready(sid: str, session: dict) -> None:
+    source_sid = str(session.get("detach_source_session_id") or "")
+    if not source_sid:
+        return
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return
+        session["detached_replacement_ready"] = True
+        source = _sessions.get(source_sid)
+        if source is not None:
+            source.pop("detached_replacement_pending", None)
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -1632,11 +2426,24 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 _clear_session_context(tokens)
 
             # Session DB row deferred to first run_conversation() call.
-            # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
-            # Baseline for the per-turn config sync; the profile home
-            # override is still active here.
-            current["config_model_seen"] = _config_model_target()
+            # Publish the expensive agent only if this exact record is still
+            # live. A close/reap that won during _make_agent must not leak or
+            # attach the late result to a replacement record with the same sid.
+            with _sessions_lock:
+                if _sessions.get(sid) is not current:
+                    late_agent = agent
+                else:
+                    late_agent = None
+                    current["agent"] = agent
+                    # Baseline for the per-turn config sync; the profile home
+                    # override is still active here.
+                    current["config_model_seen"] = _config_model_target()
+            if late_agent is not None:
+                try:
+                    if hasattr(late_agent, "close"):
+                        late_agent.close()
+                finally:
+                    return
 
             try:
                 worker = _SlashWorker(
@@ -1701,9 +2508,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # was built without those tools. Catch up once they land — see
             # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
             _schedule_mcp_late_refresh(sid, agent)
+            _mark_detached_replacement_ready(sid, current)
         except Exception as e:
-            current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            with _sessions_lock:
+                still_live = _sessions.get(sid) is current
+                if still_live:
+                    current["agent_error"] = str(e)
+            if still_live and not _recover_failed_detached_replacement(
+                sid, current, str(e)
+            ):
+                _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -2343,32 +3157,73 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
+def _notify_compute_host_interaction_complete(
+    sid: str,
+    request_id: str,
+    event: str,
+    *,
+    reason: str,
+) -> None:
+    """Tell the parent to retire a child-side waiter/approval proxy."""
+    if not _inside_compute_host_child():
+        return
+    _emit(
+        "_host.interactive.complete",
+        sid,
+        {
+            "event": event,
+            "reason": reason,
+            "request_id": request_id,
+        },
+    )
+
+
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
+    presentation_sid = _prompt_presentation_sid(sid)
     with _prompt_lock:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
         _pending_prompt_payloads[rid] = (event, dict(payload))
+        _pending_prompt_presentations[rid] = presentation_sid
+        expose = _enqueue_interactive_locked(rid, event, presentation_sid)
     answered = False
     answer = ""
     answer_present = False
+    final_presentation_sid = presentation_sid
+    next_prompt = None
     try:
-        _emit(event, sid, payload)
+        if expose:
+            _emit(event, presentation_sid, payload)
         answered = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
+            final_presentation_sid = _pending_prompt_presentations.get(
+                rid, presentation_sid
+            )
+            next_prompt = _remove_interactive_locked(
+                rid, event, final_presentation_sid
+            )
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
+            _pending_prompt_presentations.pop(rid, None)
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
 
     if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
         _emit(
             f"{event.removesuffix('.request')}.expire",
-            sid,
+            final_presentation_sid,
             {"request_id": rid},
         )
+    _emit_interactive(next_prompt)
+    _notify_compute_host_interaction_complete(
+        sid,
+        rid,
+        event,
+        reason="answered" if answered or answer_present else "timeout",
+    )
     return answer
 
 
@@ -2386,6 +3241,141 @@ def _clear_pending(sid: str | None = None) -> None:
             if sid is None or owner_sid == sid:
                 _answers[rid] = ""
                 ev.set()
+    if not _inside_compute_host_child():
+        _cancel_compute_host_interactions(
+            sid,
+            events=frozenset(_COMPUTE_HOST_INTERACTIVE_RESPONSES).difference(
+                {"approval.request"}
+            ),
+        )
+
+
+def _restore_pending_prompts(
+    source_sid: str,
+    owner_sid: str,
+    *,
+    replay_visible: bool = False,
+    emit_moved: bool = True,
+) -> int:
+    """Re-route and replay source prompts after the replacement UI is active."""
+    pending: list[tuple[str, dict]] = []
+    with _prompt_lock:
+        for rid, (pending_source_sid, _ev) in list(_pending.items()):
+            if pending_source_sid != source_sid:
+                continue
+            event, payload = _pending_prompt_payloads.get(
+                rid, ("input.request", {})
+            )
+            old_presentation = _pending_prompt_presentations.get(rid, source_sid)
+            if old_presentation == owner_sid:
+                queue = _interactive_prompt_queues.get((owner_sid, event)) or []
+                if replay_visible and queue and queue[0] == rid:
+                    pending.append((event, dict(payload)))
+                continue
+            _remove_interactive_locked(rid, event, old_presentation)
+            _pending_prompt_presentations[rid] = owner_sid
+            if _enqueue_interactive_locked(rid, event, owner_sid) and emit_moved:
+                pending.append((event, dict(payload)))
+
+        for request_id, interaction in list(_compute_host_interactions.items()):
+            if (
+                interaction.get("source_sid") != source_sid
+                or interaction.get("event") == "approval.request"
+            ):
+                continue
+            event = str(interaction.get("event") or "input.request")
+            payload = dict(interaction.get("payload") or {})
+            old_presentation = str(
+                interaction.get("presentation_sid") or source_sid
+            )
+            if old_presentation == owner_sid:
+                queue_ids = _interactive_prompt_queues.get(
+                    (owner_sid, event)
+                ) or []
+                if replay_visible and queue_ids and queue_ids[0] == request_id:
+                    pending.append((event, payload))
+                continue
+            _remove_interactive_locked(request_id, event, old_presentation)
+            interaction["presentation_sid"] = owner_sid
+            _pending_prompt_presentations[request_id] = owner_sid
+            if (
+                _enqueue_interactive_locked(request_id, event, owner_sid)
+                and emit_moved
+            ):
+                pending.append((event, payload))
+
+        for request_id, approval in list(_pending_approvals.items()):
+            if approval.get("source_sid") != source_sid:
+                continue
+            old_presentation = str(approval.get("presentation_sid") or source_sid)
+            if old_presentation == owner_sid:
+                queue = _interactive_prompt_queues.get(
+                    (owner_sid, "approval.request")
+                ) or []
+                if replay_visible and queue and queue[0] == request_id:
+                    pending.append(
+                        ("approval.request", dict(approval.get("payload") or {}))
+                    )
+                continue
+            _remove_interactive_locked(
+                request_id, "approval.request", old_presentation
+            )
+            approval["presentation_sid"] = owner_sid
+            interaction = _compute_host_interactions.get(request_id)
+            if interaction is not None:
+                interaction["presentation_sid"] = owner_sid
+            if _enqueue_interactive_locked(
+                request_id, "approval.request", owner_sid
+            ) and emit_moved:
+                pending.append(
+                    ("approval.request", dict(approval.get("payload") or {}))
+                )
+    for event, payload in pending:
+        _emit(event, owner_sid, payload)
+    return len(pending)
+
+
+def _drop_pending_approvals(source_sid: str) -> None:
+    """Forget approval presentation records owned by a settling/closed source."""
+    if not _inside_compute_host_child():
+        _cancel_compute_host_interactions(
+            source_sid, events=frozenset({"approval.request"})
+        )
+    unblocked_keys: set[tuple[str, str]] = set()
+    unblocked: list[tuple[str, str, dict]] = []
+    completed_child_requests: list[str] = []
+    with _prompt_lock:
+        for request_id, approval in list(_pending_approvals.items()):
+            if approval.get("source_sid") != source_sid:
+                continue
+            presentation_sid = str(
+                approval.get("presentation_sid") or source_sid
+            )
+            key = (presentation_sid, "approval.request")
+            queue = _interactive_prompt_queues.get(key) or []
+            if queue and queue[0] == request_id:
+                unblocked_keys.add(key)
+            _remove_interactive_locked(
+                request_id,
+                "approval.request",
+                presentation_sid,
+            )
+            _pending_approvals.pop(request_id, None)
+            completed_child_requests.append(request_id)
+
+        for key in unblocked_keys:
+            queue = _interactive_prompt_queues.get(key) or []
+            if queue and (next_prompt := _interactive_payload_locked(queue[0])):
+                unblocked.append(next_prompt)
+    for next_prompt in unblocked:
+        _emit_interactive(next_prompt)
+    for request_id in completed_child_requests:
+        _notify_compute_host_interaction_complete(
+            source_sid,
+            request_id,
+            "approval.request",
+            reason="cancelled",
+        )
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -5168,6 +6158,8 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile_home: str | Path | None = None,
+    initial_session_state: dict | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5199,6 +6191,17 @@ def _init_session(
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
+        if profile_home is not None:
+            # Install before worker/callback setup below so every profile-aware
+            # component binds to the same home from its first initialization.
+            _sessions[sid]["profile_home"] = str(profile_home)
+        if initial_session_state:
+            # Compute-host admission must be visible before the notification
+            # poller starts below. Only private coordination keys are accepted;
+            # callers cannot replace core session state through this hook.
+            for state_key, state_value in initial_session_state.items():
+                if str(state_key).startswith("_compute_host_"):
+                    _sessions[sid][state_key] = state_value
     db = session_db if session_db is not None else _get_db()
     if db is not None:
         row = db.get_session(key)
@@ -5610,6 +6613,36 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
+def _interrupt_call_pending(session: dict) -> bool:
+    return int(session.get("_interrupt_call_count") or 0) > 0
+
+
+def _finish_interrupt_call(sid: str, session: dict) -> None:
+    """Release one provider interrupt and dispatch a waiting successor safely."""
+
+    with session["history_lock"]:
+        count = max(0, int(session.get("_interrupt_call_count") or 0) - 1)
+        if count:
+            session["_interrupt_call_count"] = count
+        else:
+            session.pop("_interrupt_call_count", None)
+        should_drain = bool(
+            count == 0
+            and session.get("queued_prompt")
+            and not session.get("running")
+        )
+    if should_drain:
+        try:
+            _drain_queued_prompt(
+                f"interrupt-finished-{uuid.uuid4().hex}", sid, session
+            )
+        except Exception:
+            logger.debug(
+                "queued prompt drain after interrupt failed",
+                exc_info=True,
+            )
+
+
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     """Interrupt a busy turn without blocking the RPC reader or session lock.
 
@@ -5625,22 +6658,44 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     if not use_agent and not use_compute_host:
         return
 
+    compute_host_request_id = ""
     with session["history_lock"]:
-        if session.get("_busy_interrupt_pending"):
+        if _interrupt_call_pending(session):
             return
+        if use_compute_host:
+            # Bind this best-effort interrupt to the turn that was busy when the
+            # prompt was accepted. A delayed worker must not stop a successor
+            # that has already replaced it under the same UI session id.
+            compute_host_request_id = str(
+                session.get("_compute_host_request_id") or ""
+            )
+            if not compute_host_request_id:
+                return
         session["_busy_interrupt_pending"] = True
+        session["_interrupt_call_count"] = (
+            int(session.get("_interrupt_call_count") or 0) + 1
+        )
 
     def interrupt() -> None:
         try:
             if use_agent:
                 agent.interrupt()
             else:
-                _get_compute_host_supervisor().interrupt(sid)
+                dispatch_lock = _compute_host_dispatch_lock(session)
+                with dispatch_lock:
+                    with session["history_lock"]:
+                        if (
+                            session.get("_compute_host_request_id")
+                            != compute_host_request_id
+                        ):
+                            return
+                    _get_compute_host_supervisor().interrupt(sid)
         except Exception:
             pass
         finally:
             with session["history_lock"]:
                 session["_busy_interrupt_pending"] = False
+            _finish_interrupt_call(sid, session)
 
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
@@ -5665,11 +6720,13 @@ def _handle_busy_submit(
     mode = _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
-        if not session.get("running"):
+        running = bool(session.get("running"))
+        interrupt_pending = _interrupt_call_pending(session)
+        if not running and not interrupt_pending:
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+    if mode == "steer" and running and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
                 with session["history_lock"]:
@@ -5681,7 +6738,7 @@ def _handle_busy_submit(
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
     with session["history_lock"]:
-        if not session.get("running"):
+        if not session.get("running") and not _interrupt_call_pending(session):
             return None
         _enqueue_prompt(session, text, transport)
         session["last_active"] = time.time()
@@ -5702,8 +6759,22 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queued = session.get("queued_prompt")
         if not queued or session.get("running"):
             return False
+        if _interrupt_call_pending(session):
+            # The old generation's provider interrupt may still be blocked. Do
+            # not start a successor that the delayed interrupt could consume;
+            # the final interrupt caller drains this queue after all calls return.
+            return True
         session["queued_prompt"] = None
         session["running"] = True
+        session["turn_settled"] = False
+        # Stop deliberately clears every prompt that predates it. Therefore a
+        # queued prompt that still exists here was accepted afterwards and owns
+        # a fresh turn; do not let the old turn's cancellation discard it.
+        session["_turn_cancel_requested"] = False
+        # The retained task describes the turn that just settled, not this
+        # already-accepted successor. Keep the registry record for its owner,
+        # but release the source-side pointer before the next dispatch.
+        session.pop("detached_turn_task_id", None)
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
     try:
@@ -5762,8 +6833,17 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
 # ── Methods: session ─────────────────────────────────────────────────
 
 
-@method("session.create")
-def _(rid, params: dict) -> dict:
+def _create_session(
+    rid, params: dict, *, routing: dict | None = None
+) -> dict:
+    """Create a live session with optional trusted internal routing metadata.
+
+    ``routing`` is not exposed through JSON-RPC. Exact-turn detach uses it to
+    install the source profile, workspace, disconnect policy, and transport
+    before registry publication and before a lazy builder can observe the
+    replacement.
+    """
+    routing = routing or {}
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -5777,12 +6857,16 @@ def _(rid, params: dict) -> dict:
     # launch directory? Only an explicit choice is persisted as the session's
     # workspace (see _ensure_session_db_row); otherwise it lands in "No
     # workspace" instead of whatever folder the desktop launched in.
-    raw_cwd = str(params.get("cwd") or "").strip()
-    try:
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
-    except Exception:
-        explicit_cwd = False
-    resolved_cwd = _completion_cwd(params)
+    if "cwd" in routing:
+        resolved_cwd = str(routing["cwd"])
+        explicit_cwd = bool(routing.get("explicit_cwd"))
+    else:
+        raw_cwd = str(params.get("cwd") or "").strip()
+        try:
+            explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+        except Exception:
+            explicit_cwd = False
+        resolved_cwd = _completion_cwd(params)
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     _enable_gateway_prompts()
 
@@ -5790,8 +6874,11 @@ def _(rid, params: dict) -> dict:
     # profile must build its agent + persist against THAT profile's home/state.db,
     # not the dashboard's launch profile. Stored on the session so _start_agent_build
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
-    profile = (params.get("profile") or "").strip() or None
-    profile_home = _profile_home(profile)
+    if "profile_home" in routing:
+        profile_home = routing.get("profile_home")
+    else:
+        profile = (params.get("profile") or "").strip() or None
+        profile_home = _profile_home(profile)
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -5823,22 +6910,43 @@ def _(rid, params: dict) -> dict:
 
     ready = threading.Event()
     now = time.time()
-    lease, limit_message = _claim_active_session_slot(
-        key, live_session_id=sid, surface=source
+    # Claim the slot under the SESSION's profile home, not the ambient launch
+    # profile. A dashboard-launched replacement for a remote-profile source
+    # resolves ``profile_home`` above; the lease must be reserved in — and later
+    # released/transferred against — that same profile registry (the lease now
+    # pins its own state/lock path so this stays consistent even if a per-turn
+    # override changes the ambient home before release).
+    lease, limit_message = _claim_active_session_slot_for_profile(
+        key,
+        live_session_id=sid,
+        surface=source,
+        profile_home=profile_home,
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
 
     with _sessions_lock:
         _sessions[sid] = {
+            "_live_sid": sid,
             "agent": None,
             "agent_error": None,
             "agent_ready": ready,
             "attached_images": [],
-            "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
+            "close_on_disconnect": bool(
+                routing.get(
+                    "close_on_disconnect",
+                    is_truthy_value(params.get("close_on_disconnect", False)),
+                )
+            ),
+            "restore_close_on_disconnect": routing.get(
+                "restore_close_on_disconnect"
+            ),
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
+            "detach_source_session_id": routing.get(
+                "detach_source_session_id"
+            ),
             "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history,
@@ -5861,7 +6969,9 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None,
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
-            "transport": current_transport() or _stdio_transport,
+            "transport": routing.get("transport")
+            or current_transport()
+            or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])
 
@@ -5872,14 +6982,20 @@ def _(rid, params: dict) -> dict:
     # lazily on the first prompt (see _ensure_session_db_row + prompt.submit),
     # and the AIAgent's own INSERT-OR-IGNORE persists it on the first turn too.
 
-    # Return the lightweight session immediately so Ink can paint the composer
-    # + skeleton panel, then build the real AIAgent just after this response is
-    # flushed.  This keeps startup responsive while still hydrating tools/skills
-    # without requiring the user to submit a first prompt.
-    _schedule_agent_build(sid)
-    _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+    created = _sessions[sid]
+    try:
+        with _session_profile_context(created):
+            response_model = (
+                session_model_override.get("model")
+                if session_model_override
+                else _resolve_model()
+            )
+            response_profile_name = _current_profile_name()
+    except Exception:
+        _close_session_by_id(sid, end_reason="create_rollback")
+        raise
 
-    return _ok(
+    response = _ok(
         rid,
         {
             "session_id": sid,
@@ -5891,11 +7007,7 @@ def _(rid, params: dict) -> dict:
                 # in the immediate response so the client doesn't briefly clobber
                 # its sticky pick with the global default before the deferred
                 # build's session.info lands.
-                "model": (
-                    session_model_override.get("model")
-                    if session_model_override
-                    else _resolve_model()
-                ),
+                "model": response_model,
                 **(
                     {"provider": session_model_override["provider"]}
                     if session_model_override and session_model_override.get("provider")
@@ -5908,10 +7020,263 @@ def _(rid, params: dict) -> dict:
                 "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                "profile_name": response_profile_name,
             },
         },
     )
+
+    # All routing metadata and response validation are complete before the
+    # deferred builder can observe this record. A detached replacement waits
+    # for the Ink client ACK: by then the UI has atomically switched ownership,
+    # so even an immediate build failure can recover visibly to the source.
+    if not routing.get("defer_agent_build"):
+        _schedule_agent_build(sid)
+    _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+    return response
+
+
+@method("session.create")
+def _(rid, params: dict) -> dict:
+    return _create_session(rid, params)
+
+
+@method("session.detach_turn")
+def _(rid, params: dict) -> dict:
+    """Detach one exact in-flight turn and atomically create its UI owner.
+
+    Agent, thread, history, tool state, and durable transcript never move from
+    the source. Only a retained presentation task points at a fresh live chat.
+    """
+    source_sid = str(params.get("session_id") or "")
+    marker = uuid.uuid4().hex
+    with _sessions_lock:
+        source = _sessions.get(source_sid)
+        if source is None:
+            return _err(rid, 4001, "session not found")
+        with source["history_lock"]:
+            if source.get("detaching_turn"):
+                return _err(rid, 4093, "detach already in progress")
+
+            # Idempotent RPC retry: return the same owner/task while retained.
+            existing_id = str(source.get("detached_turn_task_id") or "")
+            if existing_id:
+                with _detached_turns_lock:
+                    existing = _detached_turns.get(existing_id)
+                    if existing is not None:
+                        result = dict(existing["detach_response"])
+                        result["task"] = _detached_turn_snapshot(existing)
+                        return _ok(rid, result)
+
+            if source.get("detached_dispatch_active"):
+                return _err(rid, 4093, "turn is already detached")
+            if not source.get("running") or source.get("turn_settled"):
+                return _err(
+                    rid, 4024, "already_settled: no running turn to detach"
+                )
+
+            # Publish source protection before releasing lifecycle locks. Every
+            # close/reaper path checks this marker before it can pop the source.
+            source["detaching_turn"] = marker
+            source_routing = {
+                "close_on_disconnect": False,
+                "cwd": _session_cwd(source),
+                "defer_agent_build": True,
+                "detach_source_session_id": source_sid,
+                "explicit_cwd": bool(source.get("explicit_cwd")),
+                "profile_home": source.get("profile_home"),
+                "restore_close_on_disconnect": bool(
+                    source.get("close_on_disconnect")
+                ),
+                "transport": source.get("transport")
+                or current_transport()
+                or _stdio_transport,
+            }
+            create_params = {
+                "cols": source.get("cols", 80),
+                "source": _session_source(source),
+            }
+
+    owner_sid = ""
+
+    def rollback(message: str, *, code: int = 5000) -> dict:
+        if owner_sid:
+            _close_session_by_id(owner_sid, end_reason="detach_rollback")
+        with _sessions_lock:
+            if _sessions.get(source_sid) is source:
+                with source["history_lock"]:
+                    if source.get("detaching_turn") == marker:
+                        source.pop("detaching_turn", None)
+        return _err(rid, code, message)
+
+    try:
+        create_response = _create_session(
+            f"{rid}:replacement",
+            create_params,
+            routing=source_routing,
+        )
+    except Exception as exc:
+        return rollback(f"could not create replacement session: {exc}")
+    if "error" in create_response:
+        error = create_response.get("error") or {}
+        return rollback(
+            str(error.get("message") or "could not create replacement session"),
+            code=int(error.get("code", 5000)),
+        )
+
+    result = dict(create_response["result"])
+    owner_sid = str(result["session_id"])
+    task_id = f"bg_turn_{uuid.uuid4().hex[:8]}"
+
+    publication_error: tuple[int, str] | None = None
+    with _sessions_lock:
+        replacement = _sessions.get(owner_sid)
+        if replacement is None or _sessions.get(source_sid) is not source:
+            publication_error = (
+                5000,
+                "replacement session disappeared during detach",
+            )
+        elif replacement.get("detached_replacement_error") or replacement.get(
+            "agent_error"
+        ):
+            message = replacement.get("detached_replacement_error") or replacement.get(
+                "agent_error"
+            )
+            publication_error = (
+                5032,
+                f"replacement agent failed to initialize: {message}",
+            )
+        else:
+            source["history_lock"].acquire()
+
+        if publication_error is None:
+            try:
+                if (
+                    source.get("detaching_turn") != marker
+                    or not source.get("running")
+                    or source.get("turn_settled")
+                ):
+                    publication_error = (
+                        4024,
+                        "already_settled: no running turn to detach",
+                    )
+                else:
+                    source_key = str(source.get("session_key") or "")
+                    result.update(
+                        {
+                            "source_session_id": source_sid,
+                            "source_session_key": source_key,
+                            "task_id": task_id,
+                        }
+                    )
+                    task = {
+                        "created_at": time.time(),
+                        "detach_response": dict(result),
+                        "notified": False,
+                        "owner_session_id": owner_sid,
+                        "registered": False,
+                        "source_session_id": source_sid,
+                        "source_session_key": source_key,
+                        "status": "running",
+                        "task_id": task_id,
+                        "text": "",
+                    }
+                    with _detached_turns_lock:
+                        _detached_turns[task_id] = task
+                    replacement["detached_replacement_published"] = True
+                    replacement["detached_replacement_task_id"] = task_id
+                    replacement["detached_replacement_source_key"] = source_key
+                    source["detached_turn_task_id"] = task_id
+                    source["detached_dispatch_active"] = True
+                    replacement_ready = bool(
+                        replacement.get("detached_replacement_ready")
+                        or (
+                            replacement.get("agent") is not None
+                            and replacement.get("agent_ready") is None
+                        )
+                    )
+                    if not replacement_ready:
+                        source["detached_replacement_pending"] = True
+                    source.pop("detaching_turn", None)
+                    result["task"] = _detached_turn_snapshot(task)
+            finally:
+                source["history_lock"].release()
+
+    if publication_error is not None:
+        code, message = publication_error
+        return rollback(message, code=code)
+    return _ok(rid, result)
+
+
+@method("session.detach_turn_ack")
+def _(rid, params: dict) -> dict:
+    """Register presentation ownership after Ink activates the fresh chat."""
+    task_id = str(params.get("task_id") or "")
+    owner_sid = str(params.get("session_id") or "")
+    with _sessions_lock:
+        if owner_sid not in _sessions:
+            return _err(rid, 4001, "session not found")
+    with _detached_turns_lock:
+        task = _detached_turns.get(task_id)
+        if not task or task.get("owner_session_id") != owner_sid:
+            return _err(
+                rid, 4042, "detached task is not owned by this session"
+            )
+        was_registered = bool(task.get("registered"))
+        task["registered"] = True
+        source_sid = str(task.get("source_session_id") or "")
+        snapshot = _detached_turn_snapshot(task)
+    _restore_pending_prompts(
+        source_sid,
+        owner_sid,
+        replay_visible=not was_registered,
+    )
+    _schedule_agent_build(owner_sid, delay=0.0)
+    return _ok(rid, {"task": snapshot})
+
+
+@method("session.detach_turn_consumed")
+def _(rid, params: dict) -> dict:
+    """Forget a terminal task only after its owner displayed it."""
+    task_id = str(params.get("task_id") or "")
+    owner_sid = str(params.get("session_id") or "")
+    source_sid = ""
+    with _sessions_lock:
+        with _detached_turns_lock:
+            task = _detached_turns.get(task_id)
+            if not task or task.get("owner_session_id") != owner_sid:
+                return _err(
+                    rid, 4042, "detached task is not owned by this session"
+                )
+            if task.get("status") == "running":
+                return _err(rid, 4092, "detached task is still running")
+            source_sid = str(task.get("source_session_id") or "")
+            _detached_turns.pop(task_id, None)
+
+        source = _sessions.get(source_sid)
+        if source is not None:
+            with source["history_lock"]:
+                if source.get("detached_turn_task_id") == task_id:
+                    source.pop("detached_turn_task_id", None)
+        owner = _sessions.get(owner_sid)
+        if owner is not None and owner.get("restore_close_on_disconnect") is not None:
+            owner["close_on_disconnect"] = bool(
+                owner.pop("restore_close_on_disconnect")
+            )
+    _reschedule_detached_orphans(source_sid, owner_sid)
+    return _ok(rid, {"consumed": True, "task_id": task_id})
+
+
+@method("session.interactions.replay")
+def _(rid, params: dict) -> dict:
+    """Replay the visible FIFO heads after a client activates this session."""
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait({"session_id": sid}, rid)
+    if err:
+        return err
+    if session.get("_finalized"):
+        return _err(rid, 4001, "session not found")
+    replayed = _restore_pending_prompts(sid, sid, replay_visible=True)
+    return _ok(rid, {"replayed": replayed})
 
 
 @method("session.list")
@@ -6254,8 +7619,11 @@ def _(rid, params: dict) -> dict:
     if is_truthy_value(params.get("lazy", False)):
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
+        lease, limit_message = _claim_active_session_slot_for_profile(
+            target,
+            live_session_id=sid,
+            surface=source,
+            profile_home=profile_home,
         )
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
@@ -6322,8 +7690,11 @@ def _(rid, params: dict) -> dict:
     if not is_truthy_value(params.get("eager_build", False)):
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
+        lease, limit_message = _claim_active_session_slot_for_profile(
+            target,
+            live_session_id=sid,
+            surface=source,
+            profile_home=profile_home,
         )
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
@@ -6399,8 +7770,11 @@ def _(rid, params: dict) -> dict:
     # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
     sid = uuid.uuid4().hex[:8]
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-    lease, limit_message = _claim_active_session_slot(
-        target, live_session_id=sid, surface=source
+    lease, limit_message = _claim_active_session_slot_for_profile(
+        target,
+        live_session_id=sid,
+        surface=source,
+        profile_home=profile_home,
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
@@ -6489,6 +7863,7 @@ def _(rid, params: dict) -> dict:
                     cwd=profile_resume_cwd,
                     session_db=db,
                     source=source,
+                    profile_home=profile_home,
                 )
             finally:
                 if init_home_token is not None:
@@ -6553,11 +7928,29 @@ def _(rid, params: dict) -> dict:
 
 
 def _session_pending_kind(sid: str) -> str:
-    for rid, (owner_sid, _ev) in list(_pending.items()):
-        if owner_sid != sid:
-            continue
-        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
-        return str(event).removesuffix(".request")
+    with _prompt_lock:
+        for rid, (source_sid, _ev) in list(_pending.items()):
+            presentation_sid = _pending_prompt_presentations.get(rid, source_sid)
+            if presentation_sid != sid:
+                continue
+            event, _payload = _pending_prompt_payloads.get(
+                rid, ("input.request", {})
+            )
+            return str(event).removesuffix(".request")
+        for request_id, interaction in _compute_host_interactions.items():
+            if interaction.get("event") == "approval.request":
+                continue
+            presentation_sid = _pending_prompt_presentations.get(
+                request_id,
+                str(interaction.get("presentation_sid") or ""),
+            )
+            if presentation_sid == sid:
+                return str(interaction.get("event") or "input.request").removesuffix(
+                    ".request"
+                )
+        for approval in _pending_approvals.values():
+            if approval.get("presentation_sid") == sid:
+                return "approval"
     return ""
 
 
@@ -6644,16 +8037,110 @@ def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
 def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
+        # Preserve the established activation surface. The lazy/no-agent path
+        # below needs the session's profile context, while a built agent is
+        # already bound to its own profile/cwd metadata.
         return _session_info(agent)
-    cwd = _default_session_cwd()
+    cwd = _session_cwd(session)
+    override = session.get("model_override")
+    override = override if isinstance(override, dict) else {}
+    with _session_profile_context(session):
+        return _lazy_resume_info(
+            cwd,
+            model=str(override.get("model") or ""),
+            provider=str(override.get("provider") or ""),
+        )
+
+
+def _detached_turn_snapshot(task: dict) -> dict:
+    """Return the client-safe presentation state for one detached turn."""
+    status = str(task.get("status") or "running")
     return {
-        "cwd": cwd,
-        "project": _project_info_for_cwd(cwd),
-        "lazy": True,
-        "model": _resolve_model(),
-        "skills": {},
-        "tools": {},
+        "source_session_id": str(task.get("source_session_id") or ""),
+        "source_session_key": str(task.get("source_session_key") or ""),
+        "status": status,
+        "task_id": str(task.get("task_id") or ""),
+        **({"text": str(task.get("text") or "")} if status != "running" else {}),
     }
+
+
+def _settle_detached_turn(session: dict, status: str, text: Any) -> None:
+    """Retain and, once registered, notify a detached turn's fresh owner."""
+    with session["history_lock"]:
+        session["turn_settled"] = True
+        task_id = str(session.get("detached_turn_task_id") or "")
+    source_sid = str(session.get("_live_sid") or "")
+    if not source_sid:
+        with _sessions_lock:
+            source_sid = next(
+                (
+                    candidate
+                    for candidate, live in _sessions.items()
+                    if live is session
+                ),
+                "",
+            )
+
+    _drop_pending_approvals(source_sid)
+    if not task_id:
+        return
+
+    owner_sid = ""
+    payload = None
+    with _detached_turns_lock:
+        task = _detached_turns.get(task_id)
+        if not task or task.get("status") != "running":
+            return
+        task["status"] = status
+        task["text"] = str(text or status)
+        task["settled_at"] = time.time()
+        task["source_session_key"] = str(session.get("session_key") or "")
+        if task.get("registered") and not task.get("notified"):
+            task["notified"] = True
+            owner_sid = str(task.get("owner_session_id") or "")
+            payload = _detached_turn_snapshot(task)
+
+    with _sessions_lock:
+        owner = _sessions.get(owner_sid)
+        owner_is_live = bool(owner is not None and not owner.get("_finalized"))
+    delivered = False
+    if payload and owner_sid and owner_is_live:
+        try:
+            delivered = bool(_emit("background.complete", owner_sid, payload))
+        except Exception:
+            delivered = False
+    if payload and not delivered:
+        # The terminal state remains retained for activation/ACK replay.
+        with _detached_turns_lock:
+            task = _detached_turns.get(task_id)
+            if task and task.get("status") != "running":
+                task["notified"] = False
+
+
+def _finish_detached_dispatch(
+    sid: str,
+    session: dict,
+    *,
+    only_if_idle: bool = False,
+) -> None:
+    """Release source teardown protection after dispatcher finalization."""
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return
+        # Arm cleanup while holding the lifecycle lock and while the marker is
+        # still present. Even a zero-delay reaper cannot observe the protected
+        # state, return, and leave an immortal parked source: it must wait until
+        # the marker is cleared below and this lock is released.
+        try:
+            _reschedule_detached_orphans(sid)
+        except Exception:
+            pass
+        with session["history_lock"]:
+            if only_if_idle and session.get("running"):
+                return
+            session.pop("detached_dispatch_active", None)
+            session.pop("detached_turn_abandoned", None)
+            session["last_active"] = time.time()
 
 
 def _live_session_payload(
@@ -6664,11 +8151,15 @@ def _live_session_payload(
     touch: bool = False,
     transport: Transport | None = None,
 ) -> dict:
+    if transport is not None:
+        with _sessions_lock:
+            # A stale disconnect/close that already removed this exact record
+            # wins; otherwise the rebind serializes with disconnect parking.
+            if _sessions.get(sid) is session:
+                session["transport"] = transport
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
         history = list(session.get("display_history_prefix") or []) + list(
@@ -6691,6 +8182,14 @@ def _live_session_payload(
         payload["inflight"] = inflight
     if queued:
         payload["queued"] = queued
+    with _detached_turns_lock:
+        detached_tasks = [
+            _detached_turn_snapshot(task)
+            for task in _detached_turns.values()
+            if task.get("owner_session_id") == sid
+        ]
+    if detached_tasks:
+        payload["detached_tasks"] = detached_tasks
     return payload
 
 
@@ -6740,20 +8239,19 @@ def _(rid, params: dict) -> dict:
     returns enough state for Ink to redraw around another live session id.
     """
     sid = str(params.get("session_id") or "")
-    session, err = _sess_nowait({"session_id": sid}, rid)
-    if err:
-        return err
-    assert session is not None
-
-    return _ok(
-        rid,
-        _live_session_payload(
+    transport = current_transport() or _stdio_transport
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            return _err(rid, 4001, "session not found")
+        payload = _live_session_payload(
             sid,
             session,
             touch=True,
-            transport=current_transport() or _stdio_transport,
-        ),
-    )
+            transport=transport,
+        )
+        session.pop("detached_recovery_until", None)
+    return _ok(rid, payload)
 
 
 @method("session.delete")
@@ -8981,9 +10479,6 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5008)
     old_key = session["session_key"]
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
@@ -8992,71 +10487,116 @@ def _(rid, params: dict) -> dict:
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
     source = _session_source(session)
-    lease, limit_message = _claim_active_session_slot(
-        new_key, live_session_id=new_sid, surface=source
+    profile_home = (session or {}).get("profile_home")
+    lease, limit_message = _claim_active_session_slot_for_profile(
+        new_key,
+        live_session_id=new_sid,
+        surface=source,
+        profile_home=profile_home,
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
-    branch_name = params.get("name", "")
+
+    agent = None
+    db = None
+    owns_profile_db = False
+    phase = "branch"
     try:
-        if branch_name:
-            title = branch_name
-        else:
-            current = db.get_session_title(old_key) or "branch"
-            title = (
-                db.get_next_title_in_lineage(current)
-                if hasattr(db, "get_next_title_in_lineage")
-                else f"{current} (branch)"
+        with _session_profile_context(session):
+            if profile_home:
+                from hermes_state import SessionDB
+
+                db = SessionDB(db_path=Path(profile_home) / "state.db")
+                owns_profile_db = True
+            else:
+                db = _get_db()
+            if db is None:
+                if lease is not None:
+                    lease.release()
+                    lease = None
+                return _db_unavailable_error(rid, code=5008)
+
+            branch_name = params.get("name", "")
+            if branch_name:
+                title = branch_name
+            else:
+                current = db.get_session_title(old_key) or "branch"
+                title = (
+                    db.get_next_title_in_lineage(current)
+                    if hasattr(db, "get_next_title_in_lineage")
+                    else f"{current} (branch)"
+                )
+            db.create_session(
+                new_key,
+                source=source,
+                model=_resolve_model(),
+                # Stable _branched_from marker so list_sessions_rich() keeps the
+                # branch visible in /resume and /sessions. The TUI branch leaves
+                # the parent live (no end_reason='branched'), so the legacy
+                # end_reason heuristic never matches it — the marker is the only
+                # thing that surfaces TUI branches. See issue #20856.
+                model_config={"_branched_from": old_key},
+                parent_session_id=old_key,
+                cwd=_session_cwd(session),
             )
-        db.create_session(
-            new_key,
-            source=source,
-            model=_resolve_model(),
-            # Stable _branched_from marker so list_sessions_rich() keeps the
-            # branch visible in /resume and /sessions. The TUI branch leaves
-            # the parent live (no end_reason='branched'), so the legacy
-            # end_reason heuristic never matches it — the marker is the only
-            # thing that surfaces TUI branches. See issue #20856.
-            model_config={"_branched_from": old_key},
-            parent_session_id=old_key,
-            cwd=_session_cwd(session),
-        )
-        for msg in history:
-            db.append_message(
-                session_id=new_key,
-                role=msg.get("role", "user"),
-                content=msg.get("content"),
+            for msg in history:
+                db.append_message(
+                    session_id=new_key,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),  # type: ignore[arg-type]
+                )
+            db.set_session_title(new_key, title)
+
+            phase = "agent init"
+            tokens = _set_session_context(
+                new_key,
+                cwd=_session_cwd(session),
+                ui_session_id=new_sid,
             )
-        db.set_session_title(new_key, title)
-    except Exception as e:
-        if lease is not None:
-            lease.release()
-        return _err(rid, 5008, f"branch failed: {e}")
-    try:
-        tokens = _set_session_context(new_key)
-        try:
-            agent = _make_agent(
+            try:
+                agent = _make_agent(
+                    new_sid,
+                    new_key,
+                    session_id=new_key,
+                    session_db=db,
+                    platform_override=source,
+                )
+            finally:
+                _clear_session_context(tokens)
+            _init_session(
                 new_sid,
                 new_key,
-                session_id=new_key,
-                platform_override=source,
+                agent,
+                list(history),
+                cols=(session or {}).get("cols", 80),
+                cwd=_session_cwd(session),
+                session_db=db,
+                source=source,
+                profile_home=profile_home,
             )
-        finally:
-            _clear_session_context(tokens)
-        _init_session(
-            new_sid,
-            new_key,
-            agent,
-            list(history),
-            cols=session.get("cols", 80),
-            source=source,
-        )
-        if new_sid in _sessions:
-            _sessions[new_sid]["active_session_lease"] = lease
+            if new_sid in _sessions:
+                _sessions[new_sid]["active_session_lease"] = lease
     except Exception as e:
+        popped = _pop_session_by_id(new_sid)
+        if popped is not None:
+            _teardown_popped_session(popped, end_reason="branch_init_failed")
+            agent = None
+        elif agent is not None:
+            try:
+                if hasattr(agent, "close"):
+                    agent.close()
+            except Exception:
+                pass
+        elif owns_profile_db and db is not None:
+            try:
+                if hasattr(db, "close"):
+                    db.close()
+            except Exception:
+                pass
         if lease is not None:
             lease.release()
-        return _err(rid, 5000, f"agent init failed on branch: {e}")
+        code = 5008 if phase == "branch" else 5000
+        return _err(rid, code, f"{phase} failed: {e}")
     return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
 
 
@@ -9065,16 +10605,33 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
+    sid = str(params.get("session_id") or "")
     if _session_uses_compute_host(session):
-        sid = str(params.get("session_id") or "")
-        if session.get("running"):
-            try:
-                _get_compute_host_supervisor().interrupt(sid, request_id=f"interrupt-{rid}")
-            except Exception as exc:
-                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
-        with session["history_lock"]:
-            session["_turn_cancel_requested"] = True
-            session["queued_prompt"] = None
+        dispatch_lock = _compute_host_dispatch_lock(session)
+        with dispatch_lock:
+            with session["history_lock"]:
+                should_interrupt = bool(
+                    session.get("running")
+                    and not _interrupt_call_pending(session)
+                )
+                session["_turn_cancel_requested"] = True
+                session["queued_prompt"] = None
+                if should_interrupt:
+                    session["_interrupt_call_count"] = (
+                        int(session.get("_interrupt_call_count") or 0) + 1
+                    )
+            if should_interrupt:
+                try:
+                    _get_compute_host_supervisor().interrupt(
+                        sid, request_id=f"interrupt-{rid}"
+                    )
+                except Exception as exc:
+                    return _err(
+                        rid, 5019, f"compute-host interrupt failed: {exc}"
+                    )
+                finally:
+                    _finish_interrupt_call(sid, session)
         _clear_pending(sid)
         try:
             from tools.approval import resolve_gateway_approval
@@ -9086,6 +10643,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    assert session is not None
     # Safety net: if the turn's run thread is already gone but `running` stayed
     # stuck (a crash/desync that skipped the run loop's `finally`), force-clear it
     # so the session can't be permanently bricked at 4009 "session busy" — every
@@ -9093,14 +10651,31 @@ def _(rid, params: dict) -> dict:
     # Always tell the agent to interrupt when the session claims a run is active:
     # stale flags are cleared below, and fresh turns clear the interrupt flag at
     # entry. This keeps a stale/missing thread handle from making Stop a no-op.
-    run_thread = session.get("_run_thread")
-    run_thread_alive = run_thread is not None and run_thread.is_alive()
-    should_interrupt = bool(session.get("running"))
-    if should_interrupt and hasattr(session["agent"], "interrupt"):
-        session["agent"].interrupt()
     with session["history_lock"]:
+        run_thread = session.get("_run_thread")
+        run_thread_alive = run_thread is not None and run_thread.is_alive()
+        agent = session.get("agent")
+        should_interrupt = bool(
+            session.get("running")
+            and agent is not None
+            and hasattr(agent, "interrupt")
+            and not _interrupt_call_pending(session)
+        )
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
+        if should_interrupt:
+            session["_interrupt_call_count"] = (
+                int(session.get("_interrupt_call_count") or 0) + 1
+            )
+    # Publish cancellation before the potentially blocking provider call. Turn
+    # startup takes the same history lock before clear_interrupt(), so it either
+    # clears first and is interrupted afterwards, or observes this cancellation
+    # and never starts. It can no longer erase a stop while interrupt() blocks.
+    if should_interrupt and agent is not None:
+        try:
+            agent.interrupt()
+        finally:
+            _finish_interrupt_call(sid, session)
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
@@ -9398,75 +10973,117 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
-        session["transport"] = t
-    while True:
-        busy_transport = None
-        with session["history_lock"]:
-            if session.get("running"):
-                # Don't reject a mid-turn prompt — queue it (and, by default,
-                # interrupt the live turn) so it runs as the next turn. The
-                # provider interrupt itself must happen after this lock is
-                # released: a non-interruptible tool may keep it waiting.
-                busy_transport = t or session.get("transport")
-            else:
+        with _sessions_lock:
+            if _sessions.get(sid) is not session:
+                return _err(rid, 4001, "session not found")
+            session["transport"] = t
+    # For compute-host sessions, serialize the parent running claim through the
+    # actual turn.start pipe write. Otherwise a concurrent busy-input interrupt
+    # can observe running=True and reach the child before the accepted turn does.
+    dispatch_context = (
+        _compute_host_dispatch_lock(session)
+        if turn_isolation
+        else contextlib.nullcontext()
+    )
+    with dispatch_context:
+        while True:
+            busy_transport = None
+            claimed = False
+            with session["history_lock"]:
+                if session.get("running") or _interrupt_call_pending(session):
+                    # Don't reject a mid-turn prompt — queue it (and, by default,
+                    # interrupt the live turn) so it runs as the next turn. The
+                    # provider interrupt itself must happen after this lock is
+                    # released: a non-interruptible tool may keep it waiting.
+                    busy_transport = t or session.get("transport")
+                else:
+                    # A watch session's run lives in the PARENT turn, so its own
+                    # running flag is False. Keep this check and the running claim
+                    # in one critical section so two concurrent submitters cannot
+                    # both observe idle and dispatch competing compute-host turns.
+                    if session.get("lazy") and _child_run_active(
+                        str(session.get("session_key") or "")
+                    ):
+                        return _err(
+                            rid,
+                            4009,
+                            "subagent still running — wait for it to finish",
+                        )
+                    if truncate_user_ordinal is not None:
+                        try:
+                            ordinal = int(truncate_user_ordinal)
+                        except (TypeError, ValueError):
+                            return _err(
+                                rid,
+                                4004,
+                                "truncate_before_user_ordinal must be an integer",
+                            )
+                        history = session.get("history", [])
+                        user_indices = [
+                            i
+                            for i, m in enumerate(history)
+                            if m.get("role") == "user"
+                        ]
+                        # Reject out-of-range ordinals on BOTH ends. A negative
+                        # value would otherwise silently index the final user turn.
+                        if ordinal < 0 or ordinal >= len(user_indices):
+                            return _err(
+                                rid,
+                                4018,
+                                "target user message is no longer in session history",
+                            )
+                        truncated = history[: user_indices[ordinal]]
+                        session["history"] = truncated
+                        session["history_version"] = (
+                            int(session.get("history_version", 0)) + 1
+                        )
+                        if (db := _get_db()) is not None:
+                            try:
+                                db.replace_messages(
+                                    session["session_key"], truncated
+                                )
+                            except Exception as exc:
+                                print(
+                                    f"[tui_gateway] prompt.submit: replace_messages failed: {exc}",
+                                    file=sys.stderr,
+                                )
+                    session["running"] = True
+                    session["turn_settled"] = False
+                    # A retained terminal task may still be waiting for owner
+                    # consumption, but it no longer describes this accepted turn.
+                    session.pop("detached_turn_task_id", None)
+                    session["_turn_cancel_requested"] = False
+                    session["last_active"] = time.time()
+                    _start_inflight_turn(session, text)
+                    claimed = True
+            if claimed:
                 break
-        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
-        if busy_response is not None:
-            return busy_response
-        # The old turn finished between the two lock acquisitions. Retry the
-        # claim so this prompt starts normally instead of being stranded in a
-        # queue whose drain already ran.
+            busy_response = _handle_busy_submit(
+                rid, sid, session, text, busy_transport
+            )
+            if busy_response is not None:
+                return busy_response
+            # The old turn finished before _handle_busy_submit acquired the lock.
+            # Retry the single atomic idle/claim section.
 
-    with session["history_lock"]:
-        # A watch session's run lives in the PARENT turn, so its own running
-        # flag is False — without this, typing mid-run builds a second agent
-        # racing the in-flight child on the same stored session (interleaved
-        # transcript, stale fork). After the run completes, submitting is fine:
-        # the upgrade resumes the child's transcript as a normal conversation.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish")
-        if truncate_user_ordinal is not None:
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            # Reject out-of-range ordinals on BOTH ends. A negative value would
-            # otherwise sail past the upper-bound check and hit Python's negative
-            # indexing below (user_indices[-1] -> the LAST user turn), silently
-            # truncating history to everything before it and persisting that loss
-            # via replace_messages — an unrecoverable overwrite of the session DB.
-            if ordinal < 0 or ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
-                try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
-        session["running"] = True
-        session["_turn_cancel_requested"] = False
-        session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
-
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
-        if not isolated_response.get("error"):
-            return isolated_response
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s",
-            sid,
-            isolated_response["error"].get("message", "unknown error"),
-        )
+        if turn_isolation:
+            isolated_response = _submit_prompt_to_compute_host(
+                rid, sid, session, text
+            )
+            if not isolated_response.get("error"):
+                return isolated_response
+            logger.warning(
+                "compute-host dispatch failed for session %s; falling back inline: %s",
+                sid,
+                isolated_response["error"].get("message", "unknown error"),
+            )
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
@@ -9478,24 +11095,30 @@ def _(rid, params: dict) -> dict:
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            _emit(
-                "error",
-                sid,
-                {
-                    "message": err.get("error", {}).get(
-                        "message", "agent initialization failed"
-                    )
-                },
+            message = err.get("error", {}).get(
+                "message", "agent initialization failed"
             )
+            with session["history_lock"]:
+                session["turn_settled"] = True
+            _emit("error", sid, {"message": message})
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)
+            _settle_detached_turn(session, "error", message)
+            _finish_detached_dispatch(sid, session, only_if_idle=True)
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
+                session["turn_settled"] = True
                 _clear_inflight_turn(session)
-                return
+                cancelled = True
+            else:
+                cancelled = False
+        if cancelled:
+            _settle_detached_turn(session, "interrupted", "interrupted")
+            _finish_detached_dispatch(sid, session, only_if_idle=True)
+            return
         _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
@@ -9747,11 +11370,28 @@ def _notification_poller_loop(
 
         _requeued = False
         with session["history_lock"]:
-            if session.get("running"):
+            # A compute-host child raises a terminal barrier after its final
+            # quiescent snapshot and clears it only after turn.end is on the
+            # wire. Treat that window as busy so this autonomous poller cannot
+            # install a successor behind the parent's terminal state.
+            if (
+                session.get("running")
+                or _interrupt_call_pending(session)
+                or session.get("queued_prompt")
+                or session.get("_compute_host_terminal_pending")
+                or session.get("_compute_host_terminal_successor_pending")
+                or session.get("_compute_host_turn_admission")
+                or session.get("_compute_host_control_pending")
+            ):
                 process_registry.completion_queue.put(evt)
                 _requeued = True
             else:
                 session["running"] = True
+                # Completion events arrive after the Stop that may have
+                # cancelled the originating turn. This is fresh work, so it
+                # must not inherit that turn's cancellation state.
+                session["_turn_cancel_requested"] = False
+                session["turn_settled"] = False
         if _requeued:
             # Back off before re-polling: the re-queued event keeps the queue
             # non-empty, so without a sleep this loop spins at full speed
@@ -9822,10 +11462,22 @@ def _notification_poller_loop(
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
-            if session.get("running"):
+            if (
+                session.get("running")
+                or _interrupt_call_pending(session)
+                or session.get("queued_prompt")
+                or session.get("_compute_host_terminal_pending")
+                or session.get("_compute_host_terminal_successor_pending")
+                or session.get("_compute_host_turn_admission")
+                or session.get("_compute_host_control_pending")
+            ):
                 process_registry.completion_queue.put(evt)
                 break
             session["running"] = True
+            # Mirror the live-loop claim: shutdown draining also starts fresh
+            # work that must not inherit a prior turn's Stop flag.
+            session["_turn_cancel_requested"] = False
+            session["turn_settled"] = False
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
@@ -9912,19 +11564,30 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    agent = session["agent"]
     with session["history_lock"]:
+        cancelled_before_start = bool(session.get("_turn_cancel_requested"))
+        session["turn_settled"] = cancelled_before_start
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
-        if not isinstance(session.get("inflight_turn"), dict):
-            _start_inflight_turn(session, text)
-    agent = session["agent"]
-    if hasattr(agent, "clear_interrupt"):
-        try:
-            agent.clear_interrupt()
-        except Exception:
-            pass
+        if cancelled_before_start:
+            session["running"] = False
+            _clear_inflight_turn(session)
+        else:
+            if not isinstance(session.get("inflight_turn"), dict):
+                _start_inflight_turn(session, text)
+            # Serialize clear_interrupt with session.interrupt's cancellation
+            # flag. A stop that wins this lock is never erased by startup; a
+            # stop that follows it re-applies agent.interrupt afterwards.
+            if hasattr(agent, "clear_interrupt"):
+                try:
+                    agent.clear_interrupt()
+                except Exception:
+                    pass
+    if cancelled_before_start:
+        return
     _emit("message.start", sid)
 
     def run():
@@ -9933,6 +11596,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
         one_turn_restore = session.pop("one_turn_model_restore", None)
+        terminal_status = "error"
+        terminal_text = "turn ended without a result"
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -10193,20 +11858,28 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             else:
                 raw = str(result)
                 status = "complete"
+            terminal_status = status
+            terminal_text = str(raw or status)
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
-            if result.get("response_previewed"):
+            if isinstance(result, dict) and result.get("response_previewed"):
                 payload["response_previewed"] = True
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
             with session["history_lock"]:
+                # Close the detach-vs-settle race before the authoritative
+                # source completion is emitted. A detach that starts after this
+                # point fails as already-settled instead of duplicating a turn
+                # the foreground UI has already received.
+                session["turn_settled"] = True
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
+            _settle_detached_turn(session, terminal_status, terminal_text)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -10366,6 +12039,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
+            terminal_status = "error"
+            terminal_text = f"error: {e}"
+            with session["history_lock"]:
+                session["turn_settled"] = True
             _emit("error", sid, {"message": str(e)})
         finally:
             if one_turn_restore:
@@ -10387,6 +12064,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # Clear the per-turn interim callback so a stale closure from
             # this turn can't fire during a later turn on the same agent.
             agent.interim_assistant_callback = None
+            try:
+                _settle_detached_turn(
+                    session, terminal_status, terminal_text
+                )
+            except Exception as settle_exc:
+                print(
+                    f"[tui_gateway] detached turn settlement failed: {settle_exc}",
+                    file=sys.stderr,
+                )
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
@@ -10452,6 +12138,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             process_registry.completion_queue.put(pending_evt)
                         break
                     session["running"] = True
+                    # Mirror the poller claims: this notification is fresh work
+                    # and must not inherit the finished turn's Stop flag, or
+                    # _run_prompt_submit would drop the event as
+                    # cancelled-before-start after message.start was emitted.
+                    session["_turn_cancel_requested"] = False
+                    session["turn_settled"] = False
                 from tools.async_delegation import (
                     claim_event_delivery, complete_event_delivery, release_event_delivery,
                 )
@@ -10477,6 +12169,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 f"{type(_drain_exc).__name__}: {_drain_exc}",
                 file=sys.stderr,
             )
+
+    dispatch_run = run
+
+    def run():
+        try:
+            dispatch_run()
+        finally:
+            if _detached_dispatch_is_protected(session):
+                _finish_detached_dispatch(sid, session, only_if_idle=True)
 
     run_thread = threading.Thread(target=run, daemon=True)
     session["_run_thread"] = run_thread
@@ -11259,59 +12960,205 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
-def _respond(rid, params, key, *, allow_expired=False):
+def _respond(rid, params, key, *, method: str, allow_expired=False):
     r = params.get("request_id", "")
+    host_interaction = None
     with _prompt_lock:
         entry = _pending.get(r)
-        if not entry:
+        host_interaction = _compute_host_interactions.get(r)
+        if not entry and not host_interaction:
             if allow_expired and r:
                 return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
-        _, ev = entry
-        _answers[r] = params.get(key, "")
-        ev.set()
+        if entry:
+            source_sid, ev = entry
+        else:
+            source_sid = str(host_interaction.get("source_sid") or "")
+            ev = None
+        presentation_sid = _pending_prompt_presentations.get(r, source_sid)
+        response_sid = str(params.get("session_id") or "")
+        if presentation_sid != source_sid and response_sid != presentation_sid:
+            return _err(
+                rid, 4043, "prompt response is not owned by this session"
+            )
+        if response_sid and response_sid != presentation_sid:
+            return _err(
+                rid, 4043, "prompt response is not owned by this session"
+            )
+        event = _pending_prompt_payloads.get(r, ("input.request", {}))[0]
+        queue = _interactive_prompt_queues.get((presentation_sid, event)) or []
+        if queue and queue[0] != r:
+            return _err(
+                rid, 4094, "prompt request is queued behind another request"
+            )
+        if entry and ev is not None:
+            _answers[r] = params.get(key, "")
+            ev.set()
+    if host_interaction is not None:
+        expected_method = _COMPUTE_HOST_INTERACTIVE_RESPONSES.get(
+            str(host_interaction.get("event") or ""),
+            ("", "", ""),
+        )[0]
+        if method != expected_method:
+            return _err(rid, 4009, f"no pending {key} request")
+        return _proxy_compute_host_interaction_response(
+            rid,
+            dict(host_interaction),
+            method=method,
+            params={key: params.get(key, "")},
+        )
     return _ok(rid, {"status": "ok"})
 
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "answer")
+    return _respond(rid, params, "answer", method="clarify.respond")
 
 
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
-    return _respond(rid, params, "text")
+    return _respond(rid, params, "text", method="terminal.read.respond")
 
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password", allow_expired=True)
+    return _respond(
+        rid,
+        params,
+        "password",
+        method="sudo.respond",
+        allow_expired=True,
+    )
 
 
 @method("secret.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "value", allow_expired=True)
+    return _respond(
+        rid,
+        params,
+        "value",
+        method="secret.respond",
+        allow_expired=True,
+    )
 
 
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    request_id = str(params.get("request_id") or "")
+    response_sid = str(params.get("session_id") or "")
+    approval = None
+    host_interaction = None
+    with _prompt_lock:
+        # Backward compatibility for desktop/native clients that still answer
+        # approval by session only: infer the one visible FIFO head.
+        if not request_id and response_sid:
+            queue = _interactive_prompt_queues.get(
+                (response_sid, "approval.request")
+            ) or []
+            if queue and queue[0] in _pending_approvals:
+                request_id = queue[0]
+        if request_id:
+            approval = _pending_approvals.get(request_id)
+            if approval is None:
+                return _err(rid, 4009, "no pending approval request")
+            if response_sid != approval.get("presentation_sid"):
+                return _err(
+                    rid, 4043, "approval response is not owned by this session"
+                )
+            source_sid = str(approval.get("source_sid") or "")
+            presentation_sid = str(approval.get("presentation_sid") or "")
+            queue = _interactive_prompt_queues.get(
+                (presentation_sid, "approval.request")
+            ) or []
+            if not queue or queue[0] != request_id:
+                return _err(
+                    rid, 4094, "approval request is queued behind another request"
+                )
+            if approval.get("compute_host"):
+                interaction = _compute_host_interactions.get(request_id)
+                if interaction is None:
+                    return _err(rid, 4009, "no pending approval request")
+                host_interaction = dict(interaction)
+        else:
+            source_sid = response_sid
+
+    if host_interaction is not None:
+        return _proxy_compute_host_interaction_response(
+            rid,
+            host_interaction,
+            method="approval.respond",
+            params={
+                "all": bool(params.get("all", False)),
+                "choice": params.get("choice", "deny"),
+            },
+            resolve_all=bool(params.get("all", False)),
+        )
+
+    session, err = _sess_nowait({"session_id": source_sid}, rid)
     if err:
         return err
     try:
         from tools.approval import resolve_gateway_approval
 
-        return _ok(
-            rid,
-            {
-                "resolved": resolve_gateway_approval(
-                    session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
-                )
-            },
+        resolved = resolve_gateway_approval(
+            session["session_key"],
+            params.get("choice", "deny"),
+            resolve_all=params.get("all", False),
         )
+        unblocked: list[tuple[str, str, dict]] = []
+        completed_request_ids: list[str] = []
+        if request_id:
+            with _prompt_lock:
+                if params.get("all", False):
+                    unblocked_keys: set[tuple[str, str]] = set()
+                    for pending_id, pending in list(_pending_approvals.items()):
+                        if pending.get("source_sid") != source_sid:
+                            continue
+                        pending_presentation = str(
+                            pending.get("presentation_sid") or source_sid
+                        )
+                        queue_key = (
+                            pending_presentation,
+                            "approval.request",
+                        )
+                        queue = _interactive_prompt_queues.get(queue_key) or []
+                        if queue and queue[0] == pending_id:
+                            unblocked_keys.add(queue_key)
+                        _remove_interactive_locked(
+                            pending_id,
+                            "approval.request",
+                            pending_presentation,
+                        )
+                        _pending_approvals.pop(pending_id, None)
+                        completed_request_ids.append(pending_id)
+                    for queue_key in unblocked_keys:
+                        queue = _interactive_prompt_queues.get(queue_key) or []
+                        if queue and (
+                            next_prompt := _interactive_payload_locked(queue[0])
+                        ):
+                            unblocked.append(next_prompt)
+                else:
+                    assert approval is not None
+                    next_prompt = _remove_interactive_locked(
+                        request_id,
+                        "approval.request",
+                        str(approval.get("presentation_sid") or source_sid),
+                    )
+                    if next_prompt is not None:
+                        unblocked.append(next_prompt)
+                    _pending_approvals.pop(request_id, None)
+                    completed_request_ids.append(request_id)
+        for next_prompt in unblocked:
+            _emit_interactive(next_prompt)
+        for completed_request_id in completed_request_ids:
+            _notify_compute_host_interaction_complete(
+                source_sid,
+                completed_request_id,
+                "approval.request",
+                reason="answered",
+            )
+        return _ok(rid, {"resolved": resolved})
     except Exception as e:
         return _err(rid, 5004, str(e))
 

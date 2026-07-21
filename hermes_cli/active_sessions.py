@@ -224,6 +224,20 @@ class ActiveSessionLease:
     surface: str
     enabled: bool = True
     released: bool = False
+    # Registry paths captured at claim time. A lease may be claimed under one
+    # profile's HERMES_HOME and released/transferred under a different ambient
+    # home (e.g. a per-turn ``set_hermes_home_override`` for a resumed remote
+    # profile). Pinning the state/lock paths here keeps claim, transfer, and
+    # release all touching the SAME profile registry. Empty means "resolve the
+    # ambient path" for backward compatibility with leases built elsewhere.
+    state_path: str = ""
+    lock_path: str = ""
+
+    def registry_state_path(self) -> Path:
+        return Path(self.state_path) if self.state_path else _state_path()
+
+    def registry_lock_path(self) -> Path:
+        return Path(self.lock_path) if self.lock_path else _lock_path()
 
     def release(self) -> None:
         if self.released or not self.enabled:
@@ -245,12 +259,16 @@ def try_acquire_active_session(
     """
     max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
+    state_path = _state_path()
+    lock_path = _lock_path()
     if max_sessions is None:
         return ActiveSessionLease(
             lease_id=lease_id,
             session_id=session_id,
             surface=surface,
             enabled=False,
+            state_path=str(state_path),
+            lock_path=str(lock_path),
         ), None
 
     now = time.time()
@@ -268,8 +286,7 @@ def try_acquire_active_session(
             str(k): v for k, v in metadata.items() if isinstance(k, str)
         }
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    with _FileLock(lock_path):
         raw_entries = _read_entries(state_path)
         entries = _prune_dead(raw_entries)
         pruned = len(raw_entries) - len(entries)
@@ -292,13 +309,15 @@ def try_acquire_active_session(
         lease_id=lease_id,
         session_id=str(session_id),
         surface=str(surface),
+        state_path=str(state_path),
+        lock_path=str(lock_path),
     ), None
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:
-    state_path = _state_path()
+    state_path = lease.registry_state_path()
     try:
-        with _FileLock(_lock_path()):
+        with _FileLock(lease.registry_lock_path()):
             entries = _prune_dead(_read_entries(state_path))
             kept = [
                 entry
@@ -327,8 +346,8 @@ def transfer_active_session(
         lease.session_id = new_session_id
         return True
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    state_path = lease.registry_state_path()
+    with _FileLock(lease.registry_lock_path()):
         entries = _prune_dead(_read_entries(state_path))
         updated = False
         for entry in entries:

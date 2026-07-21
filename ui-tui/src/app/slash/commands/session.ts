@@ -8,6 +8,7 @@ import type {
   ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
+  SessionDetachTurnResponse,
   SessionUsageResponse,
   SlashExecResponse,
   VoiceToggleResponse
@@ -15,6 +16,7 @@ import type {
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
+import { registerBackgroundTask } from '../../detachedTasks.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -76,14 +78,37 @@ const reasoningConfigPayload = (arg: string, sid: string) => {
   }
 }
 
+const detachRunningTurn = (ctx: Parameters<SlashCommand['run']>[1]) => {
+  if (!ctx.sid || !ctx.ui.busy) {
+    return ctx.transcript.sys('no running turn to detach')
+  }
+
+  ctx.gateway
+    .rpc<SessionDetachTurnResponse>('session.detach_turn', { session_id: ctx.sid })
+    .then(
+      ctx.guarded<SessionDetachTurnResponse>(r => {
+        if (!r.session_id || !r.task_id) {
+          return ctx.transcript.sys('error: invalid response: session.detach_turn')
+        }
+
+        ctx.session.activateDetachedSession(r)
+      })
+    )
+    .catch(ctx.guardedErr)
+}
+
 export const sessionCommands: SlashCommand[] = [
   {
     aliases: ['bg', 'btw'],
-    help: 'launch a background prompt',
+    help: 'launch a background prompt or detach the running turn',
     name: 'background',
-    run: (arg, ctx) => {
+    run: (arg, ctx, command) => {
       if (!arg) {
-        return ctx.transcript.sys('/background <prompt>')
+        const invoked = command.trim().match(/^\/([^\s]+)/)?.[1]?.toLowerCase()
+
+        return invoked === 'background'
+          ? detachRunningTurn(ctx)
+          : ctx.transcript.sys('/background <prompt>')
       }
 
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
@@ -92,11 +117,18 @@ export const sessionCommands: SlashCommand[] = [
             return
           }
 
-          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
-          ctx.transcript.sys(`bg ${r.task_id} started`)
+          if (registerBackgroundTask(r.task_id, ctx.sid)) {
+            ctx.transcript.sys(`bg ${r.task_id} started`)
+          }
         })
       )
     }
+  },
+
+  {
+    help: 'detach the running turn into the background',
+    name: 'detach',
+    run: (_arg, ctx) => detachRunningTurn(ctx)
   },
 
   {

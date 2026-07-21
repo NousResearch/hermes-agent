@@ -66,7 +66,8 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       try {
         await gateway.request<{ status?: string }>('sudo.respond', {
           password: value,
-          request_id: request.requestId
+          request_id: request.requestId,
+          session_id: request.sessionId ?? undefined
         })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
@@ -169,6 +170,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       try {
         await gateway.request<{ status?: string }>('secret.respond', {
           request_id: request.requestId,
+          session_id: request.sessionId ?? undefined,
           value: secret
         })
         triggerHaptic('submit')

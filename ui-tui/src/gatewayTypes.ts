@@ -150,7 +150,34 @@ export interface SessionCreateResponse {
   session_id: string
 }
 
+export type DetachedTurnStatus = 'complete' | 'error' | 'interrupted' | 'running'
+
+export interface DetachedTurnTask {
+  source_session_id: string
+  source_session_key?: string
+  status: DetachedTurnStatus
+  task_id: string
+  text?: string
+}
+
+export interface SessionDetachTurnResponse extends SessionCreateResponse {
+  source_session_id: string
+  source_session_key?: string
+  task: DetachedTurnTask
+  task_id: string
+}
+
+export interface SessionDetachTurnAckResponse {
+  task: DetachedTurnTask
+}
+
+export interface SessionDetachTurnConsumedResponse {
+  consumed: boolean
+  task_id?: string
+}
+
 export interface SessionResumeResponse {
+  detached_tasks?: DetachedTurnTask[]
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -188,6 +215,7 @@ export interface SessionInflightTurn {
 }
 
 export interface SessionActivateResponse {
+  detached_tasks?: DetachedTurnTask[]
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -623,6 +651,7 @@ export type GatewayEvent =
         choices?: string[]
         command: string
         description: string
+        request_id: string
         smart_denied?: boolean
       }
       session_id?: string
@@ -631,7 +660,27 @@ export type GatewayEvent =
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { request_id: string }; session_id?: string; type: 'secret.expire' | 'sudo.expire' }
-  | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
+  | {
+      payload: {
+        source_session_id?: string
+        source_session_key?: string
+        status?: DetachedTurnStatus
+        task_id: string
+        text: string
+      }
+      session_id?: string
+      type: 'background.complete'
+    }
+  | {
+      payload: {
+        message: string
+        source_session_id: string
+        source_session_key?: string
+        task_id: string
+      }
+      session_id?: string
+      type: 'background.detach_recovery'
+    }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }

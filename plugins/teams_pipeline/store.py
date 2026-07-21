@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import threading
+import logging
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from hermes_constants import get_hermes_home
 
 
 DEFAULT_TEAMS_PIPELINE_STORE_FILENAME = "teams_pipeline_store.json"
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -54,8 +56,20 @@ class TeamsPipelineStore:
         with self._lock:
             if not self.path.exists():
                 return
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Teams pipeline store %s is unreadable or malformed; starting with empty state: %s",
+                    self.path,
+                    exc,
+                )
+                return
             if not isinstance(data, dict):
+                logger.warning(
+                    "Teams pipeline store %s has non-object JSON root; starting with empty state",
+                    self.path,
+                )
                 return
             self._state["subscriptions"] = dict(data.get("subscriptions") or {})
             self._state["notification_receipts"] = dict(data.get("notification_receipts") or {})

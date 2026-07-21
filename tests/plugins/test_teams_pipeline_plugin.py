@@ -211,6 +211,23 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
     assert sink["page_id"] == "page-1"
 
 
+def test_store_corrupt_json_falls_back_to_empty_state(tmp_path, caplog):
+    store_path = tmp_path / "teams-store.json"
+    store_path.write_text("{bad json", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        store = TeamsPipelineStore(store_path)
+
+    assert store.stats() == {
+        "subscriptions": 0,
+        "notification_receipts": 0,
+        "event_timestamps": 0,
+        "jobs": 0,
+        "sink_records": 0,
+    }
+    assert "starting with empty state" in caplog.text
+
+
 def test_store_notification_receipts_are_idempotent(tmp_path):
     store = TeamsPipelineStore(tmp_path / "teams-store.json")
     notification = {

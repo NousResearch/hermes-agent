@@ -80,6 +80,18 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _run_doctor_text_command(cmd: list[str], **kwargs):
+    """Run a diagnostic command without relying on the system text encoding."""
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kwargs,
+    )
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1642,10 +1654,8 @@ def run_doctor(args):
             cmd += [target, "echo ok"]
             # Try to connect
             try:
-                result = subprocess.run(
+                result = _run_doctor_text_command(
                     cmd,
-                    capture_output=True,
-                    text=True,
                     timeout=15
                 )
             except subprocess.TimeoutExpired:
@@ -1806,10 +1816,10 @@ def run_doctor(args):
             try:
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).
-                audit_result = subprocess.run(
+                audit_result = _run_doctor_text_command(
                     [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
-                    capture_output=True, text=True, timeout=30,
+                    timeout=30,
                 )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}

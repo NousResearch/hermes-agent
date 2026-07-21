@@ -16,6 +16,24 @@ from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
 
 
+def test_doctor_text_subprocess_decodes_utf8_with_replacement():
+    """Diagnostic commands must not crash on non-UTF-8 Windows locales."""
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys; payload = b'\\xe2\\x80\\x94\\xff'; "
+            "sys.stdout.buffer.write(payload); sys.stderr.buffer.write(payload)"
+        ),
+    ]
+
+    result = doctor_mod._run_doctor_text_command(command)
+
+    assert result.returncode == 0
+    assert result.stdout == "\u2014\ufffd"
+    assert result.stderr == "\u2014\ufffd"
+
+
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

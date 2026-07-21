@@ -45,7 +45,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, closeModelPicker, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -962,7 +962,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const onModelSelect = useCallback((value: string) => {
-    patchOverlayState({ modelPicker: false })
+    closeModelPicker()
     slashRef.current(`/model ${value}`)
   }, [])
 

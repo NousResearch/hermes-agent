@@ -1003,6 +1003,135 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_timeout_keeps_session_db_open_until_worker_finishes(
+        self, tmp_path, monkeypatch
+    ):
+        """A timed-out worker must finish its late DB write before teardown."""
+        job = {
+            "id": "timeout-job",
+            "name": "timeout",
+            "prompt": "hello",
+        }
+        events = []
+        from hermes_state import SessionDB as RealSessionDB
+
+        db_path = tmp_path / "state.db"
+        fake_db = RealSessionDB(db_path=db_path)
+        real_close = fake_db.close
+
+        def tracking_close():
+            events.append("session_db.close")
+            real_close()
+
+        fake_db.close = tracking_close
+        session_id = None
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                nonlocal session_id
+                self.session_id = kwargs["session_id"]
+                session_id = self.session_id
+                kwargs["session_db"].create_session(self.session_id, "cron")
+
+            def run_conversation(self, *_args, **_kwargs):
+                raise AssertionError("the fake executor owns worker completion")
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 10, "last_activity_desc": "terminal"}
+
+            def interrupt(self, _reason):
+                events.append("agent.interrupt")
+
+            def close(self):
+                events.append("agent.close")
+
+        class FakeFuture:
+            def __init__(self):
+                self._done = False
+                self._callbacks = []
+
+            def done(self):
+                return self._done
+
+            def add_done_callback(self, callback):
+                self._callbacks.append(callback)
+
+            def complete_after_late_write(self):
+                assert fake_db._conn is not None
+                fake_db.append_message(session_id, "assistant", "late worker write")
+                events.append("worker.write")
+                self._done = True
+                for callback in self._callbacks:
+                    callback(self)
+
+        fake_future = FakeFuture()
+        fake_pool = MagicMock()
+        fake_pool.submit.return_value = fake_future
+        deferred = []
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1")
+        monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent), \
+             patch(
+                 "cron.scheduler.concurrent.futures.ThreadPoolExecutor",
+                 return_value=fake_pool,
+             ), \
+             patch("cron.scheduler.concurrent.futures.wait", return_value=(set(), set())), \
+             patch("tools.process_registry.process_registry.kill_all") as kill_all, \
+             patch("agent.auxiliary_client.cleanup_stale_async_clients") as cleanup:
+            success, _output, _final_response, error = run_job(
+                job, defer_agent_teardown=deferred
+            )
+
+            assert success is False
+            assert "idle" in error
+            assert len(deferred) == 1
+            kill_all.assert_called_once_with(task_id=deferred[0].agent.session_id)
+            assert fake_db._conn is not None
+            assert "agent.close" not in events
+
+            deferred[0].close()
+            deferred[0].close()
+            assert len(fake_future._callbacks) == 1
+            assert fake_db._conn is not None
+            assert "agent.close" not in events
+
+            fake_future.complete_after_late_write()
+            deferred[0].close()
+
+        assert events[-3:] == [
+            "worker.write",
+            "agent.close",
+            "session_db.close",
+        ]
+        assert events.count("agent.close") == 1
+        assert events.count("session_db.close") == 1
+        assert fake_db._conn is None
+        cleanup.assert_called_once()
+
+        reopened = RealSessionDB(db_path=db_path)
+        try:
+            assert any(
+                message["content"] == "late worker write"
+                for message in reopened.get_messages(session_id)
+            )
+        finally:
+            reopened.close()
+
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
         For cron, that abnormal-empty explainer must be treated as empty so it
@@ -1665,6 +1794,9 @@ class TestRunJobSessionPersistence:
                 return {"final_response": "ok"}
 
         class FakeFuture:
+            def done(self):
+                return True
+
             def result(self):
                 return {"final_response": "ok"}
 

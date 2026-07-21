@@ -261,17 +261,26 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read plugin.yaml and return the parsed dict, or empty dict."""
+    """Read ``plugin.yaml`` / ``plugin.yml`` and return a manifest dict."""
     manifest_file = plugin_dir / "plugin.yaml"
+    if not manifest_file.exists():
+        manifest_file = plugin_dir / "plugin.yml"
     if not manifest_file.exists():
         return {}
     try:
         import yaml
 
         with open(manifest_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "Failed to read plugin manifest %s: YAML root must be a mapping",
+                manifest_file,
+            )
+            return {}
+        return data
     except Exception as e:
-        logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
+        logger.warning("Failed to read plugin manifest %s: %s", manifest_file, e)
         return {}
 
 

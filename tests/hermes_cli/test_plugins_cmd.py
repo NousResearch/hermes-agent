@@ -383,12 +383,26 @@ class TestReadManifest:
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
             result = _read_manifest(tmp_path)
         assert result == {}
-        assert any("Failed to read plugin.yaml" in r.message for r in caplog.records)
+        assert any("Failed to read plugin manifest" in r.message for r in caplog.records)
 
     def test_empty_file_returns_empty(self, tmp_path):
         (tmp_path / "plugin.yaml").write_text("")
         result = _read_manifest(tmp_path)
         assert result == {}
+
+    def test_valid_yml_fallback(self, tmp_path):
+        manifest = {"name": "cool-plugin", "version": "1.0.1"}
+        (tmp_path / "plugin.yml").write_text(yaml.dump(manifest))
+        result = _read_manifest(tmp_path)
+        assert result["name"] == "cool-plugin"
+        assert result["version"] == "1.0.1"
+
+    def test_non_mapping_yaml_returns_empty_and_logs(self, tmp_path, caplog):
+        (tmp_path / "plugin.yml").write_text("- just\n- a\n- list\n")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
+            result = _read_manifest(tmp_path)
+        assert result == {}
+        assert any("YAML root must be a mapping" in r.message for r in caplog.records)
 
 
 # ── cmd_install tests ─────────────────────────────────────────────────────────

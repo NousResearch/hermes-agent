@@ -89,10 +89,10 @@ describe('detectLightMode', () => {
     expect(detectLightMode({})).toBe(false)
   })
 
-  it('defaults Apple Terminal to light when no stronger signal is present', async () => {
+  it('does not treat Apple Terminal as light without a real theme signal', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
 
-    expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(true)
+    expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(false)
   })
 
   it('honors HERMES_TUI_LIGHT on/off', async () => {
@@ -264,7 +264,10 @@ describe('fromSkin', () => {
   })
 
   it('normalizes non-banner foregrounds on light Apple Terminal', async () => {
-    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
+    const { fromSkin } = await importThemeWithEnv({
+      HERMES_TUI_BACKGROUND: '#ffffff',
+      TERM_PROGRAM: 'Apple_Terminal'
+    })
 
     const theme = fromSkin(
       {
@@ -287,14 +290,23 @@ describe('fromSkin', () => {
   })
 
   it('does not normalize light Apple Terminal when truecolor is advertised', async () => {
-    const { fromSkin } = await importThemeWithEnv({ COLORTERM: 'truecolor', TERM_PROGRAM: 'Apple_Terminal' })
+    const { fromSkin } = await importThemeWithEnv({
+      COLORTERM: 'truecolor',
+      HERMES_TUI_BACKGROUND: '#ffffff',
+      TERM_PROGRAM: 'Apple_Terminal'
+    })
+
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     expect(theme.color.text).toBe('#FFF8DC')
   })
 
   it('normalizes Apple Terminal names before matching', async () => {
-    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: ' Apple_Terminal ' })
+    const { fromSkin } = await importThemeWithEnv({
+      HERMES_TUI_BACKGROUND: '#ffffff',
+      TERM_PROGRAM: ' Apple_Terminal '
+    })
+
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     expect(theme.color.text).toBe('ansi256(136)')

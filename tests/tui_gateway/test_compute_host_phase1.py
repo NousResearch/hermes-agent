@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -222,6 +223,93 @@ def test_compute_host_interactive_response_reaches_real_approval_resolver(
         server._sessions.pop(sid, None)
         with server._prompt_lock:
             server._interactive_prompt_queues.clear()
+        host.close()
+
+
+@pytest.mark.parametrize("init_fails", [False, True])
+def test_compute_host_remote_profile_is_bound_through_session_init_and_fallback(
+    monkeypatch, tmp_path, init_fails
+):
+    """Agent, _init_session, and fallback config reads share one profile."""
+    from tui_gateway import server
+
+    host = ComputeHost(stdout=io.StringIO(), max_workers=1, heartbeat_secs=0)
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    sid = f"remote-profile-{'fallback' if init_fails else 'init'}"
+    captured: dict[str, Any] = {"fallback_homes": []}
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            assert db_path is not None
+            captured["db_path"] = Path(db_path)
+
+    def make_agent(*_args, session_db=None, **_kwargs):
+        captured["agent_home"] = server.get_hermes_home_override()
+        captured["agent_db"] = session_db
+        return object()
+
+    def init_session(target_sid, key, agent, history, **kwargs):
+        captured["init_home"] = server.get_hermes_home_override()
+        captured["init_kwargs"] = kwargs
+        if init_fails:
+            raise RuntimeError("force minimal fallback")
+        server._sessions[target_sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": list(history),
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "profile_home": str(kwargs["profile_home"]),
+        }
+
+    def profile_config(value):
+        captured["fallback_homes"].append(server.get_hermes_home_override())
+        return value
+
+    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_init_session", init_session)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: profile_config(True))
+    monkeypatch.setattr(
+        server, "_load_tool_progress_mode", lambda: profile_config("verbose")
+    )
+    monkeypatch.setattr(server, "_resolve_session_source", lambda value: value or "tui")
+
+    try:
+        session = host._ensure_server_session(
+            server,
+            {
+                "sid": sid,
+                "session_key": "remote-key",
+                "history": [{"role": "user", "content": "hello"}],
+                "history_version": 3,
+                "profile_home": str(profile_home),
+                "source": "tui",
+            },
+        )
+
+        assert captured["db_path"] == profile_home / "state.db"
+        assert Path(captured["agent_home"]) == profile_home
+        assert captured["agent_db"].__class__ is ProfileDB
+        assert Path(captured["init_home"]) == profile_home
+        assert captured["init_kwargs"]["session_db"] is captured["agent_db"]
+        assert captured["init_kwargs"]["profile_home"] == str(profile_home)
+        assert session["profile_home"] == str(profile_home)
+        assert session["history_version"] == 3
+        if init_fails:
+            assert [Path(home) for home in captured["fallback_homes"]] == [
+                profile_home,
+                profile_home,
+            ]
+            assert session["show_reasoning"] is True
+            assert session["tool_progress_mode"] == "verbose"
+        else:
+            assert captured["fallback_homes"] == []
+        assert server.get_hermes_home_override() is None
+    finally:
+        server._sessions.pop(sid, None)
         host.close()
 
 

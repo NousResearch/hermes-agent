@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 
 _INTERACTIVE_REQUEST_EVENTS = frozenset(
@@ -636,7 +636,8 @@ class ComputeHost:
                     session["history_version"] = incoming_version
             return session
 
-        history = frame.get("history") if isinstance(frame.get("history"), list) else []
+        raw_history = frame.get("history")
+        history = cast(list[Any], raw_history) if isinstance(raw_history, list) else []
         profile_home = str(frame.get("profile_home") or "")
         session_db = None
         home_token = None
@@ -657,6 +658,55 @@ class ComputeHost:
                 platform_override=frame.get("source"),
                 session_db=session_db,
             )
+            try:
+                from tui_gateway.transport import bind_transport, reset_transport
+
+                token = bind_transport(self._transport)
+                try:
+                    server._init_session(
+                        sid,
+                        key,
+                        agent,
+                        list(history),
+                        cols=int(frame.get("cols") or 80),
+                        cwd=str(frame.get("cwd") or "") or None,
+                        session_db=session_db,
+                        source=frame.get("source"),
+                        profile_home=profile_home or None,
+                    )
+                finally:
+                    reset_transport(token)
+            except Exception:
+                # If _init_session's side machinery (slash worker, approval
+                # notify) is unavailable, keep a minimal host-owned session
+                # rather than failing the turn after the expensive agent build
+                # succeeded. HERMES_HOME remains bound here so every fallback
+                # config read belongs to the same remote profile.
+                server._sessions[sid] = {
+                    "agent": agent,
+                    "session_key": key,
+                    "history": list(history),
+                    "history_lock": threading.Lock(),
+                    "history_version": int(frame.get("history_version") or 0),
+                    "inflight_turn": None,
+                    "created_at": time.time(),
+                    "last_active": time.time(),
+                    "running": False,
+                    "attached_images": [],
+                    "image_counter": 0,
+                    "cwd": str(frame.get("cwd") or os.getcwd()),
+                    "cols": int(frame.get("cols") or 80),
+                    "slash_worker": None,
+                    "show_reasoning": server._load_show_reasoning(),
+                    "tool_progress_mode": server._load_tool_progress_mode(),
+                    "edit_snapshots": {},
+                    "tool_started_at": {},
+                    "model_override": frame.get("model_override"),
+                    "source": server._resolve_session_source(frame.get("source")),
+                    "transport": self._transport,
+                }
+                if profile_home:
+                    server._sessions[sid]["profile_home"] = profile_home
         finally:
             if home_token is not None:
                 try:
@@ -665,50 +715,6 @@ class ComputeHost:
                     reset_hermes_home_override(home_token)
                 except Exception:
                     pass
-        try:
-            from tui_gateway.transport import bind_transport, reset_transport
-
-            token = bind_transport(self._transport)
-            try:
-                server._init_session(
-                    sid,
-                    key,
-                    agent,
-                    list(history),
-                    cols=int(frame.get("cols") or 80),
-                    cwd=str(frame.get("cwd") or "") or None,
-                    session_db=session_db,
-                    source=frame.get("source"),
-                )
-            finally:
-                reset_transport(token)
-        except Exception:
-            # If _init_session's side machinery (slash worker, approval notify) is
-            # unavailable, keep a minimal host-owned session rather than failing
-            # the turn after the expensive agent build succeeded.
-            server._sessions[sid] = {
-                "agent": agent,
-                "session_key": key,
-                "history": list(history),
-                "history_lock": threading.Lock(),
-                "history_version": int(frame.get("history_version") or 0),
-                "inflight_turn": None,
-                "created_at": time.time(),
-                "last_active": time.time(),
-                "running": False,
-                "attached_images": [],
-                "image_counter": 0,
-                "cwd": str(frame.get("cwd") or os.getcwd()),
-                "cols": int(frame.get("cols") or 80),
-                "slash_worker": None,
-                "show_reasoning": server._load_show_reasoning(),
-                "tool_progress_mode": server._load_tool_progress_mode(),
-                "edit_snapshots": {},
-                "tool_started_at": {},
-                "model_override": frame.get("model_override"),
-                "source": server._sanitize_client_source(frame.get("source")),
-                "transport": self._transport,
-            }
         session = server._sessions[sid]
         session["transport"] = self._transport
         with session.get("history_lock", threading.Lock()):

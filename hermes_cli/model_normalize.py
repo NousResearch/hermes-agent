@@ -115,6 +115,12 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
 })
 
+_OPENAI_CODEX_MODEL_ALIASES: dict[str, str] = {
+    # Legacy OpenAI API / proxy shorthand. The ChatGPT Codex backend rejects
+    # this slug, but accepts the dotted model id.
+    "gpt55": "gpt-5.5",
+}
+
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
@@ -440,7 +446,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith("openai/"):
             # openai-codex maps openai/gpt-5.4 -> gpt-5.4
-            return name.split("/", 1)[1]
+            stripped = name.split("/", 1)[1]
+        if provider == "openai-codex":
+            return _OPENAI_CODEX_MODEL_ALIASES.get(stripped.lower(), stripped)
         return stripped
 
     # --- DeepSeek: map to one of two canonical names ---
@@ -470,4 +478,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

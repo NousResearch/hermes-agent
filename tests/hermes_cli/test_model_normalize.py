@@ -145,6 +145,11 @@ class TestCopilotModelNormalization:
         """Regression: openai-codex must still strip the openai/ prefix."""
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
+    @pytest.mark.parametrize("model", ["gpt55", "openai/gpt55"])
+    def test_openai_codex_normalizes_legacy_gpt55_alias(self, model):
+        """Regression: ChatGPT Codex rejects the legacy gpt55 proxy slug."""
+        assert normalize_model_for_provider(model, "openai-codex") == "gpt-5.5"
+
 
 # ── Aggregator providers (regression) ──────────────────────────────────
 

@@ -108,7 +108,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
   {
-    name: '/handoff',
+    name: '/handoff-messaging',
     description: 'Hand off this session to a messaging platform',
     surface: action('handoff'),
     args: true

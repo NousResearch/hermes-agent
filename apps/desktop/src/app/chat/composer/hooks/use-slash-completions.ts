@@ -177,7 +177,7 @@ export function useSlashCompletions(options: {
           .filter(item => isArgCompletion || isDesktopSlashSuggestion(item.text))
           .map(item => ({
             ...item,
-            // Arg suggestions (e.g. `/handoff <platform>`) live under one
+            // Arg suggestions (e.g. `/handoff-messaging <platform>`) live under one
             // header; otherwise split skills out from built-in commands.
             group: isArgCompletion ? 'Options' : isDesktopSlashExtensionCommand(item.text) ? 'Skills' : 'Commands',
             // Arg items carry their own meta (the personality/toolset/platform

@@ -170,11 +170,11 @@ Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a
 
 ## Cross-Platform Handoff
 
-Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
+Use `/handoff-messaging <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
 
 ```bash
 # Inside a CLI session
-/handoff telegram
+/handoff-messaging telegram
 ```
 
 What happens:

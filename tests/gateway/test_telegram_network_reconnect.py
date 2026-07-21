@@ -353,6 +353,62 @@ async def test_reconnect_drains_polling_request_only():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_drains_general_pool_after_pool_timeout():
+    """A confirmed bootstrap pool timeout must rebuild both request pools.
+
+    start_polling() uses the general pool for Bot API bootstrap before it can
+    reach getUpdates. Leaving that pool wedged makes every polling-only retry
+    fail with the same pool timeout.
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+    general_req = AsyncMock()
+    general_req.shutdown = AsyncMock()
+    general_req.initialize = AsyncMock()
+    mock_app.bot._request = (mock_polling_req, general_req)
+    adapter._app = mock_app
+
+    error = Exception(
+        "Pool timeout: All connections in the connection pool are occupied. "
+        "Request was not sent to Telegram."
+    )
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(error)
+
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    mock_polling_req.shutdown.assert_awaited_once()
+    mock_polling_req.initialize.assert_awaited_once()
+    mock_app.updater.start_polling.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_general_pool_drain_is_bounded_when_close_hangs(monkeypatch):
+    """A wedged general-pool close must not freeze the reconnect ladder."""
+    adapter = _make_adapter()
+    mock_app, mock_polling_req = _make_mock_app()
+
+    async def _hang(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    general_req = AsyncMock()
+    general_req.shutdown = AsyncMock(side_effect=_hang)
+    general_req.initialize = AsyncMock(side_effect=_hang)
+    mock_app.bot._request = (mock_polling_req, general_req)
+    adapter._app = mock_app
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.01, raising=False)
+
+    await asyncio.wait_for(
+        adapter._drain_general_connections_after_pool_timeout(), timeout=1
+    )
+
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_continues_if_drain_fails():
     """If the polling request drain raises, start_polling must still proceed."""
     adapter = _make_adapter()

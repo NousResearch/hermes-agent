@@ -600,6 +600,18 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
+    # Model-provider plugins can declare a native wire protocol without a
+    # hand-maintained HERMES_OVERLAYS entry. This keeps the plugin profile the
+    # source of truth for providers such as zai-indirect.
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        if profile is not None and profile.api_mode:
+            return profile.api_mode
+    except Exception:
+        pass
+
     # Direct provider checks for providers not in HERMES_OVERLAYS
     if provider == "bedrock":
         return "bedrock_converse"

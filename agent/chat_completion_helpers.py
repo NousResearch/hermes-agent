@@ -1762,7 +1762,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                _is_oauth_token,
+                _is_zai_anthropic_endpoint,
+            )
             effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
@@ -1770,7 +1775,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
             )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+            agent._is_anthropic_oauth = _is_zai_anthropic_endpoint(
+                fb_base_url
+            ) or (
+                _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+            )
             agent.client = None
             agent._client_kwargs = {}
         else:

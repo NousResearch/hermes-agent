@@ -35,6 +35,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |
 | `GLM_BASE_URL` | Override z.ai base URL (default: `https://api.z.ai/api/paas/v4`) |
+| `ZAI_INDIRECT_API_KEY` | API key for the separate `zai-indirect` provider, which exposes only GLM-5.2 through `https://api.z.ai/api/anthropic`. See [Z.ai Indirect](/integrations/zai-indirect). |
 | `KIMI_API_KEY` | Kimi / Moonshot AI API key ([moonshot.ai](https://platform.moonshot.ai)) |
 | `KIMI_CODING_API_KEY` | Alias key for the `kimi-coding` provider (accepted alongside `KIMI_API_KEY`) |
 | `KIMI_BASE_URL` | Override Kimi base URL (default: `https://api.moonshot.ai/v1`) |

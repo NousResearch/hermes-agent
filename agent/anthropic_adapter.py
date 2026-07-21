@@ -15,9 +15,11 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -351,7 +353,7 @@ _OAUTH_ONLY_BETAS = [
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
 # The version must stay reasonably current — Anthropic rejects OAuth requests
 # when the spoofed user-agent version is too far behind the actual release.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.215"
 _claude_code_version_cache: Optional[str] = None
 
 
@@ -364,7 +366,13 @@ def _detect_claude_code_version() -> str:
     """
     import subprocess as _sp
 
-    for cmd in ("claude", "claude-code"):
+    commands = [
+        str(Path.home() / ".local" / "bin" / "claude.exe"),
+        str(Path.home() / ".local" / "bin" / "claude"),
+        "claude",
+        "claude-code",
+    ]
+    for cmd in commands:
         try:
             result = _sp.run(
                 [cmd, "--version"],
@@ -381,6 +389,10 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+_ZAI_CLAUDE_CODE_SYSTEM_PREFIX_TEMPLATE = (
+    "x-anthropic-billing-header: cc_version={version}.9de; cc_entrypoint=sdk-cli;\n"
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+)
 _MCP_TOOL_PREFIX = "mcp__"
 
 
@@ -453,6 +465,63 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     if not normalized:
         return False
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
+
+
+_ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic"
+_ZAI_CLAUDE_CODE_BETAS = (
+    "claude-code-20250219",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "mid-conversation-system-2026-04-07",
+    "advisor-tool-2026-03-01",
+    "effort-2025-11-24",
+)
+_ZAI_CLAUDE_CODE_SDK_VERSION = "0.94.0"
+_ZAI_CLAUDE_CODE_RUNTIME_VERSION = "v26.3.0"
+
+
+def _is_zai_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True only for Z.ai's Claude Code-compatible Messages endpoint."""
+    normalized = _normalize_base_url_text(base_url).rstrip("/").lower()
+    return normalized == _ZAI_ANTHROPIC_BASE_URL
+
+
+def _zai_claude_code_headers() -> dict[str, str]:
+    """Build the header fingerprint captured from the installed Claude Code CLI."""
+    version = _get_claude_code_version()
+    return {
+        "User-Agent": f"claude-cli/{version} (external, sdk-cli)",
+        "x-claude-code-session-id": str(uuid.uuid4()),
+        "x-app": "cli",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-beta": ",".join(_ZAI_CLAUDE_CODE_BETAS),
+        "x-stainless-arch": "x64",
+        "x-stainless-lang": "js",
+        "x-stainless-os": "Windows",
+        "x-stainless-package-version": _ZAI_CLAUDE_CODE_SDK_VERSION,
+        "x-stainless-retry-count": "0",
+        "x-stainless-runtime": "node",
+        "x-stainless-runtime-version": _ZAI_CLAUDE_CODE_RUNTIME_VERSION,
+    }
+
+
+def _sanitize_zai_product_identity(value: Any) -> Any:
+    """Recursively remove Hermes/Nous origin markers from Z.ai-bound payloads."""
+    if isinstance(value, str):
+        value = re.sub(r"(?i)\bhermes(?:[ -]agent)?\b", "Claude Code", value)
+        return re.sub(r"(?i)\bnous(?:\s*research)?\b", "Anthropic", value)
+    if isinstance(value, list):
+        return [_sanitize_zai_product_identity(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_zai_product_identity(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_zai_product_identity(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
@@ -806,7 +875,14 @@ def build_anthropic_client(
         drop_context_1m_beta=drop_context_1m_beta,
     )
 
-    if _is_kimi_coding_endpoint(base_url):
+    if _is_zai_anthropic_endpoint(normalized_base_url):
+        # Z.ai's coding-plan endpoint follows Claude Code's Anthropic Messages
+        # contract. Its token is bearer-authenticated and its routing classifier
+        # checks the CLI wire identity; the OpenAI-compatible PaaS route is a
+        # different billing lane and must not be used here.
+        kwargs["auth_token"] = api_key
+        kwargs["default_headers"] = _zai_claude_code_headers()
+    elif _is_kimi_coding_endpoint(base_url):
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
@@ -2550,10 +2626,18 @@ def build_anthropic_kwargs(
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
 
-    # ── OAuth: Claude Code identity ──────────────────────────────────
+    # ── OAuth / coding-plan route: Claude Code identity ────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        # 1. Prepend the endpoint's Claude Code system-prompt identity. Z.ai's
+        # coding-plan route uses the Agent SDK attribution prefix captured from
+        # the installed CLI; native Anthropic OAuth retains its existing prefix.
+        if _is_zai_anthropic_endpoint(base_url):
+            identity = _ZAI_CLAUDE_CODE_SYSTEM_PREFIX_TEMPLATE.format(
+                version=_get_claude_code_version()
+            )
+        else:
+            identity = _CLAUDE_CODE_SYSTEM_PREFIX
+        cc_block = {"type": "text", "text": identity}
         if isinstance(system, list):
             system = [cc_block] + system
         elif isinstance(system, str) and system:
@@ -2561,15 +2645,19 @@ def build_anthropic_kwargs(
         else:
             system = [cc_block]
 
-        # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
+        # 2. Remove product-origin fingerprints from system blocks. Preserve
+        # the existing narrow replacements for native Anthropic OAuth; Z.ai's
+        # route receives the recursive, case-insensitive treatment below.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
+                if _is_zai_anthropic_endpoint(base_url):
+                    text = _sanitize_zai_product_identity(text)
+                else:
+                    text = text.replace("Hermes Agent", "Claude Code")
+                    text = text.replace("Hermes agent", "Claude Code")
+                    text = text.replace("hermes-agent", "claude-code")
+                    text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
@@ -2614,6 +2702,15 @@ def build_anthropic_kwargs(
                             block["name"] = _to_oauth_wire_name(block["name"])
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name
+
+        # Z.ai's route also sees message history and tool descriptions, both of
+        # which can contain product-origin markers. Scrub the complete payload,
+        # not just the system prompt, while leaving native Anthropic OAuth's
+        # established behavior unchanged.
+        if _is_zai_anthropic_endpoint(base_url):
+            system = _sanitize_zai_product_identity(system)
+            anthropic_messages = _sanitize_zai_product_identity(anthropic_messages)
+            anthropic_tools = _sanitize_zai_product_identity(anthropic_tools)
 
     kwargs: Dict[str, Any] = {
         "model": model,

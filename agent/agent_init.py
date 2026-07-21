@@ -430,9 +430,25 @@ def init_agent(
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
+    provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+    # Provider-only callers (including plugin consumers) may not have passed the
+    # runtime resolver's base URL/API mode explicitly. Honour the registered
+    # profile here so a native-protocol plugin cannot silently fall back to the
+    # OpenAI chat-completions transport. Explicit caller values always win.
+    if provider_name and (not base_url or api_mode is None):
+        try:
+            from providers import get_provider_profile
+
+            _profile = get_provider_profile(provider_name)
+            if _profile is not None:
+                if not base_url and _profile.base_url:
+                    base_url = _profile.base_url
+                if api_mode is None and _profile.api_mode:
+                    api_mode = _profile.api_mode
+        except Exception:
+            pass
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
     agent.base_url = base_url or ""
-    provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
@@ -849,8 +865,15 @@ def init_agent(
             # so injects Claude-Code identity headers and system prompts
             # that cause 401/403 on their endpoints.  Guards #1739 and
             # the third-party identity-injection bug.
-            from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+            from agent.anthropic_adapter import (
+                _is_oauth_token as _is_oat,
+                _is_zai_anthropic_endpoint,
+            )
+            agent._is_anthropic_oauth = _is_zai_anthropic_endpoint(base_url) or (
+                _is_oat(effective_key)
+                if (_is_native_anthropic and isinstance(effective_key, str))
+                else False
+            )
             agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
             # No OpenAI client needed for Anthropic mode
             agent.client = None

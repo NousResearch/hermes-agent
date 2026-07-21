@@ -1,0 +1,5 @@
+name: zai-indirect-provider
+kind: model-provider
+version: 1.0.0
+description: "Z.ai Indirect — GLM-5.2 via the Claude Code-compatible Anthropic endpoint"
+author: Nous Research

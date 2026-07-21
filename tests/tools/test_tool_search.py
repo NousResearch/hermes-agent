@@ -706,6 +706,76 @@ class TestDescriptionOnly:
         assert is_description_only_tool("do_duplicate")
 
     # ------------------------------------------------------------------
+    # System prompt inventory: description_only tools listed by name+description
+    # ------------------------------------------------------------------
+
+    def test_description_only_inventory_in_system_prompt(self):
+        """description_only tools appear as name+description in the system
+        prompt inventory block (full JSON schemas are not included)."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from tools.registry import registry
+        from tools.tool_search import mark_description_only_tool
+
+        tool_name = "do_inv_sysprompt_test"
+        tool_desc = "Searches the project documentation for a given query"
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True, "tool": tool_name})
+
+        registry.register(
+            name=tool_name,
+            handler=_handler,
+            schema=_td(tool_name, tool_desc, {"q": {"type": "string"}}),
+            toolset="mcp-inv-test",
+            description=tool_desc,
+        )
+        mark_description_only_tool(tool_name)
+
+        agent = SimpleNamespace(
+            valid_tool_names=[tool_name],
+            _pre_assembly_tool_names={tool_name},
+            load_soul_identity=False,
+            skip_context_files=False,
+            _task_completion_guidance=False,
+            _tool_use_enforcement=False,
+            _environment_probe=False,
+            _kanban_worker_guidance="",
+            _memory_store=None,
+            _memory_manager=None,
+            model="",
+            provider="",
+            platform="",
+            pass_session_id=False,
+            session_id="",
+        )
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            from agent.system_prompt import build_system_prompt_parts
+
+            parts = build_system_prompt_parts(agent)
+            stable = parts["stable"]
+
+        assert "Available MCP Tools" in stable, (
+            "description_only inventory block missing"
+        )
+        assert "description-only" in stable
+        assert tool_name in stable
+        assert tool_desc[:50] in stable
+        assert "tool_search" in stable
+        assert "tool_describe" in stable
+        # The full JSON parameter schema must not appear in the inventory
+        # block — only the tool name and description.
+        assert '"parameters"' not in stable, (
+            "Full JSON schema leaked into system prompt inventory"
+        )
+
+    # ------------------------------------------------------------------
     # Lazy MCP registration: description_only marking persists correctly
     # ------------------------------------------------------------------
 

@@ -6,7 +6,9 @@ import threading
 import pytest
 
 from plugins.memory.supermemory import (
+    SEARCH_SCHEMA,
     SupermemoryMemoryProvider,
+    _SupermemoryClient,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -30,6 +32,7 @@ class FakeClient:
         self.ingest_calls = []
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
+        self.search_calls = []
 
     def add_memory(self, content, metadata=None, *, entity_context="",
                    container_tag=None, custom_id=None):
@@ -42,7 +45,17 @@ class FakeClient:
         })
         return {"id": "mem_123"}
 
-    def search_memories(self, query, *, limit=5, container_tag=None, search_mode=None):
+    def search_memories(self, query, *, limit=5, container_tag=None, search_mode=None,
+                        threshold=None, rerank=False, aggregate=False, rewrite_query=False,
+                        include_documents=False, include_summaries=False,
+                        include_related_memories=False):
+        self.search_calls.append({
+            "query": query, "limit": limit, "container_tag": container_tag,
+            "search_mode": search_mode, "threshold": threshold, "rerank": rerank,
+            "aggregate": aggregate, "rewrite_query": rewrite_query,
+            "include_documents": include_documents, "include_summaries": include_summaries,
+            "include_related_memories": include_related_memories,
+        })
         return self.search_results
 
     def get_profile(self, query=None, *, container_tag=None):
@@ -284,6 +297,111 @@ def test_search_tool_formats_results(provider):
     result = json.loads(provider.handle_tool_call("supermemory_search", {"query": "concise docs"}))
     assert result["count"] == 1
     assert result["results"][0]["similarity"] == 92
+
+
+def test_search_tool_forwards_config_defaults(provider):
+    provider.handle_tool_call("supermemory_search", {"query": "podcast notes"})
+    call = provider._client.search_calls[-1]
+    assert call["search_mode"] == "hybrid"
+    assert call["include_documents"] is False
+    assert call["threshold"] == 0.6
+    assert call["rerank"] is False
+    assert call["aggregate"] is False
+
+
+def test_search_tool_args_override_config(provider):
+    provider.handle_tool_call("supermemory_search", {
+        "query": "podcast notes", "rerank": True, "aggregate": True,
+        "rewrite_query": True, "search_mode": "documents",
+    })
+    call = provider._client.search_calls[-1]
+    assert call["search_mode"] == "documents"
+    assert call["rerank"] is True
+    assert call["aggregate"] is True
+    assert call["rewrite_query"] is True
+
+
+def test_empty_result_retries_once_with_rewrite(provider):
+    provider._client.search_results = []
+    out = json.loads(provider.handle_tool_call("supermemory_search", {"query": "quokkas"}))
+    calls = provider._client.search_calls
+    assert len(calls) == 2
+    assert calls[0]["rewrite_query"] is False
+    assert calls[1]["rewrite_query"] is True
+    assert out["count"] == 0
+    assert "retried_with_rewrite" not in out  # retry also found nothing
+
+
+def test_retry_upgrades_memories_mode_to_hybrid(provider):
+    provider._client.search_results = []
+    provider._search_mode = "memories"
+    provider.handle_tool_call("supermemory_search", {"query": "podcast"})
+    calls = provider._client.search_calls
+    assert calls[0]["search_mode"] == "memories"
+    assert calls[1]["search_mode"] == "hybrid"
+
+
+def test_no_retry_when_first_search_hits(provider):
+    provider._client.search_results = [{"id": "m1", "memory": "found", "similarity": 0.9}]
+    provider.handle_tool_call("supermemory_search", {"query": "x"})
+    assert len(provider._client.search_calls) == 1
+
+
+def test_overrides_ignored_when_disabled(provider):
+    provider._allow_agent_search_overrides = False
+    provider.handle_tool_call("supermemory_search", {
+        "query": "x", "aggregate": True, "search_mode": "documents"})
+    call = provider._client.search_calls[0]
+    assert call["aggregate"] is False
+    assert call["search_mode"] == "hybrid"
+
+
+def test_disabled_overrides_hides_knobs_from_schema(provider):
+    provider._allow_agent_search_overrides = False
+    schema = next(s for s in provider.get_tool_schemas() if s["name"] == "supermemory_search")
+    props = schema["parameters"]["properties"]
+    assert "query" in props
+    for knob in ("search_mode", "rerank", "aggregate", "rewrite_query"):
+        assert knob not in props
+    # global schema untouched
+    assert "aggregate" in SEARCH_SCHEMA["parameters"]["properties"]
+
+
+def _bare_client(captured):
+    """Build a _SupermemoryClient without touching the real SDK."""
+    c = object.__new__(_SupermemoryClient)
+    c._container_tag = "hermes"
+    c._search_mode = "hybrid"
+
+    class _Search:
+        def memories(self, **kwargs):
+            captured.update(kwargs)
+            return type("R", (), {"results": []})()
+
+    c._client = type("C", (), {"search": _Search()})()
+    return c
+
+
+def test_aggregate_and_rerank_are_mutually_exclusive():
+    # API returns 400 "Cannot use both aggregate and rerank simultaneously".
+    captured = {}
+    _bare_client(captured).search_memories("q", rerank=True, aggregate=True)
+    assert captured.get("aggregate") is True
+    assert "rerank" not in captured
+
+
+def test_rerank_sent_when_aggregate_off():
+    captured = {}
+    _bare_client(captured).search_memories("q", rerank=True)
+    assert captured.get("rerank") is True
+    assert "aggregate" not in captured
+
+
+def test_include_flags_use_api_casing():
+    captured = {}
+    _bare_client(captured).search_memories(
+        "q", include_documents=True, include_related_memories=True)
+    assert captured["include"] == {"documents": True, "relatedMemories": True}
 
 
 def test_forget_tool_by_id(provider):

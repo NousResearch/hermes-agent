@@ -581,7 +581,15 @@ stays local.
 | `max_recall_results` | `10` | Max recalled items to format into context |
 | `profile_frequency` | `50` | Include profile facts on first turn and every N turns |
 | `capture_mode` | `all` | Skip tiny or trivial turns by default |
-| `search_mode` | `hybrid` | Search mode: `hybrid`, `memories`, or `documents` |
+| `search_mode` | `hybrid` | Search mode: `hybrid` (memories + document chunks), `memories`, or `documents`. Plugin defaults to `hybrid`; the hosted API's own default is `memories`. |
+| `include_documents` | `false` | Attach parent-document metadata (title, type, metadata) to each result. Does **not** control whether document content is searched — that is `search_mode`. Costs an extra document fetch per search. |
+| `include_summaries` | `false` | Include document summaries in search results |
+| `include_related_memories` | `false` | Include memories related to the matches |
+| `search_threshold` | `0.6` | Selection sensitivity, 0 (broad, more results) to 1 (strict, fewer results) |
+| `search_rerank` | `false` | Rerank results by relevance to the query |
+| `search_aggregate` | `false` | Synthesize new memories by aggregating across multiple results. Mutually exclusive with `search_rerank` — the API rejects both with a 400, and aggregate does *not* rerank (server-side they are separate branches: aggregate synthesizes via LLM, rerank runs a cross-encoder). If both are set, aggregate wins and rerank is dropped. |
+| `search_rewrite_query` | `false` | Rewrite the query to improve matching (adds ~400ms latency). Applied automatically as a one-shot retry when a search returns nothing. |
+| `allow_agent_search_overrides` | `true` | Let the agent pass `search_mode` / `rerank` / `aggregate` / `rewrite_query` per call. Set `false` to pin behavior to this config and hide those options from the tool schema (useful for cost control, since `aggregate` costs an extra LLM call). |
 | `api_timeout` | `5.0` | Timeout for SDK and ingest requests |
 
 **Environment variables:** `SUPERMEMORY_API_KEY` (required), `SUPERMEMORY_BASE_URL` (compatibility fallback when `base_url` is not configured), `SUPERMEMORY_CONTAINER_TAG` (overrides config).

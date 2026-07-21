@@ -228,6 +228,10 @@ class QQAdapter(BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
+        # Exception-disconnect window tracking (detect Resume death-loops)
+        self._exc_disconnect_count: int = 0
+        self._last_exc_disconnect: float = 0.0  # time.monotonic()
+
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
@@ -651,6 +655,55 @@ class QQAdapter(BasePlatformAdapter):
                 self._mark_transport_disconnected()
                 self._fail_pending("Connection interrupted")
 
+                # --- Exception-disconnect window tracking ---
+                # If we get 5+ exception-disconnects within 5 minutes with
+                # the same session_id, we are stuck in a Resume death-loop
+                # (typically 60s idle-timeout on QQ's TCP frontend).
+                # Clear session to force a fresh Identify on reconnect.
+                now = time.monotonic()
+                if now - self._last_exc_disconnect < 300:
+                    self._exc_disconnect_count += 1
+                else:
+                    self._exc_disconnect_count = 1
+                self._last_exc_disconnect = now
+
+                if self._exc_disconnect_count >= 5 and self._session_id:
+                    logger.info(
+                        "[%s] %d exception-disconnects in 300s — "
+                        "clearing session to force fresh Identify",
+                        self._log_tag,
+                        self._exc_disconnect_count,
+                    )
+                    self._session_id = None
+                    self._last_seq = None
+                    self._exc_disconnect_count = 0
+
+                # --- Quick disconnect detection (mirror QQCloseError branch) ---
+                duration = time.monotonic() - connect_time
+                if duration < QUICK_DISCONNECT_THRESHOLD and connect_time > 0:
+                    quick_disconnect_count += 1
+                    logger.info(
+                        "[%s] Quick disconnect (%.1fs), count: %d",
+                        self._log_tag,
+                        duration,
+                        quick_disconnect_count,
+                    )
+                    if quick_disconnect_count >= MAX_QUICK_DISCONNECT_COUNT:
+                        logger.error(
+                            "[%s] Too many quick disconnects. "
+                            "Check: 1) AppID/Secret correct 2) Bot permissions on QQ Open Platform",
+                            self._log_tag,
+                        )
+                        self._set_fatal_error(
+                            "qq_quick_disconnect",
+                            "Too many quick disconnects — check bot permissions",
+                            retryable=True,
+                        )
+                        return
+                else:
+                    quick_disconnect_count = 0
+
+                # --- Backoff with upper bound ---
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
                     self._mark_disconnected()

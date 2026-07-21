@@ -1,4 +1,5 @@
-import { useCallback, useRef } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
@@ -14,8 +15,11 @@ import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
+  $sessionArchiveSettledGeneration,
   $sessions,
+  canApplySessionListResponse,
   CRON_SECTION_LIMIT,
+  getSessionArchiveGeneration,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -74,12 +78,16 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  const archiveSettledGeneration = useStore($sessionArchiveSettledGeneration)
+  const observedArchiveSettledGenerationRef = useRef(archiveSettledGeneration)
 
   // Messaging-platform sessions as their own slice, fetched separately from
   // local recents so each platform renders a self-managed section and never
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const archiveGeneration = getSessionArchiveGeneration()
+
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
@@ -88,6 +96,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
+
+      if (!canApplySessionListResponse(archiveGeneration)) {
+        return
+      }
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -102,6 +114,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
+    const archiveGeneration = getSessionArchiveGeneration()
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
@@ -110,6 +123,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     })
 
     const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+
+    if (!canApplySessionListResponse(archiveGeneration)) {
+      return
+    }
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -139,6 +156,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
+    const archiveGeneration = getSessionArchiveGeneration()
     refreshSessionsRequestRef.current = requestId
     // The loading flag exists to drive the initial skeletons (they only render
     // while the list is empty). Turn-complete / reconnect refreshes over a
@@ -177,7 +195,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         messagingExclude: MESSAGING_EXCLUDED_SOURCES
       })
 
-      if (refreshSessionsRequestRef.current === requestId) {
+      if (refreshSessionsRequestRef.current === requestId && canApplySessionListResponse(archiveGeneration)) {
         const recents = result.recents
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
@@ -230,6 +248,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.
   const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
+    const archiveGeneration = getSessionArchiveGeneration()
     const key = normalizeProfileKey(profile)
     const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
     const loaded = $sessions.get().filter(inKey).length
@@ -237,6 +256,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
       excludeSources: SIDEBAR_EXCLUDED_SOURCES
     })
+
+    if (!canApplySessionListResponse(archiveGeneration)) {
+      return
+    }
 
     const keep = sessionsToKeep(key)
 
@@ -248,6 +271,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
     setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
   }, [])
+
+  useEffect(() => {
+    if (observedArchiveSettledGenerationRef.current === archiveSettledGeneration) {
+      return
+    }
+
+    observedArchiveSettledGenerationRef.current = archiveSettledGeneration
+    void Promise.all([refreshSessions(), refreshCronJobs(), refreshMessagingSessions()])
+  }, [archiveSettledGeneration, refreshCronJobs, refreshMessagingSessions, refreshSessions])
 
   return {
     loadMoreMessagingForPlatform,

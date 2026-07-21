@@ -5,6 +5,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
   $messages,
@@ -75,6 +76,7 @@ export function useSessionStateCache({
   const selectedStoredSessionIdRef = useRef<string | null>(null)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
+  const runtimeProfileByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
   // Runtime id whose transcript currently occupies `$messages` — lets the
@@ -113,10 +115,15 @@ export function useSessionStateCache({
         // handleTransition (session-states.ts) off the published diff.
         if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+          runtimeProfileByStoredSessionIdRef.current.delete(existing.storedSessionId)
         }
 
         if (storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+          runtimeProfileByStoredSessionIdRef.current.set(
+            storedSessionId,
+            normalizeProfileKey($activeGatewayProfile.get())
+          )
         }
       }
 
@@ -128,6 +135,7 @@ export function useSessionStateCache({
 
     if (storedSessionId) {
       runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+      runtimeProfileByStoredSessionIdRef.current.set(storedSessionId, normalizeProfileKey($activeGatewayProfile.get()))
     }
 
     return created
@@ -295,6 +303,7 @@ export function useSessionStateCache({
     getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
+    runtimeProfileByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,
     syncSessionStateToView,

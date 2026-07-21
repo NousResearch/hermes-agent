@@ -37,6 +37,13 @@ export function useDesktopIntegrations({
   routedSessionId,
   runtimeIdByStoredSessionId
 }: DesktopIntegrationsParams): void {
+  // Capture launch intent before an effect can persist the default route over
+  // it. This survives StrictMode effect replay and later in-app navigation.
+  const startupRestoreRef = useRef({
+    route: getRememberedRoute(),
+    sessionId: getRememberedSessionId()
+  })
+
   // Update polling — populates $desktopVersion/$updateStatus, which feed the
   // statusbar version pill and the update toasts. Also honors the main
   // process's "open updates" menu request.
@@ -62,7 +69,11 @@ export function useDesktopIntegrations({
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
   useEffect(() => {
-    if (routedSessionId) {
+    if (locationPathname === NEW_CHAT_ROUTE) {
+      // An explicit New Chat remains fresh on the next relaunch. Cold-start
+      // restoration uses the intent captured above before this clear occurs.
+      setRememberedSessionId(null)
+    } else if (routedSessionId) {
       setRememberedSessionId(routedSessionId)
     }
 
@@ -84,18 +95,20 @@ export function useDesktopIntegrations({
     }
 
     restoredRef.current = true
-    const route = getRememberedRoute()
+    const { route, sessionId } = startupRestoreRef.current
 
-    if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
+    if (route === NEW_CHAT_ROUTE) {
+      return
+    }
+
+    if (route && !isOverlayView(appViewForPath(route))) {
       navigate(route, { replace: true })
 
       return
     }
 
-    const last = getRememberedSessionId()
-
-    if (last) {
-      navigate(sessionRoute(last), { replace: true })
+    if (sessionId) {
+      navigate(sessionRoute(sessionId), { replace: true })
     }
   }, [locationPathname, navigate])
 

@@ -1,6 +1,8 @@
 """Tests for the Camofox browser backend."""
 
 import json
+
+import requests
 from unittest.mock import MagicMock, patch
 
 
@@ -18,6 +20,7 @@ from tools.browser_camofox import (
     camofox_vision,
     check_camofox_available,
     is_camofox_mode,
+    _loopback_rewrite_remediation,
     _rewrite_loopback_url_for_camofox,
 )
 
@@ -67,8 +70,17 @@ def _mock_response(status=200, json_data=None):
     resp.status_code = status
     resp.json.return_value = json_data or {}
     resp.content = b"\x89PNG\r\n\x1a\nfake"
+    resp.text = ""
     resp.raise_for_status = MagicMock()
     return resp
+
+
+def _mock_http_error(status=500, text=""):
+    resp = requests.Response()
+    resp.status_code = status
+    resp._content = text.encode("utf-8")
+    resp.url = "http://localhost:9377/tabs"
+    return requests.HTTPError(f"{status} Server Error", response=resp)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +141,39 @@ class TestCamofoxLoopbackRewrite:
         assert metadata["from"] == "::1"
         assert metadata["to"] == "192.168.1.10"
 
+    @patch("tools.browser_camofox.load_config")
+    def test_loopback_refused_error_suggests_docker_rewrite(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        monkeypatch.delenv("CAMOFOX_LOOPBACK_HOST_ALIAS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=False)
+        error = _mock_http_error(text="page.goto: NS_ERROR_CONNECTION_REFUSED")
+
+        remediation = _loopback_rewrite_remediation("http://127.0.0.1:8765/", error)
+
+        assert remediation is not None
+        assert "Docker" in remediation["likely_cause"]
+        assert remediation["config"] == {
+            "browser.camofox.rewrite_loopback_urls": True,
+            "browser.camofox.loopback_host_alias": "host.docker.internal",
+        }
+        assert remediation["command"] == "hermes config set browser.camofox.rewrite_loopback_urls true"
+
+    @patch("tools.browser_camofox.load_config")
+    def test_loopback_refused_error_omits_hint_when_rewrite_enabled(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=True)
+        error = _mock_http_error(text="page.goto: NS_ERROR_CONNECTION_REFUSED")
+
+        assert _loopback_rewrite_remediation("http://127.0.0.1:8765/", error) is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_non_loopback_refused_error_omits_rewrite_hint(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=False)
+        error = _mock_http_error(text="page.goto: NS_ERROR_CONNECTION_REFUSED")
+
+        assert _loopback_rewrite_remediation("https://example.com/", error) is None
+
 
 class TestCamofoxNavigate:
     @patch("tools.browser_camofox.requests.post")
@@ -176,6 +221,22 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
+
+    @patch("tools.browser_camofox.load_config")
+    @patch("tools.browser_camofox.requests.post")
+    def test_loopback_http_error_returns_rewrite_troubleshooting(self, mock_post, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=False)
+        error = _mock_http_error(text="page.goto: NS_ERROR_CONNECTION_REFUSED")
+        mock_post.side_effect = error
+
+        result = json.loads(camofox_navigate("http://localhost:8765/", task_id="t_loopback_error"))
+
+        assert result["success"] is False
+        assert "Navigation failed" in result["error"]
+        assert result["troubleshooting"]["config"]["browser.camofox.rewrite_loopback_urls"] is True
+        assert "host.docker.internal" in result["troubleshooting"]["suggested_fix"]
 
 
 # ---------------------------------------------------------------------------

@@ -306,6 +306,57 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
     }
 
 
+def _loopback_rewrite_remediation(url: str, exc: BaseException) -> Optional[Dict[str, Any]]:
+    """Return Docker-loopback troubleshooting metadata for Camofox failures.
+
+    Camofox often runs in Docker while Hermes runs on the host. In that setup
+    ``http://127.0.0.1:<port>`` is valid for Hermes to reach the Camofox control
+    API, but it is not valid as a page URL opened by the browser inside the
+    container. When the server reports a browser-side connection refusal for a
+    loopback page URL and rewriting is disabled, surface the likely fix instead
+    of a bare HTTP 500.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not _is_loopback_hostname(parsed.hostname):
+        return None
+
+    camofox_cfg = _get_camofox_config()
+    if _loopback_rewrite_enabled(camofox_cfg):
+        return None
+
+    response = getattr(exc, "response", None)
+    response_text = ""
+    if response is not None:
+        try:
+            response_text = response.text or ""
+        except Exception:
+            response_text = ""
+    lowered = response_text.lower()
+    if not any(token in lowered for token in ("ns_error_connection_refused", "connection_refused", "econnrefused")):
+        return None
+
+    alias = _loopback_rewrite_host(camofox_cfg)
+    return {
+        "likely_cause": (
+            "Camofox is running outside the host network, commonly in Docker. "
+            "The browser opened the page URL from inside that environment, so "
+            f"{parsed.hostname} pointed at Camofox itself instead of the host running the web app."
+        ),
+        "suggested_fix": (
+            "Enable Camofox loopback rewriting so localhost page URLs are opened "
+            f"as {alias} from inside the browser environment."
+        ),
+        "config": {
+            "browser.camofox.rewrite_loopback_urls": True,
+            "browser.camofox.loopback_host_alias": alias,
+        },
+        "command": "hermes config set browser.camofox.rewrite_loopback_urls true",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
@@ -558,6 +609,13 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 
         return json.dumps(result)
     except requests.HTTPError as e:
+        remediation = _loopback_rewrite_remediation(url, e)
+        if remediation:
+            return tool_error(
+                f"Navigation failed: {e}",
+                success=False,
+                troubleshooting=remediation,
+            )
         return tool_error(f"Navigation failed: {e}", success=False)
     except requests.ConnectionError:
         return json.dumps({

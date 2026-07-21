@@ -534,10 +534,37 @@ sidecar remain discoverable on platforms with secure sidecar I/O as a
 backward-compatible migration policy. Adding
 or changing tests through `skill_manage` creates the pending sidecar and opts
 the package into gating. Text-only skills without tests can use `validate` for
-static structural validation and remain discoverable after later edits. Hermes
-deliberately does not execute hidden test code inside `skill_manage`; execution
-stays in the existing terminal/sandbox path, where normal isolation and approval
-policies apply.
+static structural validation and remain discoverable after later edits. Hermes deliberately does not execute hidden test code inside `skill_manage`; foreground
+execution stays in the existing terminal/sandbox path, where normal isolation and
+approval policies apply.
+
+### Autonomous background lifecycle
+
+When the background self-improvement review creates or changes a skill package,
+Hermes completes a bounded `create → evaluate → refine → register` pass before
+the review fork exits:
+
+1. Successful `create`, `edit`, `patch`, `write_file`, and `remove_file` actions
+   are collected from the current review only; inherited tool calls and staged
+   but unapplied writes are ignored.
+2. Text-only skills receive static validation. Skills with `tests/` receive a
+   fresh digest/token challenge and remain hidden while pending.
+3. On Linux, generated pytest code runs in a Bubblewrap mount namespace inside
+   a transient user-systemd cgroup. The sandbox has no network, an empty `PATH`,
+   a read-only skill package and minimal Python runtime, a 64 MiB isolated
+   `/tmp`, bounded output/files, `TasksMax=16`, and a 2 GiB aggregate memory
+   ceiling with swap disabled. Hermes never falls back to unsandboxed automatic
+   execution: if Bubblewrap, `prlimit`, or the user-systemd manager is unavailable,
+   the skill stays pending and undiscoverable.
+4. A failed test returns a bounded diagnostic to the review agent as explicitly
+   untrusted data. The agent may patch the same skill, after which Hermes hashes
+   the changed package and reruns the tests. Refinement is capped at two attempts.
+5. Only evidence bound to the current package digest can mark the skill passed
+   and restore automatic discovery.
+
+The lifecycle adds no new model-facing tool schema and does not modify the live
+conversation's system prompt or prompt cache. Refinement runs inside the isolated
+background-review conversation; the foreground session remains untouched.
 
 :::tip
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.

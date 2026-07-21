@@ -28,6 +28,34 @@ from agent.thread_scoped_output import thread_scoped_silence
 logger = logging.getLogger(__name__)
 
 
+def _run_autonomous_skill_lifecycle(
+    review_agent: Any,
+    review_messages: List[Dict],
+    *,
+    prior_messages: Optional[List[Dict]] = None,
+) -> Dict[str, Any]:
+    """Validate/refine skills changed by the review, failing closed if needed."""
+
+    from agent.background_skill_lifecycle import run_background_skill_lifecycles
+    from tools.skill_test_sandbox import BubblewrapTestExecutor
+
+    try:
+        executor = BubblewrapTestExecutor.discover()
+        return run_background_skill_lifecycles(
+            review_agent,
+            review_messages,
+            execute=executor,
+            max_refinements=2,
+            prior_messages=prior_messages or [],
+        )
+    except Exception as exc:
+        # Self-improvement is auxiliary: a sandbox/runtime failure must leave
+        # the tested skill pending, but must never discard the completed review
+        # or its user-visible action summary.
+        logger.warning("Autonomous skill lifecycle pass failed: %s", exc)
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Background-review aux-model selector + routed digest.
 #
@@ -228,11 +256,15 @@ _SKILL_REVIEW_PROMPT = (
     "     • `scripts/<name>.<ext>` — statically re-runnable actions "
     "the skill can invoke directly (verification scripts, fixture "
     "generators, deterministic probes, anything the agent should run "
-    "rather than hand-type each time).\n"
+    "     rather than hand-type each time).\n"
     "     Add support files via skill_manage action=write_file with "
     "file_path starting 'references/', 'templates/', or 'scripts/'. "
     "The umbrella's SKILL.md should gain a one-line pointer to any "
     "new support file so future agents know it exists.\n"
+    "     For every code-backed skill you create or change, add focused "
+    "pytest tests under `tests/`. Do NOT run them yourself: the isolated lifecycle runner "
+    "executes them after this review, returns failures as untrusted diagnostics, "
+    "and gives you a bounded repair turn.\n"
     "  4. CREATE A NEW CLASS-LEVEL UMBRELLA SKILL when no existing "
     "skill covers the class. The name MUST be at the class level. "
     "The name MUST NOT be a specific PR number, error string, feature "
@@ -321,6 +353,10 @@ _COMBINED_REVIEW_PROMPT = (
     "`scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification, fixture generators, probes). Add a one-line "
     "pointer in SKILL.md so future agents find them.\n"
+    "     For every code-backed skill you create or change, add focused "
+    "pytest tests under `tests/`. Do NOT run them yourself: the isolated lifecycle runner "
+    "executes them after this review, returns failures as untrusted diagnostics, "
+    "and gives you a bounded repair turn.\n"
     "  4. CREATE A NEW CLASS-LEVEL UMBRELLA when nothing exists. "
     "Name at the class level — NOT a PR number, error string, "
     "codename, library-alone name, or 'fix-X / debug-Y' session "
@@ -856,6 +892,18 @@ def _run_review_in_thread(
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,
+                )
+                # Complete the MUSE-style create → evaluate → refine → register
+                # loop while the review agent is still alive. The review fork
+                # remains restricted to memory/skill tools; generated tests run
+                # only through the fail-closed isolated executor.
+                review_messages = list(
+                    getattr(review_agent, "_session_messages", [])
+                )
+                _run_autonomous_skill_lifecycle(
+                    review_agent,
+                    review_messages,
+                    prior_messages=messages_snapshot,
                 )
             finally:
                 clear_thread_tool_whitelist()

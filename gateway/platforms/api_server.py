@@ -125,6 +125,7 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+RUN_EVENTS_SSE_KEEPALIVE_SECONDS = 5.0  # Must be safely < undici bodyTimeout (30s)
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
@@ -5178,16 +5179,20 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         try:
+            last_activity = time.monotonic()
             while True:
                 try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    event = await asyncio.wait_for(q.get(), timeout=0.5)
                 except asyncio.TimeoutError:
-                    await response.write(b": keepalive\n\n")
+                    if time.monotonic() - last_activity >= RUN_EVENTS_SSE_KEEPALIVE_SECONDS:
+                        await response.write(b": keepalive\n\n")
+                        last_activity = time.monotonic()
                     continue
                 if event is None:
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
+                last_activity = time.monotonic()
                 payload = f"data: {json.dumps(event)}\n\n"
                 await response.write(payload.encode())
         except Exception as exc:

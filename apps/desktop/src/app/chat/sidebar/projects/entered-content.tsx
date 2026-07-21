@@ -26,20 +26,23 @@ import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
+  sessionRecency,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
 } from './workspace-groups'
 import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
 
-// The entered project's body. Main-checkout sessions render directly — no
-// redundant repo/branch header (the breadcrumb already names the project). Only
-// linked worktrees nest, shown by branch. Multi-folder projects keep per-repo
-// headers so the folders stay distinguishable.
+// Multi-folder projects first render one row per repo. A focused repo — or the
+// only repo — then renders one complete, deduplicated session list across its
+// primary and linked-worktree lanes.
 export function EnteredProjectContent({
   project,
   renderRows,
   onNewSession,
+  focusedRepoId,
+  onFocusRepo,
+  onExitRepo,
   repoWorktrees,
   liveSessions,
   removedSessionIds
@@ -47,30 +50,88 @@ export function EnteredProjectContent({
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  focusedRepoId?: null | string
+  onFocusRepo?: (repoId: string) => void
+  onExitRepo?: () => void
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
+  const { t } = useI18n()
+
   if (!project.repos.length) {
     return null
   }
 
-  const single = project.repos.length === 1
+  const singleRepo = project.repos.length === 1 ? project.repos[0] : null
+  const focusedRepo = singleRepo ?? project.repos.find(repo => repo.id === focusedRepoId)
+
+  if (!focusedRepo) {
+    return (
+      <SidebarRowStack>
+        {project.repos.map(repo => (
+          <div className="group/workspace flex min-h-7 items-center gap-1 px-2 text-[0.6875rem]" key={repo.id}>
+            <button
+              aria-label={`Open ${repo.label}`}
+              className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left font-semibold text-(--ui-text-secondary) hover:text-foreground"
+              onClick={() => onFocusRepo?.(repo.id)}
+              type="button"
+            >
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder" size="0.75rem" />
+              <span className="min-w-0 flex-1 truncate" title={repo.path ? `${repo.label}\n${repo.path}` : repo.label}>
+                {repo.label}
+              </span>
+              <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">
+                {repo.sessionCount}
+              </span>
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-right" size="0.75rem" />
+            </button>
+            {onNewSession && (
+              <WorkspaceAddButton label={t.sidebar.newSessionIn(repo.label)} onClick={() => onNewSession(repo.path)} />
+            )}
+          </div>
+        ))}
+      </SidebarRowStack>
+    )
+  }
 
   return (
     <>
-      {project.repos.map(repo => (
-        <RepoFlatSection
-          discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
-          key={repo.id}
-          liveSessions={liveSessions}
-          onNewSession={onNewSession}
-          removedSessionIds={removedSessionIds}
-          renderRows={renderRows}
-          repo={repo}
-          showHeader={!single}
-        />
-      ))}
+      {!singleRepo && (
+        <button
+          className="flex min-h-7 w-full items-center gap-1.5 bg-transparent px-2 text-left text-[0.6875rem] font-medium text-(--ui-text-secondary) opacity-70 hover:opacity-100"
+          onClick={onExitRepo}
+          type="button"
+        >
+          <Codicon name="chevron-left" size="0.75rem" />
+          <span className="truncate">{project.label}</span>
+        </button>
+      )}
+      <div className="flex min-h-7 items-center gap-1 px-2 text-[0.6875rem] font-semibold text-(--ui-text-secondary)">
+        <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder-opened" size="0.75rem" />
+        <span className="min-w-0 flex-1 truncate" title={focusedRepo.path ?? undefined}>
+          {focusedRepo.label}
+        </span>
+        <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">
+          {focusedRepo.sessionCount}
+        </span>
+        {onNewSession && (
+          <WorkspaceAddButton
+            label={t.sidebar.newSessionIn(focusedRepo.label)}
+            onClick={() => onNewSession(focusedRepo.path)}
+          />
+        )}
+      </div>
+      <RepoFlatSection
+        discoveredWorktrees={focusedRepo.path ? repoWorktrees?.[focusedRepo.path] : undefined}
+        flattenSessions
+        liveSessions={liveSessions}
+        onNewSession={onNewSession}
+        removedSessionIds={removedSessionIds}
+        renderRows={renderRows}
+        repo={focusedRepo}
+        showHeader={false}
+      />
     </>
   )
 }
@@ -81,6 +142,7 @@ function RepoFlatSection({
   renderRows,
   onNewSession,
   discoveredWorktrees,
+  flattenSessions = false,
   liveSessions,
   removedSessionIds
 }: {
@@ -89,6 +151,7 @@ function RepoFlatSection({
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   discoveredWorktrees?: HermesGitWorktree[]
+  flattenSessions?: boolean
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
@@ -135,6 +198,18 @@ function RepoFlatSection({
 
   const repoCount = ordered.reduce((sum, group) => sum + group.sessions.length, 0)
 
+  const flattenedSessions = useMemo(() => {
+    const byId = new Map<string, SessionInfo>()
+
+    for (const group of ordered) {
+      for (const session of group.sessions) {
+        byId.set(session.id, byId.get(session.id) ?? session)
+      }
+    }
+
+    return [...byId.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+  }, [ordered])
+
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
   // and leave the worktree on disk. A dirty worktree escalates to a force prompt
   // instead of erroring (those changes are usually throwaway).
@@ -160,7 +235,9 @@ function RepoFlatSection({
     }
   }
 
-  const body = (
+  const body = flattenSessions ? (
+    renderRows(flattenedSessions)
+  ) : (
     <>
       {ordered.map(group => (
         <SidebarWorkspaceGroup

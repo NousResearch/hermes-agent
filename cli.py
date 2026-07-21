@@ -4823,6 +4823,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        try:
+            from agent.context_telemetry import emit_context_telemetry
+
+            emit_context_telemetry(agent, snapshot=snapshot)
+        except Exception:
+            pass
+
         return snapshot
 
     @staticmethod

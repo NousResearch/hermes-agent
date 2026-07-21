@@ -1001,6 +1001,16 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "context": {
+        "telemetry": {
+            "enabled": False,
+            "path": "",
+            "min_write_interval_seconds": 1,
+            "smart_zone_tokens": 120000,
+            "smart_zone_context_pct": 45,
+            "compression_threshold": 0.85,
+        },
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

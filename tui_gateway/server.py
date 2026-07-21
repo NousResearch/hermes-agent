@@ -3659,6 +3659,12 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    try:
+        from agent.context_telemetry import emit_context_telemetry
+
+        emit_context_telemetry(agent, usage=usage)
+    except Exception:
+        pass
     return usage
 
 

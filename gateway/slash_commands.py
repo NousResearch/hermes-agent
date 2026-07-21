@@ -621,6 +621,25 @@ class GatewaySlashCommandsMixin:
             if isinstance(configured_context, int) and configured_context > 0:
                 context_total = configured_context
 
+        if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                from agent.context_telemetry import emit_context_telemetry
+
+                context_percent = None
+                if context_used > 0 and context_total > 0:
+                    context_percent = min(100, round((context_used / context_total) * 100))
+                emit_context_telemetry(
+                    status_agent,
+                    snapshot={
+                        "model_name": model_name,
+                        "context_tokens": context_used,
+                        "context_length": context_total or None,
+                        "context_percent": context_percent,
+                    },
+                )
+            except Exception:
+                pass
+
         model_line = ""
         if model_name:
             if provider_name:

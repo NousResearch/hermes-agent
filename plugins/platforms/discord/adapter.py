@@ -3506,6 +3506,21 @@ class DiscordAdapter(BasePlatformAdapter):
                     file=forum_file,
                 )
 
+            # Resolve a reply reference (matches the text-send path). Only
+            # attempt when reply mode is enabled and a target is available —
+            # mirrors the gating used by `send()` so disabled modes and
+            # missing targets fall through to an unthreaded voice message.
+            voice_reference = None
+            if reply_to and self._reply_to_mode != "off":
+                try:
+                    ref_msg = await channel.fetch_message(int(reply_to))
+                    if hasattr(ref_msg, "to_reference"):
+                        voice_reference = ref_msg.to_reference(fail_if_not_exists=False)
+                    else:
+                        voice_reference = ref_msg
+                except Exception as e:
+                    logger.debug("Could not fetch voice reply-to message: %s", e)
+
             # Try sending as a native voice message via raw API (flags=8192).
             try:
                 import base64
@@ -3522,7 +3537,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()
 
                 import json as _json
-                payload = _json.dumps({
+                payload_dict = {
                     "flags": 8192,
                     "attachments": [{
                         "id": "0",
@@ -3530,7 +3545,18 @@ class DiscordAdapter(BasePlatformAdapter):
                         "duration_secs": round(duration_secs, 2),
                         "waveform": waveform_b64,
                     }],
-                })
+                }
+                if voice_reference is not None:
+                    payload_dict["message_reference"] = (
+                        voice_reference.to_message_reference_dict()
+                        if hasattr(voice_reference, "to_message_reference_dict")
+                        else {
+                            "message_id": str(voice_reference.message_id),
+                            "channel_id": str(voice_reference.channel_id),
+                            "fail_if_not_exists": False,
+                        }
+                    )
+                payload = _json.dumps(payload_dict)
                 form = [
                     {"name": "payload_json", "value": payload},
                     {
@@ -3548,7 +3574,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
+                msg = await channel.send(file=file, reference=voice_reference)
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)

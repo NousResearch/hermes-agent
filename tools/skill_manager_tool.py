@@ -111,6 +111,41 @@ SKILLS_DIR = HERMES_HOME / "skills"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
+# Cap on the unified-diff preview returned in tool results so the
+# background-review summary stays compact (issue: user wants to see
+# what changed, not just "1 replacement").
+_DIFF_PREVIEW_MAX_CHARS = 600
+
+
+def _build_diff_preview(
+    original: str,
+    updated: str,
+    label: str = "SKILL.md",
+) -> str:
+    """Return a compact unified-diff preview of a skill-file edit.
+
+    Returns an empty string when there is no original (new file) or
+    when the diff would exceed ``_DIFF_PREVIEW_MAX_CHARS`` (truncated
+    with a ``… (truncated)`` marker).
+    """
+    import difflib
+
+    if original is None:
+        original = ""
+    if original == updated:
+        return ""
+    diff_lines = list(difflib.unified_diff(
+        original.splitlines(keepends=True),
+        updated.splitlines(keepends=True),
+        fromfile=f"a/{label}",
+        tofile=f"b/{label}",
+        n=1,
+    ))
+    diff = "".join(diff_lines)
+    if len(diff) > _DIFF_PREVIEW_MAX_CHARS:
+        diff = diff[:_DIFF_PREVIEW_MAX_CHARS].rstrip() + "\n… (truncated)"
+    return diff
+
 
 def _containing_skills_root(skill_path: Path) -> Path:
     """Return the skills root directory (local or external_dirs entry) that
@@ -529,6 +564,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "message": f"Skill '{name}' created.",
         "path": str(skill_dir.relative_to(SKILLS_DIR)),
         "skill_md": str(skill_md),
+        "diff_preview": _build_diff_preview(None, content, "SKILL.md"),
     }
     if category:
         result["category"] = category
@@ -557,7 +593,6 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
-
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
@@ -569,6 +604,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         "success": True,
         "message": f"Skill '{name}' updated.",
         "path": str(existing["path"]),
+        "diff_preview": _build_diff_preview(original_content, content, "SKILL.md"),
     }
 
 
@@ -660,9 +696,11 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
+    target_label = "SKILL.md" if not file_path else file_path
     return {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
+        "diff_preview": _build_diff_preview(original_content, new_content, target_label),
     }
 
 
@@ -772,6 +810,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
+        "diff_preview": _build_diff_preview(original_content, file_content, file_path),
     }
 
 

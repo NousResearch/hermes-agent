@@ -313,3 +313,59 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
     )
+
+
+def test_background_review_surfaces_diff_preview_for_skill_patches():
+    """Skill patch/create/edit actions must include a diff preview.
+
+    Users complained that the self-improvement summary only showed
+    "Patched SKILL.md in skill 'X' (1 replacement)" with no indication
+    of what actually changed.  The skill_manage tool now returns a
+    ``diff_preview`` field in its result JSON; summarize_background_review_actions
+    must surface that diff alongside the action message.
+    """
+    import json
+
+    from agent.background_review import summarize_background_review_actions
+
+    review_messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "call_patch",
+            "content": json.dumps({
+                "success": True,
+                "message": "Patched SKILL.md in skill 'my-skill' (1 replacement).",
+                "diff_preview": "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1,3 +1,3 @@\n-old line\n+new line\n",
+            }),
+        },
+    ]
+
+    actions = summarize_background_review_actions(review_messages, prior_snapshot=[])
+
+    assert len(actions) == 1, actions
+    action = actions[0]
+    assert "Patched SKILL.md in skill 'my-skill'" in action
+    assert "new line" in action, "diff_preview must be surfaced in the action summary"
+    assert "-old line" in action, "removed lines must appear in the diff"
+
+
+def test_background_review_memory_actions_have_no_diff_preview():
+    """Memory actions without diff_preview must still work (backward compat)."""
+    import json
+
+    from agent.background_review import summarize_background_review_actions
+
+    review_messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "call_mem",
+            "content": json.dumps({
+                "success": True,
+                "message": "Entry added",
+                "target": "memory",
+            }),
+        },
+    ]
+
+    actions = summarize_background_review_actions(review_messages, prior_snapshot=[])
+    assert actions == ["Memory updated"]

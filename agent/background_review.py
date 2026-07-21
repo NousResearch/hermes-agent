@@ -281,10 +281,17 @@ def summarize_background_review_actions(
             continue
         message = data.get("message", "")
         target = data.get("target", "")
+        diff_preview = data.get("diff_preview", "")
         if "created" in message.lower():
-            actions.append(message)
+            action = message
+            if diff_preview:
+                action = f"{message}\n{diff_preview}"
+            actions.append(action)
         elif "updated" in message.lower():
-            actions.append(message)
+            action = message
+            if diff_preview:
+                action = f"{message}\n{diff_preview}"
+            actions.append(action)
         elif "added" in message.lower() or (target and "add" in message.lower()):
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
             actions.append(f"{label} updated")
@@ -294,6 +301,13 @@ def summarize_background_review_actions(
         elif "removed" in message.lower() or "replaced" in message.lower():
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
             actions.append(f"{label} updated")
+        elif "patched" in message.lower() or "written" in message.lower():
+            # skill_manage patch/create/edit/write_file — surface the diff
+            # so the user can see what actually changed, not just a count.
+            action = message
+            if diff_preview:
+                action = f"{message}\n{diff_preview}"
+            actions.append(action)
     return actions
 
 

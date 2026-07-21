@@ -5365,6 +5365,7 @@ class GatewaySlashCommandsMixin:
             source=source.platform.value if source.platform else None,
             session_key=None if cross_origin else session_key,
             current_session_id=current_entry.session_id,
+            include_current_session=True,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
             search_query=search_query,

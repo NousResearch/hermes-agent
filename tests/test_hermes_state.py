@@ -5822,6 +5822,55 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+@pytest.mark.parametrize(
+    "persisted_session_key",
+    ["agent:main:telegram:dm:chat-1", None],
+    ids=["exact-key", "peer-fallback"],
+)
+def test_gateway_session_recovery_does_not_cross_newer_reset_boundary(
+    db, persisted_session_key
+):
+    peer = {
+        "user_id": "user-1",
+        "session_key": persisted_session_key,
+        "chat_id": "chat-1",
+        "chat_type": "dm",
+    }
+    db.create_session("gw-before-reset", "telegram", **peer)
+    db.append_message("gw-before-reset", "user", "old context")
+    db.create_session("gw-reset", "telegram", **peer)
+    db.append_message("gw-reset", "user", "/new")
+    db.end_session("gw-reset", "session_reset")
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None
+
+
+def test_gateway_session_recovery_does_not_skip_newer_empty_session(db):
+    peer = {
+        "user_id": "user-1",
+        "session_key": "agent:main:telegram:dm:chat-1",
+        "chat_id": "chat-1",
+        "chat_type": "dm",
+    }
+    db.create_session("gw-with-history", "telegram", **peer)
+    db.append_message("gw-with-history", "user", "old context")
+    db.create_session("gw-empty", "telegram", **peer)
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None
+
+
 def test_gateway_session_recovery_reopens_ws_orphan_reap_rows(db):
     """Rows wrongly ended by the TUI ws-orphan reaper must be recoverable (#63207)."""
     db.create_session(

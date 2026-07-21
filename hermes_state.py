@@ -2301,36 +2301,53 @@ class SessionDB:
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Find the latest recoverable gateway session for a routing peer.
+        """Find the latest gateway session for a routing peer if recoverable.
 
         ``sessions.json`` is the fast routing index, but it can be missing or
-        pruned after process-level restart bugs.  New gateway sessions persist
+        pruned after process-level restart bugs. New gateway sessions persist
         the deterministic ``session_key`` on the durable session row so the
-        mapping can be rebuilt exactly.  Rows ended only by older gateway
-        cleanup's ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap``
-        (dashboard viewer disconnect before #60609) are treated as recoverable;
-        explicit conversation boundaries such as /new, /resume switches, and
-        compression splits are not.
+        mapping can be rebuilt exactly. The newest matching row is selected
+        *before* checking whether it is recoverable: an intentional boundary
+        such as ``session_reset`` must block fallback to an older live row for
+        the same peer (#68539). Rows ended only by older gateway cleanup's
+        ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap`` (dashboard
+        viewer disconnect before #60609) remain recoverable, as do live rows.
         """
         if not session_key:
             return None
         with self._lock:
+
+            def _recoverable(row):
+                if row is None:
+                    return None
+                if row["ended_at"] is not None and row["end_reason"] not in (
+                    "agent_close",
+                    "ws_orphan_reap",
+                ):
+                    return None
+                if not (row["message_count"] or 0):
+                    has_message = self._conn.execute(
+                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                        (row["id"],),
+                    ).fetchone()
+                    if has_message is None:
+                        return None
+                return dict(row)
+
             row = self._conn.execute(
                 """
                 SELECT * FROM sessions
                 WHERE session_key = ?
                   AND source = ?
-                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
-                  AND (COALESCE(message_count, 0) > 0 OR EXISTS (
-                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
-                  ))
-                ORDER BY started_at DESC
+                ORDER BY started_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (session_key, source),
             ).fetchone()
+            # An exact-key row is authoritative even when it is not recoverable:
+            # do not let the legacy peer-tuple fallback search behind a reset.
             if row is not None:
-                return dict(row)
+                return _recoverable(row)
 
             # Conservative fallback for rows created by current code but with a
             # temporarily-missing exact key: still require the complete peer
@@ -2345,16 +2362,12 @@ class SessionDB:
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_type, '') = COALESCE(?, '')
                   AND COALESCE(thread_id, '') = COALESCE(?, '')
-                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
-                  AND (COALESCE(message_count, 0) > 0 OR EXISTS (
-                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
-                  ))
-                ORDER BY started_at DESC
+                ORDER BY started_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (source, user_id, chat_id, chat_type, thread_id),
             ).fetchone()
-        return dict(row) if row else None
+            return _recoverable(row)
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.

@@ -259,6 +259,42 @@ async def test_retry_exhaustion_queues_reconnect_before_child_disconnect(tmp_pat
     assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_watchdog_handoff_survives_child_disconnect(tmp_path):
+    """The wedged-recovery heartbeat watchdog must survive its fatal callback.
+
+    The heartbeat loop force-escalates a stuck polling-recovery task.  Like
+    the network/conflict terminal paths, the heartbeat task itself is the
+    owner that ``disconnect()`` cancels, so the fatal callback must release
+    ``_polling_heartbeat_task`` before notifying the runner.
+    """
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter.set_fatal_error_handler(runner._handle_adapter_fatal_error)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+
+    # Simulate the heartbeat watchdog's fatal-escalation path directly.
+    adapter._set_fatal_error(
+        "telegram_network_error",
+        "Telegram reconnect task wedged; forcing gateway reconnect.",
+        retryable=True,
+    )
+    heartbeat_task = asyncio.create_task(adapter._handoff_polling_fatal_error())
+    adapter._polling_heartbeat_task = heartbeat_task
+    result = await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    assert result == [None]
+    assert runner.adapters == {}
+    assert Platform.TELEGRAM in runner._failed_platforms
+
+
 # ---------------------------------------------------------------------------
 # Connection pool drain tests (PR #16466 salvage)
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
@@ -9251,12 +9251,12 @@ def _(rid, params: dict) -> dict:
     if not isinstance(subagents, list) or not subagents:
         return _err(rid, 4000, "subagents list required")
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     started_at = params.get("started_at")
     finished_at = params.get("finished_at") or time.time()
     label = str(params.get("label") or "")
-    ts = datetime.utcfromtimestamp(float(finished_at)).strftime("%Y%m%dT%H%M%S")
+    ts = datetime.fromtimestamp(float(finished_at), tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
     fname = f"{ts}.json"
     d = _spawn_tree_session_dir(session_id or "default")
     path = d / fname
@@ -13843,7 +13843,7 @@ def _(rid, params: dict) -> dict:
     paste_dir = _hermes_home / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     paste_file = (
         paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"

@@ -196,10 +196,28 @@ class HolographicMemoryProvider(MemoryProvider):
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
                 "Use fact_feedback to rate facts after using them (trains trust scores)."
             )
+        # Check HRR availability for accurate capability description
+        try:
+            from . import holographic as _hrr_check
+            _has_hrr = _hrr_check._HAS_NUMPY
+        except Exception:
+            _has_hrr = False
+
+        if _has_hrr:
+            _capabilities = (
+                "probe entities (algebraic), reason across entities (compositional), "
+                "related (structural adjacency), contradict (conflict detection)"
+            )
+        else:
+            _capabilities = (
+                "search (keyword), probe/related/reason/contradict (keyword fallback — "
+                "install numpy for full algebraic retrieval)"
+            )
+
         return (
             f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
-            f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
+            f"Use fact_store to search, {_capabilities}, or add facts.\n"
             f"Use fact_feedback to rate facts after using them (trains trust scores)."
         )
 

@@ -8247,7 +8247,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # A future internal handoff capability must be explicit rather than
         # silently manufacturing provenance here.
         if (
-            getattr(adapter, "_host_security_context_trusted_instance", False)
+            getattr(adapter, "_host_security_context_trusted_instance", False) is True
             or self._adapter_has_live_security_trust(adapter)
         ):
             from gateway.security_context import SecurityContextError

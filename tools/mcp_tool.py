@@ -1730,7 +1730,7 @@ class MCPServerTask:
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
-        "_reconnect_retries",
+        "_reconnect_retries", "_session_proven", "_was_parked",
     )
 
     def __init__(self, name: str):
@@ -1753,6 +1753,18 @@ class MCPServerTask:
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
         self._reconnect_retries: int = 0
+        # Rapid-drop budget (#62212): a freshly (re)established session is
+        # UNPROVEN until it demonstrates real health — it survived at least
+        # one full keepalive interval (keepalive success path) or served at
+        # least one successful tool call. Only a proven session clears the
+        # reconnect budget; a transport that flaps right after the handshake
+        # keeps getting charged and still reaches the park instead of
+        # hot-cycling respawns forever.
+        self._session_proven: bool = False
+        # True while parked (reconnect budget exhausted) or after a park,
+        # until the session proves healthy again — used to log the
+        # parked→revived transition exactly once.
+        self._was_parked: bool = False
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -2066,6 +2078,27 @@ class MCPServerTask:
         # Fallback probe for servers without ping support.
         await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
 
+    def _mark_session_proven(self) -> None:
+        """Record that the current session demonstrated real health.
+
+        Called from the keepalive success path (session survived at least one
+        full keepalive interval) and the tool-call success path. Only then is
+        the reconnect budget cleared: a handshake that completes but drops
+        moments later must keep consuming ``_reconnect_retries`` so a flapping
+        transport still reaches the park instead of respawning forever
+        (#62212 — 6212 spawns in 63h).
+        """
+        if not self._session_proven:
+            self._session_proven = True
+            self._reconnect_retries = 0
+            if self._was_parked:
+                self._was_parked = False
+                logger.warning(
+                    "MCP server '%s': revived — session healthy again after "
+                    "parking (state: parked → connected)",
+                    self.name,
+                )
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.
 
@@ -2152,6 +2185,10 @@ class MCPServerTask:
                         )
                         self._reconnect_event.set()
                         break
+                    # Keepalive succeeded — the session survived a full
+                    # keepalive interval, which is real proof of health.
+                    # Clear the rapid-drop budget (#62212).
+                    self._mark_session_proven()
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
@@ -2365,10 +2402,12 @@ class MCPServerTask:
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
-                    # This session is live: reset the reconnect retry counter
-                    # so transient prior failures do not accumulate toward
-                    # permanent parking (#57604).
-                    self._reconnect_retries = 0
+                    # A completed handshake alone is NOT proof of health: a
+                    # flapping transport can handshake fine and drop moments
+                    # later, forever (#62212). The session must prove itself
+                    # (keepalive success or a successful tool call) before the
+                    # reconnect budget is cleared — see _mark_session_proven.
+                    self._session_proven = False
                     # stdio transport does not use OAuth, but we still honor
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
@@ -2554,6 +2593,9 @@ class MCPServerTask:
         Re-raise (rather than mask) when the failure is not a transient drop:
         - shutdown is in progress (``shutdown()`` sets ``_shutdown_event``
           before it ever cancels the task);
+        - the group carries a ``KeyboardInterrupt`` / ``SystemExit`` — fatal
+          signals must propagate to the interpreter, never be converted into
+          a reconnect;
         - the group carries a real ``CancelledError`` (task cancellation must
           propagate to asyncio, mirroring the ``run()`` guard for #9930);
         - we never reached a live session this attempt (``_ready`` unset) — a
@@ -2561,6 +2603,9 @@ class MCPServerTask:
           rather than hot-loop reconnects against a broken endpoint.
         """
         if self._shutdown_event.is_set():
+            raise eg
+        fatal, _rest = eg.split((KeyboardInterrupt, SystemExit))
+        if fatal is not None:
             raise eg
         cancelled, _rest = eg.split(asyncio.CancelledError)
         if cancelled is not None:
@@ -2699,7 +2744,8 @@ class MCPServerTask:
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
                         _reset_server_error(self.name)
-                        self._reconnect_retries = 0
+                        # Unproven until keepalive/tool-call success (#62212).
+                        self._session_proven = False
                         reason = await self._wait_for_lifecycle_event()
                         if reason == "reconnect":
                             logger.info(
@@ -2761,7 +2807,8 @@ class MCPServerTask:
                             # a prior outage so the first call after recovery
                             # isn't gated on a stale failure count (#16788).
                             _reset_server_error(self.name)
-                            self._reconnect_retries = 0
+                            # Unproven until keepalive/tool-call success (#62212).
+                            self._session_proven = False
                             reason = await self._wait_for_lifecycle_event()
                             if reason == "reconnect":
                                 logger.info(
@@ -2798,7 +2845,8 @@ class MCPServerTask:
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
                         _reset_server_error(self.name)
-                        self._reconnect_retries = 0
+                        # Unproven until keepalive/tool-call success (#62212).
+                        self._session_proven = False
                         reason = await self._wait_for_lifecycle_event()
                         if reason == "reconnect":
                             logger.info(
@@ -2971,15 +3019,49 @@ class MCPServerTask:
                     "manual refresh)",
                     self.name,
                 )
-                # A clean transport return only happens after a session was
-                # successfully established and then asked to rebuild (auth
-                # recovery / manual refresh / breaker-driven reconnect). That
-                # is proof the server is reachable, so clear the consecutive-
-                # failure budget — otherwise transient drops accumulated over
-                # a long-lived session would eventually exhaust it and
-                # permanently kill an otherwise-healthy server.
-                self._reconnect_retries = 0
-                backoff = 1.0
+                # A clean transport return means a session was established and
+                # then asked to rebuild (auth recovery / manual refresh /
+                # keepalive failure / transport TaskGroup drop). That alone is
+                # NOT proof of health: a flapping transport handshakes fine and
+                # drops moments later, and resetting the budget here let such
+                # servers respawn forever (#62212 — 6212 spawns in 63h).
+                # Only clear the consecutive-failure budget once the session
+                # PROVED healthy — survived >=1 full keepalive interval or
+                # served >=1 successful tool call (_mark_session_proven).
+                if self._session_proven:
+                    self._reconnect_retries = 0
+                    backoff = 1.0
+                else:
+                    # Unproven session: charge the rapid-drop budget so a
+                    # flapping transport still reaches the park.
+                    self._reconnect_retries += 1
+                    if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
+                        logger.warning(
+                            "MCP server '%s': %d consecutive reconnects "
+                            "without a healthy session (rapid-drop budget "
+                            "exhausted), parking; will self-probe every %ds "
+                            "until it recovers (state: degraded → parked)",
+                            self.name, _MAX_RECONNECT_RETRIES,
+                            _PARKED_RETRY_INTERVAL,
+                        )
+                        self._was_parked = True
+                        self._deregister_tools()
+                        self._reconnect_event.clear()
+                        parked = await self._wait_for_reconnect_or_shutdown(
+                            timeout=_PARKED_RETRY_INTERVAL
+                        )
+                        if parked == "shutdown":
+                            break
+                        logger.debug(
+                            "MCP server '%s': attempting revival from parked "
+                            "state (self-probe or explicit reconnect request); "
+                            "rebuilding transport.",
+                            self.name,
+                        )
+                        # One probe attempt per wake — see the exception-path
+                        # park below.
+                        self._reconnect_retries = _MAX_RECONNECT_RETRIES
+                        backoff = 1.0
                 # Reset the session reference and readiness; _run_http/_run_stdio
                 # will repopulate both on successful re-entry.  Leaving
                 # _ready set here lets handler-side recovery mistake the stale
@@ -4236,6 +4318,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
+            # The RPC round-trip completed — the session is demonstrably
+            # healthy at the transport level (even if the tool itself
+            # returned isError). Clear the rapid-drop budget (#62212).
+            _mark_proven = getattr(server, "_mark_session_proven", None)
+            if _mark_proven is not None:
+                _mark_proven()
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

@@ -518,19 +518,23 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
     Resolution (highest precedence first):
 
-    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
+    1. A scoped board override from the CLI ``--board`` flag. This is an
+       explicit operator choice and must beat worker-env pins so readback /
+       repair commands can inspect another board from inside a claimed worker.
+    2. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
        back-compat and for the dispatcher→worker handoff (defense in
        depth: dispatcher injects this into worker env so workers are
        immune to any path-resolution disagreement).
-    2. When ``board`` arg is None, the active board from
+    3. When ``board`` arg is None, the active board from
        :func:`get_current_board` is used.
-    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+    4. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
+    scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    slug = _normalize_board_slug(scoped) if scoped else _normalize_board_slug(board)
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
-    if override:
+    if override and not scoped:
         return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -542,17 +546,19 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
     Anchored per-board so workspaces don't leak between projects.
-    ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
-    precedence) — the dispatcher injects this into worker env.
+    A scoped board override from the CLI ``--board`` flag beats
+    ``HERMES_KANBAN_WORKSPACES_ROOT``; otherwise that env var pins the path
+    directly (for the dispatcher→worker handoff).
 
     ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
     that existing scratch workspaces from before the boards feature are
     preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
     """
+    scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    slug = _normalize_board_slug(scoped) if scoped else _normalize_board_slug(board)
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
+    if override and not scoped:
         return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:

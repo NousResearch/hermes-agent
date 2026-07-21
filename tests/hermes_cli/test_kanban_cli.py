@@ -310,6 +310,29 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
     assert beta_titles == ["beta-task"]
 
 
+def test_board_override_beats_worker_db_pin(kanban_home, monkeypatch):
+    """CLI --board is an explicit operator override, even inside a worker env."""
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="alpha")))
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(kb.workspaces_root(board="alpha")))
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    args = parser.parse_args(["kanban", "--board", "beta", "create", "beta-task"])
+    assert kc.kanban_command(args) == 0
+
+    with kb.scoped_current_board("alpha"), kb.connect_closing() as conn:
+        alpha_titles = [row.title for row in kb.list_tasks(conn, limit=100)]
+    with kb.scoped_current_board("beta"), kb.connect_closing() as conn:
+        beta_titles = [row.title for row in kb.list_tasks(conn, limit=100)]
+
+    assert alpha_titles == []
+    assert beta_titles == ["beta-task"]
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------

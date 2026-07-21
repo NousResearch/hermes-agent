@@ -2075,7 +2075,8 @@ export interface Translations {
   assistant: {
     thread: {
       loadingSession: string
-      showEarlier: string
+      showEarlierMessages: string
+      showEarlierToolCalls: string
       loadingResponse: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string

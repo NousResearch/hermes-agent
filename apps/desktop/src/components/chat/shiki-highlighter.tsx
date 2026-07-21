@@ -17,7 +17,7 @@ import { useI18n } from '@/i18n'
 import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
 
 import type { ShikiWorkerToken } from './shiki-worker'
-import { startShikiHighlight } from './shiki-worker-client'
+import { isShikiWorkerRetryableError, startShikiHighlight } from './shiki-worker-client'
 
 /**
  * Streamdown's code adapter renders header + body as inline siblings, so we
@@ -100,22 +100,41 @@ function useWorkerHighlight(code: string, enabled: boolean, language: string) {
       return
     }
 
-    const job = startShikiHighlight(code, language)
     let active = true
+    let activeJob: ReturnType<typeof startShikiHighlight> | null = null
 
-    void job.promise
-      .then(result => {
-        if (active) {
-          setTokens(result)
+    const highlight = async () => {
+      for (let attempt = 0; attempt < 2 && active; attempt += 1) {
+        const job = startShikiHighlight(code, language)
+        activeJob = job
+
+        try {
+          const result = await job.promise
+
+          if (active) {
+            setTokens(result)
+          }
+
+          return
+        } catch (error) {
+          job.dispose()
+
+          if (activeJob === job) {
+            activeJob = null
+          }
+
+          if (!active || attempt > 0 || !isShikiWorkerRetryableError(error)) {
+            return
+          }
         }
-      })
-      .catch(() => {
-        // Plain code is the intentional fallback when a grammar/worker fails.
-      })
+      }
+    }
+
+    void highlight()
 
     return () => {
       active = false
-      job.dispose()
+      activeJob?.dispose()
     }
   }, [code, enabled, language])
 

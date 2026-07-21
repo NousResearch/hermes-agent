@@ -2389,7 +2389,8 @@ export const ja = defineLocale({
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
-      showEarlier: '以前のメッセージを表示',
+      showEarlierMessages: '以前のメッセージを表示',
+      showEarlierToolCalls: '以前のツール呼び出しを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
       resumeWhenBackgroundDone: count =>
         count === 1

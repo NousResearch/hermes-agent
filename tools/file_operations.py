@@ -1179,8 +1179,43 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    # Sentinel echoed through the terminal backend to verify the execution
+    # environment itself is healthy before trusting a failed file probe.
+    _ENV_PROBE_MARKER = "__HERMES_FILEOPS_ENV_OK__"
+
+    def _env_ready(self) -> bool:
+        """Check the terminal environment can execute commands at all.
+
+        A failed existence probe (``wc -c`` etc.) has two very different
+        causes: the file is genuinely missing, or ``env.execute()`` itself
+        failed — container still starting, container gone, transport error.
+        Reporting the latter as "File not found" poisons the model's beliefs
+        about its own filesystem, so callers use this probe to disambiguate.
+        """
+        try:
+            probe = self._exec(f"echo {self._ENV_PROBE_MARKER}")
+        except Exception:
+            return False
+        return probe.exit_code == 0 and self._ENV_PROBE_MARKER in probe.stdout
+
+    def _env_unavailable_result(self, path: str) -> ReadResult:
+        """ReadResult for 'the sandbox failed', as opposed to 'file missing'."""
+        return ReadResult(
+            error=(
+                f"Terminal environment unavailable while accessing {path}: "
+                "command execution failed (the sandbox may still be starting). "
+                "This is NOT evidence the file is missing — retry shortly."
+            )
+        )
+
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
+        # The existence probe that sent us here exits non-zero for missing
+        # files AND for execution-environment failures. Only report
+        # "File not found" when the environment can actually run commands.
+        if not self._env_ready():
+            return self._env_unavailable_result(path)
+
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
         basename_no_ext = os.path.splitext(filename)[0]
@@ -2106,7 +2141,21 @@ class ShellFileOperations(FileOperations):
                 error=". ".join(hint_parts),
                 total_count=0
             )
-        
+        if "exists" not in check.stdout:
+            # Neither marker came back: the existence probe itself failed to
+            # execute (sandbox still starting, container gone, transport
+            # error). Don't proceed to a search that would return a
+            # misleading empty result.
+            return SearchResult(
+                error=(
+                    f"Terminal environment unavailable while searching {path}: "
+                    "command execution failed (the sandbox may still be "
+                    "starting). This is NOT evidence the path is missing — "
+                    "retry shortly."
+                ),
+                total_count=0,
+            )
+
         if target == "files":
             return self._search_files(pattern, path, limit, offset)
         else:

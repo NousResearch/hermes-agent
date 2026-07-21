@@ -1667,6 +1667,7 @@ def _kill_orphaned_chromium_processes(session_name: str) -> int:
         return 0
 
     killed = 0
+    from tools.process_registry import ProcessRegistry
 
     for proc in psutil.process_iter(["pid", "name", "cmdline", "ppid"]):
         try:
@@ -1687,7 +1688,6 @@ def _kill_orphaned_chromium_processes(session_name: str) -> int:
             # so descendants (renderer, GPU, etc.) receive the same
             # SIGTERM→SIGKILL escalation as the root instead of surviving as
             # newly orphaned processes when the root is force-killed.
-            from tools.process_registry import ProcessRegistry
             ProcessRegistry._terminate_host_pid(proc.info["pid"])
             killed += 1
             logger.info(
@@ -1748,6 +1748,7 @@ def _reap_orphaned_browser_sessions():
         }
 
     reaped = 0
+    chromium_scan_done = False
     for socket_dir in socket_dirs:
         dir_name = os.path.basename(socket_dir)
         # dir_name is "agent-browser-{session_name}"
@@ -1801,7 +1802,9 @@ def _reap_orphaned_browser_sessions():
             # back to this socket directory, so only terminate agent-browser
             # Chromium processes that are already orphaned.  Active sessions still
             # have a live daemon parent and are skipped.
-            _kill_orphaned_chromium_processes(session_name)
+            if not chromium_scan_done:
+                chromium_scan_done = True
+                _kill_orphaned_chromium_processes(session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 

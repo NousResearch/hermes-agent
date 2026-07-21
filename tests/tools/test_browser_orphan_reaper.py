@@ -206,13 +206,36 @@ class TestOrphanedChromiumCleanup:
             chromium_killed.append(session_name)
             return 0
 
-        with patch("tools.browser_tool._kill_orphaned_chromium_processes",
-                    side_effect=mock_kill_chromium):
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.browser_tool._kill_orphaned_chromium_processes",
+                   side_effect=mock_kill_chromium):
             _reap_orphaned_browser_sessions()
 
         assert len(chromium_killed) == 1
         assert chromium_killed[0] == "h_dead123456"
         assert not d.exists()
+
+    def test_dead_daemons_trigger_chromium_scan_only_once(self, fake_tmpdir):
+        """Global Chromium scanning happens once per reaper invocation."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        first = _make_socket_dir(fake_tmpdir, "h_dead_first", pid=10001)
+        second = _make_socket_dir(fake_tmpdir, "h_dead_second", pid=10002)
+        chromium_scans = []
+
+        def mock_kill_chromium(session_name):
+            chromium_scans.append(session_name)
+            return 0
+
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.browser_tool._kill_orphaned_chromium_processes",
+                   side_effect=mock_kill_chromium):
+            _reap_orphaned_browser_sessions()
+
+        assert len(chromium_scans) == 1
+        assert set(chromium_scans) <= {"h_dead_first", "h_dead_second"}
+        assert not first.exists()
+        assert not second.exists()
 
     def test_alive_daemon_does_not_trigger_chromium_scan(self, fake_tmpdir):
         """When the daemon PID is alive, Chromium scan is NOT triggered

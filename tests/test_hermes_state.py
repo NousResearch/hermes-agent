@@ -4372,6 +4372,18 @@ class TestSchemaInit:
         from hermes_state import SCHEMA_SQL
 
         expected = SessionDB._parse_schema_columns(SCHEMA_SQL)
+        goal_work_columns = {
+            "goal_id",
+            "requires_goal_join",
+            "parent_delegation_id",
+            "goal_owner_session_id",
+            "reconciliation_state",
+            "reconciliation_claim",
+            "reconciliation_claimed_at",
+            "reconciliation_attempts",
+            "reconciled_at",
+        }
+        assert goal_work_columns <= set(expected["async_delegations"])
         for table_name, declared_cols in expected.items():
             live_cols = {
                 r[1]
@@ -4384,6 +4396,69 @@ class TestSchemaInit:
                     f"Column {col_name} declared in SCHEMA_SQL for {table_name} "
                     f"but missing from live DB. Live columns: {live_cols}"
                 )
+        indexes = {
+            row[1]
+            for row in db._conn.execute(
+                'PRAGMA index_list("async_delegations")'
+            ).fetchall()
+        }
+        assert "idx_async_delegations_goal_reconciliation" in indexes
+
+    def test_goal_work_columns_and_index_migrate_from_legacy_table(self, tmp_path):
+        db_path = tmp_path / "legacy-async.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """CREATE TABLE async_delegations (
+                    delegation_id TEXT PRIMARY KEY,
+                    origin_session TEXT NOT NULL,
+                    origin_ui_session_id TEXT NOT NULL DEFAULT '',
+                    parent_session_id TEXT,
+                    state TEXT NOT NULL,
+                    dispatched_at REAL NOT NULL,
+                    completed_at REAL,
+                    updated_at REAL NOT NULL,
+                    event_json TEXT,
+                    result_json TEXT,
+                    delivery_state TEXT NOT NULL DEFAULT 'pending',
+                    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                    delivered_at REAL,
+                    owner_pid INTEGER,
+                    owner_started_at INTEGER,
+                    task_json TEXT,
+                    delivery_claim TEXT,
+                    delivery_claimed_at REAL
+                )"""
+            )
+
+        migrated = SessionDB(db_path=db_path)
+        migrated_conn = migrated._conn
+        assert migrated_conn is not None
+        columns = {
+            row[1]
+            for row in migrated_conn.execute(
+                'PRAGMA table_info("async_delegations")'
+            ).fetchall()
+        }
+        indexes = {
+            row[1]
+            for row in migrated_conn.execute(
+                'PRAGMA index_list("async_delegations")'
+            ).fetchall()
+        }
+        migrated.close()
+
+        assert {
+            "goal_id",
+            "requires_goal_join",
+            "parent_delegation_id",
+            "goal_owner_session_id",
+            "reconciliation_state",
+            "reconciliation_claim",
+            "reconciliation_claimed_at",
+            "reconciliation_attempts",
+            "reconciled_at",
+        } <= columns
+        assert "idx_async_delegations_goal_reconciliation" in indexes
 
 
 class TestTitleUniqueness:
@@ -5211,6 +5286,14 @@ class TestStateMeta:
         """set_meta overwrites existing value (ON CONFLICT DO UPDATE)."""
         db.set_meta("key", "v1")
         db.set_meta("key", "v2")
+        assert db.get_meta("key") == "v2"
+
+    def test_compare_and_set_meta_does_not_overwrite_a_concurrent_value(self, db):
+        db.set_meta("key", "v1")
+
+        assert db.compare_and_set_meta("key", "stale", "replacement") is False
+        assert db.get_meta("key") == "v1"
+        assert db.compare_and_set_meta("key", "v1", "v2") is True
         assert db.get_meta("key") == "v2"
 
 

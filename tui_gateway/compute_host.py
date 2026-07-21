@@ -346,21 +346,41 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         request_id = str(frame.get("request_id") or uuid.uuid4().hex)
         if not sid:
-            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "sid required"})
+            self.emit(
+                {
+                    "type": "turn.error",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "reason": "unknown_session",
+                    "turn_started": False,
+                    "message": "sid required",
+                }
+            )
             return
+        turn_started = False
         try:
             from tui_gateway import server
 
             session = self._ensure_server_session(server, frame)
             with session["history_lock"]:
                 if session.get("running"):
-                    self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
+                    self.emit(
+                        {
+                            "type": "turn.error",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "reason": "session_busy",
+                            "turn_started": False,
+                            "message": "session busy",
+                        }
+                    )
                     return
                 session["running"] = True
                 session["_turn_cancel_requested"] = False
                 session["last_active"] = time.time()
                 server._start_inflight_turn(session, frame.get("text") if "text" in frame else frame.get("prompt"))
             self.emit({"type": "turn.started", "sid": sid, "request_id": request_id, "started_ns": now_ns()})
+            turn_started = True
             try:
                 server._ensure_session_db_row(session)
             except Exception:
@@ -412,7 +432,16 @@ class ComputeHost:
                         server._clear_inflight_turn(session)
             except Exception:
                 pass
-            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
+            self.emit(
+                {
+                    "type": "turn.error",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "reason": "exception",
+                    "turn_started": turn_started,
+                    "message": str(exc),
+                }
+            )
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")

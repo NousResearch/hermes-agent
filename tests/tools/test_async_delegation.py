@@ -5,9 +5,11 @@ onto the shared process_registry.completion_queue, the rich re-injection block
 formatting, capacity rejection, and crash handling.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -63,6 +65,21 @@ def _drain_for(delegation_id, timeout=5.0):
             continue
         time.sleep(0.02)
     return None
+
+
+def _install_goal_owner(goal_id: str, session_id: str = "owner") -> None:
+    with ad._connect() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO state_meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (
+                f"goal:{session_id}",
+                json.dumps({"goal_id": goal_id, "status": "active"}),
+            ),
+        )
 
 
 def test_dispatch_returns_immediately_without_blocking():
@@ -247,26 +264,627 @@ def test_completed_records_pruned_to_cap():
 def test_completion_is_persisted_and_delivery_can_be_acknowledged(tmp_path, monkeypatch):
     """A finished child remains pending on disk until its queue consumer acks it."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-123")
     dispatched = ad.dispatch_async_delegation(
         goal="durable", context="ctx", toolsets=["terminal"], role="leaf",
         model="m", session_key="owner", parent_session_id="parent",
-        runner=lambda: {"status": "completed", "summary": "survived"},
+        goal_id="goal-123", requires_goal_join=True,
+        goal_owner_session_id="owner",
+        parent_delegation_id="deleg-parent",
+        runner=lambda: {
+            "status": "completed",
+            "summary": "survived",
+            "tokens": {"input": 9, "output": 5},
+            "cost_usd": 0.02,
+        },
     )
-    assert _drain_one() is not None
+    assert dispatched["goal_owner"] == {
+        "goal_id": "goal-123",
+        "requires_goal_join": True,
+    }
+    completion = _drain_one()
+    assert completion is not None
+    assert completion["goal_id"] == "goal-123"
+    assert completion["requires_goal_join"] is True
+    assert completion["parent_delegation_id"] == "deleg-parent"
+    assert completion["goal_owner_session_id"] == "owner"
+    assert completion["tokens"] == {"input": 9, "output": 5}
+    assert completion["cost_usd"] == 0.02
 
     restored = queue.Queue()
     assert ad.restore_undelivered_completions(restored) == 1
     row = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert row is not None
     assert row["origin_session"] == "owner"
     assert row["state"] == "completed"
     assert row["result"]["summary"] == "survived"
+    assert row["goal_id"] == "goal-123"
+    assert row["requires_goal_join"] is True
+    assert row["parent_delegation_id"] == "deleg-parent"
+    assert row["goal_owner_session_id"] == "owner"
+    assert row["reconciliation_state"] == "pending"
     assert row["delivery_state"] == "pending"
     # Queue publication/restoration is not a destination delivery attempt.
     assert row["delivery_attempts"] == 0
 
     assert ad.mark_completion_delivered(dispatched["delegation_id"])
-    assert ad.restore_undelivered_completions(queue.Queue()) == 0
+    semantic = queue.Queue()
+    assert ad.restore_undelivered_completions(semantic) == 1
+    assert semantic.get_nowait()["semantic_recovery"] is True
     assert ad.get_durable_delegation(dispatched["delegation_id"])["delivery_state"] == "delivered"
+
+
+def test_completion_persistence_recovers_from_one_transient_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    real_persist_once = ad._persist_completion_once
+    attempts = 0
+
+    def fail_once(event, result):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is locked")
+        assert not ad._DB_LOCK.locked()
+        real_persist_once(event, result)
+
+    monkeypatch.setattr(ad, "_persist_completion_once", fail_once)
+    dispatched = ad.dispatch_async_delegation(
+        goal="retry terminal write",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        delegation_id="deleg_transient_completion_lock",
+        runner=lambda: {"status": "completed", "summary": "persisted"},
+    )
+
+    event = _drain_for(dispatched["delegation_id"])
+    assert event is not None
+    assert attempts == 2
+    durable = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert durable is not None and durable["state"] == "completed"
+    assert ad.active_count() == 0
+
+
+def test_completion_persistence_continues_after_immediate_retries_exhaust(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_COMPLETION_PERSIST_IMMEDIATE_ATTEMPTS", 2)
+    monkeypatch.setattr(ad, "_COMPLETION_PERSIST_RETRY_BASE_SECONDS", 0.01)
+    real_persist_once = ad._persist_completion_once
+    allow_persistence = threading.Event()
+    immediate_exhausted = threading.Event()
+    attempts = 0
+
+    def locked_until_released(event, result):
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 2:
+            immediate_exhausted.set()
+        if not allow_persistence.is_set():
+            raise sqlite3.OperationalError("database is locked")
+        real_persist_once(event, result)
+
+    monkeypatch.setattr(ad, "_persist_completion_once", locked_until_released)
+    dispatched = ad.dispatch_async_delegation(
+        goal="preserve terminal result",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        delegation_id="deleg_background_completion_retry",
+        runner=lambda: {"status": "completed", "summary": "eventual result"},
+    )
+    assert dispatched["status"] == "dispatched"
+    assert immediate_exhausted.wait(timeout=5)
+    assert process_registry.completion_queue.empty()
+    running = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert running is not None and running["state"] == "running"
+    assert ad.list_async_delegations()[0]["status"] == "finalizing"
+
+    blocked = ad.dispatch_async_delegation(
+        goal="must not outgrow retry capacity",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        delegation_id="deleg_blocked_while_finalizing",
+        runner=lambda: {"status": "completed", "summary": "should not run"},
+        max_async_children=1,
+    )
+    assert blocked["status"] == "rejected"
+    assert "capacity reached" in blocked["error"]
+
+    allow_persistence.set()
+    event = _drain_for(dispatched["delegation_id"])
+    assert event is not None and event["summary"] == "eventual result"
+    durable = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert durable is not None and durable["state"] == "completed"
+    assert ad.active_count() == 0
+
+
+def test_completion_remains_durable_when_registry_import_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "tools.process_registry", None)
+    dispatched = ad.dispatch_async_delegation(
+        goal="persist without queue import",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        delegation_id="deleg_registry_import_failure",
+        runner=lambda: {"status": "completed", "summary": "durable result"},
+    )
+
+    deadline = time.monotonic() + 5.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    durable = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert durable is not None and durable["state"] == "completed"
+    assert durable["result"]["summary"] == "durable result"
+    assert ad.active_count() == 0
+
+
+def test_durable_schema_migrates_goal_ownership_columns(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    initial = ad._connect()
+    initial.close()
+
+    with sqlite3.connect(ad._db_path()) as conn:
+        conn.execute("DROP INDEX idx_async_delegations_goal_reconciliation")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN goal_id")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN requires_goal_join")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN parent_delegation_id")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN goal_owner_session_id")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN reconciliation_state")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN reconciliation_claim")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN reconciliation_claimed_at")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN reconciliation_attempts")
+        conn.execute("ALTER TABLE async_delegations DROP COLUMN reconciled_at")
+
+    with ad._connect() as conn:
+        columns = {
+            row[1]: row for row in conn.execute("PRAGMA table_info(async_delegations)")
+        }
+    assert columns["goal_id"][3] == 1  # NOT NULL
+    assert columns["goal_id"][4] == "''"  # default preserves legacy rows
+    assert columns["requires_goal_join"][4] == "0"
+    assert columns["goal_owner_session_id"][4] == "''"
+    assert columns["reconciliation_state"][4] == "'not_required'"
+    assert "reconciliation_claim" in columns
+
+
+def test_concurrent_processes_can_migrate_goal_ownership_columns(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    initial = ad._connect()
+    initial.close()
+    with sqlite3.connect(ad._db_path()) as conn:
+        conn.execute("DROP INDEX idx_async_delegations_goal_reconciliation")
+        for column in (
+            "goal_id",
+            "requires_goal_join",
+            "parent_delegation_id",
+            "goal_owner_session_id",
+            "reconciliation_state",
+            "reconciliation_claim",
+            "reconciliation_claimed_at",
+            "reconciliation_attempts",
+            "reconciled_at",
+        ):
+            conn.execute(f"ALTER TABLE async_delegations DROP COLUMN {column}")
+
+    start_file = tmp_path / "start-migration"
+    script = """
+import os
+import sys
+import time
+from tools import async_delegation as ad
+
+while not os.path.exists(sys.argv[1]):
+    time.sleep(0.01)
+with ad._connect():
+    pass
+"""
+    env = dict(os.environ)
+    workers = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(start_file)],
+            cwd=os.getcwd(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(8)
+    ]
+    start_file.touch()
+    failures = []
+    for worker in workers:
+        stdout, stderr = worker.communicate(timeout=45)
+        if worker.returncode:
+            failures.append((worker.returncode, stdout, stderr))
+
+    assert failures == []
+    with ad._connect() as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")
+        }
+    assert "goal_id" in columns
+    assert "reconciled_at" in columns
+
+
+def test_duplicate_delegation_id_preserves_original_durable_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    base = {
+        "delegation_id": "deleg_fixed",
+        "goal": "original",
+        "session_key": "owner",
+        "status": "running",
+        "dispatched_at": time.time(),
+    }
+    ad._persist_dispatch(base)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        ad._persist_dispatch({**base, "goal": "replacement"})
+
+    with sqlite3.connect(ad._db_path()) as conn:
+        task_json = conn.execute(
+            "SELECT task_json FROM async_delegations WHERE delegation_id='deleg_fixed'"
+        ).fetchone()[0]
+    assert json.loads(task_json)["goal"] == "original"
+
+
+def test_duplicate_live_delegation_id_does_not_replace_runner(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    gate = threading.Event()
+
+    def original_runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "original finished"}
+
+    first = ad.dispatch_async_delegation(
+        goal="original live task",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        delegation_id="deleg_live_fixed",
+        runner=original_runner,
+    )
+    second = ad.dispatch_async_delegation(
+        goal="replacement task",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        delegation_id="deleg_live_fixed",
+        runner=lambda: {"status": "completed", "summary": "replacement ran"},
+    )
+    assert first["status"] == "dispatched"
+    assert second["status"] == "rejected"
+    gate.set()
+    event = _drain_for("deleg_live_fixed")
+    assert event is not None
+    assert event["summary"] == "original finished"
+
+
+def test_dispatch_persistence_failure_releases_in_memory_slot(monkeypatch):
+    def fail_persist(_record):
+        raise OSError("disk")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
+
+    result = ad.dispatch_async_delegation(
+        goal="must persist",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        runner=lambda: {"status": "completed"},
+    )
+
+    assert result["status"] == "rejected"
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []
+
+    batch_result = ad.dispatch_async_delegation_batch(
+        goals=["also persist"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        runner=lambda: {"results": []},
+    )
+    assert batch_result["status"] == "rejected"
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []
+
+
+def test_goal_snapshot_reports_mixed_batch_child_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-mixed")
+    dispatched = ad.dispatch_async_delegation_batch(
+        goals=["succeeds", "fails"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        goal_id="goal-mixed",
+        requires_goal_join=True,
+        goal_owner_session_id="owner",
+        runner=lambda: {
+            "status": "completed",
+            "results": [
+                {"status": "completed", "summary": "ok"},
+                {"status": "error", "error": "child exploded"},
+            ],
+        },
+    )
+    assert _drain_for(dispatched["delegation_id"]) is not None
+
+    snapshot = ad.get_goal_work_snapshot("goal-mixed")
+    assert snapshot["completed_count"] == 1
+    assert snapshot["failed_count"] == 1
+    assert snapshot["last_error"] == "child exploded"
+
+
+def test_in_memory_pruning_keeps_finalizing_records(monkeypatch):
+    monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 1)
+    with ad._records_lock:
+        ad._records.update({
+            "deleg_finalizing": {
+                "status": "finalizing",
+                "dispatched_at": 1,
+            },
+            "deleg_old": {
+                "status": "completed",
+                "completed_at": 2,
+            },
+            "deleg_new": {
+                "status": "completed",
+                "completed_at": 3,
+            },
+        })
+        ad._prune_completed_locked()
+
+    assert "deleg_finalizing" in ad._records
+    assert "deleg_old" not in ad._records
+    assert "deleg_new" in ad._records
+
+
+def test_reconciliation_claim_is_fenced_idempotent_and_stale_recoverable(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-claim")
+    dispatched = ad.dispatch_async_delegation(
+        goal="claimable",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        goal_id="goal-claim",
+        requires_goal_join=True,
+        goal_owner_session_id="owner",
+        runner=lambda: {"status": "completed", "summary": "ready"},
+    )
+    completion = _drain_one()
+    assert completion is not None
+    assert completion["delegation_id"] == dispatched["delegation_id"]
+
+    first = ad.claim_goal_reconciliation("goal-claim", "consumer-a")
+    assert first is not None
+    assert first["attempt"] == 1
+    assert ad.claim_goal_reconciliation("goal-claim", "consumer-b") is None
+    assert ad.release_goal_reconciliation("wrong-token") is False
+    assert ad.release_goal_reconciliation(first["claim_id"]) is True
+    assert ad.release_goal_reconciliation(first["claim_id"]) is True
+
+    second = ad.claim_goal_reconciliation("goal-claim", "consumer-b")
+    assert second is not None
+    assert second["attempt"] == 2
+    with sqlite3.connect(ad._db_path()) as conn:
+        conn.execute(
+            "UPDATE async_delegations SET reconciliation_claimed_at=? WHERE delegation_id=?",
+            (time.time() - 999, dispatched["delegation_id"]),
+        )
+        conn.execute(
+            "UPDATE async_delegations SET delivery_state='delivered' WHERE delegation_id=?",
+            (dispatched["delegation_id"],),
+        )
+    restored = queue.Queue()
+    assert ad.recover_stale_goal_reconciliation_claims(restored) == 1
+    retry_event = restored.get_nowait()
+    assert retry_event["semantic_recovery"] is True
+    assert retry_event["goal_owner_session_id"] == "owner"
+    third = ad.claim_goal_reconciliation("goal-claim", "consumer-c")
+    assert third is not None
+    assert third["attempt"] == 3
+    assert ad.complete_goal_reconciliation(second["claim_id"]) is False
+    assert ad.complete_goal_reconciliation(third["claim_id"]) is True
+    assert ad.complete_goal_reconciliation(third["claim_id"]) is True
+    assert ad.get_goal_work_snapshot("goal-claim")["reconciled_count"] == 1
+
+
+def test_pruning_protects_required_unreconciled_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-retain")
+    dispatched = ad.dispatch_async_delegation(
+        goal="retain evidence",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        goal_id="goal-retain",
+        requires_goal_join=True,
+        goal_owner_session_id="owner",
+        runner=lambda: {"status": "completed", "summary": "evidence"},
+    )
+    assert _drain_one() is not None
+    delegation_id = dispatched["delegation_id"]
+    assert ad.mark_completion_delivered(delegation_id)
+    with sqlite3.connect(ad._db_path()) as conn:
+        conn.execute(
+            "UPDATE async_delegations SET delivered_at=? WHERE delegation_id=?",
+            (time.time() - 10_000, delegation_id),
+        )
+    monkeypatch.setattr(ad, "_DURABLE_RETENTION_SECONDS", 1)
+
+    ad._prune_durable_records()
+    assert ad.get_durable_delegation(delegation_id) is not None
+
+    assert ad.abandon_goal_work("goal-retain", "test cleanup") == 1
+    with sqlite3.connect(ad._db_path()) as conn:
+        conn.execute(
+            "UPDATE async_delegations SET updated_at=? WHERE delegation_id=?",
+            (time.time() - 10_000, delegation_id),
+        )
+    ad._prune_durable_records()
+    assert ad.get_durable_delegation(delegation_id) is None
+
+
+def test_reconciliation_claim_tolerates_malformed_result_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-malformed")
+    dispatched = ad.dispatch_async_delegation(
+        goal="malformed evidence",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        goal_id="goal-malformed",
+        requires_goal_join=True,
+        goal_owner_session_id="owner",
+        runner=lambda: {"status": "completed", "summary": "valid first"},
+    )
+    assert _drain_one() is not None
+    with sqlite3.connect(ad._db_path()) as conn:
+        conn.execute(
+            "UPDATE async_delegations SET result_json=? WHERE delegation_id=?",
+            ("{not-json", dispatched["delegation_id"]),
+        )
+
+    claim = ad.claim_goal_reconciliation("goal-malformed", "test")
+    assert claim is not None
+    assert claim["delegations"][0]["result"] == {}
+
+
+def test_pre_turn_release_does_not_consume_retry_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-pre-turn")
+    ad.dispatch_async_delegation(
+        goal="enqueue later",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        goal_id="goal-pre-turn",
+        requires_goal_join=True,
+        goal_owner_session_id="owner",
+        runner=lambda: {"status": "completed", "summary": "ready"},
+    )
+    assert _drain_one() is not None
+    first = ad.claim_goal_reconciliation("goal-pre-turn", "test")
+    assert first is not None and first["attempt"] == 1
+    assert ad.release_goal_reconciliation(
+        first["claim_id"],
+        decrement_attempt=True,
+    )
+    second = ad.claim_goal_reconciliation("goal-pre-turn", "test")
+    assert second is not None and second["attempt"] == 1
+
+
+def test_concurrent_reconciliation_claims_have_one_winner(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-contention")
+    ad.dispatch_async_delegation(
+        goal="claim once",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model=None,
+        session_key="owner",
+        goal_id="goal-contention",
+        requires_goal_join=True,
+        goal_owner_session_id="owner",
+        runner=lambda: {"status": "completed", "summary": "ready"},
+    )
+    assert _drain_one() is not None
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        claims = list(
+            executor.map(
+                lambda index: ad.claim_goal_reconciliation(
+                    "goal-contention", f"consumer-{index}"
+                ),
+                range(8),
+            )
+        )
+    assert len([claim for claim in claims if claim is not None]) == 1
+
+
+def test_reconciliation_claim_batches_never_hide_claimed_rows(tmp_path, monkeypatch):
+    from hermes_cli.goals import complete_goal_reconciliation_turn
+    from tools.process_registry import format_goal_reconciliation_claim
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _install_goal_owner("goal-bounded-batch")
+    for index in range(21):
+        ad.dispatch_async_delegation(
+            goal=f"work {index}",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model=None,
+            session_key="batch-session",
+            parent_session_id="batch-session",
+            goal_id="goal-bounded-batch",
+            requires_goal_join=True,
+            goal_owner_session_id="owner",
+            delegation_id=f"deleg_bounded_{index:02d}",
+            runner=lambda i=index: {
+                "status": "completed",
+                "summary": f"bounded result {i} " + ("x" * 20_000),
+            },
+        )
+        _drain_one()
+
+    claimed_ids = []
+    batch_sizes = []
+    while True:
+        claim = ad.claim_goal_reconciliation("goal-bounded-batch", "test")
+        if claim is None:
+            break
+        batch_ids = list(claim["delegation_ids"])
+        batch_sizes.append(len(batch_ids))
+        prompt = format_goal_reconciliation_claim(claim, goal="bounded goal")
+        assert len(prompt) < 60_000
+        for delegation_id in batch_ids:
+            assert f"async_delegations:{delegation_id}" in prompt
+        claimed_ids.extend(batch_ids)
+        assert complete_goal_reconciliation_turn(claim["claim_id"])
+        if len(claimed_ids) < 21:
+            followup = process_registry.completion_queue.get(timeout=1)
+            assert followup["semantic_recovery"] is True
+
+    assert batch_sizes == [10, 10, 1]
+    assert claimed_ids == [f"deleg_bounded_{index:02d}" for index in range(21)]
 
 
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
@@ -487,6 +1105,60 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
+def test_delegate_task_runs_synchronously_when_goal_ownership_is_unavailable(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import hermes_cli.goals as goals_module
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    creds = {
+        "model": "m",
+        "provider": None,
+        "base_url": None,
+        "api_key": None,
+        "api_mode": None,
+        "command": None,
+        "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **_kw: fake_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *_a, **_k: creds)
+    monkeypatch.setattr(
+        dt,
+        "_run_single_child",
+        lambda *_a, **_k: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "joined in the parent turn",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        },
+    )
+    monkeypatch.setattr(
+        goals_module,
+        "capture_goal_delegation_owner",
+        lambda _session_id: (_ for _ in ()).throw(RuntimeError("database locked")),
+    )
+    dispatch = MagicMock(side_effect=AssertionError("must not detach"))
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", dispatch)
+
+    result = json.loads(
+        dt.delegate_task(goal="safe fallback", background=True, parent_agent=parent)
+    )
+
+    assert result["results"][0]["summary"] == "joined in the parent turn"
+    assert "ran synchronously" in result["note"]
+    dispatch.assert_not_called()
+
+
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
@@ -557,6 +1229,7 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     import json
     from unittest.mock import MagicMock, patch
     import tools.delegate_tool as dt
+    from hermes_cli.goals import GoalManager
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -589,6 +1262,7 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    standing_goal = GoalManager("sess").set("Finish the parent objective")
     out = dt.delegate_task(
         tasks=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}],
         background=True,
@@ -601,6 +1275,18 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert parsed["count"] == 3
     assert parsed["delegation_id"].startswith("deleg_")
     assert parsed["goals"] == ["a", "b", "c"]
+    assert parsed["goal_owner"] == {
+        "goal_id": standing_goal.goal_id,
+        "requires_goal_join": True,
+        "parent_delegation_id": "",
+    }
+    durable = ad.get_durable_delegation(parsed["delegation_id"])
+    assert durable is not None
+    assert durable["requires_goal_join"] is True
+    assert durable["reconciliation_state"] == "pending"
+    assert fake_child._root_goal_id == standing_goal.goal_id
+    assert fake_child._root_goal_owner_session_id == "sess"
+    assert fake_child._delegation_id == parsed["delegation_id"]
     # ONE background unit for the whole fan-out (not three), and the call
     # returned while all children are still blocked → chat not blocked.
     assert process_registry.completion_queue.empty()
@@ -612,6 +1298,8 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert evt is not None
     assert evt["type"] == "async_delegation"
     assert evt.get("is_batch") is True
+    assert evt["goal_id"] == standing_goal.goal_id
+    assert evt["requires_goal_join"] is True
     assert len(evt["results"]) == 3
     summaries = sorted(r["summary"] for r in evt["results"])
     assert summaries == ["done: a", "done: b", "done: c"]
@@ -622,6 +1310,63 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert "done: a" in text and "done: b" in text and "done: c" in text
     # No more events — it's a single combined completion, not N of them.
     assert _drain_one() is None
+
+
+def test_nested_async_dispatch_inherits_root_goal_and_parent_delegation(monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 1
+    parent.session_id = "nested-session"
+    parent._root_goal_id = "goal-root"
+    parent._root_goal_owner_session_id = "root-owner-session"
+    parent._delegation_id = "deleg-parent"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    child = MagicMock()
+    captured = {}
+
+    monkeypatch.setattr(dt, "_get_max_spawn_depth", lambda: 2)
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **_kw: child)
+    monkeypatch.setattr(
+        dt,
+        "_resolve_delegation_credentials",
+        lambda *_a, **_k: {
+            "model": "m",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+        },
+    )
+
+    def _dispatch(**kwargs):
+        captured.update(kwargs)
+        return {"status": "dispatched", "delegation_id": kwargs["delegation_id"]}
+
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", _dispatch)
+    payload = json.loads(
+        dt.delegate_task(
+            tasks=[{"goal": "nested work"}],
+            background=True,
+            parent_agent=parent,
+        )
+    )
+
+    assert payload["status"] == "dispatched"
+    assert captured["goal_id"] == "goal-root"
+    assert captured["requires_goal_join"] is True
+    assert captured["parent_delegation_id"] == "deleg-parent"
+    assert captured["goal_owner_session_id"] == "root-owner-session"
+    assert child._root_goal_id == "goal-root"
+    assert child._root_goal_owner_session_id == "root-owner-session"
+    assert child._delegation_id == payload["delegation_id"]
 
 
 def test_model_dispatch_forces_background():

@@ -2031,6 +2031,85 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
+def format_goal_reconciliation_claim(claim: dict, *, goal: str) -> str:
+    """Render one bounded internal mailbox batch without hiding claimed rows."""
+    delegations = claim.get("delegations") or []
+    lines = [
+        "[INTERNAL GOAL ASYNC-DELEGATION RECONCILIATION]",
+        f"Standing goal: {goal}",
+        f"Goal ID: {claim.get('goal_id', '')}",
+        f"Reconciliation claim: {claim.get('claim_id', '')}",
+        (
+            f"The {len(delegations)} required async delegation result(s) below "
+            "were claimed as one batch. Reconcile them into the standing goal. "
+            "Treat failures or unknown outcomes explicitly; verify mutable facts "
+            "before acting. This is an internal callback, not a user message."
+        ),
+    ]
+    row_budget = max(3000, 48000 // max(1, len(delegations)))
+    for item in delegations:
+        delegation_id = str(item.get("delegation_id") or "?")
+        task = item.get("task") if isinstance(item.get("task"), dict) else {}
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        row_lines = [
+            "",
+            f"--- {delegation_id} [{item.get('status', 'unknown')}] ---",
+            f"Durable result reference: async_delegations:{delegation_id}",
+        ]
+        task_goals = task.get("goals")
+        if isinstance(task_goals, list):
+            row_lines.append("Tasks: " + "; ".join(str(value)[:500] for value in task_goals[:20]))
+        elif task.get("goal"):
+            row_lines.append(f"Task: {str(task['goal'])[:1000]}")
+        child_results = result.get("results")
+        if isinstance(child_results, list):
+            detail_budget = max(1000, row_budget - sum(len(value) for value in row_lines) - 500)
+            max_children = min(len(child_results), 20)
+            per_child = max(120, detail_budget // max(1, max_children) - 80)
+            for index, child in enumerate(child_results[:max_children], start=1):
+                if not isinstance(child, dict):
+                    row_lines.append(f"Task {index}: {str(child)[:per_child]}")
+                    continue
+                summary = str(child.get("summary") or child.get("error") or "(no summary)")
+                row_lines.append(
+                    f"Task {index} [{child.get('status', 'unknown')}]: {summary[:per_child]}"
+                )
+                if child.get("summary") and child.get("error"):
+                    row_lines.append(f"Task {index} error: {str(child['error'])[:per_child]}")
+            if len(child_results) > max_children:
+                row_lines.append(
+                    f"{len(child_results) - max_children} additional child result(s) are stored at "
+                    f"async_delegations:{delegation_id}."
+                )
+        else:
+            available = max(500, row_budget - sum(len(value) for value in row_lines) - 200)
+            summary = result.get("summary") or result.get("error") or "(no summary)"
+            row_lines.append(str(summary)[:available])
+            if result.get("summary") and result.get("error"):
+                row_lines.append(f"Error: {str(result['error'])[: max(200, available // 3)]}")
+        transcripts = result.get("live_transcripts") or result.get("live_transcript")
+        if transcripts:
+            row_lines.append(f"Live transcript(s): {str(transcripts)[:1000]}")
+        row_text = "\n".join(row_lines)
+        if len(row_text) > row_budget:
+            row_text = (
+                row_text[: max(0, row_budget - 140)]
+                + f"\n[bounded; full payload: async_delegations:{delegation_id}]"
+            )
+        lines.append(row_text)
+    raw_tokens = claim.get("tokens")
+    tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+    lines.append(
+        "\nBatch totals: "
+        f"api_calls={int(claim.get('api_calls', 0) or 0)}, "
+        f"tokens={int(tokens.get('input', 0) or 0)} in/"
+        f"{int(tokens.get('output', 0) or 0)} out/"
+        f"{int(tokens.get('reasoning', 0) or 0)} reasoning, "
+        f"cost=${float(claim.get('cost_usd', 0.0) or 0.0):.6f}."
+    )
+    return "\n".join(lines)
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 

@@ -2396,6 +2396,71 @@ class GatewaySlashCommandsMixin:
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
+            decision = {}
+            try:
+                from hermes_cli.goals import prepare_goal_resume, get_goal_work_snapshot
+
+                adapters = getattr(self, "adapters", {})
+                session_key_for_source = getattr(self, "_session_key_for_source")
+                enqueue_fifo = getattr(self, "_enqueue_fifo")
+                adapter = adapters.get(event.source.platform) if event.source else None
+                _quick_key = session_key_for_source(event.source) if event.source else None
+                if adapter and _quick_key:
+                    decision = prepare_goal_resume(
+                        session_entry.session_id,
+                        consumer="gateway-goal-resume",
+                    )
+                    prompt = decision.get("prompt")
+                    if not prompt:
+                        snapshot = get_goal_work_snapshot(state.goal_id)
+                        outstanding = sum(
+                            int(snapshot.get(key, 0))
+                            for key in (
+                                "running_count",
+                                "terminal_unreconciled_count",
+                                "claimed_count",
+                            )
+                        )
+                        if outstanding:
+                            return t("gateway.goal.resumed", goal=state.goal) + " (waiting for required async work)"
+                        prompt = mgr.next_continuation_prompt() or state.goal
+                    metadata = {}
+                    if decision.get("reconciliation_claim"):
+                        metadata["goal_reconciliation"] = {
+                            "claim_id": decision.get("reconciliation_claim"),
+                            "goal_id": decision.get("goal_id"),
+                            "session_id": decision.get("goal_session_id"),
+                            "attempt": decision.get("reconciliation_attempt", 1),
+                            "delegation_ids": decision.get("delegation_ids") or [],
+                        }
+                    resume_event = MessageEvent(
+                        text=prompt,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                        internal=bool(metadata),
+                        metadata=metadata,
+                    )
+                    enqueue_fifo(_quick_key, resume_event, adapter)
+            except Exception as exc:
+                claim_id = str(decision.get("reconciliation_claim") or "")
+                if claim_id:
+                    try:
+                        from hermes_cli.goals import release_goal_reconciliation_turn
+
+                        release_goal_reconciliation_turn(
+                            claim_id,
+                            session_id=str(
+                                decision.get("goal_session_id") or session_entry.session_id
+                            ),
+                            goal_id=str(decision.get("goal_id") or ""),
+                            attempt=int(decision.get("reconciliation_attempt", 1) or 1),
+                            turn_started=False,
+                        )
+                    except Exception:
+                        pass
+                logger.debug("goal resume enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
         if lower in {"clear", "stop", "done"}:

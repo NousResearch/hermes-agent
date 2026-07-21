@@ -1003,7 +1003,16 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    goal_id TEXT NOT NULL DEFAULT '',
+    requires_goal_join INTEGER NOT NULL DEFAULT 0,
+    parent_delegation_id TEXT NOT NULL DEFAULT '',
+    goal_owner_session_id TEXT NOT NULL DEFAULT '',
+    reconciliation_state TEXT NOT NULL DEFAULT 'not_required',
+    reconciliation_claim TEXT,
+    reconciliation_claimed_at REAL,
+    reconciliation_attempts INTEGER NOT NULL DEFAULT 0,
+    reconciled_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -1033,6 +1042,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
+CREATE INDEX IF NOT EXISTS idx_async_delegations_goal_reconciliation
+    ON async_delegations(goal_id, requires_goal_join, reconciliation_state, state);
 """
 
 # ── Deferred FTS rebuild bookkeeping (schema v23) ──
@@ -8830,6 +8841,17 @@ class SessionDB:
                 (key, value),
             )
         self._execute_write(_do)
+
+    def compare_and_set_meta(self, key: str, expected: str, value: str) -> bool:
+        """Replace an existing meta value only when it is still *expected*."""
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?",
+                (value, key, expected),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

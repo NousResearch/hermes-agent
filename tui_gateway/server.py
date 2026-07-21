@@ -1265,12 +1265,30 @@ def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> di
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
         attached_images = list(session.get("attached_images", []))
+        pending_reconciliation = session.get("pending_goal_reconciliation")
+        pending_reconciliation = (
+            dict(pending_reconciliation)
+            if isinstance(pending_reconciliation, dict)
+            else {}
+        )
+    turn_text = text
+    if pending_reconciliation and not (
+        isinstance(text, dict) and text.get("goal_reconciliation")
+    ):
+        expected_prompt = str(pending_reconciliation.pop("_prompt", "") or "")
+        prompt_text = str(text or "")
+        if expected_prompt and prompt_text != expected_prompt:
+            prompt_text = f"{expected_prompt}\n\n[Additional user input]\n{prompt_text}"
+        turn_text = {
+            "text": prompt_text,
+            "goal_reconciliation": pending_reconciliation,
+        }
     return {
         "type": "turn.start",
         "sid": sid,
         "request_id": rid,
         "session_key": session.get("session_key") or sid,
-        "text": text,
+        "text": turn_text,
         "history": history,
         "history_version": history_version,
         "cols": int(session.get("cols", 80) or 80),
@@ -1341,6 +1359,45 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     if is_error:
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
+        reconciliation = frame.get("_goal_reconciliation")
+        if isinstance(reconciliation, dict) and reconciliation.get("claim_id"):
+            home_token = None
+            try:
+                profile_home = str(session.get("profile_home") or "")
+                if profile_home:
+                    from hermes_constants import set_hermes_home_override
+
+                    home_token = set_hermes_home_override(profile_home)
+                from hermes_cli.goals import release_goal_reconciliation_turn
+
+                preturn_reasons = {"send_failed", "session_busy", "unknown_session"}
+                turn_started = bool(
+                    frame.get(
+                        "turn_started",
+                        str(frame.get("reason") or "") not in preturn_reasons,
+                    )
+                )
+                release_goal_reconciliation_turn(
+                    str(reconciliation.get("claim_id") or ""),
+                    session_id=str(
+                        reconciliation.get("session_id")
+                        or session.get("session_key")
+                        or ""
+                    ),
+                    goal_id=str(reconciliation.get("goal_id") or ""),
+                    attempt=int(reconciliation.get("attempt", 1) or 1),
+                    turn_started=turn_started,
+                )
+            except Exception:
+                logger.exception("Failed to release compute-host goal reconciliation")
+            finally:
+                if home_token is not None:
+                    try:
+                        from hermes_constants import reset_hermes_home_override
+
+                        reset_hermes_home_override(home_token)
+                    except Exception:
+                        pass
     _apply_compute_host_metadata_mirror(session, frame)
     try:
         info = _session_info(session.get("agent"), session)
@@ -1354,6 +1411,22 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text)
+    packed_text = frame.get("text")
+    reconciliation = (
+        dict(packed_text.get("goal_reconciliation") or {})
+        if isinstance(packed_text, dict) and packed_text.get("goal_reconciliation")
+        else {}
+    )
+    pending_to_restore = None
+    with session["history_lock"]:
+        pending = session.get("pending_goal_reconciliation")
+        if (
+            reconciliation
+            and isinstance(pending, dict)
+            and str(pending.get("claim_id") or "")
+            == str(reconciliation.get("claim_id") or "")
+        ):
+            pending_to_restore = session.pop("pending_goal_reconciliation")
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure through the callback
@@ -1362,11 +1435,17 @@ def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any)
         # duplicate terminal error.
         if done.get("reason") == "send_failed":
             return
+        if reconciliation:
+            done = dict(done)
+            done["_goal_reconciliation"] = reconciliation
         _on_compute_host_turn_done(rid, sid, session, done)
 
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:
+        if pending_to_restore is not None:
+            with session["history_lock"]:
+                session.setdefault("pending_goal_reconciliation", pending_to_restore)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
         session["_compute_host_active"] = True
@@ -9984,11 +10063,17 @@ def _notification_poller_loop(
     poller requeues events owned by another live session and drops addressed
     events whose owner is gone; ownerless legacy notifications remain global.
     """
+    from tools.async_delegation import recover_stale_goal_reconciliation_claims
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    last_claim_recovery_at = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
+            now = time.monotonic()
+            if now - last_claim_recovery_at >= 30.0:
+                last_claim_recovery_at = now
+                recover_stale_goal_reconciliation_claims(process_registry.completion_queue)
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
             continue
@@ -10033,22 +10118,17 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        # Only emit the same notification identity to TUI once — re-queued
-        # completions get re-emitted every 0.5s otherwise when session is busy,
-        # while distinct watch_match events from the same process must remain
-        # visible independently.
-        _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
+        # Never consume a notification while an agent turn is already running.
+        # Requeue it and let the post-turn drain pick it up, avoiding nested turns.
         _requeued = False
         with session["history_lock"]:
             if session.get("running"):
+                _dedup_key = _notification_event_dedup_key(evt)
+                if _dedup_key not in _emitted:
+                    _emit("status.update", sid, {"kind": "process", "text": text})
+                    _emitted.add(_dedup_key)
                 process_registry.completion_queue.put(evt)
                 _requeued = True
-            else:
-                session["running"] = True
         if _requeued:
             # Back off before re-polling: the re-queued event keeps the queue
             # non-empty, so without a sleep this loop spins at full speed
@@ -10063,12 +10143,103 @@ def _notification_poller_loop(
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
             continue
+        reconciliation = {}
         try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            prompt = text
+            classification = "unowned"
+            status_message = ""
+            decision = {}
+            if evt.get("type") == "async_delegation":
+                from hermes_cli.goals import prepare_goal_delegation_delivery
+
+                decision = prepare_goal_delegation_delivery(
+                    evt,
+                    text,
+                    current_session_id=str(session.get("session_key") or ""),
+                    consumer="tui-poller",
+                )
+                prompt = decision.get("prompt")
+                classification = str(decision.get("classification") or "")
+                status_message = str(decision.get("status_message") or "")
+
+            display_text = status_message
+            if not display_text and classification in {"unowned", "superseded"}:
+                display_text = text
+            _dedup_key = _notification_event_dedup_key(evt)
+            if display_text and _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": display_text})
+                _emitted.add(_dedup_key)
+
+            if not prompt:
+                complete_event_delivery(evt, _claim)
+                continue
+
+            if decision.get("reconciliation_claim"):
+                reconciliation = {
+                    "claim_id": decision.get("reconciliation_claim"),
+                    "goal_id": decision.get("goal_id"),
+                    "session_id": decision.get("goal_session_id"),
+                    "attempt": decision.get("reconciliation_attempt", 1),
+                    "delegation_ids": decision.get("delegation_ids") or [],
+                }
+
+            with session["history_lock"]:
+                if session.get("running"):
+                    if reconciliation:
+                        from hermes_cli.goals import release_goal_reconciliation_turn
+
+                        release_goal_reconciliation_turn(
+                            str(reconciliation.get("claim_id") or ""),
+                            session_id=str(reconciliation.get("session_id") or ""),
+                            goal_id=str(reconciliation.get("goal_id") or ""),
+                            attempt=int(reconciliation.get("attempt", 1) or 1),
+                            turn_started=False,
+                            requeue=False,
+                        )
+                    release_event_delivery(evt, _claim)
+                    process_registry.completion_queue.put(evt)
+                    time.sleep(0.1)
+                    continue
+                session["running"] = True
+            turn_input = (
+                {"text": prompt, "goal_reconciliation": reconciliation}
+                if reconciliation
+                else prompt
+            )
+            if _session_uses_compute_host(session):
+                isolated_response = _submit_prompt_to_compute_host(
+                    rid,
+                    sid,
+                    session,
+                    turn_input,
+                )
+                if isolated_response.get("error"):
+                    raise RuntimeError(
+                        isolated_response["error"].get(
+                            "message", "compute-host dispatch failed"
+                        )
+                    )
+            else:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, turn_input)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
+            if reconciliation:
+                try:
+                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                    release_goal_reconciliation_turn(
+                        str(reconciliation.get("claim_id") or ""),
+                        session_id=str(reconciliation.get("session_id") or ""),
+                        goal_id=str(reconciliation.get("goal_id") or ""),
+                        attempt=int(reconciliation.get("attempt", 1) or 1),
+                        turn_started=False,
+                        requeue=False,
+                    )
+                except Exception:
+                    pass
             release_event_delivery(evt, _claim)
+            process_registry.completion_queue.put(evt)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -10113,16 +10284,14 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
         with session["history_lock"]:
             if session.get("running"):
+                _dedup_key = _notification_event_dedup_key(evt)
+                if _dedup_key not in _emitted:
+                    _emit("status.update", sid, {"kind": "process", "text": text})
+                    _emitted.add(_dedup_key)
                 process_registry.completion_queue.put(evt)
                 break
-            session["running"] = True
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
@@ -10131,12 +10300,87 @@ def _notification_poller_loop(
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
             continue
+        reconciliation = {}
         try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            prompt = text
+            classification = "unowned"
+            status_message = ""
+            decision = {}
+            if evt.get("type") == "async_delegation":
+                from hermes_cli.goals import prepare_goal_delegation_delivery
+
+                decision = prepare_goal_delegation_delivery(
+                    evt,
+                    text,
+                    current_session_id=str(session.get("session_key") or ""),
+                    consumer="tui-shutdown-drain",
+                )
+                prompt = decision.get("prompt")
+                classification = str(decision.get("classification") or "")
+                status_message = str(decision.get("status_message") or "")
+
+            display_text = status_message
+            if not display_text and classification in {"unowned", "superseded"}:
+                display_text = text
+            _dedup_key = _notification_event_dedup_key(evt)
+            if display_text and _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": display_text})
+                _emitted.add(_dedup_key)
+
+            if not prompt:
+                complete_event_delivery(evt, _claim)
+                continue
+
+            if decision.get("reconciliation_claim"):
+                reconciliation = {
+                    "claim_id": decision.get("reconciliation_claim"),
+                    "goal_id": decision.get("goal_id"),
+                    "session_id": decision.get("goal_session_id"),
+                    "attempt": decision.get("reconciliation_attempt", 1),
+                    "delegation_ids": decision.get("delegation_ids") or [],
+                }
+
+            with session["history_lock"]:
+                session["running"] = True
+            turn_input = (
+                {"text": prompt, "goal_reconciliation": reconciliation}
+                if reconciliation
+                else prompt
+            )
+            if _session_uses_compute_host(session):
+                isolated_response = _submit_prompt_to_compute_host(
+                    rid,
+                    sid,
+                    session,
+                    turn_input,
+                )
+                if isolated_response.get("error"):
+                    raise RuntimeError(
+                        isolated_response["error"].get(
+                            "message", "compute-host dispatch failed"
+                        )
+                    )
+            else:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, turn_input)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
+            if reconciliation:
+                try:
+                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                    release_goal_reconciliation_turn(
+                        str(reconciliation.get("claim_id") or ""),
+                        session_id=str(reconciliation.get("session_id") or ""),
+                        goal_id=str(reconciliation.get("goal_id") or ""),
+                        attempt=int(reconciliation.get("attempt", 1) or 1),
+                        turn_started=False,
+                        requeue=False,
+                    )
+                except Exception:
+                    pass
             release_event_delivery(evt, _claim)
+            process_registry.completion_queue.put(evt)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -10232,6 +10476,17 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    reconciliation = {}
+    if isinstance(text, dict) and text.get("goal_reconciliation"):
+        reconciliation = dict(text.get("goal_reconciliation") or {})
+        text = str(text.get("text") or "")
+    elif isinstance(session.get("pending_goal_reconciliation"), dict):
+        pending_reconciliation = session.get("pending_goal_reconciliation") or {}
+        expected_prompt = str(pending_reconciliation.get("_prompt") or "")
+        reconciliation = dict(session.pop("pending_goal_reconciliation"))
+        reconciliation.pop("_prompt", None)
+        if expected_prompt and isinstance(text, str) and text != expected_prompt:
+            text = f"{expected_prompt}\n\n[Additional user input]\n{text}"
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -10252,6 +10507,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        reconciliation_finalized = False
         one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
             from tools.approval import (
@@ -10493,7 +10749,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 status = (
                     "interrupted"
                     if result.get("interrupted")
-                    else "error" if result.get("error") else "complete"
+                    else "error"
+                    if result.get("error") or result.get("failed") or result.get("partial")
+                    else "complete"
                 )
                 # When the backend produced no visible response AND reported a
                 # real error (e.g. invalid model slug → provider 4xx), surface
@@ -10527,6 +10785,32 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
+
+            if reconciliation:
+                claim_id = str(reconciliation.get("claim_id") or "")
+                from hermes_cli.goals import reconciliation_turn_succeeded
+
+                if claim_id and reconciliation_turn_succeeded(
+                    raw,
+                    interrupted=bool(result.get("interrupted")) if isinstance(result, dict) else False,
+                    failed=bool(result.get("failed")) if isinstance(result, dict) else False,
+                    partial=bool(result.get("partial")) if isinstance(result, dict) else False,
+                    error=bool(result.get("error")) if isinstance(result, dict) else False,
+                ):
+                    from hermes_cli.goals import complete_goal_reconciliation_turn
+
+                    complete_goal_reconciliation_turn(claim_id)
+                    reconciliation_finalized = True
+                elif claim_id:
+                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                    release_goal_reconciliation_turn(
+                        claim_id,
+                        session_id=str(reconciliation.get("session_id") or session.get("session_key") or ""),
+                        goal_id=str(reconciliation.get("goal_id") or ""),
+                        attempt=int(reconciliation.get("attempt", 1) or 1),
+                    )
+                    reconciliation_finalized = True
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -10688,6 +10972,18 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            if reconciliation and not reconciliation_finalized:
+                try:
+                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                    release_goal_reconciliation_turn(
+                        str(reconciliation.get("claim_id") or ""),
+                        session_id=str(reconciliation.get("session_id") or session.get("session_key") or ""),
+                        goal_id=str(reconciliation.get("goal_id") or ""),
+                        attempt=int(reconciliation.get("attempt", 1) or 1),
+                    )
+                except Exception:
+                    logger.debug("TUI goal reconciliation release failed", exc_info=True)
             if one_turn_restore:
                 try:
                     _restore_agent_model_runtime(agent, one_turn_restore)
@@ -10771,19 +11067,90 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         for pending_evt, _pending_synth in drained[index:]:
                             process_registry.completion_queue.put(pending_evt)
                         break
-                    session["running"] = True
                 from tools.async_delegation import (
                     claim_event_delivery, complete_event_delivery, release_event_delivery,
                 )
                 _claim = claim_event_delivery(_evt, "tui-post-turn")
                 if _claim is None:
                     continue
+                notification_reconciliation = {}
                 try:
+                    prompt = synth
+                    decision = {}
+                    if _evt.get("type") == "async_delegation":
+                        from hermes_cli.goals import prepare_goal_delegation_delivery
+
+                        decision = prepare_goal_delegation_delivery(
+                            _evt,
+                            synth,
+                            current_session_id=str(session.get("session_key") or ""),
+                            consumer="tui-post-turn",
+                        )
+                        prompt = decision.get("prompt")
+                        status_message = str(decision.get("status_message") or "")
+                        if status_message:
+                            _emit(
+                                "status.update",
+                                sid,
+                                {"kind": "process", "text": status_message},
+                            )
+
+                    if not prompt:
+                        complete_event_delivery(_evt, _claim)
+                        continue
+
+                    if decision.get("reconciliation_claim"):
+                        notification_reconciliation = {
+                            "claim_id": decision.get("reconciliation_claim"),
+                            "goal_id": decision.get("goal_id"),
+                            "session_id": decision.get("goal_session_id"),
+                            "attempt": decision.get("reconciliation_attempt", 1),
+                            "delegation_ids": decision.get("delegation_ids") or [],
+                        }
+
+                    with session["history_lock"]:
+                        if session.get("running"):
+                            if notification_reconciliation:
+                                from hermes_cli.goals import release_goal_reconciliation_turn
+
+                                release_goal_reconciliation_turn(
+                                    str(notification_reconciliation.get("claim_id") or ""),
+                                    session_id=str(notification_reconciliation.get("session_id") or ""),
+                                    goal_id=str(notification_reconciliation.get("goal_id") or ""),
+                                    attempt=int(notification_reconciliation.get("attempt", 1) or 1),
+                                    turn_started=False,
+                                    requeue=False,
+                                )
+                            release_event_delivery(_evt, _claim)
+                            process_registry.completion_queue.put(_evt)
+                            for pending_evt, _pending_synth in drained[index + 1:]:
+                                process_registry.completion_queue.put(pending_evt)
+                            break
+                        session["running"] = True
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _run_prompt_submit(
+                        rid, sid, session,
+                        ({"text": prompt, "goal_reconciliation": notification_reconciliation}
+                         if notification_reconciliation else prompt),
+                    )
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
+                    if notification_reconciliation:
+                        try:
+                            from hermes_cli.goals import release_goal_reconciliation_turn
+
+                            release_goal_reconciliation_turn(
+                                str(notification_reconciliation.get("claim_id") or ""),
+                                session_id=str(notification_reconciliation.get("session_id") or ""),
+                                goal_id=str(notification_reconciliation.get("goal_id") or ""),
+                                attempt=int(notification_reconciliation.get("attempt", 1) or 1),
+                                turn_started=False,
+                                requeue=False,
+                            )
+                        except Exception:
+                            pass
                     release_event_delivery(_evt, _claim)
+                    process_registry.completion_queue.put(_evt)
                     print(
                         f"[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",
@@ -13928,14 +14295,47 @@ def _(rid, params: dict) -> dict:
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            from hermes_cli.goals import prepare_goal_resume, get_goal_work_snapshot
+
+            decision = prepare_goal_resume(sid_key, consumer="tui-goal-resume")
+            prompt = decision.get("prompt")
+            if decision.get("reconciliation_claim"):
+                session["pending_goal_reconciliation"] = {
+                    "claim_id": decision.get("reconciliation_claim"),
+                    "goal_id": decision.get("goal_id"),
+                    "session_id": decision.get("goal_session_id"),
+                    "attempt": decision.get("reconciliation_attempt", 1),
+                    "delegation_ids": decision.get("delegation_ids") or [],
+                    "_prompt": prompt,
+                }
+            if not prompt:
+                snapshot = get_goal_work_snapshot(state.goal_id)
+                outstanding = sum(
+                    int(snapshot.get(key, 0))
+                    for key in (
+                        "running_count",
+                        "terminal_unreconciled_count",
+                        "claimed_count",
+                    )
+                )
+                if outstanding:
+                    return _ok(
+                        rid,
+                        {
+                            "type": "exec",
+                            "output": (
+                                f"▶ Goal resumed: {state.goal} "
+                                "(waiting for required async work)"
+                            ),
+                        },
+                    )
+                prompt = mgr.next_continuation_prompt() or state.goal
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": f"▶ Goal resumed: {state.goal}",
+                    "message": prompt,
                 },
             )
         if lower in {"clear", "stop", "done"}:

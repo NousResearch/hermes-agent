@@ -38,6 +38,14 @@ export function windowItems<T>(items: T[], selected: number, visible: number) {
   }
 }
 
+/**
+ * Clamp a selection index into `[0, length - 1]`, returning 0 for an empty
+ * list. Shared by the type-to-filter overlays to keep a cursor in bounds when
+ * the filtered list shrinks beneath it.
+ */
+export const clampIndex = (index: number, length: number): number =>
+  length <= 0 ? 0 : Math.max(0, Math.min(index, length - 1))
+
 interface OverlayHintProps {
   children: string
   t: Theme

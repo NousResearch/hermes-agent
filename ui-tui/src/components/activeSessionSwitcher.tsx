@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -11,6 +11,7 @@ import type {
   SessionListItem,
   SessionListResponse
 } from '../gatewayTypes.js'
+import { fuzzyRank } from '../lib/fuzzy.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -87,6 +88,195 @@ export const resumableHistory = (history: readonly SessionListItem[], live: read
   const liveIds = new Set(live.map(s => s.id))
 
   return history.filter(h => !liveIds.has(h.id))
+}
+
+// ── Type-to-filter (fuzzy search) ────────────────────────────────────
+//
+// The live + resumable rows support fuzzy type-to-filter, separate from the
+// "+ new" row's draft prompt: printable keys feed the draft when the new row is
+// selected, and the filter when a session row is selected. The list logic and
+// the key-gating decision are pure functions so they can be unit-tested.
+
+/** Fuzzy-rank live/resumable rows by title + preview + id. Empty query keeps order. */
+export const rankByText = <T extends { id: string; preview?: string; title?: string }>(
+  items: readonly T[],
+  query: string
+): T[] =>
+  query.trim()
+    ? fuzzyRank(items, query, x => `${x.title ?? ''} ${x.preview ?? ''} ${x.id}`).map(r => r.item)
+    : [...items]
+
+/**
+ * Clamp the flat Sessions selection. Rows are [new][live…][history…], so the
+ * valid range is `[0, matchCount]` (index 0 is the pinned "+ new" row, indices
+ * 1..matchCount are session rows). While a filter is active the floor is 1 so
+ * the cursor can never land on the new row — which would divert printable keys
+ * to the draft prompt instead of the filter.
+ */
+export const clampSessionSel = (sel: number, matchCount: number, filtering: boolean): number =>
+  Math.max(filtering ? 1 : 0, Math.min(sel, matchCount))
+
+/**
+ * Preserve the selected session across a live-status poll while filtering.
+ * Matching rows can be inserted, removed, or re-ranked as their metadata
+ * changes, so clamping the old numeric index is not enough: re-anchor by id,
+ * just like the unfiltered quiet-poll path does.
+ */
+export function reanchorFilteredSessionSelection(
+  sel: number,
+  previousLive: readonly SessionSearchRow[],
+  previousHistory: readonly SessionSearchRow[],
+  nextLive: readonly SessionSearchRow[],
+  nextHistory: readonly SessionSearchRow[],
+  query: string
+): number {
+  const previousRows = [...rankByText(previousLive, query), ...rankByText(previousHistory, query)]
+  const nextRows = [...rankByText(nextLive, query), ...rankByText(nextHistory, query)]
+  const selectedId = previousRows[sel - 1]?.id
+  const nextIndex = selectedId ? nextRows.findIndex(row => row.id === selectedId) : -1
+
+  return nextIndex >= 0 ? nextIndex + 1 : clampSessionSel(sel, nextRows.length, true)
+}
+
+/** Map a filtered row back to its position in the full session list. */
+export function fullSessionSelectionForId(
+  id: string | undefined,
+  live: readonly SessionSearchRow[],
+  history: readonly SessionSearchRow[]
+): number {
+  const liveIndex = id ? live.findIndex(row => row.id === id) : -1
+
+  if (liveIndex >= 0) {
+    return liveIndex + 1
+  }
+
+  const historyIndex = id ? history.findIndex(row => row.id === id) : -1
+
+  if (historyIndex >= 0) {
+    return live.length + historyIndex + 1
+  }
+
+  return live.length + history.length > 0 ? 1 : 0
+}
+
+interface SessionSearchRow {
+  id: string
+  preview?: string
+  title?: string
+}
+
+/** Subset of the Ink key flags the Sessions handler inspects. */
+export interface SessionsKeyFlags {
+  backspace?: boolean
+  ctrl?: boolean
+  delete?: boolean
+  downArrow?: boolean
+  escape?: boolean
+  meta?: boolean
+  return?: boolean
+  tab?: boolean
+  upArrow?: boolean
+}
+
+export interface SessionsKeyContext {
+  filterActive: boolean
+  onNewRow: boolean
+  selectedKind: SessionRowKind
+}
+
+export type SessionsKeyAction =
+  | { ch: string; kind: 'filterAppend' }
+  | { kind: 'armDelete' }
+  | { kind: 'cancel' }
+  | { kind: 'clearFilter' }
+  | { kind: 'closeLive' }
+  | { kind: 'draft' }
+  | { kind: 'filterBackspace' }
+  | { kind: 'ignore' }
+  | { kind: 'navDown' }
+  | { kind: 'navUp' }
+  | { kind: 'newSession' }
+  | { kind: 'pickModel' }
+  | { kind: 'refresh' }
+  | { kind: 'select' }
+
+/**
+ * Decide what a keypress does on the Sessions overlay. Ctrl chords (new /
+ * refresh / close), Tab, arrows and Enter are always available. Esc clears an
+ * active filter before cancelling. On the "+ new" row, printable keys feed the
+ * draft prompt; on a session row they start / extend the fuzzy filter. `d` arms
+ * a delete only when not filtering, so it can be typed into the filter.
+ */
+export function classifySessionsListKey(ch: string, key: SessionsKeyFlags, ctx: SessionsKeyContext): SessionsKeyAction {
+  const { filterActive, onNewRow, selectedKind } = ctx
+  const lower = ch ? ch.toLowerCase() : ''
+  const isCtrl = (letter: string) => !!key.ctrl && (lower === letter || ch === ctrlChar(letter))
+
+  if (isCtrl('n')) {
+    return { kind: 'newSession' }
+  }
+
+  if (isCtrl('r')) {
+    return { kind: 'refresh' }
+  }
+
+  if (key.tab) {
+    return onNewRow ? { kind: 'pickModel' } : { kind: 'ignore' }
+  }
+
+  if (isCtrl('d')) {
+    return !filterActive && selectedKind === 'live' ? { kind: 'closeLive' } : { kind: 'ignore' }
+  }
+
+  if (key.escape) {
+    return filterActive ? { kind: 'clearFilter' } : { kind: 'cancel' }
+  }
+
+  // `d` arms two-press delete on a resumable row — only when not filtering and
+  // not on the new row, so the same key can be typed into the filter.
+  if (lower === 'd' && !key.ctrl && !key.meta && !filterActive && !onNewRow && selectedKind === 'history') {
+    return { kind: 'armDelete' }
+  }
+
+  if (key.upArrow) {
+    return { kind: 'navUp' }
+  }
+
+  if (key.downArrow) {
+    return { kind: 'navDown' }
+  }
+
+  if (key.return) {
+    return { kind: 'select' }
+  }
+
+  // The new row owns the draft prompt; printable keys belong to its TextInput.
+  if (onNewRow) {
+    return ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ' ? { kind: 'draft' } : { kind: 'ignore' }
+  }
+
+  // On a session row: Backspace / Ctrl+U edit the filter; any other printable
+  // key starts / extends it.
+  if ((key.backspace || key.delete) && filterActive) {
+    return { kind: 'filterBackspace' }
+  }
+
+  if (isCtrl('u') && filterActive) {
+    return { kind: 'clearFilter' }
+  }
+
+  if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+    // A leading space must not start a filter (it would read as "active" while
+    // the trimmed query leaves the list unfiltered). Spaces inside a query are
+    // fine (multi-token match).
+    if (ch === ' ' && !filterActive) {
+      return { kind: 'ignore' }
+    }
+
+    return { ch, kind: 'filterAppend' }
+  }
+
+  return { kind: 'ignore' }
 }
 
 export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
@@ -298,6 +488,8 @@ export function ActiveSessionSwitcher({
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState('')
   const [draftModel, setDraftModel] = useState('')
+  // Type-to-filter query for the live + resumable list (not the new-row draft).
+  const [filter, setFilter] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
   // When non-null, the user pressed `d` on this (history) session and we await
@@ -317,6 +509,8 @@ export function ActiveSessionSwitcher({
   // than keeping a now-stale flat index.
   const itemsRef = useRef<SessionActiveItem[]>([])
   const historyDisplayRef = useRef<SessionListItem[]>([])
+  // Mirror the live filter for the quiet poll's selection re-anchor (below).
+  const filterRef = useRef('')
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const promptColumns = Math.max(20, width - 11)
@@ -324,8 +518,21 @@ export function ActiveSessionSwitcher({
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
   // always rendered) and the live+history list is windowed below it. `total`
   // is the count of selectable rows (incl. the new row).
-  const liveCount = items.length
-  const histCount = history.length
+  // A non-empty filter narrows the rendered + navigable lists; the "+ new" row
+  // (index 0) stays pinned. All index math below uses these display lists, while
+  // `items` / `history` remain the full state used for fetching + destructive
+  // actions (which are gated behind an empty filter).
+  const filterActive = filter.trim() !== ''
+
+  const displayItems = useMemo(() => (filterActive ? rankByText(items, filter) : items), [filterActive, items, filter])
+
+  const displayHistory = useMemo(
+    () => (filterActive ? rankByText(history, filter) : history),
+    [filterActive, history, filter]
+  )
+
+  const liveCount = displayItems.length
+  const histCount = displayHistory.length
   const listLen = liveCount + histCount
   const total = listLen + 1
   const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
@@ -396,6 +603,22 @@ export function ActiveSessionSwitcher({
             return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
           }
 
+          // Filtering can reorder the display list as live metadata changes or
+          // matching sessions appear/disappear. Preserve the selected session
+          // by id instead of letting the old numeric index drift to another row.
+          const activeFilter = filterRef.current
+
+          if (activeFilter.trim() !== '') {
+            return reanchorFilteredSessionSelection(
+              s,
+              itemsRef.current,
+              historyDisplayRef.current,
+              next,
+              hist,
+              activeFilter
+            )
+          }
+
           if (s <= 0) {
             return 0 // "+ new" row
           }
@@ -434,6 +657,10 @@ export function ActiveSessionSwitcher({
     itemsRef.current = items
     historyDisplayRef.current = history
   }, [items, history])
+
+  useEffect(() => {
+    filterRef.current = filter
+  }, [filter])
 
   useEffect(() => {
     void load()
@@ -535,21 +762,25 @@ export function ActiveSessionSwitcher({
 
       if (kind === 'live') {
         setSel(clamped)
-        onSelect(items[index - 1]!.id)
+        onSelect(displayItems[index - 1]!.id)
 
         return
       }
 
       if (kind === 'history') {
         setSel(clamped)
-        onResume(history[index - 1 - items.length]!.id)
+        onResume(displayHistory[index - 1 - liveCount]!.id)
 
         return
       }
 
+      // Clicking the "+ new" row expresses intent to compose a new session, so
+      // exit any active filter — otherwise sel=0 would sit on the new row while
+      // filtering and divert keystrokes to the draft (see clampSessionSel).
+      setFilter('')
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [displayHistory, displayItems, liveCount, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
@@ -575,75 +806,96 @@ export function ActiveSessionSwitcher({
       return
     }
 
-    const lower = ch?.toLowerCase() ?? ''
-    const isCtrl = (letter: string) => key.ctrl && (lower === letter || ch === ctrlChar(letter))
+    const action = classifySessionsListKey(ch, key, { filterActive, onNewRow: newSelected, selectedKind })
 
-    if (key.escape) {
-      return onCancel()
-    }
+    switch (action.kind) {
+      case 'newSession':
+        return onNew()
 
-    if (isCtrl('n')) {
-      return onNew()
-    }
+      case 'refresh':
+        return void load()
 
-    if (isCtrl('r')) {
-      void load()
-
-      return
-    }
-
-    if (key.tab) {
-      if (newSelected) {
+      case 'pickModel':
         setPickingModel(true)
-      }
 
-      return
-    }
+        return
 
-    if (isCtrl('d')) {
-      if (selectedKind === 'live') {
+      case 'closeLive':
         void closeSelected()
-      }
 
-      return
-    }
+        return
 
-    // `d` arms deletion on a resumable history row. (On the New row `d` is
-    // captured by the prompt's TextInput, so it never reaches here.)
-    if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
+      case 'cancel':
+        return onCancel()
 
-      return
-    }
+      case 'clearFilter':
+        setSel(
+          fullSessionSelectionForId(
+            selectedKind === 'live' ? displayItems[sel - 1]?.id : displayHistory[sel - 1 - liveCount]?.id,
+            items,
+            history
+          )
+        )
+        setFilter('')
 
-    if (newSelected && draftHasText) {
-      return
-    }
+        return
 
-    if (key.upArrow && sel > 0) {
-      return setSel(s => Math.max(0, s - 1))
-    }
+      case 'armDelete':
+        setConfirmDelete(displayHistory[sel - 1 - liveCount]?.id ?? null)
 
-    if (key.downArrow && sel < total - 1) {
-      return setSel(s => Math.min(total - 1, s + 1))
-    }
+        return
 
-    if (key.return) {
-      if (newSelected) {
-        if (!draftHasText) {
-          return onNew()
+      case 'navUp':
+        // The new row owns its draft mid-compose; don't steal navigation keys.
+        // While filtering, clampSessionSel floors at row 1 so Up can't reach the
+        // new row (which would divert keystrokes to the draft instead of filter).
+        if (!(newSelected && draftHasText)) {
+          setSel(s => clampSessionSel(s - 1, listLen, filterActive))
         }
 
         return
-      }
 
-      if (selectedKind === 'live' && items[sel - 1]) {
-        return onSelect(items[sel - 1]!.id)
-      }
+      case 'navDown':
+        if (!(newSelected && draftHasText)) {
+          setSel(s => clampSessionSel(s + 1, listLen, filterActive))
+        }
 
-      if (selectedKind === 'history' && history[sel - 1 - items.length]) {
-        return onResume(history[sel - 1 - items.length]!.id)
-      }
+        return
+
+      case 'select':
+        if (newSelected) {
+          // With draft text the TextInput's onSubmit starts the session.
+          return draftHasText ? undefined : onNew()
+        }
+
+        if (selectedKind === 'live' && displayItems[sel - 1]) {
+          return onSelect(displayItems[sel - 1]!.id)
+        }
+
+        if (selectedKind === 'history' && displayHistory[sel - 1 - liveCount]) {
+          return onResume(displayHistory[sel - 1 - liveCount]!.id)
+        }
+
+        return
+
+      case 'filterAppend':
+        setFilter(v => v + action.ch)
+        // Keep the cursor on the first matching session row (never the new row,
+        // which would flip into draft mode and swallow further keystrokes).
+        setSel(1)
+
+        return
+
+      case 'filterBackspace':
+        setFilter(v => v.slice(0, -1))
+        setSel(1)
+
+        return
+
+      default:
+        // 'draft' (printable on the new row) + 'ignore' fall through to the
+        // new-row TextInput, which owns its own input.
+        return
     }
   })
 
@@ -686,6 +938,11 @@ export function ActiveSessionSwitcher({
         Sessions
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+      <Text color={filterActive ? t.color.accent : t.color.muted} wrap="truncate-end">
+        {filterActive
+          ? `filter: ${filter}▎ · ${listLen} match${listLen === 1 ? '' : 'es'}`
+          : 'type to filter a session row'}
+      </Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 
@@ -726,7 +983,11 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
-      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
+      {!listLen && (
+        <Text color={t.color.muted}>
+          {filterActive ? 'no sessions match the filter' : 'no other sessions — Enter on +new to start one'}
+        </Text>
+      )}
 
       {visibleRows.map(i => {
         const selected = sel === i
@@ -735,7 +996,7 @@ export function ActiveSessionSwitcher({
         const kind = rowKind(i)
 
         if (kind === 'history') {
-          const h = history[i - 1 - items.length]!
+          const h = displayHistory[i - 1 - liveCount]!
           const pendingDelete = confirmDelete === h.id
 
           const title = pendingDelete
@@ -793,7 +1054,7 @@ export function ActiveSessionSwitcher({
           )
         }
 
-        const s = items[i - 1]!
+        const s = displayItems[i - 1]!
         const status = s.status ?? 'idle'
         const current = s.current || s.id === currentSessionId
         const title = closingId === s.id ? 'closing…' : s.title || s.preview || '(untitled)'
@@ -855,7 +1116,16 @@ export function ActiveSessionSwitcher({
 
       {offset + VISIBLE < listLen && <Text color={t.color.muted}> ↓ {listLen - offset - VISIBLE} more</Text>}
 
-      {newSelected ? (
+      {filterActive ? (
+        // While filtering the cursor stays on session rows: delete (`d`) is
+        // unavailable and Esc clears the filter, so show filter-specific hints
+        // instead of the misleading row/global hints.
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={t.color.muted} wrap="truncate-end">
+            Enter select · ↑/↓ move · Backspace edit · Esc clear filter
+          </Text>
+        </Box>
+      ) : newSelected ? (
         <>
           <Box marginTop={1}>
             <Text color={t.color.label}>prompt › </Text>
@@ -880,7 +1150,7 @@ export function ActiveSessionSwitcher({
         </Box>
       )}
 
-      <OrchestratorHintText segments={orchestratorGlobalHotkeyHintSegments} t={t} />
+      {!filterActive && <OrchestratorHintText segments={orchestratorGlobalHotkeyHintSegments} t={t} />}
     </Box>
   )
 }

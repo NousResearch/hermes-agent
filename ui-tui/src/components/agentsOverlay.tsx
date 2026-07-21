@@ -13,6 +13,7 @@ import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '..
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
+import { fuzzyRank } from '../lib/fuzzy.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,
@@ -32,6 +33,7 @@ import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
+import { clampIndex } from './overlayControls.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
 // ── Types + lookup tables ────────────────────────────────────────────
@@ -130,6 +132,159 @@ const statusGlyph = (item: SubagentProgress, t: Theme) => {
 
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
   tree.length === 0 ? [] : flattenTree([...tree].sort(SORT_COMPARATORS[sort])).filter(FILTER_PREDICATES[filter])
+
+// ── Type-to-filter (fuzzy search) ────────────────────────────────────
+//
+// A free-text fuzzy query is a third, orthogonal concern layered on top of the
+// existing sort + FilterMode: it ranks the already-sorted+filtered rows by the
+// subagent goal / id / model. The list logic and the (list-mode) key-gating
+// decision are pure functions so they can be unit-tested without rendering Ink.
+
+/** Subset of the Ink key flags the list-mode handler inspects. */
+export interface AgentsKeyFlags {
+  backspace?: boolean
+  ctrl?: boolean
+  delete?: boolean
+  downArrow?: boolean
+  escape?: boolean
+  meta?: boolean
+  return?: boolean
+  rightArrow?: boolean
+  upArrow?: boolean
+  wheelDown?: boolean
+  wheelUp?: boolean
+}
+
+/** Fuzzy-rank flattened rows by goal/id/model. Empty query keeps order. */
+export const rankSubagentRows = (rows: readonly SubagentNode[], query: string): SubagentNode[] =>
+  query.trim()
+    ? fuzzyRank(rows, query, n => `${n.item.goal ?? ''} ${n.item.id} ${n.item.model ?? ''}`).map(r => r.item)
+    : [...rows]
+
+export type AgentsListAction =
+  | { ch: string; kind: 'filterAppend' }
+  | { kind: 'close' }
+  | { kind: 'cursorBottom' }
+  | { kind: 'cursorDown' }
+  | { kind: 'cursorTop' }
+  | { kind: 'cursorUp' }
+  | { kind: 'cycleFilter' }
+  | { kind: 'cycleSort' }
+  | { kind: 'filterBackspace' }
+  | { kind: 'filterClear' }
+  | { kind: 'historyNewer' }
+  | { kind: 'historyOlder' }
+  | { kind: 'ignore' }
+  | { kind: 'killOne' }
+  | { kind: 'killSubtree' }
+  | { kind: 'open' }
+  | { kind: 'pause' }
+
+/**
+ * Decide what a keypress does in list mode. Arrows / wheel / Enter / → always
+ * navigate, and Esc clears an active filter before closing. Reserved single-key
+ * shortcuts (q, p, x, X, s, f, g, G, j, k, l, history brackets) fire only when
+ * no filter is active, so the same keys extend the filter once the user is
+ * typing one. Any other printable key starts / extends the filter.
+ */
+export function classifyAgentsListKey(
+  ch: string,
+  key: AgentsKeyFlags,
+  hasQuery: boolean,
+  hasSelected: boolean
+): AgentsListAction {
+  if (key.escape) {
+    return hasQuery ? { kind: 'filterClear' } : { kind: 'close' }
+  }
+
+  if ((key.backspace || key.delete) && hasQuery) {
+    return { kind: 'filterBackspace' }
+  }
+
+  if (key.ctrl && ch === 'u' && hasQuery) {
+    return { kind: 'filterClear' }
+  }
+
+  // Navigation that is always available (never swallowed by the filter).
+  if (key.upArrow || key.wheelUp) {
+    return { kind: 'cursorUp' }
+  }
+
+  if (key.downArrow || key.wheelDown) {
+    return { kind: 'cursorDown' }
+  }
+
+  if ((key.return || key.rightArrow) && hasSelected) {
+    return { kind: 'open' }
+  }
+
+  // Reserved shortcuts fire only when not actively filtering.
+  if (!hasQuery) {
+    if (ch === 'q') {
+      return { kind: 'close' }
+    }
+
+    if (ch === '<' || ch === '[') {
+      return { kind: 'historyOlder' }
+    }
+
+    if (ch === '>' || ch === ']') {
+      return { kind: 'historyNewer' }
+    }
+
+    if (ch === 'p') {
+      return { kind: 'pause' }
+    }
+
+    if (ch === 'x' && hasSelected) {
+      return { kind: 'killOne' }
+    }
+
+    if (ch === 'X' && hasSelected) {
+      return { kind: 'killSubtree' }
+    }
+
+    if (ch === 'l' && hasSelected) {
+      return { kind: 'open' }
+    }
+
+    if (ch === 'k') {
+      return { kind: 'cursorUp' }
+    }
+
+    if (ch === 'j') {
+      return { kind: 'cursorDown' }
+    }
+
+    if (ch === 'g') {
+      return { kind: 'cursorTop' }
+    }
+
+    if (ch === 'G') {
+      return { kind: 'cursorBottom' }
+    }
+
+    if (ch === 's') {
+      return { kind: 'cycleSort' }
+    }
+
+    if (ch === 'f') {
+      return { kind: 'cycleFilter' }
+    }
+  }
+
+  if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+    // A leading space must not start a filter (it would read as "active" while
+    // the trimmed query leaves the list unfiltered and disable the shortcuts).
+    if (ch === ' ' && !hasQuery) {
+      return { kind: 'ignore' }
+    }
+
+    return { ch, kind: 'filterAppend' }
+  }
+
+  return { kind: 'ignore' }
+}
 
 const diffMetricLine = (name: string, a: number, b: number, fmt: (n: number) => string) => {
   const d = b - a
@@ -605,6 +760,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const [sort, setSort] = useState<SortMode>('depth-first')
   const [filter, setFilter] = useState<FilterMode>('all')
+  // Free-text fuzzy query (list mode only), orthogonal to the FilterMode above.
+  const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const [flash, setFlash] = useState<string>('')
   const [now, setNow] = useState(() => Date.now())
@@ -631,8 +788,10 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const spark = useMemo(() => sparkline(widths), [widths])
   const peak = useMemo(() => peakHotness(tree), [tree])
   const rows = useMemo(() => prepareRows(tree, sort, filter), [tree, sort, filter])
+  // Apply the fuzzy query as a final pass; navigation + rendering index into this.
+  const visibleRows = useMemo(() => rankSubagentRows(rows, query), [rows, query])
 
-  const selected = rows[cursor] ?? null
+  const selected = visibleRows[cursor] ?? null
 
   const cols = stdout?.columns ?? 80
   const rowsH = Math.max(8, (stdout?.rows ?? 24) - 10)
@@ -683,10 +842,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   }, [gw])
 
   useEffect(() => {
-    if (cursor >= rows.length) {
-      setCursor(Math.max(0, rows.length - 1))
-    }
-  }, [cursor, rows.length])
+    setCursor(c => clampIndex(c, visibleRows.length))
+  }, [visibleRows.length])
 
   // ── Actions ────────────────────────────────────────────────────────
 
@@ -752,38 +909,35 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const scrollDetail = (dy: number) => detailScrollRef.current?.scrollBy(dy)
 
   useInput((ch, key) => {
-    if (ch === 'q') {
-      return closeWithCleanup()
-    }
-
-    if (key.escape) {
-      return mode === 'detail' ? setMode('list') : closeWithCleanup()
-    }
-
-    // Shared actions (both modes).
-    if (ch === '<' || ch === '[') {
-      return stepHistory(1)
-    }
-
-    if (ch === '>' || ch === ']') {
-      return stepHistory(-1)
-    }
-
-    if (ch === 'p') {
-      return togglePause()
-    }
-
-    if (ch === 'x' && selected) {
-      return killOne(selected.item.id)
-    }
-
-    if (ch === 'X' && selected) {
-      return killSubtree(selected)
-    }
-
+    // Detail mode: scroll-focused, unchanged. The fuzzy query is only edited in
+    // list mode, so detail keeps every existing binding (incl. shared actions).
     if (mode === 'detail') {
-      if (key.leftArrow || ch === 'h') {
+      if (ch === 'q') {
+        return closeWithCleanup()
+      }
+
+      if (key.escape || key.leftArrow || ch === 'h') {
         return setMode('list')
+      }
+
+      if (ch === '<' || ch === '[') {
+        return stepHistory(1)
+      }
+
+      if (ch === '>' || ch === ']') {
+        return stepHistory(-1)
+      }
+
+      if (ch === 'p') {
+        return togglePause()
+      }
+
+      if (ch === 'x' && selected) {
+        return killOne(selected.item.id)
+      }
+
+      if (ch === 'X' && selected) {
+        return killSubtree(selected)
       }
 
       if (key.pageUp || (key.ctrl && ch === 'u')) {
@@ -821,33 +975,68 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       return
     }
 
-    // List mode.
-    if ((key.return || key.rightArrow || ch === 'l') && selected) {
-      return setMode('detail')
-    }
+    // List mode: type-to-filter aware. Reserved single-key shortcuts gate behind
+    // an empty query so the same keys can be typed into the filter (see
+    // classifyAgentsListKey).
+    const action = classifyAgentsListKey(ch, key, query.trim() !== '', selected !== null)
 
-    if (key.upArrow || ch === 'k' || key.wheelUp) {
-      return setCursor(c => Math.max(0, c - 1))
-    }
+    switch (action.kind) {
+      case 'close':
+        return closeWithCleanup()
 
-    if (key.downArrow || ch === 'j' || key.wheelDown) {
-      return setCursor(c => Math.min(Math.max(0, rows.length - 1), c + 1))
-    }
+      case 'cursorBottom':
+        return setCursor(Math.max(0, visibleRows.length - 1))
 
-    if (ch === 'g') {
-      return setCursor(0)
-    }
+      case 'cursorDown':
+        return setCursor(c => Math.min(Math.max(0, visibleRows.length - 1), c + 1))
 
-    if (ch === 'G') {
-      return setCursor(Math.max(0, rows.length - 1))
-    }
+      case 'cursorTop':
+        return setCursor(0)
 
-    if (ch === 's') {
-      return setSort(m => cycle(SORT_ORDER, m))
-    }
+      case 'cursorUp':
+        return setCursor(c => Math.max(0, c - 1))
 
-    if (ch === 'f') {
-      return setFilter(m => cycle(FILTER_ORDER, m))
+      case 'cycleFilter':
+        return setFilter(m => cycle(FILTER_ORDER, m))
+
+      case 'cycleSort':
+        return setSort(m => cycle(SORT_ORDER, m))
+
+      case 'filterAppend':
+        setQuery(q => q + action.ch)
+
+        return setCursor(0)
+
+      case 'filterBackspace':
+        setQuery(q => q.slice(0, -1))
+
+        return setCursor(0)
+
+      case 'filterClear':
+        setQuery('')
+
+        return setCursor(0)
+
+      case 'historyNewer':
+        return stepHistory(-1)
+
+      case 'historyOlder':
+        return stepHistory(1)
+
+      case 'killOne':
+        return selected ? killOne(selected.item.id) : undefined
+
+      case 'killSubtree':
+        return selected ? killSubtree(selected) : undefined
+
+      case 'open':
+        return selected ? setMode('detail') : undefined
+
+      case 'pause':
+        return togglePause()
+
+      default:
+        return
     }
   })
 
@@ -905,16 +1094,20 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Text>
       </Box>
 
-      {rows.length === 0 ? (
+      {mode === 'list' && visibleRows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
-          <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <Text color={t.color.muted}>
+            {query.trim()
+              ? `No agents match "${query}". Esc to clear the filter.`
+              : 'No subagents this turn. Trigger delegate_task to populate the tree.'}
+          </Text>
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-          <GanttStrip cols={cols} cursor={cursor} flatNodes={rows} maxRows={6} now={now} t={t} />
+          <GanttStrip cols={cols} cursor={cursor} flatNodes={visibleRows} maxRows={6} now={now} t={t} />
 
           <Box flexDirection="column" flexGrow={0} flexShrink={0} overflow="hidden">
-            {rows.slice(listWindowStart, listWindowStart + rowsH).map((node, i) => (
+            {visibleRows.slice(listWindowStart, listWindowStart + rowsH).map((node, i) => (
               <ListRow
                 active={listWindowStart + i === cursor}
                 index={listWindowStart + i}
@@ -944,10 +1137,25 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       <Box flexDirection="column" marginTop={1}>
         {flash ? <Text color={t.color.accent}>{flash}</Text> : null}
 
-        {mode === 'list' ? (
+        {mode === 'list' && query.trim() ? (
+          <Text color={t.color.accent} wrap="truncate-end">
+            filter: {query}▎
+          </Text>
+        ) : null}
+
+        {mode === 'list' && query.trim() ? (
+          // While filtering, the single-letter shortcuts feed the query, so only
+          // advertise the keys that still do what they say (and drop the
+          // selection keys when nothing matches).
+          <Text color={t.color.muted}>
+            {visibleRows.length
+              ? '↑↓ move · Enter/→ open detail · Backspace edit · Esc clear filter'
+              : 'Backspace edit · Esc clear filter'}
+          </Text>
+        ) : mode === 'list' ? (
           <Text color={t.color.muted}>
             ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
-            {FILTER_LABEL[filter]}
+            {FILTER_LABEL[filter]} · type to filter
             {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
             {' · q close'}
           </Text>

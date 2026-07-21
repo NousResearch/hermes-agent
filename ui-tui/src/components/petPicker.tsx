@@ -2,16 +2,17 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { fuzzyRank } from '../lib/fuzzy.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
-import { OverlayHint, windowItems } from './overlayControls.js'
+import { clampIndex, OverlayHint, windowItems } from './overlayControls.js'
 
 const VISIBLE = 10
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-interface GalleryPet {
+export interface GalleryPet {
   slug: string
   displayName: string
   installed: boolean
@@ -22,6 +23,19 @@ interface Gallery {
   enabled: boolean
   active: string
   pets: GalleryPet[]
+}
+
+export function rankPets(pets: readonly GalleryPet[], query: string, enabled: boolean, active: string): GalleryPet[] {
+  const available = pets.filter(pet => !/^clawd(-|$)/i.test(pet.slug))
+
+  const statusRank = (pet: GalleryPet) =>
+    (enabled && pet.slug === active ? 4 : 0) + (pet.installed ? 2 : 0) + (pet.curated ? 1 : 0)
+
+  const ranked = [...available].sort((a, b) => statusRank(b) - statusRank(a))
+
+  return query.trim()
+    ? fuzzyRank(ranked, query, pet => `${pet.displayName} ${pet.slug}`).map(result => result.item)
+    : ranked
 }
 
 /**
@@ -54,20 +68,10 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   const enabled = gallery?.enabled ?? false
   const active = gallery?.active ?? ''
 
-  // Rank by the signals petdex gives us — active, then installed, then curated
-  // (its official set), then the rest — and hide the clawd placeholders.
-  const view = useMemo(() => {
-    const pets = (gallery?.pets ?? []).filter(p => !/^clawd(-|$)/i.test(p.slug))
-    const needle = query.trim().toLowerCase()
-
-    const matched = needle
-      ? pets.filter(p => p.slug.toLowerCase().includes(needle) || p.displayName.toLowerCase().includes(needle))
-      : pets
-
-    const rank = (p: GalleryPet) => (enabled && p.slug === active ? 4 : 0) + (p.installed ? 2 : 0) + (p.curated ? 1 : 0)
-
-    return [...matched].sort((a, b) => rank(b) - rank(a))
-  }, [gallery, query, enabled, active])
+  // Rank by fuzzy match quality while retaining the petdex status priority
+  // (active, installed, curated) as the stable tie-break order.
+  const view = useMemo(() => rankPets(gallery?.pets ?? [], query, enabled, active), [gallery, query, enabled, active])
+  const clampedIdx = clampIndex(idx, view.length)
 
   const adopt = (slug: string) => {
     setBusy(true)
@@ -86,6 +90,13 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
     }
 
     if (key.escape) {
+      if (query) {
+        setQuery('')
+        setIdx(0)
+
+        return
+      }
+
       return onClose()
     }
 
@@ -94,11 +105,11 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
     }
 
     if (key.downArrow) {
-      return setIdx(i => Math.min(view.length - 1, i + 1))
+      return setIdx(i => clampIndex(i + 1, view.length))
     }
 
     if (key.return) {
-      const pet = view[idx]
+      const pet = view[clampedIdx]
 
       return pet ? adopt(pet.slug) : undefined
     }
@@ -109,8 +120,18 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
       return setIdx(0)
     }
 
+    if (key.ctrl && (input.toLowerCase() === 'u' || input === String.fromCharCode(21))) {
+      setQuery('')
+
+      return setIdx(0)
+    }
+
     // Printable char → extend the filter (ignore control/chorded keys).
     if (input && input.length === 1 && input >= ' ' && !key.ctrl && !key.meta) {
+      if (input === ' ' && !query) {
+        return
+      }
+
       setQuery(q => q + input)
       setIdx(0)
     }
@@ -129,7 +150,7 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
     )
   }
 
-  const { items, offset } = windowItems(view, idx, VISIBLE)
+  const { items, offset } = windowItems(view, clampedIdx, VISIBLE)
 
   return (
     <Box flexDirection="column" width={width}>
@@ -147,7 +168,7 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
         <Text color={t.color.muted}>{query ? `no pets match "${query}"` : 'no pets available'}</Text>
       ) : (
         items.map((pet, i) => {
-          const at = offset + i === idx
+          const at = offset + i === clampedIdx
           const isActive = enabled && pet.slug === active
           const mark = isActive ? '●' : pet.installed ? '✓' : ' '
           const tag = pet.installed ? '' : pet.curated ? ' · official' : ''
@@ -171,7 +192,11 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
       {busy ? <Text color={t.color.accent}>adopting…</Text> : null}
 
-      <OverlayHint t={t}>↑/↓ select · Enter adopt · type to filter · Esc cancel</OverlayHint>
+      <OverlayHint t={t}>
+        {query
+          ? '↑/↓ select · Enter adopt · Backspace edit · Ctrl+U clear · Esc clear filter'
+          : '↑/↓ select · Enter adopt · type to filter · Esc cancel'}
+      </OverlayHint>
     </Box>
   )
 }

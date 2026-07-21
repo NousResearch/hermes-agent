@@ -1,3 +1,5 @@
+import type { SkinBranding, SkinColors } from '@hermes/shared/skin'
+
 import { desaturate, grayOf, liftForContrast, mix, parseColor, relativeLuminance, toHex } from './lib/color.js'
 
 export interface ThemeColors {
@@ -763,8 +765,8 @@ export function defaultThemeForCurrentBackground(env: NodeJS.ProcessEnv = proces
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
 export function fromSkin(
-  colors: Record<string, string>,
-  branding: Record<string, string>,
+  colors: SkinColors,
+  branding: SkinBranding,
   bannerLogo = '',
   bannerHero = '',
   toolPrefix = '',
@@ -848,6 +850,12 @@ export function fromSkin(
 
   return normalizeThemeForAnsiLightTerminal(
     {
+      // The element tokens theme-sdk introduced (ui_primary, ui_text,
+      // ui_border, ui_ok/warn/error, shell_dollar, status_bar_*) are read
+      // above into `seeds` and flow through buildPalette → adaptColorsToBackground,
+      // so `adapted` already honors them AND applies #20379's contrast/polarity
+      // machinery. Emitting a hand-mapped color block here would bypass that
+      // adaptation and regress theme quality.
       color: adapted,
 
       brand: {

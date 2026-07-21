@@ -532,4 +532,32 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     // …then the OSC-11 answer lands and is cached into the env slot.
     expect(defaultThemeForCurrentBackground({ HERMES_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
   })
+
+  it('maps the status bar from skin status_bar_* keys', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      {
+        status_bar_bg: '#101020',
+        status_bar_text: '#e0e0e0',
+        status_bar_bad: '#ff8800',
+        status_bar_critical: '#ff0000'
+      },
+      {}
+    )
+
+    expect(color.statusBg).toBe('#101020')
+    expect(color.statusFg).toBe('#e0e0e0')
+    expect(color.statusBad).toBe('#ff8800')
+    expect(color.statusCritical).toBe('#ff0000')
+  })
+
+  it('falls the status bar back to background + semantic colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { color } = fromSkin({ background: '#0a0a0a', banner_text: '#fafafa', ui_error: '#dd2222' }, {})
+
+    expect(color.statusBg).toBe('#0a0a0a')
+    expect(color.statusFg).toBe('#fafafa')
+    expect(color.statusCritical).toBe('#dd2222')
+  })
 })

@@ -651,6 +651,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
     monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
+    monkeypatch.setattr(gateway, "_print_duplicate_gateway_diagnostics", lambda: None)
 
     def fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):
         if cmd[:4] == ["systemctl", "--user", "status", gateway.get_service_name()]:
@@ -1248,6 +1249,112 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
+
+
+def test_systemd_gateway_unit_names_discovers_system_units_read_only(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None)
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        assert "start" not in cmd
+        assert "stop" not in cmd
+        assert "disable" not in cmd
+        if "list-unit-files" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="hermes-gateway.service enabled\nhermes-gateway-default.service disabled\n",
+                stderr="",
+            )
+        if "list-units" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="hermes-gateway-extra.service loaded active running Hermes\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    units, error = gateway._systemd_gateway_unit_names(system=True)
+
+    assert units == [
+        "hermes-gateway-default.service",
+        "hermes-gateway-extra.service",
+        "hermes-gateway.service",
+    ]
+    assert error is None
+    assert all(call[1]["env"] is None for call in calls)
+
+
+def test_systemd_gateway_unit_names_reports_user_bus_inspection_failure(monkeypatch):
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.setattr(gateway, "_systemctl_user_env", lambda: {"XDG_RUNTIME_DIR": "/run/user/123"})
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:2] == ["systemctl", "--user"]
+        assert kwargs["env"] == {"XDG_RUNTIME_DIR": "/run/user/123"}
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Failed to connect to bus: No medium found\n",
+        )
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    units, error = gateway._systemd_gateway_unit_names(system=False)
+
+    assert units == []
+    assert error == "Failed to connect to bus: No medium found"
+
+
+def test_duplicate_gateway_diagnostics_warns_for_system_and_user_units(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "_duplicate_gateway_process_pids", lambda: [])
+
+    def fake_units(*, system):
+        return (["hermes-gateway.service"], None) if system else (["hermes-gateway-default.service"], None)
+
+    monkeypatch.setattr(gateway, "_systemd_gateway_unit_names", fake_units)
+
+    gateway._print_duplicate_gateway_diagnostics()
+
+    out = capsys.readouterr().out
+    assert "Duplicate gateway supervisors detected" in out
+    assert "System units: hermes-gateway.service" in out
+    assert "User units:   hermes-gateway-default.service" in out
+    assert "read-only" in out
+
+
+def test_duplicate_gateway_diagnostics_warns_for_user_bus_failure(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "_duplicate_gateway_process_pids", lambda: [])
+
+    def fake_units(*, system):
+        return (["hermes-gateway.service"], None) if system else ([], "Failed to connect to bus: No medium found")
+
+    monkeypatch.setattr(gateway, "_systemd_gateway_unit_names", fake_units)
+
+    gateway._print_duplicate_gateway_diagnostics()
+
+    out = capsys.readouterr().out
+    assert "Could not inspect user-scope gateway services" in out
+    assert "systemctl --user: Failed to connect to bus: No medium found" in out
+
+
+def test_duplicate_gateway_diagnostics_warns_for_multiple_gateway_pids(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "is_linux", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "_duplicate_gateway_process_pids", lambda: [111, 222])
+
+    gateway._print_duplicate_gateway_diagnostics()
+
+    out = capsys.readouterr().out
+    assert "Multiple gateway processes detected" in out
+    assert "PIDs: 111, 222" in out
 
 
 def test_module_has_logger():

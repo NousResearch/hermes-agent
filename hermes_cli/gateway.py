@@ -1061,6 +1061,99 @@ def _systemd_main_pid(system: bool = False) -> int | None:
     return _systemd_main_pid_from_props(_read_systemd_unit_properties(system=system))
 
 
+def _systemctl_user_env() -> dict[str, str]:
+    """Return an environment that can reach the user systemd bus when present."""
+    env = os.environ.copy()
+    uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    runtime_dir = env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+    env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    bus_path = Path(runtime_dir) / "bus"
+    if "DBUS_SESSION_BUS_ADDRESS" not in env and bus_path.exists():
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+    return env
+
+
+def _systemd_gateway_unit_names(*, system: bool) -> tuple[list[str], str | None]:
+    """Read-only discovery of installed/loaded Hermes gateway systemd units."""
+    if shutil.which("systemctl") is None:
+        return [], "systemctl is not available"
+    names: set[str] = set()
+    errors: list[str] = []
+    env = _systemctl_user_env() if not system else None
+    commands = (
+        ["list-unit-files", "hermes-gateway*.service", "--no-legend", "--no-pager"],
+        ["list-units", "hermes-gateway*.service", "--all", "--no-legend", "--no-pager"],
+    )
+    for args in commands:
+        try:
+            result = subprocess.run(
+                _systemctl_cmd(system) + args,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+            )
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(str(exc))
+            continue
+        if result.returncode != 0:
+            text = (result.stderr or result.stdout or "").strip()
+            if text:
+                errors.append(text)
+            continue
+        for line in (result.stdout or "").splitlines():
+            parts = line.split(None, 1)
+            first = parts[0] if parts else ""
+            if first.startswith("hermes-gateway") and first.endswith(".service"):
+                names.add(first)
+    error = "; ".join(dict.fromkeys(errors)) or None
+    return sorted(names), error
+
+
+def _duplicate_gateway_process_pids() -> list[int]:
+    try:
+        return sorted(find_gateway_pids(all_profiles=False))
+    except Exception:
+        return []
+
+
+def _print_duplicate_gateway_diagnostics() -> None:
+    """Print read-only hints for duplicate gateway supervisors/processes."""
+    if is_linux():
+        system_units, _system_err = _systemd_gateway_unit_names(system=True)
+        user_units, user_err = _systemd_gateway_unit_names(system=False)
+        if system_units and user_units:
+            print()
+            print("⚠ Duplicate gateway supervisors detected for this host")
+            print(f"  System units: {', '.join(system_units)}")
+            print(f"  User units:   {', '.join(user_units)}")
+            print(f"  HERMES_HOME:   {get_hermes_home().resolve()}")
+            print("  Choose one supervisor lane (system or user) before editing model/provider config.")
+            print("  This check is read-only; it did not stop, disable, or delete any service.")
+        elif user_err and "connect to bus" in user_err.lower():
+            print()
+            print("⚠ Could not inspect user-scope gateway services")
+            print(f"  systemctl --user: {user_err.splitlines()[0]}")
+            print("  This is different from no user services existing; try a login shell or linger-enabled user bus.")
+    elif is_macos():
+        plist = get_launchd_plist_path()
+        label = get_launchd_label()
+        if plist.exists():
+            print()
+            print("Gateway supervisor check:")
+            print(f"  launchd label: {label}")
+            print(f"  plist:         {plist}")
+            print("  If another foreground/tmux gateway is also running, choose one supervisor lane.")
+
+    pids = _duplicate_gateway_process_pids()
+    if len(pids) > 1:
+        print()
+        print("⚠ Multiple gateway processes detected for this profile")
+        print(f"  PIDs: {', '.join(str(p) for p in pids)}")
+        print(f"  HERMES_HOME: {get_hermes_home().resolve()}")
+        print("  Duplicate processes using `gateway run --replace` can take turns replacing each other.")
+
+
 def _read_gateway_runtime_status() -> dict | None:
     try:
         from gateway.status import read_runtime_status
@@ -3525,6 +3618,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         for line in runtime_lines:
             print(f"  {line}")
 
+    _print_duplicate_gateway_diagnostics()
+
     unit_props = _read_systemd_unit_properties(system=system)
     active_state = unit_props.get("ActiveState", "")
     sub_state = unit_props.get("SubState", "")
@@ -4545,6 +4640,8 @@ def launchd_status(deep: bool = False):
         print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
+
+    _print_duplicate_gateway_diagnostics()
 
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"

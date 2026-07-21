@@ -64,9 +64,11 @@ class _RecordingHTTPXRequest:
 
     instances: list = []
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, httpx_kwargs=None, **kwargs):
         self.args = args
         self.kwargs = kwargs
+        if httpx_kwargs is not None:
+            self.kwargs["httpx_kwargs"] = httpx_kwargs
         _RecordingHTTPXRequest.instances.append(self)
 
 
@@ -131,6 +133,16 @@ def _drive_connect(monkeypatch, *, proxy_url):
 
 def _assert_keepalive_tight(instances):
     assert instances, "connect() built no HTTPXRequest — test setup is wrong"
+
+    # Skip keepalive assertion if PTB doesn't support httpx_kwargs (#61158)
+    # Older PTB versions (< 22.6) don't accept httpx_kwargs parameter.
+    # In that case, keepalive tuning is unavailable and we accept the fallback.
+    import inspect
+    from telegram.request import HTTPXRequest
+    ptb_supports_httpx_kwargs = "httpx_kwargs" in inspect.signature(HTTPXRequest.__init__).parameters
+    if not ptb_supports_httpx_kwargs:
+        pytest.skip("PTB < 22.6: httpx_kwargs not supported, keepalive tuning unavailable")
+
     for inst in instances:
         limits = inst.kwargs.get("httpx_kwargs", {}).get("limits")
         assert isinstance(limits, httpx.Limits), (

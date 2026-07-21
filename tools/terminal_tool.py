@@ -149,7 +149,7 @@ def _check_disk_usage_warning():
         return False
 
 
-# Interactive sudo password cache.
+# Interactive sudo password one-shot cache.
 #
 # Scope the cache to the active session when a session key is available, then
 # fall back to callback identity (ACP / CLI interactive callbacks), then the
@@ -229,8 +229,15 @@ def _get_cached_sudo_password() -> str:
         return _sudo_password_cache.get(scope, "")
 
 
+def _pop_cached_sudo_password() -> str:
+    """Consume and clear the cached sudo password for the current scope."""
+    scope = _get_sudo_password_cache_scope()
+    with _sudo_password_cache_lock:
+        return _sudo_password_cache.pop(scope, "")
+
+
 def _set_cached_sudo_password(password: str) -> None:
-    """Persist a sudo password for the current scope."""
+    """Store a sudo password for the current scope until next sudo use."""
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
         if password:
@@ -913,7 +920,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     sudo_password = (
         os.environ.get("SUDO_PASSWORD", "")
         if has_configured_password
-        else _get_cached_sudo_password()
+        else _pop_cached_sudo_password()
     )
 
     # Local hosts with sudoers NOPASSWD should not be forced through the
@@ -931,8 +938,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     )
     if not has_configured_password and not sudo_password and should_prompt_for_sudo:
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
-        if sudo_password:
-            _set_cached_sudo_password(sudo_password)
 
     if has_configured_password or sudo_password:
         # Trailing newline is required: sudo -S reads one line per invocation.

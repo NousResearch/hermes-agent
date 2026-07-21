@@ -96,6 +96,24 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
 
     assert transformed == "echo ok && sudo -S -p '' whoami"
     assert sudo_stdin == "cached-pass\n"
+    assert terminal_tool._get_cached_sudo_password() == ""
+
+
+def test_interactive_sudo_password_is_not_cached_after_prompt(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False, raising=False)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_prompt_for_sudo_password",
+        lambda timeout_seconds=45: "prompt-pass",
+    )
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo whoami")
+
+    assert transformed == "sudo -S -p '' whoami"
+    assert sudo_stdin == "prompt-pass\n"
+    assert terminal_tool._get_cached_sudo_password() == ""
 
 
 def test_registered_sudo_callback_is_used_without_interactive_env(monkeypatch):

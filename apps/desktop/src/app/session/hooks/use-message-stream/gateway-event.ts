@@ -32,9 +32,7 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -55,6 +53,7 @@ import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, 
 
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
+  'message.interim',
   'thinking.delta',
   'reasoning.delta',
   'reasoning.available',
@@ -73,9 +72,10 @@ interface GatewayEventDeps {
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
-  completeAssistantMessage: (sessionId: string, text: string) => void
+  completeAssistantMessage: (sessionId: string, text: string, responsePreviewed?: boolean) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
+  finalizeInterimAssistantMessage: (sessionId: string, text: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
@@ -105,6 +105,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
+    finalizeInterimAssistantMessage,
     queryClient,
     refreshHermesConfig,
     sessionInterrupted,
@@ -219,13 +220,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (apply) {
-          if (modelChanged) {
-            setCurrentModel(payload!.model || '')
-          }
-
-          if (providerChanged) {
-            setCurrentProvider(payload!.provider || '')
-          }
+          // Do not call setCurrentModel / setCurrentProvider here. Composer
+          // model/provider is sticky UI state (localStorage + manual picks).
+          // Periodic session.info heartbeats often carry the profile default
+          // (or a stale session model) and would silently revert the dropdown.
+          // Active-session model/provider still flows through the session state
+          // cache via updateSessionState → syncRuntimeMetadataToView below.
 
           if (typeof payload?.cwd === 'string') {
             // The active session's agent can relocate itself (new repo/worktree
@@ -284,7 +284,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         // The running→busy transition must reach EVERY session, not just the
         // active one. The `apply` gate above correctly scopes view-only side
-        // effects (setCurrentModel, setCurrentCwd, etc.) to the focused chat,
+        // effects (setCurrentCwd, etc.) to the focused chat,
         // but the per-session busy state is what drives the sidebar working
         // indicator — a background session's turn start/finish must update
         // its dot without the user opening it. updateSessionState only
@@ -389,6 +389,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             awaitingResponse: true,
             sawAssistantPayload: false,
             interrupted: false,
+            interimBoundaryPending: false,
             turnStartedAt: Date.now()
           }
         })
@@ -399,6 +400,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'message.delta') {
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+        }
+      } else if (event.type === 'message.interim') {
+        // The agent emitted interim assistant commentary (text alongside tool
+        // calls, or the attempted final answer before a verify-on-stop nudge).
+        // Finalize it as its own sealed bubble so message.complete doesn't wipe
+        // it — the text was already streamed via message.delta and is visible.
+        if (sessionId) {
+          flushQueuedDeltas(sessionId)
+          const text = coerceGatewayText(payload?.text)
+
+          if (text) {
+            finalizeInterimAssistantMessage(sessionId, text)
+          }
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -469,10 +483,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
-        playCompletionSound()
+        // Keyed by session so only one window beeps when several are open.
+        playCompletionSound(sessionId)
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -806,6 +821,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       compactedTurnRef,
       completeAssistantMessage,
       failAssistantMessage,
+      finalizeInterimAssistantMessage,
       flushQueuedDeltas,
       lastCwdInfoSessionRef,
       nativeSubagentSessionsRef,

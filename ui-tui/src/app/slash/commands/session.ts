@@ -22,6 +22,12 @@ import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
+const REASONING_SESSION_FLAGS = new Set(['--session'])
+const REASONING_GLOBAL_FLAGS = new Set(['--global'])
+const REASONING_DISPLAY_KEYS = {
+  hide: 'sys.reasoningDisplayHide',
+  show: 'sys.reasoningDisplayShow'
+} as const satisfies Record<string, TranslationKey>
 
 const formatUsageCost = (r: SessionUsageResponse) =>
   r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
@@ -93,6 +99,42 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   return trimmed
+}
+
+const reasoningConfigPayload = (arg: string, sid: string) => {
+  const parts = arg.trim().split(/\s+/).filter(Boolean)
+  let scope = ''
+  const valueParts: string[] = []
+
+  for (const part of parts) {
+    const flag = part.toLowerCase()
+
+    if (REASONING_GLOBAL_FLAGS.has(flag)) {
+      scope = 'global'
+
+      continue
+    }
+
+    if (REASONING_SESSION_FLAGS.has(flag)) {
+      // Session scope is the default; accept the flag for parity with /model.
+      if (!scope) {
+        scope = 'session'
+      }
+
+      continue
+    }
+
+    valueParts.push(part)
+  }
+
+  const value = valueParts.join(' ')
+
+  return {
+    key: 'reasoning',
+    session_id: sid,
+    value,
+    ...(scope ? { scope } : {})
+  }
 }
 
 export const sessionCommands: SlashCommand[] = [
@@ -533,21 +575,26 @@ export const sessionCommands: SlashCommand[] = [
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.gateway.rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning' }).then(
-          ctx.guarded<ConfigGetValueResponse>(
-            r =>
-              r.value &&
-              ctx.transcript.sys(
-                translate(ctx.ui.locale, 'sys.reasoningCurrent', {
-                  value: r.value,
-                  display: r.display || 'hide'
-                })
-              )
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(
+              r =>
+                r.value &&
+                ctx.transcript.sys(
+                  translate(ctx.ui.locale, 'sys.reasoningCurrent', {
+                    value: r.value,
+                    display: translate(
+                      ctx.ui.locale,
+                      REASONING_DISPLAY_KEYS[r.display === 'show' ? 'show' : 'hide']
+                    )
+                  })
+                )
+            )
           )
-        )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg }).then(
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (!r.value) {
             return

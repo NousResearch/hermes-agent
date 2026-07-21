@@ -1418,6 +1418,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
 
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
         def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
             return (
@@ -1555,6 +1558,9 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
 
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
         def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
@@ -1620,6 +1626,9 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
 
         def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
@@ -4637,24 +4646,33 @@ def test_complete_slash_tui_extra_exposes_stable_localization_key():
     assert compact["meta_key"] == "compact"
 
 
-def test_resolve_language_uses_shared_live_contract(monkeypatch):
+def test_resolve_language_uses_shared_process_stable_contract(monkeypatch):
+    from agent import i18n
     from hermes_cli import config as config_module
 
     current = {"display": {"language": "en"}}
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
-    monkeypatch.setattr(config_module, "load_config_readonly", lambda: current)
+    monkeypatch.setattr(config_module, "load_config", lambda: current)
+    i18n.reset_language_cache()
 
-    assert server.resolve_language() == "en"
-    current = {"display": {"language": "zh"}}
-    assert server.resolve_language() == "zh"
+    try:
+        assert server.resolve_language() == "en"
+        current = {"display": {"language": "zh"}}
+        assert server.resolve_language() == "en"
 
-    monkeypatch.setenv("HERMES_LANGUAGE", "pt_BR")
-    monkeypatch.setattr(
-        config_module,
-        "load_config_readonly",
-        lambda: pytest.fail("environment override must not read config"),
-    )
-    assert server.resolve_language() == "pt"
+        i18n.reset_language_cache()
+        assert server.resolve_language() == "zh"
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "pt_BR")
+        monkeypatch.setattr(
+            config_module,
+            "load_config",
+            lambda: pytest.fail("environment override must not read config"),
+        )
+        i18n.reset_language_cache()
+        assert server.resolve_language() == "pt"
+    finally:
+        i18n.reset_language_cache()
 
 
 def test_commands_catalog_exposes_stable_presentation_ids():
@@ -4695,8 +4713,18 @@ def test_complete_slash_details_args():
     assert expanded["meta_vars"] == {"section": "thinking"}
 
 
+def test_complete_slash_reasoning_includes_current_efforts_and_global_scope():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/reasoning "}}
+    )
+
+    values = {item["text"] for item in resp["result"]["items"]}
+    assert {"max", "ultra", "--global"} <= values
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
 
@@ -4704,11 +4732,42 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
         {
             "id": "1",
             "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "low"},
+            "params": {
+                "session_id": "sid",
+                "key": "reasoning",
+                "value": "low",
+            },
         }
     )
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert server._sessions["sid"]["create_reasoning_override"] == {"enabled": True, "effort": "low"}
+    assert server._load_cfg()["agent"]["reasoning_effort"] == "medium"
+
+    resp_status = server.handle_request(
+        {
+            "id": "5",
+            "method": "config.get",
+            "params": {"session_id": "sid", "key": "reasoning"},
+        }
+    )
+    assert resp_status["result"]["value"] == "low"
+
+    resp_global_status = server.handle_request(
+        {"id": "6", "method": "config.get", "params": {"key": "reasoning"}}
+    )
+    assert resp_global_status["result"]["value"] == "medium"
+
+    del server._sessions["sid"]["create_reasoning_override"]
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    resp_agent_status = server.handle_request(
+        {
+            "id": "7",
+            "method": "config.get",
+            "params": {"session_id": "sid", "key": "reasoning"},
+        }
+    )
+    assert resp_agent_status["result"]["value"] == "high"
 
     resp_show = server.handle_request(
         {
@@ -4758,6 +4817,36 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     cfg_clamp = server._load_cfg()
     assert cfg_clamp["display"]["reasoning_full"] is False
     assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
+
+
+def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    agent = types.SimpleNamespace(reasoning_config=None)
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["create_reasoning_override"] = {"enabled": True, "effort": "low"}
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "reasoning",
+                "value": "high",
+                "scope": "global",
+            },
+        }
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert server._load_cfg()["agent"]["reasoning_effort"] == "high"
+    assert "create_reasoning_override" not in server._sessions["sid"]
+
+    status = server.handle_request(
+        {"id": "2", "method": "config.get", "params": {"session_id": "sid", "key": "reasoning"}}
+    )
+    assert status["result"]["value"] == "high"
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
@@ -5652,6 +5741,9 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
 
         def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False):
             assert key == "session-key"
@@ -10444,16 +10536,20 @@ def test_start_agent_build_passes_session_model_override(
 # ── billing/subscription state + error serialization ─────────────────
 
 
-def test_reset_session_agent_preserves_explicit_normal_fast(monkeypatch):
+def test_reset_session_agent_clears_session_overrides(monkeypatch):
+    """/new is a full conversation boundary: session-scoped /model, /reasoning,
+    and /fast overrides do NOT carry into the fresh agent — it re-derives
+    everything from config.yaml (#48055, #23131)."""
     captured = {}
     new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
     session = _session(
         agent=types.SimpleNamespace(
             model="openai/gpt-5.4",
-            reasoning_config=None,
+            reasoning_config={"enabled": True, "effort": "high"},
             service_tier="",
         ),
         model_override={"model": "openai/gpt-5.4"},
+        create_reasoning_override={"enabled": True, "effort": "high"},
         create_service_tier_override="",
     )
 
@@ -10473,7 +10569,14 @@ def test_reset_session_agent_preserves_explicit_normal_fast(monkeypatch):
 
     server._reset_session_agent("sid", session)
 
-    assert captured["service_tier_override"] == ""
+    # No session overrides forwarded — fresh agent builds from config.
+    assert "model_override" not in captured
+    assert "reasoning_config_override" not in captured
+    assert "service_tier_override" not in captured
+    # And the session pins are gone so a later rebuild can't resurrect them.
+    assert "model_override" not in session
+    assert "create_reasoning_override" not in session
+    assert "create_service_tier_override" not in session
     assert session["agent"] is new_agent
 
 

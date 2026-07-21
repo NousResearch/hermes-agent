@@ -53,6 +53,21 @@ describe('schema localization', () => {
     }
   })
 
+  it('covers configuration fields introduced by the latest upstream release', () => {
+    const fields = {
+      'mcp.auto_reload_on_config_change': 'MCP → 配置变更时自动重载',
+      'tts.minimax.model': '语音合成 → MiniMax → 默认模型',
+      'tts.minimax.voice_id': '语音合成 → MiniMax → 语音 ID',
+      'tts.kittentts.model': '语音合成 → KittenTTS → 默认模型',
+      'tts.kittentts.voice': '语音合成 → KittenTTS → 语音',
+      'x_search.reasoning_effort': 'X 搜索 → 推理强度'
+    }
+
+    for (const [key, expected] of Object.entries(fields)) {
+      expect(resolveSchemaLabel(zhSchema, key, 'English fallback')).toBe(expected)
+    }
+  })
+
   it('covers schema fields added by browser and Discord reconnect recovery', () => {
     const fields = {
       'browser.headed': '浏览器 → 显示浏览器窗口',

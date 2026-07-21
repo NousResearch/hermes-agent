@@ -435,6 +435,8 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      keepAwakeTitle: string
+      keepAwakeDesc: string
     }
     credentials: {
       pasteKey: string

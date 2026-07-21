@@ -17,7 +17,7 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
 
-const expandSnips = (snips: PasteSnippet[]) => {
+export const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
 
   for (const { label, text } of snips) {
@@ -224,9 +224,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
+      // History stores expanded paste content, not the `[[…]]` label: snips
+      // are cleared on submit, so recall must be self-contained. Idempotent on
+      // label-free text, so re-submitting a recalled entry stays stable.
+      const toHistory = expandSnips(composerState.pasteSnips)(full)
+
       if (looksLikeSlashCommand(full)) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
-        composerActions.pushHistory(full)
+        composerActions.pushHistory(toHistory)
         slashRef.current(full)
         composerActions.clearIn()
 
@@ -242,7 +247,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const live = getUiState()
 
       if (!live.sid) {
-        composerActions.pushHistory(full)
+        composerActions.pushHistory(toHistory)
         composerActions.enqueue(full)
         composerActions.clearIn()
 
@@ -278,7 +283,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return sendQueued(picked)
       }
 
-      composerActions.pushHistory(full)
+      composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
         return handleBusyInput(full)
@@ -292,7 +297,18 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
+    [
+      appendMessage,
+      composerActions,
+      composerRefs,
+      composerState.pasteSnips,
+      handleBusyInput,
+      interpolate,
+      send,
+      sendQueued,
+      shellExec,
+      slashRef
+    ]
   )
 
   const submit = useCallback(

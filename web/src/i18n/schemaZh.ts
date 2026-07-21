@@ -189,6 +189,7 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   'memory.provider': '记忆 → 服务商',
   'memory.user_char_limit': '记忆 → 用户字符上限',
   'memory.user_profile_enabled': '记忆 → 启用用户画像',
+  'mcp.auto_reload_on_config_change': 'MCP → 配置变更时自动重载',
   model: '默认模型',
   'model_catalog.enabled': '模型目录 → 启用',
   'model_catalog.ttl_hours': '模型目录 → 有效期(小时)',
@@ -267,6 +268,10 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   'tts.edge.voice': '语音合成 → Edge → 语音',
   'tts.elevenlabs.model_id': '语音合成 → ElevenLabs → 模型 ID',
   'tts.elevenlabs.voice_id': '语音合成 → ElevenLabs → 语音 ID',
+  'tts.kittentts.model': '语音合成 → KittenTTS → 默认模型',
+  'tts.kittentts.voice': '语音合成 → KittenTTS → 语音',
+  'tts.minimax.model': '语音合成 → MiniMax → 默认模型',
+  'tts.minimax.voice_id': '语音合成 → MiniMax → 语音 ID',
   'tts.mistral.model': '语音合成 → Mistral → 默认模型',
   'tts.mistral.voice_id': '语音合成 → Mistral → 语音 ID',
   'tts.neutts.device': '语音合成 → NeuTTS → 设备',
@@ -294,7 +299,8 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   'voice.silence_threshold': '语音 → 静音阈值',
   'web.backend': '网页 → 后端',
   'web.extract_backend': '网页 → 提取后端',
-  'web.search_backend': '网页 → 搜索后端'
+  'web.search_backend': '网页 → 搜索后端',
+  'x_search.reasoning_effort': 'X 搜索 → 推理强度'
 }
 
 // Only backend descriptions that add information beyond the generated field

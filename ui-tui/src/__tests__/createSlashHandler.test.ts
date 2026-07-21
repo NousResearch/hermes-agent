@@ -318,6 +318,63 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('reads and localizes /reasoning status for the active session', async () => {
+    patchUiState({ locale: 'zh', sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ display: 'show', value: 'low' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', {
+      key: 'reasoning',
+      session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('推理强度：low · 推理内容：显示')
+    })
+  })
+
+  it.each(['low', 'max', 'ultra'])('sends plain /reasoning %s without a scope (session default)', effort => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/reasoning ${effort}`)).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: 'sid-abc',
+      value: effort
+    })
+  })
+
+  it('sends /reasoning <level> --global as global config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning high --global')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'global',
+      session_id: 'sid-abc',
+      value: 'high'
+    })
+  })
+
+  it('strips /reasoning session flags before config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning low --session')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'session',
+      session_id: 'sid-abc',
+      value: 'low'
+    })
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 

@@ -7,7 +7,7 @@ description: >-
 
 inputs:
   github-token:
-    description: Token for the GitHub API (gh CLI). Pass secrets.AUTOFIX_BOT_PAT from the calling workflow.
+    description: Token for the GitHub API (gh CLI). Pass steps.app-token.outputs.token from the calling workflow.
     required: false
     default: ${{ github.token }}
 

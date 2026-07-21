@@ -1179,6 +1179,8 @@ const catalog = {
   'sys.skinCurrent': 'skin: {value}',
   'sys.skinSet': 'skin → {value}',
   'sys.reasoningCurrent': 'reasoning: {value} · display {display}',
+  'sys.reasoningDisplayHide': 'hide',
+  'sys.reasoningDisplayShow': 'show',
   'sys.reasoningSet': 'reasoning: {value}',
   'sys.usageFast': 'usage: /fast [normal|fast|status|on|off|toggle]',
   'sys.fastMode': 'fast mode: {value}',

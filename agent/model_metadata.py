@@ -1826,6 +1826,12 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
+                            # Fallback: model-level max_context_length (training
+                            # max, available even when the model is not loaded).
+                            # See: https://github.com/NousResearch/hermes-agent/issues/47678
+                            ctx = m.get("max_context_length")
+                            if ctx and isinstance(ctx, (int, float)):
+                                return int(ctx)
                             break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}

@@ -38,6 +38,7 @@ import {
   setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
+import { routeSessionId } from '@/app/routes'
 
 // ---------------------------------------------------------------------------
 // Reactive per-runtime session state (view mirror of the wiring cache).
@@ -561,11 +562,17 @@ export function focusOpenSession(storedSessionId: string): boolean {
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
+  // Only skip navigation when the current URL is already a session route —
+  // on a non-session page (e.g. /messaging) the sidebar highlight reads
+  // currentView from the URL, so revealing the workspace pane alone won't
+  // update it.  Fall through to the caller's navigate() instead.
   if (storedSessionId === $selectedStoredSessionId.get()) {
-    revealTreePane('workspace')
-    noteActiveTreeGroup(null)
-
-    return true
+    if (routeSessionId(window.location.pathname)) {
+      revealTreePane('workspace')
+      noteActiveTreeGroup(null)
+      return true
+    }
+    return false
   }
 
   return false

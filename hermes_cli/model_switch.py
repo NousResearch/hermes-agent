@@ -1299,7 +1299,38 @@ def switch_model(
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
-                target_provider, new_model = detected
+                detected_provider = detected[0]
+                # detect_provider_for_model() matches Hermes' built-in static
+                # catalogs (CURATED_MODELS), so a bare name that also lives
+                # there — e.g. ``gpt-5.5`` under ``openai-api`` — would select
+                # that vendor as the switch target even when the user never
+                # configured it (#62240). The remaining concern this guard
+                # addresses is exactly that: don't pick an unconfigured provider
+                # off a static-catalog match. (The live-agent switch is now
+                # separately rejected and rolled back when the target can't be
+                # resolved — see agent/agent_runtime_helpers.py — so this is
+                # about not offering the wrong target in the first place.)
+                # Only accept a cross-provider static reroute when the detected
+                # provider actually has credentials; a configured custom/user
+                # provider that declares the model already wins earlier via
+                # step d.5.  When the authed set is unknown (empty), fall back
+                # to the historical behaviour so we never over-block.
+                if detected_provider == current_provider:
+                    target_provider, new_model = detected
+                else:
+                    _authed = get_authenticated_provider_slugs(
+                        current_provider=current_provider,
+                        user_providers=user_providers,
+                        custom_providers=custom_providers,
+                    )
+                    if not _authed or detected_provider in _authed:
+                        target_provider, new_model = detected
+                    else:
+                        logger.debug(
+                            "Not rerouting '%s' to unconfigured provider %s "
+                            "(no credentials); keeping current provider %s",
+                            new_model, detected_provider, current_provider,
+                        )
 
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata

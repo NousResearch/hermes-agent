@@ -74,6 +74,7 @@ import hashlib
 import logging
 import os
 import secrets
+import threading
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -173,6 +174,7 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         # PyJWKClient is lazily imported so plugin discovery doesn't pay the
         # crypto-import cost when the provider isn't activated.
         self._jwks_client: Any = None
+        self._jwks_client_lock = threading.Lock()
 
     # ---- public API (DashboardAuthProvider) -------------------------------
 
@@ -413,15 +415,16 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         return body if isinstance(body, dict) else {}
 
     def _get_jwks_client(self) -> Any:
-        if self._jwks_client is None:
-            from jwt import PyJWKClient  # lazy import
+        with self._jwks_client_lock:
+            if self._jwks_client is None:
+                from jwt import PyJWKClient  # lazy import
 
-            self._jwks_client = PyJWKClient(
-                self._jwks_url,
-                cache_keys=True,
-                lifespan=_JWKS_CACHE_SECONDS,
-            )
-        return self._jwks_client
+                self._jwks_client = PyJWKClient(
+                    self._jwks_url,
+                    cache_keys=True,
+                    lifespan=_JWKS_CACHE_SECONDS,
+                )
+            return self._jwks_client
 
     def _verify_jwt(self, access_token: str) -> Dict[str, Any]:
         # Lazy import — keeps startup fast for operators who never trigger

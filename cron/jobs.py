@@ -503,8 +503,13 @@ def parse_duration(s: str) -> int:
         raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
     
     value = int(match.group(1))
+    if value <= 0:
+        raise ValueError(
+            f"Duration must be positive: '{s}'. "
+            "A zero interval would re-fire on every scheduler tick."
+        )
     unit = match.group(2)[0]  # First char: m, h, or d
-    
+
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
 

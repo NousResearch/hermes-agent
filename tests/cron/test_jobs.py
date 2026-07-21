@@ -64,6 +64,17 @@ class TestParseDuration:
         with pytest.raises(ValueError):
             parse_duration("m30")
 
+    def test_zero_duration_raises(self):
+        """A zero duration is degenerate: as an interval it produces a job
+        that is always immediately due and re-fires every scheduler tick.
+        It must be rejected at parse time rather than silently accepted."""
+        with pytest.raises(ValueError):
+            parse_duration("0m")
+        with pytest.raises(ValueError):
+            parse_duration("0h")
+        with pytest.raises(ValueError):
+            parse_duration("0d")
+
 
 # =========================================================================
 # parse_schedule
@@ -106,6 +117,12 @@ class TestParseSchedule:
     def test_invalid_schedule_raises(self):
         with pytest.raises(ValueError):
             parse_schedule("not_a_schedule")
+
+    def test_zero_interval_raises(self):
+        """'every 0m' would build an interval job that is always due and
+        re-fires on every tick (runaway agent runs); reject it."""
+        with pytest.raises(ValueError):
+            parse_schedule("every 0m")
 
     def test_invalid_cron_raises(self):
         pytest.importorskip("croniter")

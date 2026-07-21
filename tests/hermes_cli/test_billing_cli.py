@@ -81,7 +81,11 @@ def test_billing_killswitch_off_blocks(cli, monkeypatch, capsys):
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
     cli._show_billing("/billing")
     out = capsys.readouterr().out
-    assert "turned off for this org" in out
+    assert "Remote spending is off for this org." in out
+    assert (
+        "A billing admin can turn it on from the portal's Hermes Agent page "
+        "to add funds here."
+    ) in out
 
 
 def test_billing_limit_screen_readonly(cli, monkeypatch, capsys):

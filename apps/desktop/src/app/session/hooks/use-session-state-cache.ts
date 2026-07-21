@@ -17,7 +17,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { publishSessionState, setWatchdogClearFn } from '@/store/session-states'
+import { publishSessionState } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
@@ -104,6 +104,16 @@ export function useSessionStateCache({
         const updated = { ...existing, storedSessionId }
 
         sessionStateByRuntimeIdRef.current.set(sessionId, updated)
+
+        // Drop the obsolete stored→runtime reverse mapping as soon as the id
+        // rotates (e.g. auto-compression forks a continuation). Leaving the
+        // stale key lets getRuntimeIdForStoredSession resolve the old stored id
+        // to this runtime, which the compression route-follow logic relies on
+        // being absent. The rotation signal itself is emitted centrally from
+        // handleTransition (session-states.ts) off the published diff.
+        if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+        }
 
         if (storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
@@ -278,33 +288,6 @@ export function useSessionStateCache({
 
     return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
   }, [])
-
-  // Wire the watchdog's force-clear callback to our cache. When the watchdog
-  // fires (8 min of stream silence — a hung or looping turn that never
-  // delivered its terminal event), it calls this to clear the session's busy
-  // state. Clearing the sidebar dot alone would leave the composer wedged on
-  // "Thinking"/Stop; updateSessionState propagates the clear to $sessionStates
-  // → $workingSessionIds (computed) follows automatically, and
-  // syncSessionStateToView re-syncs $busy when the healed session is the one
-  // on screen.
-  useEffect(() => {
-    setWatchdogClearFn(runtimeId => {
-      const state = sessionStateByRuntimeIdRef.current.get(runtimeId)
-
-      if (!state?.busy) {
-        return
-      }
-
-      updateSessionState(runtimeId, current => ({
-        ...current,
-        awaitingResponse: false,
-        busy: false,
-        needsInput: false
-      }))
-    })
-
-    return () => setWatchdogClearFn(null)
-  }, [updateSessionState])
 
   return {
     activeSessionIdRef,

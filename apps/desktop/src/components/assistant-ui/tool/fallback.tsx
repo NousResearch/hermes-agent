@@ -624,10 +624,11 @@ function ToolEntry({ part }: ToolEntryProps) {
 // A back-to-back run of this many tool calls collapses into the bounded,
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
+const TOOL_GROUP_DOM_PAGE = 20
 
 // Tools whose body (an interactive form, a full-size image) must never be
-// trapped behind the window's max-height + fade mask. A run holding any of
-// them stays a plain, fully-visible stack no matter how long it is.
+// trapped behind the window's max-height + fade mask. Large runs still page
+// their DOM independently; the newest page contains the active tool.
 export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
 
 export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
@@ -709,6 +710,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
+  const { t } = useI18n()
 
   const hasUnboundable = useAuiState(s =>
     s.message.parts
@@ -718,12 +720,32 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
-  const bounded = shouldBoundToolGroup(Children.count(children), hasUnboundable)
+  const childArray = Children.toArray(children)
+  const bounded = shouldBoundToolGroup(childArray.length, hasUnboundable)
+  const pageKey = `${messageId}:${startIndex}`
+  const [page, setPage] = useState({ count: TOOL_GROUP_DOM_PAGE, key: pageKey })
+
+  if (page.key !== pageKey) {
+    setPage({ count: TOOL_GROUP_DOM_PAGE, key: pageKey })
+  }
+
+  const renderCount = page.key === pageKey ? page.count : TOOL_GROUP_DOM_PAGE
+  const hiddenCount = Math.max(0, childArray.length - renderCount)
+  const visibleChildren = hiddenCount > 0 ? childArray.slice(-renderCount) : childArray
   const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
 
   return (
     <ToolEmbedContext.Provider value={false}>
       <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
+        {hiddenCount > 0 && (
+          <button
+            className="mx-auto mb-1 block rounded-full border border-border/65 bg-(--composer-fill) px-2.5 py-0.5 text-[0.65rem] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => setPage(current => ({ ...current, count: current.count + TOOL_GROUP_DOM_PAGE }))}
+            type="button"
+          >
+            {t.assistant.thread.showEarlier}
+          </button>
+        )}
         <div
           className={cn(
             bounded && 'tool-group-scroll max-h-(--tool-group-scroll-max-h) overflow-y-auto',
@@ -733,7 +755,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
           ref={scrollRef}
         >
           <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" ref={contentRef}>
-            {children}
+            {visibleChildren}
           </div>
         </div>
       </div>

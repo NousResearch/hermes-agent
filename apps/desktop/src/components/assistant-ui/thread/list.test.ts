@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildGroups, firstVisibleGroupIndex, isVirtualizedGroup, LIVE_TAIL_GROUPS, type MessageGroup } from './list'
+import {
+  buildGroups,
+  firstVisibleGroupIndex,
+  isVirtualizedGroup,
+  LIVE_TAIL_GROUPS,
+  type MessageGroup,
+  nextHistoryBudget,
+  shouldAutoBackfill
+} from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
@@ -108,5 +116,29 @@ describe('isVirtualizedGroup', () => {
   it('honors a custom tail size', () => {
     expect(isVirtualizedGroup(5, 10, 3)).toBe(true)
     expect(isVirtualizedGroup(7, 10, 3)).toBe(false)
+  })
+})
+
+describe('shouldAutoBackfill', () => {
+  const group = (weight: number): MessageGroup => ({ id: String(weight), index: 0, kind: 'standalone', weight })
+
+  it('backfills a bounded transcript after first paint', () => {
+    expect(shouldAutoBackfill([group(300)])).toBe(true)
+  })
+
+  it('keeps a long transcript on explicit history pages', () => {
+    expect(shouldAutoBackfill([group(301)])).toBe(false)
+  })
+})
+
+describe('nextHistoryBudget', () => {
+  const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
+
+  it('advances by a bounded page for ordinary history', () => {
+    expect(nextHistoryBudget([group('old', 60), group('new', 60)], 60)).toBe(120)
+  })
+
+  it('always reveals an earlier group after a very heavy visible turn', () => {
+    expect(nextHistoryBudget([group('old', 5), group('huge', 500)], 60)).toBe(505)
   })
 })

@@ -354,13 +354,22 @@ class JobManager:
 
         Called by the cancellation callback after process tree termination
         and resource cleanup are complete. Records remaining_processes and
-        transitions to CANCELLED.
+        transitions to CANCELLED only if no processes remain.  If processes
+        survived the kill attempt, the state stays at CANCELLING to signal
+        that cleanup was incomplete.
         """
         with self._lock:
             entry = self._jobs.get(job_id)
             if entry:
                 token = entry[0]
-                self._jobs[job_id] = (token, JobState.CANCELLED)
+                if remaining_processes:
+                    # Survivors — stay in CANCELLING, do not declare CANCELLED
+                    self._jobs[job_id] = (token, JobState.CANCELLING)
+                else:
+                    # Clean — transition to CANCELLED
+                    self._jobs[job_id] = (token, JobState.CANCELLED)
+                    # Clear process registry for this job
+                    get_process_registry().clear(job_id)
 
 
 def _cancel_callback(
@@ -440,8 +449,12 @@ def _cancel_callback(
     # Check remaining
     remaining = registry.get_remaining(job_id)
 
-    # Progress to CANCELLED
-    token.set_cancelled()
+    # Only set CANCELLED on the token if no processes survived.
+    # If survivors exist, leave the token in CANCELLING state so
+    # complete_cancellation and the JobManager both reflect the
+    # incomplete cleanup.
+    if not remaining:
+        token.set_cancelled()
 
     # Update JobManager state — use the mgr passed in (the one that created the job),
     # NOT the global singleton (which may be a different instance in tests).

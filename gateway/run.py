@@ -7028,12 +7028,19 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
-            # /stop must hard-kill the session when an agent is running.
-            # A soft interrupt (agent.interrupt()) doesn't help when the agent
-            # is truly hung — the executor thread is blocked and never checks
-            # _interrupt_requested.  Force-clean _running_agents so the session
-            # is unlocked and subsequent messages are processed normally.
+            # /jobs — list running jobs (must work even while agent is busy).
+            if _cmd_def_inner and _cmd_def_inner.name == "jobs":
+                return await self._handle_jobs_command(event)
+
+            # /stop with arguments (job_id or "all") routes to JobManager
+            # BEFORE the session-wide stop when preemptive cancellation is
+            # enabled.  Bare /stop (no args) keeps the session-wide behavior.
             if _cmd_def_inner and _cmd_def_inner.name == "stop":
+                _stop_args = event.get_command_args().strip()
+                if _stop_args:
+                    # Has an argument — route to preemptive cancellation handler
+                    return await self._handle_stop_command(event)
+                # No argument — session-wide stop (existing behavior)
                 await self._interrupt_and_clear_session(
                     _quick_key,
                     source,
@@ -9813,47 +9820,50 @@ class GatewayRunner:
 
         Preemptive cancellation (feature-flagged):
         When HERMES_PREEMPTIVE_CANCELLATION is enabled, this method also
-        supports ``STOP <job_id>`` and ``STOP ALL`` syntax for out-of-band
+        supports ``/stop <job_id>`` and ``/stop all`` syntax for out-of-band
         cancellation of specific jobs via the global JobManager.
+
+        Note: Uppercase ``STOP`` as a plain text message is NOT supported.
+        Only the ``/stop`` slash command with arguments triggers preemptive
+        cancellation.  Use ``/stop <job_id>`` or ``/stop all``.
         """
-        # ── Preemptive cancellation: STOP <job_id> / STOP ALL ──────────
+        # ── Preemptive cancellation: /stop <job_id> / /stop all ──────────
         try:
             from agent.cancellation import get_job_manager, is_preemptive_cancellation_enabled
             if is_preemptive_cancellation_enabled():
-                _text = (getattr(event, "content", "") or "").strip()
-                _stop_token = _text.lower().split()[0] if _text else ""
-                if _stop_token in ("stop", "/stop"):
-                    _rest = _text.split(None, 1)
-                    _target = _rest[1].strip() if len(_rest) > 1 else ""
-                    if _target.lower() == "all":
-                        _mgr = get_job_manager()
-                        _results = _mgr.cancel_all()
-                        if _results:
-                            _summary_parts = []
-                            for r in _results:
-                                _summary_parts.append(
-                                    f"  job `{r.job_id}`: {r.state.value}"
-                                    + (f" (last step: {r.last_completed_step})" if r.last_completed_step else "")
-                                    + (f" (cancelled at: {r.cancelled_step})" if r.cancelled_step else "")
-                                )
-                            logger.info("STOP ALL: cancelled %d job(s)", len(_results))
-                            return EphemeralReply(
-                                f"🛑 Cancelled {len(_results)} job(s):\n" + "\n".join(_summary_parts)
+                # Use command args (already parsed by the gateway) instead of
+                # raw text — works from both the busy-agent early-intercept
+                # path and normal command dispatch.
+                _target = event.get_command_args().strip()
+                if _target.lower() == "all":
+                    _mgr = get_job_manager()
+                    _results = _mgr.cancel_all()
+                    if _results:
+                        _summary_parts = []
+                        for r in _results:
+                            _summary_parts.append(
+                                f"  job `{r.job_id}`: {r.state.value}"
+                                + (f" (last step: {r.last_completed_step})" if r.last_completed_step else "")
+                                + (f" (cancelled at: {r.cancelled_step})" if r.cancelled_step else "")
                             )
-                        else:
-                            return EphemeralReply("🛑 No running jobs to cancel.")
-                    elif _target:
-                        _mgr = get_job_manager()
-                        _result = _mgr.cancel_job(_target)
-                        if _result:
-                            logger.info("STOP %s: cancelled", _target)
-                            return EphemeralReply(
-                                f"🛑 Cancelled job `{_target}` (state: {_result.state.value}"
-                                + (f", last step: {_result.last_completed_step}" if _result.last_completed_step else "")
-                                + ")"
-                            )
-                        else:
-                            return EphemeralReply(f"🛑 Job `{_target}` not found or already completed.")
+                        logger.info("STOP ALL: cancelled %d job(s)", len(_results))
+                        return EphemeralReply(
+                            f"🛑 Cancelled {len(_results)} job(s):\n" + "\n".join(_summary_parts)
+                        )
+                    else:
+                        return EphemeralReply("🛑 No running jobs to cancel.")
+                elif _target:
+                    _mgr = get_job_manager()
+                    _result = _mgr.cancel_job(_target)
+                    if _result:
+                        logger.info("STOP %s: cancelled", _target)
+                        return EphemeralReply(
+                            f"🛑 Cancelled job `{_target}` (state: {_result.state.value}"
+                            + (f", last step: {_result.last_completed_step}" if _result.last_completed_step else "")
+                            + ")"
+                        )
+                    else:
+                        return EphemeralReply(f"🛑 Job `{_target}` not found or already completed.")
         except Exception as _e:
             logger.debug("Preemptive cancellation STOP parse error: %s", _e)
 

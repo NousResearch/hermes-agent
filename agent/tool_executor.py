@@ -202,6 +202,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         _worker_tid = threading.current_thread().ident
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.add(_worker_tid)
+        # Propagate the job_id to this worker thread so terminal_tool,
+        # file_tools, and send_message_tool can access the cancellation
+        # token and process registry for the correct job.  This is cleaned
+        # up in the finally block below.
+        _worker_job_id = getattr(agent, "_job_id", None)
+        if _worker_job_id is not None:
+            threading.current_thread()._hermes_job_id = _worker_job_id
         # Race: if the agent was interrupted between fan-out (which
         # snapshotted an empty/earlier set) and our registration, apply
         # the interrupt to our own tid now so is_interrupted() inside
@@ -267,6 +274,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _set_approval_callback(None)
             _set_sudo_password_callback(None)
         except Exception:
+            pass
+        # Remove job_id from this worker thread so a recycled thread
+        # doesn't inherit a stale job context.
+        try:
+            delattr(threading.current_thread(), "_hermes_job_id")
+        except AttributeError:
             pass
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)

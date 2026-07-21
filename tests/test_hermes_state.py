@@ -1794,7 +1794,7 @@ class TestFTS5Search:
         """Unit test for _sanitize_fts5_query static method."""
         from hermes_state import SessionDB
         s = SessionDB._sanitize_fts5_query
-        assert s('hello world') == 'hello world'
+        assert s('hello world') == 'hello OR world'
         assert '+' not in s('C++')
         assert '"' not in s('"unterminated')
         assert '(' not in s('(problem')

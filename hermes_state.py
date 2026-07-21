@@ -5504,6 +5504,17 @@ class SessionDB:
         for i, quoted in enumerate(_quoted_parts):
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
 
+        # Step 7: If no explicit boolean operators, join terms with OR.
+        # FTS5 defaults to AND for space-separated terms, which makes
+        # multi-keyword recall searches (e.g. "特洛伊 海伦") return almost
+        # nothing since few messages contain ALL terms.  For session search
+        # / recall, OR semantics are far more useful.
+        if not re.search(r'(?i)\b(AND|OR|NOT)\b', sanitized):
+            # Split on whitespace but keep quoted phrases as single tokens
+            tokens = re.findall(r'"[^"]*"|\S+', sanitized)
+            if len(tokens) > 1:
+                sanitized = " OR ".join(tokens)
+
         return sanitized.strip()
 
 

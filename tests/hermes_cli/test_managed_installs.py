@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.config import (
     format_managed_message,
     get_managed_system,
+    is_managed,
     recommended_update_command,
 )
 from hermes_cli.main import cmd_update
@@ -49,6 +52,15 @@ def test_cmd_update_blocks_managed_homebrew(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "managed by Homebrew" in captured.err
     assert "brew upgrade hermes-agent" in captured.err
+
+
+@pytest.mark.parametrize("false_value", ["false", "0", "no", "off", "FALSE", "False"])
+def test_get_managed_system_false_values(monkeypatch, false_value):
+    monkeypatch.setenv("HERMES_MANAGED", false_value)
+
+    assert get_managed_system() is None
+    assert not is_managed()
+    assert recommended_update_command() == "hermes update"
 
 
 def test_optional_skill_source_honors_env_override(monkeypatch, tmp_path):

@@ -1,7 +1,6 @@
 .DS_Store
 /venv/
 /venv.old/
-/_pycache/
 *.pyc*
 __pycache__/
 act/
@@ -25,8 +24,6 @@ act/
 .uv-cache/
 compose.hermes.local.yml
 export*
-__pycache__/model_tools.cpython-310.pyc
-__pycache__/web_tools.cpython-310.pyc
 logs/
 data/
 .pytest_cache/
@@ -52,7 +49,6 @@ agent-browser/
 *.pem
 privvy*
 images/
-__pycache__/
 hermes_agent.egg-info/
 wandb/
 testlogs

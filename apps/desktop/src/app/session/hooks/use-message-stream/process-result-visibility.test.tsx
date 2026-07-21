@@ -15,13 +15,13 @@ const VISIBLE_TEXT =
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let sessionStateByRuntimeIdRef: { current: Map<string, ClientSessionState> }
-const refreshBackgroundProcesses = vi.fn(async () => undefined)
+const refreshBackgroundProcesses = vi.fn(async (_sid: string) => undefined)
 
 vi.mock('@/store/composer-status', async importOriginal => {
   const actual = await importOriginal<typeof import('@/store/composer-status')>()
   return {
     ...actual,
-    refreshBackgroundProcesses: (...args: unknown[]) => refreshBackgroundProcesses(...args)
+    refreshBackgroundProcesses: (sid: string) => refreshBackgroundProcesses(sid)
   }
 })
 

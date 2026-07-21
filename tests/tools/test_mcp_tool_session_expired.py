@@ -17,6 +17,14 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def _mcp_error(code, message="boom"):
+    """Build a real McpError carrying a JSON-RPC error code (structural
+    shape, not a plain string exception)."""
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+    return McpError(ErrorData(code=code, message=message))
+
+
 # ---------------------------------------------------------------------------
 # _is_session_expired_error — unit coverage
 # ---------------------------------------------------------------------------
@@ -80,6 +88,51 @@ def test_is_session_expired_rejects_unrelated_errors():
     assert _is_session_expired_error(Exception("Connection refused")) is False
     # 401 is handled by the sibling _is_auth_error path, not here.
     assert _is_session_expired_error(RuntimeError("401 Unauthorized")) is False
+
+
+def test_is_session_expired_detects_invalid_request_parameters():
+    """A server that restarted mid-session (redeploy, pod rotation) drops
+    its server-side session state; the client's *next* request fails
+    JSON-RPC INVALID_PARAMS validation server-side (see
+    mcp/shared/session.py's incoming-request handler) and comes back as
+    this exact generic message -- not one of the more specific phrases
+    above. Studio North MCP incident, 2026-07-18: this was the literal
+    error text hit after every deploy, and it fell through unrecognized
+    before this marker was added, requiring a manual gateway restart.
+
+    Plain-exception form (no structural .error.code) still matches on
+    the exact-text fallback -- some transports re-wrap the original
+    McpError before it reaches this classifier."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("Invalid request parameters")) is True
+    assert _is_session_expired_error(RuntimeError("INVALID REQUEST PARAMETERS")) is True
+
+
+def test_is_session_expired_detects_structural_mcperror_invalid_params():
+    """The real call-site shape: an ``McpError`` carrying
+    ``ErrorData(code=INVALID_PARAMS, message="Invalid request parameters")``
+    exactly as raised by mcp/shared/session.py's incoming-request handler
+    on a stale/dropped server-side session. Structural code + exact
+    generic message -> session-expired reconnect path."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(_mcp_error(-32602, "Invalid request parameters")) is True
+
+
+def test_is_session_expired_rejects_real_bad_argument_invalid_params():
+    """PR #66841 review fix (teknium1): a genuine bad-arguments tool call
+    also raises McpError(-32602, ...), but from a *different* code path
+    (the tool/server's own argument validation) that virtually always
+    names the offending tool/parameter -- it does not reproduce the SDK's
+    bare generic string verbatim. This must NOT be treated as a stale
+    session and must NOT trigger a silent reconnect-and-retry that would
+    mask a real error from the caller."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(
+        _mcp_error(-32602, "Invalid arguments for tool 'search': missing required field 'query'")
+    ) is False
+    assert _is_session_expired_error(
+        _mcp_error(-32602, "Invalid params: 'limit' must be a positive integer")
+    ) is False
 
 
 def test_is_session_expired_rejects_interrupted_error():

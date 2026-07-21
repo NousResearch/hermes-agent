@@ -3528,6 +3528,33 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "end of file",
 )
 
+# The MCP SDK's *exact*, hardcoded fallback message for a JSON-RPC
+# INVALID_PARAMS (-32602) request-validation failure — see
+# mcp/shared/session.py's incoming-request handler
+# (``ErrorData(code=INVALID_PARAMS, message="Invalid request parameters")``).
+# A server that restarted mid-session (e.g. a redeploy) drops its
+# server-side session state; the *next* request from a client still
+# holding the old session fails request validation and comes back as
+# exactly this message verbatim, with no further detail appended —
+# functionally identical to the other session-expiry symptoms above.
+#
+# This is intentionally NOT folded into ``_SESSION_EXPIRED_MARKERS`` as a
+# loose substring: a real tool call with genuinely bad arguments can also
+# raise ``McpError(-32602, ...)``, and those come from a *different* code
+# path (a tool/server's own argument validation) that virtually always
+# names the offending tool/parameter rather than reproducing the SDK's
+# bare generic string. Matching on that generic text as a substring would
+# risk swallowing a real bad-arguments bug as "just reconnect and retry"
+# instead of surfacing it. Structural code check + exact (not substring)
+# message match narrows this to the one code path that actually produces
+# it. See PR #66841 review discussion.
+try:
+    from mcp.types import INVALID_PARAMS as _JSONRPC_INVALID_PARAMS
+except Exception:  # pragma: no cover — older/newer SDK without the constant
+    _JSONRPC_INVALID_PARAMS = -32602
+
+_SDK_GENERIC_INVALID_PARAMS_MESSAGE = "invalid request parameters"
+
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """Return True if ``exc`` looks like an MCP transport session expiry.
@@ -3552,7 +3579,27 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     if not msg:
         return False
-    return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
+    if any(marker in msg for marker in _SESSION_EXPIRED_MARKERS):
+        return True
+
+    # Stale-session INVALID_PARAMS: require the structural JSON-RPC code
+    # (when available — an McpError with .error.code) AND an *exact*
+    # match against the SDK's bare generic message, not a substring
+    # match against arbitrary tool-call error text. A genuine bad-argument
+    # error (e.g. "Invalid arguments for tool 'search': missing 'query'")
+    # contains extra detail and will not exactly equal the generic
+    # fallback string, so it correctly falls through as a real error.
+    if msg.strip() == _SDK_GENERIC_INVALID_PARAMS_MESSAGE:
+        err = getattr(exc, "error", None)
+        code = getattr(err, "code", None)
+        # If the exception exposes a structural code, it must match
+        # INVALID_PARAMS. If it doesn't expose one (e.g. a plain
+        # RuntimeError wrapping the message, as some transports do),
+        # fall back to the exact-text match alone — still far narrower
+        # than the old blanket substring match.
+        if code is None or code == _JSONRPC_INVALID_PARAMS:
+            return True
+    return False
 
 
 def _handle_session_expired_and_retry(

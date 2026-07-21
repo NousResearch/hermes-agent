@@ -12107,20 +12107,23 @@ def _try_termux_fast_cli_launch() -> bool:
         args.command = "chat"
 
     if args.command in {None, "chat"}:
-        _set_chat_arg_defaults(args)
-        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
         # --warm with --query: bypass full CLI init, go straight to
-        # the fast API-Server path.  If the server is unavailable it
-        # falls back transparently.
-        if not interactive_prompt and getattr(args, "warm", False):
+        # the fast API-Server path.  Check BEFORE _set_chat_arg_defaults
+        # so we skip that initialization entirely.
+        if getattr(args, "query", None) and getattr(args, "warm", False):
             from hermes_cli.oneshot import run_oneshot
 
             sys.exit(
                 run_oneshot(
-                    getattr(args, "query", ""),
+                    args.query,
+                    model=getattr(args, "model", None),
+                    provider=getattr(args, "provider", None),
+                    toolsets=getattr(args, "toolsets", None),
                     warm=True,
                 )
             )
+        _set_chat_arg_defaults(args)
+        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
         if interactive_prompt:
             # Bare Termux CLI should reach the prompt first and do agent-only
             # discovery on the first submitted turn instead of before input.

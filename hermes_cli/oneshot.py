@@ -23,7 +23,8 @@ Env var fallbacks (used when the corresponding arg is not passed):
     the Gateway API Server (``http://127.0.0.1:8642/v1/chat/completions``)
     which is always hot — no cold-start module loading.  Falls back to the
     normal cold-start path if the API Server is unavailable or unconfigured.
-    Skips model/provider/toolsets resolution entirely for the warm path.
+    When ``--model`` or ``--provider`` are given, they are forwarded to the
+    API Server so model routing is preserved.
 """
 
 from __future__ import annotations
@@ -40,12 +41,20 @@ from typing import Optional
 from hermes_cli.fallback_config import get_fallback_chain
 
 
-def _try_api_server_warm(prompt: str) -> str | None:
+def _try_api_server_warm(
+    prompt: str,
+    model: str | None = None,
+    provider: str | None = None,
+) -> str | None:
     """Attempt to route *prompt* through the Gateway API Server.
 
     Checks for ``API_SERVER_KEY`` in the environment (set via ``.env`` or
     ``config.yaml``).  If present, sends the prompt as a
     ``POST /v1/chat/completions`` to the running gateway.
+
+    When *model* or *provider* are given, they are forwarded in the request
+    body so the API Server's model routing picks them up instead of using a
+    hard-coded default.
 
     Returns the response text on success, or ``None`` when the API Server
     is unavailable, unconfigured, or returns an error — the caller should
@@ -64,12 +73,16 @@ def _try_api_server_warm(prompt: str) -> str | None:
 
     url = f"http://{host}:{port}/v1/chat/completions"
 
-    body = json.dumps({
-        "model": "default",
+    request_body: dict[str, object] = {
+        "model": model or "default",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 4096,
         "stream": False,
-    }).encode("utf-8")
+    }
+    if provider:
+        request_body["provider"] = provider
+
+    body = json.dumps(request_body).encode("utf-8")
 
     req = urllib.request.Request(
         url,
@@ -211,7 +224,7 @@ def run_oneshot(
     """
     # --- Warm path: try the hot API Server first. ---
     if warm:
-        response = _try_api_server_warm(prompt)
+        response = _try_api_server_warm(prompt, model=model, provider=provider)
         if response is not None:
             real_stdout = sys.stdout
             real_stdout.write(response)

@@ -504,8 +504,14 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
-def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+def _build_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    existing: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
+    existing = existing or {}
     current_key = llm_api_key
     if current_key is None:
         current_key = (
@@ -514,9 +520,15 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
             or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
         )
 
-    current_provider = config.get("llm_provider", "")
-    current_model = config.get("llm_model", "")
-    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    current_provider = config.get("llm_provider", "") or existing.get("HINDSIGHT_API_LLM_PROVIDER", "")
+    current_model = config.get("llm_model", "") or existing.get("HINDSIGHT_API_LLM_MODEL", "")
+    current_base_url = (
+        config.get("llm_base_url")
+        or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+        or existing.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    )
+    if not current_key:
+        current_key = existing.get("HINDSIGHT_API_LLM_API_KEY", "")
 
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
@@ -549,14 +561,42 @@ def _embedded_profile_env_path(config: dict[str, Any]):
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
-    """Write the profile-scoped env file that standalone hindsight-embed uses."""
+    """Merge Hermes-owned settings into the embedded profile env file.
+
+    Preserve comments and Hindsight settings Hermes does not own.  In
+    particular, an incomplete profile must never erase a valid shared LLM
+    provider/model/key with blank values.
+    """
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
-        encoding="utf-8",
+    saved = _load_simple_env(profile_env)
+    env_values = _build_embedded_profile_env(
+        config,
+        llm_api_key=llm_api_key,
+        existing=saved,
     )
+    if not env_values["HINDSIGHT_API_LLM_PROVIDER"] or not env_values["HINDSIGHT_API_LLM_MODEL"]:
+        raise ValueError(
+            "Hindsight embedded mode requires non-empty llm_provider and llm_model; "
+            "refusing to write an incomplete shared profile environment."
+        )
+
+    lines = profile_env.read_text(encoding="utf-8").splitlines() if profile_env.exists() else []
+    updated: set[str] = set()
+    merged_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in line:
+            key = line.split("=", 1)[0].strip()
+            if key in env_values:
+                merged_lines.append(f"{key}={env_values[key]}")
+                updated.add(key)
+                continue
+        merged_lines.append(line)
+    for key, value in env_values.items():
+        if key not in updated:
+            merged_lines.append(f"{key}={value}")
+    profile_env.write_text("\n".join(merged_lines).rstrip() + "\n", encoding="utf-8")
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:
@@ -1418,13 +1458,17 @@ class HindsightMemoryProvider(MemoryProvider):
                     # Update the profile .env to match our current config so
                     # the daemon always starts with the right settings.
                     # If the config changed and the daemon is running, stop it.
-                    profile_env = _embedded_profile_env_path(self._config)
-                    expected_env = _build_embedded_profile_env(self._config)
+                    current_config = self._config or {}
+                    profile_env = _embedded_profile_env_path(current_config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    expected_env = _build_embedded_profile_env(current_config, existing=saved)
+                    # Extra settings in the shared profile are legitimate and
+                    # must not cause a rewrite/restart loop.  Compare only the
+                    # keys Hermes owns.
+                    config_changed = any(saved.get(key) != value for key, value in expected_env.items())
 
                     if config_changed:
-                        profile_env = _materialize_embedded_profile_env(self._config)
+                        profile_env = _materialize_embedded_profile_env(current_config)
                         if client._manager.is_running(profile):
                             with open(log_path, "a", encoding="utf-8") as f:
                                 f.write("\n=== Config changed, restarting daemon ===\n")

@@ -494,6 +494,16 @@ class TestPluginMemoryDiscovery:
         from plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
 
+    def test_disabled_exclusive_memory_provider_cannot_load(self, monkeypatch):
+        """plugins.disabled is a hard deny-list for memory providers too."""
+        from plugins.memory import load_memory_provider
+
+        monkeypatch.setattr(
+            "plugins.memory._get_disabled_provider_names",
+            lambda: {"hindsight"},
+        )
+        assert load_memory_provider("hindsight") is None
+
 
 class TestUserInstalledProviderDiscovery:
     """Memory providers installed to $HERMES_HOME/plugins/ should be found.

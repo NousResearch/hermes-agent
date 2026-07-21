@@ -32,7 +32,6 @@ class RepairPattern(str, Enum):
     EMPTY_ARGS = "empty_args"                    # Empty/whitespace → {}
     NONE_LITERAL = "none_literal"                # Python None → {}
     CONTROL_CHAR_ESCAPE = "control_char_escape"  # Unescaped control chars in JSON strings
-    MALFORMED_JSON_REPAIR = "malformed_json_repair"  # Trailing commas, unclosed brackets, excess brackets
     UNCLOSED_BRACKET = "unclosed_bracket"        # Unclosed {}/[]
     TRAILING_CONTENT = "trailing_content"        # Complete JSON + extra prose
     DOUBLE_SERIALIZE = "double_serialize"        # JSON string wrapping JSON object

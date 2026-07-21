@@ -774,8 +774,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         results. Older Gemini does NOT.
 
     For unknown / legacy providers we conservatively return False — the
-    caller falls back to the legacy aux-LLM text path.  The check is relaxed
-    when the provider's ``ProviderProfile`` declares ``supports_vision=True``.
+    caller falls back to the legacy aux-LLM text path.  ``ProviderProfile.supports_vision``
+    is NOT used here because it indicates model capability, not API transport
+    compatibility.
     """
     if not isinstance(provider, str):
         return False
@@ -812,16 +813,13 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
-    # Check the provider's registered profile for the supports_vision flag.
-    # This covers vision-capable providers like xiaomi, minimax, etc. that
-    # aren't in the hardcoded list above.
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(p)
-        if profile is not None and profile.supports_vision:
-            return True
-    except Exception:
-        pass
+    # NOTE: We intentionally do NOT fall back to ProviderProfile.supports_vision
+    # here.  That flag indicates *model* capability (from models.dev catalog),
+    # not *API transport* compatibility.  Providers like xiaomi have
+    # supports_vision=True because mimo-v2 supports vision inputs, but the
+    # xiaomi API does not accept images inside tool-role messages.  Only add
+    # providers to the explicit allowlist above after empirically verifying
+    # their API handles multimodal tool results.
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
@@ -833,16 +831,19 @@ def _should_use_native_vision_fast_path() -> bool:
     """Whether vision tools should attach the image to the main model directly
     instead of routing through the auxiliary vision LLM.
 
-    True when image routing resolves to ``native`` AND either the provider is
-    known to accept images inside tool results, or the user explicitly declared
-    the model vision-capable via the ``model.supports_vision`` config override.
-    The override is the escape hatch for custom/local providers that aren't in
-    the static allowlist. Best-effort: any resolution failure returns False so
-    the caller falls back to the legacy aux-LLM path.
+    True when image routing resolves to ``native`` AND the provider API is
+    known to accept images inside tool results.  For providers not in the
+    static allowlist, the ``model.supports_vision`` config override acts as an
+    escape hatch — setting it to ``True`` declares that *both* the model *and*
+    the provider API support multimodal tool content.  A catalog-level
+    ``supports_vision=True`` (from models.dev) is **not** sufficient on its
+    own because it only indicates model capability, not API transport
+    compatibility.  Best-effort: any resolution failure returns False so the
+    caller falls back to the legacy aux-LLM path.
     """
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode, _supports_vision_override
         from hermes_cli.config import load_config
 
         provider = _read_main_provider()
@@ -850,10 +851,16 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True
-        )
+        # The provider API must support multimodal tool content.  The static
+        # allowlist covers known providers (OpenAI, Anthropic, Gemini, …).
+        if _supports_media_in_tool_results(provider, model):
+            return True
+        # For unlisted providers, an explicit user config override
+        # (``model.supports_vision: true``) acts as an escape hatch — the user
+        # is declaring that the provider API can handle multimodal tool results.
+        # A catalog-level vision flag alone is NOT enough because it only
+        # indicates model capability, not API transport compatibility.
+        return _supports_vision_override(cfg, provider, model) is True
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

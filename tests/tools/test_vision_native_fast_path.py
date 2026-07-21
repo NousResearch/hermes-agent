@@ -303,3 +303,37 @@ class TestHandleVisionAnalyzeFastPath:
         assert isinstance(result, str)
         assert json.loads(result) == {"sentinel": "aux-path"}
         mock_aux.assert_called_once()
+
+    def test_xiaomi_provider_rejected_when_no_media_in_tool_results(self, tmp_path):
+        """Regression for #39685: xiaomi API rejects multimodal tool results.
+
+        Even though mimo-v2.5 supports vision (from model catalog), the xiaomi
+        API does not accept images inside tool-role messages.  The fast path
+        must NOT fire — it should fall through to the aux LLM.
+        """
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("xiaomi", "mimo-v2.5")
+        try:
+            with patch(
+                "agent.image_routing.decide_image_input_mode",
+                return_value="native",
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool",
+                side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        # Fast path must NOT fire for xiaomi — fall through to aux LLM
+        assert isinstance(result, str), \
+            f"Fast path fired for xiaomi; should have fallen through to aux LLM"
+        assert json.loads(result) == {"sentinel": "aux-path"}
+        mock_aux.assert_called_once()

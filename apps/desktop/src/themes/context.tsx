@@ -222,6 +222,9 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
+    ...(typo.baseSize ? { '--dt-base-size': typo.baseSize } : {}),
+    ...(typo.lineHeight ? { '--dt-line-height': typo.lineHeight } : {}),
+    ...(typo.letterSpacing ? { '--dt-letter-spacing': typo.letterSpacing } : {}),
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 

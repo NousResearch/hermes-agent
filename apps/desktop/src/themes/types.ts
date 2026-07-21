@@ -52,6 +52,12 @@ export interface DesktopThemeTypography {
   fontMono: string
   /** Google/Bunny/self-hosted font stylesheet URL. */
   fontUrl?: string
+  /** Base font size written to `--dt-base-size` (e.g. `'1rem'`, `'14px'`). */
+  baseSize?: string
+  /** Line-height written to `--dt-line-height` (e.g. `'1.5'`, `'1.6'`). */
+  lineHeight?: string
+  /** Letter-spacing written to `--dt-letter-spacing` (e.g. `'0'`, `'0.01em'`). */
+  letterSpacing?: string
 }
 
 /**

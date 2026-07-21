@@ -618,11 +618,82 @@ def test_get_minimax_oauth_auth_status_logged_in():
         "region": "global",
     }
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+    with patch("hermes_cli.auth.get_provider_auth_state", side_effect=[state, state]), \
+         patch(
+             "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+             return_value={
+                 "provider": "minimax-oauth",
+                 "api_key": "tok",
+                 "base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+                 "source": "oauth",
+             },
+         ):
         status = get_minimax_oauth_auth_status()
 
     assert status["logged_in"] is True
     assert status["region"] == "global"
+
+
+def test_get_minimax_oauth_auth_status_refreshes_expired_but_recoverable_state():
+    expired_state = {
+        "access_token": "old-token",
+        "refresh_token": "rt",
+        "expires_at": _past_iso(60),
+        "region": "global",
+    }
+    refreshed_state = {
+        "access_token": "new-token",
+        "refresh_token": "rt",
+        "expires_at": _future_iso(3600),
+        "region": "global",
+    }
+
+    with patch(
+        "hermes_cli.auth.get_provider_auth_state",
+        side_effect=[expired_state, refreshed_state],
+    ), patch(
+        "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+        return_value={
+            "provider": "minimax-oauth",
+            "api_key": "new-token",
+            "base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            "source": "oauth",
+        },
+    ) as mock_resolve:
+        status = get_minimax_oauth_auth_status()
+
+    mock_resolve.assert_called_once_with()
+    assert status["logged_in"] is True
+    assert status["expires_at"] == refreshed_state["expires_at"]
+    assert status["region"] == "global"
+
+
+def test_get_minimax_oauth_auth_status_reports_refresh_failures():
+    state = {
+        "access_token": "old-token",
+        "refresh_token": "rt",
+        "expires_at": _past_iso(60),
+        "region": "cn",
+    }
+
+    with patch(
+        "hermes_cli.auth.get_provider_auth_state",
+        side_effect=[state, state],
+    ), patch(
+        "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+        side_effect=AuthError(
+            "MiniMax OAuth refresh failed: invalid_grant",
+            provider="minimax-oauth",
+            code="refresh_failed",
+            relogin_required=True,
+        ),
+    ) as mock_resolve:
+        status = get_minimax_oauth_auth_status()
+
+    mock_resolve.assert_called_once_with()
+    assert status["logged_in"] is False
+    assert status["region"] == "cn"
+    assert "refresh failed" in status["error"].lower()
 
 
 def test_generic_auth_status_dispatches_minimax_oauth():
@@ -632,7 +703,16 @@ def test_generic_auth_status_dispatches_minimax_oauth():
         "region": "global",
     }
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+    with patch("hermes_cli.auth.get_provider_auth_state", side_effect=[state, state]), \
+         patch(
+             "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+             return_value={
+                 "provider": "minimax-oauth",
+                 "api_key": "tok",
+                 "base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+                 "source": "oauth",
+             },
+         ):
         status = get_auth_status("minimax-oauth")
 
     assert status["logged_in"] is True

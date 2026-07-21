@@ -358,7 +358,11 @@ def _is_glm_thinking_model(model: Optional[str]) -> bool:
     return bare.startswith("glm-4") or bare.startswith("glm4")
 
 
-def _get_aux_thinking_disable_kwargs(model: Optional[str], provider: str) -> Optional[Dict[str, Any]]:
+def _get_aux_thinking_disable_kwargs(
+    model: Optional[str],
+    provider: str,
+    base_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Return request kwargs to disable thinking for a model on a custom endpoint.
 
     Auxiliary tasks (title generation, compression, web extraction, etc.) do not
@@ -388,9 +392,13 @@ def _get_aux_thinking_disable_kwargs(model: Optional[str], provider: str) -> Opt
     field. This ensures no auxiliary task silently fails even on unknown
     framework/model combinations.
     """
-    # Apply to custom providers (including named custom:<name>) and auto.
+    # Only apply when we control the endpoint. Custom providers always do.
+    # "auto" may resolve to a remote backend (OpenRouter, etc.) — only
+    # inject when a local base_url is explicitly set.
     prov_lower = (provider or "").strip().lower()
-    if not (prov_lower == "auto" or prov_lower.startswith("custom")):
+    if prov_lower == "auto" and not (base_url or "").strip():
+        return None
+    if not prov_lower.startswith("custom") and prov_lower != "auto":
         return None
     if not model:
         return None
@@ -6872,7 +6880,7 @@ def _build_call_kwargs(
     # tasks do not need thinking capability — a reasoning model would waste
     # tokens on internal thought instead of producing actual output, and
     # may return null content.
-    _thinking_kwargs = _get_aux_thinking_disable_kwargs(model, provider)
+    _thinking_kwargs = _get_aux_thinking_disable_kwargs(model, provider, base_url)
     if _thinking_kwargs:
         for key, value in _thinking_kwargs.items():
             if key == "extra_body" and isinstance(value, dict):

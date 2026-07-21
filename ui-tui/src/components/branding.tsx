@@ -8,6 +8,7 @@ import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
+import { ShimmerRows } from './loaders.js'
 import { WidgetGrid } from './widgetGrid.js'
 
 const LOADER_TICK_MS = 120
@@ -188,6 +189,20 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   )
 }
 
+// ── Skeleton ─────────────────────────────────────────────────────────
+//
+// Lazy sections render shimmer rows shaped like the real content (label
+// block + value run) instead of a blank gap that pops when data lands.
+// Row widths mirror the typical toolsets listing.
+const SKELETON_ROWS: readonly (readonly [number, number])[] = [
+  [7, 30],
+  [7, 9],
+  [14, 12],
+  [12, 12],
+  [7, 7],
+  [10, 13]
+]
+
 // ── Collapsible helpers ──────────────────────────────────────────────
 
 function CollapseToggle({
@@ -299,6 +314,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const mcpConnected = mcpServers.filter(s => s.connected).length
 
   const toolsBody = () => {
+    if (info.lazy && toolEntries.length === 0) {
+      return <ShimmerRows color={listFade} highlight={t.color.label} rows={SKELETON_ROWS} />
+    }
+
     const shown = toolEntries.slice(0, TOOLSETS_MAX)
     const overflow = toolEntries.length - TOOLSETS_MAX
 
@@ -463,8 +482,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text />
 
         <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
+          {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
+          {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
+          {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
           {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>

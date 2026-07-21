@@ -149,6 +149,30 @@ def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     assert "x" * 30 not in show
 
 
+def test_run_slash_stats_text_includes_review_lane(kanban_home):
+    """``stats`` text output must surface the ``review`` lane.
+
+    board_stats() reports a per-status count for every non-archived
+    status, so the human-readable ``By status:`` block must enumerate
+    ``review`` too — otherwise its count silently disappears while
+    ``--json`` still shows it.
+    """
+    import re
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs review", assignee="alice")
+        # Move it into the review lane (autocommit connection persists it).
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+
+    out = kc.run_slash("stats")
+    assert "review" in out
+    assert re.search(r"review\s+1", out), out
+
+    # The text path must agree with the JSON path, which already exposed it.
+    out_json = kc.run_slash("stats --json")
+    assert json.loads(out_json)["by_status"].get("review") == 1
+
+
 def test_run_slash_block_unblock_cycle(kanban_home):
     out = kc.run_slash("create 'x' --assignee alice")
     import re

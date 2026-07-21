@@ -303,6 +303,30 @@ class TestActiveVenvMarkerStripping:
         assert "CONDA_PREFIX" not in result
         assert result.get("HOME") == "/home/user"
 
+    def test_poisoned_ssl_cert_file_is_stripped_from_terminal_env(self):
+        """Torn env snapshots must not make TLS CLIs echo secret-bearing dumps."""
+        poisoned = (
+            "/private/etc/ssl/cert.pem\n"
+            "declare -x OPENAI_API_KEY=sk-leaked-by-invalid-cert-path"
+        )
+        result_env = _run_with_env(extra_os_env={"SSL_CERT_FILE": poisoned})
+        assert "SSL_CERT_FILE" not in result_env
+        assert "OPENAI_API_KEY" not in "".join(map(str, result_env.values()))
+
+    def test_valid_ssl_cert_file_is_preserved(self):
+        result_env = _run_with_env(extra_os_env={"SSL_CERT_FILE": "/private/etc/ssl/cert.pem"})
+        assert result_env["SSL_CERT_FILE"] == "/private/etc/ssl/cert.pem"
+
+    def test_poisoned_certificate_env_is_stripped_from_sanitized_spawn_env(self):
+        from tools.environments.local import _sanitize_subprocess_env
+
+        result = _sanitize_subprocess_env(
+            {"HOME": "/home/user", "CURL_CA_BUNDLE": "/cert.pem\rdeclare -x GH_TOKEN=ghs_fake"},
+            {"REQUESTS_CA_BUNDLE": "/cert.pem export OPENAI_API_KEY=sk-fake"},
+        )
+        assert "CURL_CA_BUNDLE" not in result
+        assert "REQUESTS_CA_BUNDLE" not in result
+
     def test_markers_constant_contents(self):
         from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
         assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS

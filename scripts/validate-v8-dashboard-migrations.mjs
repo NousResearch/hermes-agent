@@ -159,6 +159,21 @@ check("package script", () => {
   }
 });
 
+check("production image rebuilds on dashboard changes", () => {
+  const workflow = read(".github/workflows/docker-publish.yml");
+  for (const watchedPath of [
+    "web/**",
+    "ui-tui/**",
+    "packages/hermes-dashboard-kit/**",
+    "package-lock.json",
+    ".dockerignore",
+  ]) {
+    requireIncludes(workflow, watchedPath, `Docker publish watches ${watchedPath}`);
+  }
+  const dockerignore = read(".dockerignore");
+  requireIncludes(dockerignore, "hermes_cli/web_dist/", "local web_dist excluded from Docker context");
+});
+
 finish("V8 dashboard migration validation");
 
 function check(label, fn) {

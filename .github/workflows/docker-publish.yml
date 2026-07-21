@@ -5,9 +5,15 @@ on:
     branches: [main]
     paths:
       - '**/*.py'
+      - 'web/**'
+      - 'ui-tui/**'
+      - 'packages/hermes-dashboard-kit/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'package.json'
+      - 'package-lock.json'
       - 'Dockerfile'
+      - '.dockerignore'
       - 'docker/**'
       - '.github/workflows/docker-publish.yml'
       - '.github/actions/hermes-smoke-test/**'
@@ -15,9 +21,15 @@ on:
     branches: [main]
     paths:
       - '**/*.py'
+      - 'web/**'
+      - 'ui-tui/**'
+      - 'packages/hermes-dashboard-kit/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'package.json'
+      - 'package-lock.json'
       - 'Dockerfile'
+      - '.dockerignore'
       - 'docker/**'
       - '.github/workflows/docker-publish.yml'
       - '.github/actions/hermes-smoke-test/**'

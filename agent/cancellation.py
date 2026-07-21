@@ -174,6 +174,13 @@ class ProcessRegistry:
         with self._lock:
             self._pids.setdefault(job_id, []).append(pid)
 
+    def unregister_pid(self, job_id: str, pid: int) -> None:
+        """Remove a specific PID from a job's registry (normal process exit)."""
+        with self._lock:
+            pids = self._pids.get(job_id, [])
+            if pid in pids:
+                pids.remove(pid)
+
     def register_pgid(self, job_id: str, pgid: int) -> None:
         """Associate a process group ID with a job."""
         self.register_pid(job_id, pgid)
@@ -233,6 +240,7 @@ class JobManager:
 
     def __init__(self) -> None:
         self._jobs: dict[str, tuple[CancellationToken, JobState]] = {}
+        self._worker_tids: dict[str, set[int]] = {}
         self._lock = threading.RLock()
 
     def create_job(self, job_id: Optional[str] = None) -> str:
@@ -327,6 +335,23 @@ class JobManager:
     def unregister_job(self, job_id: str) -> None:
         with self._lock:
             self._jobs.pop(job_id, None)
+            self._worker_tids.pop(job_id, None)
+
+    def register_worker_tid(self, job_id: str, tid: int) -> None:
+        """Track a worker thread ID for a job (for interrupt signal on cancel)."""
+        with self._lock:
+            self._worker_tids.setdefault(job_id, set()).add(tid)
+
+    def unregister_worker_tid(self, job_id: str, tid: int) -> None:
+        """Remove a worker thread ID when the worker exits."""
+        with self._lock:
+            tids = self._worker_tids.get(job_id, set())
+            tids.discard(tid)
+
+    def get_worker_tids(self, job_id: str) -> set[int]:
+        """Get all worker thread IDs for a job."""
+        with self._lock:
+            return set(self._worker_tids.get(job_id, set()))
 
     def list_running_jobs(self) -> list[dict]:
         """List all running jobs with their job_id, state, and current step."""
@@ -448,6 +473,20 @@ def _cancel_callback(
 
     # Check remaining
     remaining = registry.get_remaining(job_id)
+
+    # Set interrupt signal on all worker threads for this job so
+    # _wait_for_process and other interrupt-aware tools exit their
+    # poll loops immediately (rather than waiting for the process
+    # to die from the kill above).
+    try:
+        import run_agent as _ra_mod
+        for _tid in mgr.get_worker_tids(job_id):
+            try:
+                _ra_mod._set_interrupt(True, _tid)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Only set CANCELLED on the token if no processes survived.
     # If survivors exist, leave the token in CANCELLING state so

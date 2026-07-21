@@ -827,7 +827,35 @@ class BaseEnvironment(ABC):
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
+
+        # Preemptive cancellation: register the PID immediately at spawn time
+        # (before _wait_for_process starts blocking) so cancel_job can kill
+        # the process tree.  Unregister on normal completion.
+        _fg_job_id = None
+        _fg_registry = None
+        _fg_pid = getattr(proc, "pid", None)
+        try:
+            from agent.cancellation import get_process_registry, is_preemptive_cancellation_enabled
+            if is_preemptive_cancellation_enabled() and _fg_pid:
+                import threading as _thr
+                _fg_job_id = getattr(_thr.current_thread(), "_hermes_job_id", None)
+                if _fg_job_id:
+                    _fg_registry = get_process_registry()
+                    _fg_registry.register_pid(_fg_job_id, _fg_pid)
+        except Exception:
+            pass
+
+        try:
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+        finally:
+            # Unregister on normal completion.  On cancel, the callback
+            # already killed the process and clears the registry itself.
+            if _fg_registry and _fg_job_id and _fg_pid:
+                try:
+                    _fg_registry.unregister_pid(_fg_job_id, _fg_pid)
+                except Exception:
+                    pass
+
         self._update_cwd(result)
 
         return result

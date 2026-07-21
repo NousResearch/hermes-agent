@@ -1,10 +1,98 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
+const RICH_INPUT_SLOT = 'composer-rich-input'
+
+function composerPlainText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent || ''
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return ''
+  }
+
+  const element = node as HTMLElement
+
+  if (element.dataset.refText) {
+    return element.dataset.refText
+  }
+
+  if (element.tagName === 'BR') {
+    return '\n'
+  }
+
+  const text = Array.from(node.childNodes).map(composerPlainText).join('')
+  const block = element.tagName === 'DIV' || element.tagName === 'P'
+
+  return block && text && element.dataset.slot !== RICH_INPUT_SLOT ? `${text}\n` : text
+}
+
+function noteTrustedComposerSend(editor: HTMLElement | null): void {
+  if (!editor || editor.dataset.slot !== RICH_INPUT_SLOT) {
+    return
+  }
+
+  const root = editor.closest<HTMLElement>('[data-slot="composer-root"]')
+
+  // Busy/local-queue and attachment-bearing drafts are deliberately ordinary
+  // chat. This renderer-owned marker enforces the product contract; it is not a
+  // security boundary. Exact text captured from the trusted OS gesture remains
+  // the authority boundary if renderer code is compromised.
+  if (root?.dataset.directActionEligible !== 'true') {
+    return
+  }
+
+  const text = composerPlainText(editor)
+
+  if (text && text.length <= 8_192) {
+    ipcRenderer.send('hermes:direct-action:trusted-gesture', { text })
+  }
+}
+
+// The isolated preload observes only OS-trusted composer-submit gestures.
+// Renderer code cannot synthesize ``isTrusted``, call this IPC channel, or
+// substitute text after the main process binds the captured text hash.
+window.addEventListener(
+  'keydown',
+  event => {
+    if (
+      event.isTrusted &&
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.isComposing
+    ) {
+      noteTrustedComposerSend(
+        (event.target as HTMLElement | null)?.closest?.(`[data-slot="${RICH_INPUT_SLOT}"]`) || null
+      )
+    }
+  },
+  true
+)
+window.addEventListener(
+  'pointerup',
+  event => {
+    if (event.isTrusted && event.button === 0) {
+      const target = event.target as HTMLElement | null
+      const send = target?.closest?.('[data-direct-action-send="true"]')
+      const root = send?.closest?.('[data-slot="composer-root"]')
+      const editor = root?.querySelector?.(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement | null
+
+      noteTrustedComposerSend(editor)
+    }
+  },
+  true
+)
+
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  getDirectActionIdentity: profile => ipcRenderer.invoke('hermes:direct-action:identity', profile),
+  mintDirectActionPrompt: request => ipcRenderer.invoke('hermes:direct-action:mint-prompt', request),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),

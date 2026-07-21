@@ -201,6 +201,26 @@ def test_task_id_passthrough():
     assert agent._current_task_id == "fixed-task"
 
 
+def test_pre_llm_hook_receives_gateway_surface_context():
+    agent = _FakeAgent()
+    agent.platform = "telegram"
+    agent._user_id = "42"
+    agent._gateway_event_context = {
+        "platform": "telegram",
+        "sender_id": "42",
+        "chat_id": "42",
+        "source_messages": [{"raw_event_id": "100", "message_id": "7"}],
+    }
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]) as invoke:
+        _build(agent)
+
+    kwargs = invoke.call_args.kwargs
+    assert kwargs["platform"] == "telegram"
+    assert kwargs["sender_id"] == "42"
+    assert kwargs["surface_context"] == agent._gateway_event_context
+
+
 def test_persist_user_message_becomes_original():
     agent = _FakeAgent()
     ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")
@@ -450,4 +470,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

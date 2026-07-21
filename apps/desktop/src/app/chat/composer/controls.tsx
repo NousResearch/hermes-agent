@@ -131,6 +131,7 @@ export function ComposerControls({
           <Button
             aria-label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}
             className={PRIMARY_ICON_BTN}
+            data-direct-action-send={!busy && canSubmit ? 'true' : undefined}
             disabled={disabled || !canSubmit}
             type="submit"
           >

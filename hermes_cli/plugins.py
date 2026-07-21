@@ -161,6 +161,18 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    # Long-running gateway lifecycle. Callbacks are synchronous registration
+    # seams: a plugin may create/cancel its own bounded asyncio task while the
+    # gateway adapters are connected. Return values are ignored.
+    # Kwargs: gateway: GatewayRunner.
+    "on_gateway_start",
+    "on_gateway_stop",
+    # Dashboard/Desktop sidecar lifecycle and durable-session attachment.
+    # ``on_tui_gateway_start`` receives a narrow event emitter keyed by the
+    # durable session id. ``on_tui_session_attached`` may return bounded
+    # ``plugin.*`` events for replay after a create/resume response is sent.
+    "on_tui_gateway_start",
+    "on_tui_session_attached",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
@@ -171,6 +183,20 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Platform ingress provenance hook. Fired by adapters immediately before
+    # a user-authored event enters an adapter-side debounce/aggregation queue.
+    # It is observational: return values are ignored and MUST NOT authorize a
+    # turn.  The hook exists so trusted local plugins can durably record the
+    # ordered raw event identifiers that would otherwise be lost when multiple
+    # platform messages are combined into one MessageEvent.
+    #
+    # Current kwargs: event: MessageEvent, adapter: BasePlatformAdapter.
+    "pre_platform_event_enqueue",
+    # Desktop ingress provenance. Fired by the TUI/dashboard prompt handler
+    # after session lookup and text sanitization, before queueing or dispatch.
+    # A trusted plugin may return {"surface_context": {...}}; absent/invalid
+    # provenance leaves the ordinary chat path unchanged.
+    "pre_prompt_submit",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

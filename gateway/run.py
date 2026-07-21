@@ -7915,6 +7915,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_plugin_hook
+
+            _invoke_plugin_hook("on_gateway_start", gateway=self)
+        except Exception:
+            logger.warning("Plugin gateway-start hooks failed", exc_info=True)
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
@@ -8857,6 +8863,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _stop_impl() -> None:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_plugin_hook
+
+                _invoke_plugin_hook("on_gateway_stop", gateway=self)
+            except Exception:
+                logger.warning("Plugin gateway-stop hooks failed", exc_info=True)
+
             def _kill_tool_subprocesses(phase: str) -> None:
                 """Kill tool subprocesses + tear down terminal envs + browsers.
 
@@ -20948,7 +20961,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                _event_metadata = getattr(event, "metadata", None) or {}
+                _source_members = _event_metadata.get("platform_event_members")
+                if not isinstance(_source_members, list):
+                    _source_members = []
+                _source_texts = getattr(event, "_platform_event_member_texts", None)
+                if not isinstance(_source_texts, list):
+                    _source_texts = []
+                agent._gateway_event_context = {
+                    "platform": platform_key,
+                    "sender_id": str(source.user_id or ""),
+                    "chat_id": str(source.chat_id or ""),
+                    "chat_type": str(source.chat_type or ""),
+                    "thread_id": str(source.thread_id or ""),
+                    "profile": str(source.profile or ""),
+                    "platform_account": str(
+                        _event_metadata.get("platform_account") or ""
+                    ),
+                    "accepted_text": message if isinstance(message, str) else "",
+                    "source_messages": [
+                        {**dict(member), "text": str(_source_texts[index])}
+                        for index, member in enumerate(_source_members)
+                        if isinstance(member, dict)
+                        and index < len(_source_texts)
+                    ],
+                }
+                try:
+                    result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                finally:
+                    # Cached agents are reused across turns. Never let one
+                    # event's provenance become ambient authority for the next.
+                    agent._gateway_event_context = {}
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

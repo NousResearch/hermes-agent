@@ -58,6 +58,19 @@ def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
     )
 
 
+def _with_member(event: MessageEvent, raw_event_id: str, message_id: str) -> MessageEvent:
+    event.metadata["platform_event_members"] = [
+        {
+            "raw_event_id": raw_event_id,
+            "message_id": message_id,
+            "occurred_at": "2026-07-21T12:00:00+00:00",
+            "text_hash": "a" * 64,
+        }
+    ]
+    event._platform_event_member_texts = [event.text]
+    return event
+
+
 class TestTextBatching:
     @pytest.mark.asyncio
     async def test_single_message_dispatched_after_delay(self):
@@ -114,6 +127,33 @@ class TestTextBatching:
         assert "chunk 1" in text
         assert "chunk 2" in text
         assert "chunk 3" in text
+
+    @pytest.mark.asyncio
+    async def test_split_messages_preserve_ordered_platform_members(self):
+        """Aggregation must not erase the raw IDs needed for later authority."""
+        adapter = _make_adapter()
+        first = _with_member(_make_event("chunk 1"), "update-1", "message-1")
+        second = _with_member(_make_event("chunk 2"), "update-2", "message-2")
+
+        adapter._enqueue_text_event(first)
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(second)
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert [
+            member["raw_event_id"]
+            for member in dispatched.metadata["platform_event_members"]
+        ] == ["update-1", "update-2"]
+        assert [
+            member["message_id"]
+            for member in dispatched.metadata["platform_event_members"]
+        ] == ["message-1", "message-2"]
+        assert all(
+            "text" not in member
+            for member in dispatched.metadata["platform_event_members"]
+        )
+        assert dispatched._platform_event_member_texts == ["chunk 1", "chunk 2"]
 
     @pytest.mark.asyncio
     async def test_different_chats_not_merged(self):

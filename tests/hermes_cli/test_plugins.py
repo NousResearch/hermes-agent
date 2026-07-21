@@ -359,12 +359,13 @@ class TestPluginDiscovery:
         mgr.discover_and_load()
         mgr.discover_and_load()  # second call should no-op
 
-        # Filter out bundled plugins — they're always discovered.
-        non_bundled = {
+        # Entry-point plugins depend on the test runner's installed environment;
+        # this assertion concerns only the isolated HERMES_HOME user directory.
+        user_plugins = {
             n: p for n, p in mgr._plugins.items()
-            if p.manifest.source != "bundled"
+            if p.manifest.source == "user"
         }
-        assert len(non_bundled) == 1
+        assert len(user_plugins) == 1
 
     def test_failed_discovery_is_not_cached(self, tmp_path, monkeypatch):
         """A sweep that raises must not cache 'discovered' with no plugins.
@@ -394,11 +395,11 @@ class TestPluginDiscovery:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
         mgr.discover_and_load()
         assert mgr._discovered is True
-        non_bundled = {
+        user_plugins = {
             n: p for n, p in mgr._plugins.items()
-            if p.manifest.source != "bundled"
+            if p.manifest.source == "user"
         }
-        assert len(non_bundled) == 1
+        assert len(user_plugins) == 1
 
     def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
         """Directories without plugin.yaml are silently skipped."""
@@ -409,12 +410,11 @@ class TestPluginDiscovery:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        # Filter out bundled plugins — they're always discovered.
-        non_bundled = {
+        user_plugins = {
             n: p for n, p in mgr._plugins.items()
-            if p.manifest.source != "bundled"
+            if p.manifest.source == "user"
         }
-        assert len(non_bundled) == 0
+        assert len(user_plugins) == 0
 
     def test_entry_points_scanned(self, tmp_path, monkeypatch):
         """Entry-point based plugins are discovered (mocked)."""
@@ -634,6 +634,15 @@ class TestPluginHooks:
 
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_valid_hooks_include_pre_platform_event_enqueue(self):
+        assert "pre_platform_event_enqueue" in VALID_HOOKS
+
+    def test_valid_hooks_include_gateway_lifecycle(self):
+        assert "on_gateway_start" in VALID_HOOKS
+        assert "on_gateway_stop" in VALID_HOOKS
+        assert "on_tui_gateway_start" in VALID_HOOKS
+        assert "on_tui_session_attached" in VALID_HOOKS
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""

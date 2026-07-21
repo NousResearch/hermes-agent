@@ -727,6 +727,43 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'plugin.medcloud.status') {
+        const operationId = typeof payload?.operation_id === 'string' ? payload.operation_id.trim() : ''
+        const text = coerceGatewayText(payload?.text).trim()
+
+        const transitionId =
+          typeof payload?.transition_id === 'number' && Number.isSafeInteger(payload.transition_id)
+            ? payload.transition_id
+            : 0
+
+        if (sessionId && operationId && operationId.length <= 64 && text && transitionId > 0) {
+          flushQueuedDeltas(sessionId)
+          const messageId = `medcloud-status-${operationId}`
+
+          updateSessionState(sessionId, state => {
+            const statusMessage = {
+              id: messageId,
+              role: 'system' as const,
+              parts: [textPart(text)],
+              timestamp: Math.floor(Date.now() / 1000),
+              medcloudTransitionId: transitionId
+            }
+
+            const existingIndex = state.messages.findIndex(message => message.id === messageId)
+            const existing = existingIndex >= 0 ? state.messages[existingIndex] : undefined
+
+            if ((existing?.medcloudTransitionId ?? 0) > transitionId) {
+              return state
+            }
+
+            const messages =
+              existingIndex < 0
+                ? [...state.messages, statusMessage]
+                : state.messages.map((message, index) => (index === existingIndex ? statusMessage : message))
+
+            return { ...state, messages }
+          })
+        }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)

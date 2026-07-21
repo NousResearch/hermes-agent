@@ -18,6 +18,8 @@ To see available layouts: ls unpacked/ppt/slideLayouts/
 Prints the <p:sldId> element to add to presentation.xml.
 """
 
+from __future__ import annotations  # PEP 604 union syntax on Python 3.9
+
 import re
 import shutil
 import sys

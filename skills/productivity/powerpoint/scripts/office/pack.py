@@ -10,6 +10,8 @@ Examples:
     python pack.py unpacked/ output.pptx --validate false
 """
 
+from __future__ import annotations  # PEP 604 union syntax on Python 3.9
+
 import argparse
 import sys
 import shutil

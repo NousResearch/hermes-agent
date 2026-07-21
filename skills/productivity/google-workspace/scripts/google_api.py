@@ -20,6 +20,8 @@ Usage:
   python google_api.py docs get DOC_ID
 """
 
+from __future__ import annotations  # PEP 604 union syntax on Python 3.9
+
 import argparse
 import base64
 import json

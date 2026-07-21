@@ -372,6 +372,12 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # Some backends (e.g. vLLM) don't apply the OpenAI-documented
+            # `auto` default themselves when tool_choice is absent, so tool
+            # calls can go silently unrequested (#39099). Emit the documented
+            # default explicitly; request_overrides below still wins if the
+            # caller passed an explicit tool_choice.
+            api_kwargs["tool_choice"] = "auto"
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
@@ -559,6 +565,10 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # See _build_kwargs: some backends don't apply the documented
+            # `auto` default themselves (#39099). request_overrides below
+            # still wins if the caller passed an explicit tool_choice.
+            api_kwargs["tool_choice"] = "auto"
 
         # max_tokens resolution — priority: ephemeral > user > profile default
         max_tokens_fn = params.get("max_tokens_param_fn")

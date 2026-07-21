@@ -1,5 +1,6 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
+import hmac
 import json
 
 import pytest
@@ -166,12 +167,95 @@ class TestBlueBubblesHelpers:
 
 class _FakeBlueBubblesRequest:
     def __init__(self, payload, password="secret"):
-        self.query = {"password": password}
+        # password=None simulates a request that carries no token at all.
+        self.query = {} if password is None else {"password": password}
         self.headers = {}
         self._body = json.dumps(payload).encode("utf-8")
 
     async def read(self):
         return self._body
+
+
+class TestBlueBubblesWebhookAuth:
+    """Regression tests for webhook token validation.
+
+    The token check must reject bad/missing tokens with 401 (never an
+    exception) and must go through hmac.compare_digest — including for
+    non-ASCII passwords, where comparing str objects would raise TypeError.
+    """
+
+    # A non-message event: the handler acknowledges it with 200 "ok" right
+    # after auth, so these tests exercise only the token comparison.
+    _PAYLOAD = {"type": "typing-indicator"}
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_returns_401(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password="wrong")
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_missing_token_returns_401(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password=None)
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_empty_token_returns_401(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password="")
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_correct_token_accepted(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password="secret")
+        )
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    async def test_non_ascii_password_correct_token_accepted(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, password="şifre123")
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password="şifre123")
+        )
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    async def test_non_ascii_password_wrong_token_returns_401(self, monkeypatch):
+        """str-based compare_digest would raise TypeError here; the bytes
+        comparison must keep returning the plain 401."""
+        adapter = _make_adapter(monkeypatch, password="şifre123")
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password="wrong")
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_token_comparison_uses_compare_digest(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+        real_compare = hmac.compare_digest
+
+        def spy(a, b):
+            calls.append((a, b))
+            return real_compare(a, b)
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.hmac.compare_digest", spy
+        )
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._PAYLOAD, password="secret")
+        )
+        assert response.status == 200
+        assert calls == [(b"secret", b"secret")]
 
 
 class TestBlueBubblesMentionGating:

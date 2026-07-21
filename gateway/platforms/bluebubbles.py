@@ -9,6 +9,7 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -880,7 +881,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or request.headers.get("x-guid")
             or request.headers.get("x-bluebubbles-guid")
         )
-        if token != self.password:
+        # Compare as bytes: compare_digest raises TypeError on non-ASCII str
+        # inputs, which would turn a wrong password into a 500 instead of 401.
+        if not hmac.compare_digest(
+            (token or "").encode("utf-8"), (self.password or "").encode("utf-8")
+        ):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             raw = await request.read()

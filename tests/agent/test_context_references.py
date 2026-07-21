@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -148,6 +149,76 @@ def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
     assert "main.py" in result.message
     assert "helper.py" in result.message
     assert not result.warnings
+
+
+def _make_nested_workspace(root: Path) -> Path:
+    workspace = root / "ws"
+    (workspace / "pkg" / "sub" / "deep").mkdir(parents=True)
+    (workspace / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (workspace / "pkg" / "z.py").write_text("z = 1\n", encoding="utf-8")
+    (workspace / "pkg" / "sub" / "c.py").write_text("c = 1\n", encoding="utf-8")
+    (workspace / "pkg" / "sub" / "deep" / "d.py").write_text("d = 1\n", encoding="utf-8")
+    return workspace
+
+
+def test_folder_listing_no_duplicate_root_and_nests_depth_first(tmp_path: Path):
+    from agent import context_references as cr
+    from agent.context_references import preprocess_context_references
+
+    workspace = _make_nested_workspace(tmp_path)
+
+    # `rg --files` emits paths relative to cwd; feeding a fixed list exercises
+    # the ripgrep branch deterministically whether or not rg is installed.
+    rg_files = [
+        Path("pkg/a.py"),
+        Path("pkg/z.py"),
+        Path("pkg/sub/c.py"),
+        Path("pkg/sub/deep/d.py"),
+    ]
+
+    with patch.object(cr, "_rg_files", return_value=list(rg_files)):
+        rg_message = preprocess_context_references(
+            "@folder:pkg", cwd=workspace, context_length=100_000
+        ).message
+    with patch.object(cr, "_rg_files", return_value=None):
+        walk_message = preprocess_context_references(
+            "@folder:pkg", cwd=workspace, context_length=100_000
+        ).message
+
+    for message in (rg_message, walk_message):
+        # The folder is the listing header; it must not also appear as a child.
+        assert "pkg/" in message
+        assert "- pkg/" not in message
+        # Children nest under their real parent via the depth-based indent.
+        assert "- sub/" in message
+        assert "  - deep/" in message
+        assert "    - d.py" in message
+        assert "  - c.py" in message
+
+    # Both code paths must render the same tree on a clean directory — this is
+    # the ripgrep-present vs ripgrep-absent divergence the fix closes.
+    assert rg_message == walk_message
+
+
+def test_folder_listing_ripgrep_branch_matches_walk_with_real_rg(tmp_path: Path):
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    from agent import context_references as cr
+    from agent.context_references import preprocess_context_references
+
+    workspace = _make_nested_workspace(tmp_path)
+
+    rg_message = preprocess_context_references(
+        "@folder:pkg", cwd=workspace, context_length=100_000
+    ).message
+    with patch.object(cr, "_rg_files", return_value=None):
+        walk_message = preprocess_context_references(
+            "@folder:pkg", cwd=workspace, context_length=100_000
+        ).message
+
+    assert "- pkg/" not in rg_message
+    assert rg_message == walk_message
 
 
 def test_expand_quoted_file_reference_with_spaces(tmp_path: Path):

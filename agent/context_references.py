@@ -497,34 +497,74 @@ def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
 
 
 def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
+    """Directories and files under ``path`` in nested tree order.
+
+    The ripgrep fast path and the os.walk fallback return the same entries
+    in the same order so the rendered tree is identical whether or not
+    ripgrep is installed: a depth-first traversal, directories before files
+    within each directory, with the target folder itself excluded (it is the
+    listing header, not one of its own children). Hidden entries and
+    ``__pycache__`` are skipped, and the result is capped at ``limit``.
+
+    ripgrep lists files only, so empty directories surface only on the
+    os.walk fallback — the one unavoidable difference between the sources.
+    """
+    entries: set[Path] = set()
+
     rg_entries = _rg_files(path, cwd, limit=limit)
     if rg_entries is not None:
-        output: list[Path] = []
-        seen_dirs: set[Path] = set()
         for rel in rg_entries:
             full = cwd / rel
+            if _is_hidden_under_root(full, path):
+                continue
+            entries.add(full)
             for parent in full.parents:
-                if parent == cwd or parent in seen_dirs or path not in {parent, *parent.parents}:
-                    continue
-                seen_dirs.add(parent)
-                output.append(parent)
-            output.append(full)
-        return sorted({p for p in output if p.exists()}, key=lambda p: (not p.is_dir(), str(p)))
+                if parent == path:
+                    break
+                entries.add(parent)
+    else:
+        for root, dirs, files in os.walk(path):
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
+            root_path = Path(root)
+            for name in dirs:
+                entries.add(root_path / name)
+            for name in sorted(f for f in files if not f.startswith(".")):
+                entries.add(root_path / name)
+            if len(entries) >= limit:
+                break
 
-    output = []
-    for root, dirs, files in os.walk(path):
-        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
-        files = sorted(f for f in files if not f.startswith("."))
-        root_path = Path(root)
-        for d in dirs:
-            output.append(root_path / d)
-            if len(output) >= limit:
-                return output
-        for f in files:
-            output.append(root_path / f)
-            if len(output) >= limit:
-                return output
-    return output
+    ordered = sorted(
+        (entry for entry in entries if entry.exists()),
+        key=lambda entry: _tree_sort_key(entry, path),
+    )
+    return ordered[:limit]
+
+
+def _tree_sort_key(entry: Path, root: Path) -> tuple[tuple[int, str], ...]:
+    """Order entries depth-first with directories before files at each level.
+
+    The depth-based indent in ``_build_folder_listing`` only renders a
+    correct tree when each directory is immediately followed by its own
+    subtree. Each path component contributes ``(0, name)`` when it is a
+    directory and ``(1, name)`` when it is the final file component, so a
+    directory sorts ahead of its sibling files and ahead of (yet adjacent
+    to) its descendants.
+    """
+    rel_parts = entry.relative_to(root).parts
+    is_dir = entry.is_dir()
+    last = len(rel_parts) - 1
+    return tuple(
+        (0 if index < last or is_dir else 1, part)
+        for index, part in enumerate(rel_parts)
+    )
+
+
+def _is_hidden_under_root(entry: Path, root: Path) -> bool:
+    try:
+        rel_parts = entry.relative_to(root).parts
+    except ValueError:
+        return False
+    return any(part.startswith(".") or part == "__pycache__" for part in rel_parts)
 
 
 def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:

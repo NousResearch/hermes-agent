@@ -350,8 +350,20 @@ def _cmd_auth() -> int:
     print(f"saving storage state to: {path}")
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=False)
+            # Launch real Chrome (not Chromium for Testing) and strip the
+            # --enable-automation flag so Google's sign-in flow doesn't
+            # block us with "Couldn't sign you in / browser may not be secure".
+            browser = pw.chromium.launch(
+                headless=False,
+                channel="chrome",
+                ignore_default_args=["--enable-automation"],
+                args=["--disable-blink-features=AutomationControlled"],
+            )
             context = browser.new_context()
+            # Hide navigator.webdriver — another tell Google sniffs.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
             page = context.new_page()
             page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
             try:

@@ -7,6 +7,17 @@ import { liftForContrast, mix } from '../lib/color.js'
 import type { Theme } from '../theme.js'
 
 /**
+ * Overlay width clamp: prefer `preferred`, honor the caller's `maxWidth`
+ * ABSOLUTELY (a grid cell knows its budget — overflowing it clips at the
+ * terminal edge), and keep a usability floor only when the cap allows it.
+ */
+export function clampOverlayWidth(preferred: number, maxWidth?: number, min = 24): number {
+  const cap = maxWidth === undefined ? Number.MAX_SAFE_INTEGER : Math.max(1, Math.trunc(maxWidth))
+
+  return Math.max(Math.min(min, cap), Math.min(preferred, cap))
+}
+
+/**
  * THE scrollbar treatment (transcript + overlays): thumb rides the theme
  * base, accent while interacting; track recedes via an explicit blend toward
  * the surface. Never SGR dim — terminal-interpreted, it renders as a black

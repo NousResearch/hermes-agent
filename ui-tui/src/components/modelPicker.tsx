@@ -10,7 +10,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
-import { chipRowProps } from './overlayPrimitives.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -62,7 +62,7 @@ export function ModelPicker({
   // has an actual constraint to truncate against. Optional maxWidth lets
   // grid layouts hand the picker its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
-  const width = Math.max(24, Math.min(preferredWidth, Math.trunc(maxWidth ?? preferredWidth)))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
     gw.request<ModelOptionsResponse>('model.options', {

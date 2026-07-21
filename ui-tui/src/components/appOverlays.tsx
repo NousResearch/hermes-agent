@@ -227,7 +227,10 @@ export function FloatingOverlays({
       id: 'grid-test',
       render: () => (
         <FloatBox color={theme.color.border}>
-          <GridTestOverlay cols={Math.max(24, cols - 6)} state={gridTest} t={theme} />
+          {/* cols-6 = FloatBox chrome (4) + margin (2); no 24-col floor —
+              forcing one would overflow cells narrower than 28 and clip at
+              the terminal edge. */}
+          <GridTestOverlay cols={Math.max(1, cols - 6)} state={gridTest} t={theme} />
         </FloatBox>
       )
     })

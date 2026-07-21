@@ -1,3 +1,4 @@
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -10,7 +11,8 @@ import {
   HERMES_PATHS_MIME,
   imageBlobDedupeKey,
   partitionDroppedFiles,
-  rememberRecentImageBlobPaste
+  rememberRecentImageBlobPaste,
+  useComposerActions
 } from './use-composer-actions'
 
 // A Finder/Explorer drop carries a native File handle; an in-app drag (project
@@ -298,5 +300,102 @@ describe('recent image paste dedupe', () => {
     expect(rememberRecentImageBlobPaste(seen, key, 1000)).toBe(true)
     forgetRecentImageBlobPaste(seen, key)
     expect(rememberRecentImageBlobPaste(seen, key, 1200)).toBe(true)
+  })
+})
+
+describe('image paste persistence', () => {
+  afterEach(() => {
+    cleanup()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: undefined })
+  })
+
+  const renderActions = (saveImageBuffer: ReturnType<typeof vi.fn>) => {
+    const add = vi.fn()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:image/png;base64,cHJldmlldw=='),
+        saveImageBuffer
+      }
+    })
+
+    const hook = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '',
+        requestGateway: vi.fn(async () => undefined) as never,
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test'
+        }
+      })
+    )
+
+    return { add, ...hook }
+  }
+
+  it('retries the same bytes immediately after a save returns no path', async () => {
+    const saveImageBuffer = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce('/tmp/retried-image.png')
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+    const { add, result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(false)
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(2)
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/tmp/retried-image.png' }))
+  })
+
+  it('retries the same bytes immediately after a save throws', async () => {
+    const saveImageBuffer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce('/tmp/retried-after-error.png')
+
+    const blob = new Blob([new Uint8Array([4, 5, 6])], { type: 'image/png' })
+    const { add, result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(false)
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(2)
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/tmp/retried-after-error.png' }))
+  })
+
+  it('persists same-size images when their bytes differ', async () => {
+    const saveImageBuffer = vi
+      .fn()
+      .mockResolvedValueOnce('/tmp/first-image.png')
+      .mockResolvedValueOnce('/tmp/second-image.png')
+
+    const first = new Blob([new Uint8Array([7, 8, 9])], { type: 'image/png' })
+    const second = new Blob([new Uint8Array([7, 8, 10])], { type: 'image/png' })
+    const { result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(first)).resolves.toBe(true)
+      await expect(result.current.attachImageBlob(second)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(2)
+  })
+
+  it('persists byte-identical near-simultaneous pastes once', async () => {
+    const saveImageBuffer = vi.fn(async () => '/tmp/only-image.png')
+    const blob = new Blob([new Uint8Array([11, 12, 13])], { type: 'image/png' })
+    const { result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(1)
   })
 })

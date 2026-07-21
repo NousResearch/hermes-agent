@@ -44,7 +44,7 @@ export async function imageBlobDedupeKey(blob: Blob, data: Uint8Array): Promise<
   // screenshot can arrive with different File metadata.
   const digestInput = Uint8Array.from(data).buffer
   const digest = await crypto.subtle.digest('SHA-256', digestInput)
-  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 
   return [blob.size, `sha256:${hash}`].join('|')
 }

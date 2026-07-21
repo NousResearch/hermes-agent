@@ -38,6 +38,11 @@ class TestChromiumSearchRoots:
         home = os.path.expanduser("~")
         assert any(r == os.path.join(home, ".cache", "ms-playwright") for r in roots)
 
+    def test_includes_agent_browser_chrome_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path))
+        roots = bt._chromium_search_roots()
+        assert str(tmp_path / ".agent-browser" / "browsers") in roots
+
 
 class TestChromiumInstalled:
     def test_true_when_plain_chromium_on_path(self, monkeypatch):
@@ -59,6 +64,37 @@ class TestChromiumInstalled:
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium_headless_shell-1208").mkdir()
         assert bt._chromium_installed() is True
+
+    def test_true_when_agent_browser_chrome_for_testing_present(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr(bt.shutil, "which", lambda _: None)
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path))
+        chrome_exe = (
+            tmp_path
+            / ".agent-browser"
+            / "browsers"
+            / "chrome-149.0.7827.22"
+            / "Google Chrome for Testing.app"
+            / "Contents"
+            / "MacOS"
+            / "Google Chrome for Testing"
+        )
+        chrome_exe.parent.mkdir(parents=True)
+        chrome_exe.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        assert bt._chromium_installed() is True
+
+    def test_false_when_agent_browser_chrome_dir_has_no_executable(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr(bt.shutil, "which", lambda _: None)
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path))
+        (tmp_path / ".agent-browser" / "browsers" / "chrome-149.0.7827.22").mkdir(
+            parents=True
+        )
+
+        assert bt._chromium_installed() is False
 
 
 

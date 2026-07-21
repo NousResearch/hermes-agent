@@ -825,17 +825,44 @@ class TestWellKnownSkillSource:
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
-    def test_search_accepts_domain_root_and_resolves_index(self, mock_get, _mock_read_cache, _mock_write_cache):
+    def test_search_domain_root_prefers_v2_path(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """Domain root: v0.2.0 path tried first; if it succeeds, v0.1.0 is never fetched."""
         mock_get.return_value = MagicMock(
             status_code=200,
-            json=lambda: {"skills": [{"name": "git-workflow", "description": "Git rules", "files": ["SKILL.md"]}]},
+            json=lambda: {
+                "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+                "skills": [{"name": "agent", "type": "skill-md", "description": "Agent skill",
+                             "url": "/.well-known/agent-skills/agent/SKILL.md"}],
+            },
         )
 
         results = self._source().search("https://example.com", limit=10)
 
         assert len(results) == 1
-        called_url = mock_get.call_args.args[0]
-        assert called_url == "https://example.com/.well-known/skills/index.json"
+        first_called_url = mock_get.call_args_list[0].args[0]
+        assert first_called_url == "https://example.com/.well-known/agent-skills/index.json"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_domain_root_falls_back_to_v1_when_v2_missing(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """Domain root: falls back to v0.1.0 path when v0.2.0 endpoint returns 404."""
+        def fake_get(url, *args, **kwargs):
+            if "agent-skills" in url:
+                return MagicMock(status_code=404)
+            return MagicMock(
+                status_code=200,
+                json=lambda: {"skills": [{"name": "git-workflow", "description": "Git rules", "files": ["SKILL.md"]}]},
+            )
+        mock_get.side_effect = fake_get
+
+        results = self._source().search("https://example.com", limit=10)
+
+        assert len(results) == 1
+        assert results[0].name == "git-workflow"
+        urls_called = [c.args[0] for c in mock_get.call_args_list]
+        assert "https://example.com/.well-known/agent-skills/index.json" in urls_called
+        assert "https://example.com/.well-known/skills/index.json" in urls_called
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -1144,6 +1171,92 @@ class TestUrlSource:
         ]
         for name in invalid:
             assert not UrlSource._is_valid_skill_name(name), f"should reject {name!r}"
+
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_v2_index_normalises_url_field(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """v0.2.0 entries with a ``url`` field are normalised to files+identifier."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+                "skills": [
+                    {
+                        "name": "agent",
+                        "type": "skill-md",
+                        "description": "Agent skill",
+                        "url": "/.well-known/agent-skills/agent/SKILL.md",
+                        "digest": "sha256:abc123",
+                    }
+                ],
+            },
+        )
+
+        results = self._source().search(
+            "https://example.com/.well-known/agent-skills/index.json", limit=10
+        )
+
+        assert len(results) == 1
+        assert results[0].name == "agent"
+        assert results[0].identifier == "well-known:https://example.com/.well-known/agent-skills/agent"
+        assert results[0].source == "well-known"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_v2_skill_downloads_from_derived_url(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """v0.2.0 fetch resolves the skill file URL from the normalised entry."""
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/index.json"):
+                return MagicMock(status_code=200, json=lambda: {
+                    "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+                    "skills": [{
+                        "name": "agent",
+                        "type": "skill-md",
+                        "description": "Agent skill",
+                        "url": "/.well-known/agent-skills/agent/SKILL.md",
+                    }],
+                })
+            if url.endswith("/agent/SKILL.md"):
+                return MagicMock(status_code=200, text="---\nname: agent\ndescription: Agent skill\n---\n\n# Agent\n")
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        mock_get.side_effect = fake_get
+
+        bundle = self._source().fetch(
+            "well-known:https://example.com/.well-known/agent-skills/agent"
+        )
+
+        assert bundle is not None
+        assert bundle.source == "well-known"
+        assert "SKILL.md" in bundle.files
+        assert bundle.files["SKILL.md"].startswith("---")
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_v2_unknown_type_entries_skipped(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """v0.2.0 entries with an unknown ``type`` are skipped gracefully."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+                "skills": [
+                    {"name": "future-type", "type": "unknown-future", "url": "/x/y.md"},
+                    {"name": "agent", "type": "skill-md", "description": "Agent skill",
+                     "url": "/.well-known/agent-skills/agent/SKILL.md"},
+                ],
+            },
+        )
+
+        results = self._source().search(
+            "https://example.com/.well-known/agent-skills/index.json", limit=10
+        )
+
+        assert len(results) == 1
+        assert results[0].name == "agent"
 
 
 class TestCheckForSkillUpdates:

@@ -1184,9 +1184,20 @@ class GitHubSource(SkillSource):
 # ---------------------------------------------------------------------------
 
 class WellKnownSkillSource(SkillSource):
-    """Read skills from a domain exposing /.well-known/skills/index.json."""
+    """Read skills from a domain exposing the Agent Skills .well-known URI.
 
-    BASE_PATH = "/.well-known/skills"
+    Supports both spec versions:
+      v0.2.0 — /.well-known/agent-skills/index.json  (tried first)
+      v0.1.0 — /.well-known/skills/index.json        (fallback)
+
+    v0.2.0 index entries use an explicit ``url`` field pointing directly to
+    the skill file (e.g. ``/.well-known/agent-skills/agent/SKILL.md``) instead
+    of a ``files`` array. This adapter normalises both formats so all
+    downstream methods (search / inspect / fetch) work identically.
+    """
+
+    AGENT_SKILLS_PATH = "/.well-known/agent-skills"  # v0.2.0
+    BASE_PATH = "/.well-known/skills"                 # v0.1.0
 
     def source_id(self) -> str:
         return "well-known"
@@ -1195,11 +1206,7 @@ class WellKnownSkillSource(SkillSource):
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        index_url = self._query_to_index_url(query)
-        if not index_url:
-            return []
-
-        parsed = self._parse_index(index_url)
+        parsed = self._resolve_index(query)
         if not parsed:
             return []
 
@@ -1310,16 +1317,48 @@ class WellKnownSkillSource(SkillSource):
             },
         )
 
-    def _query_to_index_url(self, query: str) -> Optional[str]:
+    # ------------------------------------------------------------------
+    # Index resolution (v0.2.0 first, v0.1.0 fallback)
+    # ------------------------------------------------------------------
+
+    def _resolve_index(self, query: str) -> Optional[dict]:
+        """Try each candidate index URL in order and return the first that parses."""
+        for url in self._candidate_index_urls(query):
+            result = self._parse_index(url)
+            if result is not None:
+                return result
+        return None
+
+    def _candidate_index_urls(self, query: str) -> List[str]:
+        """Return ordered list of index.json URLs to try for a query string.
+
+        - Explicit index.json URL → use as-is (single candidate).
+        - URL containing a known path prefix → resolve to that index.
+        - Domain root → try v0.2.0 path first, then v0.1.0 fallback.
+        """
         query = query.strip()
         if not query.startswith(("http://", "https://")):
-            return None
+            return []
         if query.endswith("/index.json"):
-            return query
-        if f"{self.BASE_PATH}/" in query:
-            base_url = query.split(f"{self.BASE_PATH}/", 1)[0] + self.BASE_PATH
-            return f"{base_url}/index.json"
-        return query.rstrip("/") + f"{self.BASE_PATH}/index.json"
+            return [query]
+        for path in (self.AGENT_SKILLS_PATH, self.BASE_PATH):
+            if f"{path}/" in query:
+                base_url = query.split(f"{path}/", 1)[0] + path
+                return [f"{base_url}/index.json"]
+        base = query.rstrip("/")
+        return [
+            f"{base}{self.AGENT_SKILLS_PATH}/index.json",
+            f"{base}{self.BASE_PATH}/index.json",
+        ]
+
+    # ------------------------------------------------------------------
+    # Identifier parsing
+    # ------------------------------------------------------------------
+
+    def _query_to_index_url(self, query: str) -> Optional[str]:
+        """Return primary candidate index URL (kept for internal use)."""
+        urls = self._candidate_index_urls(query)
+        return urls[0] if urls else None
 
     def _parse_identifier(self, identifier: str) -> Optional[dict]:
         raw = identifier[len("well-known:"):] if identifier.startswith("well-known:") else identifier
@@ -1348,18 +1387,25 @@ class WellKnownSkillSource(SkillSource):
         else:
             skill_url = clean_url.rstrip("/")
 
-        if f"{self.BASE_PATH}/" not in skill_url:
-            return None
+        # Accept both v0.2.0 and v0.1.0 path prefixes
+        for path in (self.AGENT_SKILLS_PATH, self.BASE_PATH):
+            if f"{path}/" in skill_url:
+                base_url, skill_name = skill_url.rsplit("/", 1)
+                return {
+                    "index_url": f"{base_url}/index.json",
+                    "base_url": base_url,
+                    "skill_name": skill_name,
+                    "skill_url": skill_url,
+                }
 
-        base_url, skill_name = skill_url.rsplit("/", 1)
-        return {
-            "index_url": f"{base_url}/index.json",
-            "base_url": base_url,
-            "skill_name": skill_name,
-            "skill_url": skill_url,
-        }
+        return None
+
+    # ------------------------------------------------------------------
+    # Index fetch + normalisation
+    # ------------------------------------------------------------------
 
     def _parse_index(self, index_url: str) -> Optional[dict]:
+        """Fetch and normalise an index.json, handling both v0.1.0 and v0.2.0."""
         cache_key = f"well_known_index_{hashlib.md5(index_url.encode()).hexdigest()}"
         cached = _read_index_cache(cache_key)
         if isinstance(cached, dict) and isinstance(cached.get("skills"), list):
@@ -1377,13 +1423,50 @@ class WellKnownSkillSource(SkillSource):
         if not isinstance(skills, list):
             return None
 
+        base_url = index_url[:-len("/index.json")]
+        normalised = self._normalise_entries(skills, base_url, index_url)
+
         parsed = {
             "index_url": index_url,
-            "base_url": index_url[:-len("/index.json")],
-            "skills": skills,
+            "base_url": base_url,
+            "skills": normalised,
         }
         _write_index_cache(cache_key, parsed)
         return parsed
+
+    def _normalise_entries(
+        self, entries: list, base_url: str, index_url: str
+    ) -> list:
+        """Normalise v0.2.0 entries to the v0.1.0 shape used by the rest of the adapter.
+
+        v0.2.0 entries have a ``url`` field (domain-relative path to the skill
+        file) instead of a ``files`` array. This method converts them so all
+        downstream code only needs to handle one format:
+          - ``files``: list of relative filenames within the skill directory
+          - The entry's ``name`` continues to identify the skill directory under base_url
+        """
+        result = []
+        parsed_base = urlparse(index_url)
+        domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if "url" in entry and "files" not in entry:
+                # v0.2.0: derive files and skill_url from the explicit url field
+                skill_type = entry.get("type", "skill-md")
+                if skill_type != "skill-md":
+                    # Unknown type — skip rather than guess
+                    continue
+                rel_url = entry["url"]  # e.g. "/.well-known/agent-skills/agent/SKILL.md"
+                parts = rel_url.rstrip("/").rsplit("/", 1)
+                if len(parts) != 2:
+                    continue
+                filename = parts[1]  # "SKILL.md"
+                entry = dict(entry)
+                entry["files"] = [filename]
+            result.append(entry)
+        return result
 
     def _index_entry(self, index_url: str, skill_name: str) -> Optional[dict]:
         parsed = self._parse_index(index_url)

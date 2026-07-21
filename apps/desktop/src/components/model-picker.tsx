@@ -1,11 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
-import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
+import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -46,15 +47,18 @@ export function ModelPickerDialog({
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const queryClient = useQueryClient()
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
   // it and do a plain substring filter that preserves array order — matching
   // the `hermes model` CLI picker, which shows the curated list verbatim.
   const [search, setSearch] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const queryKey = ['model-options', sessionId || 'global']
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
+    queryKey,
     queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })
@@ -89,6 +93,23 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  const refreshModels = async () => {
+    if (refreshing) {
+      return
+    }
+
+    setRefreshing(true)
+
+    try {
+      const next = await requestModelOptions({ gateway: gw, refresh: true, sessionId })
+      queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
+    } catch {
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
@@ -117,6 +138,15 @@ export function ModelPickerDialog({
         </Command>
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+          <Button
+            className="mr-auto"
+            disabled={refreshing}
+            onClick={() => void refreshModels()}
+            variant="ghost"
+          >
+            <Codicon name="sync" size="0.75rem" spinning={refreshing} />
+            {copy.refreshModels}
+          </Button>
           <Button onClick={addProvider} variant="ghost">
             {copy.addProvider}
           </Button>

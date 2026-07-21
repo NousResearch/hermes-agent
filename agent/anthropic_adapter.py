@@ -1214,7 +1214,7 @@ def _write_claude_code_credentials(
             except OSError:
                 pass
             raise
-    except (OSError, IOError) as e:
+    except (OSError, IOError, json.JSONDecodeError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
 

@@ -1426,6 +1426,36 @@ class TestBuildAnthropicKwargs:
         assert "claude-code-20250219" in betas
         assert "interleaved-thinking-2025-05-14" in betas
 
+    def test_oauth_system_prompt_sanitizer_preserves_hermes_docs_url(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Hermes Agent by Nous Research. "
+                        "Docs: https://hermes-agent.nousresearch.com/docs. "
+                        "Load the hermes-agent skill. "
+                        "Literal marker: __HERMES_DOCS_URL__."
+                    ),
+                },
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        system_text = "\n".join(
+            block["text"] for block in kwargs["system"] if block.get("type") == "text"
+        )
+        assert "Claude Code by Anthropic" in system_text
+        assert "https://hermes-agent.nousresearch.com/docs" in system_text
+        assert "https://claude-code.nousresearch.com/docs" not in system_text
+        assert "Load the claude-code skill." in system_text
+        assert "Literal marker: __HERMES_DOCS_URL__." in system_text
+
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",

@@ -465,6 +465,23 @@ class GatewayAuthorizationMixin:
         # In multiplex gateways, route to the per-profile PairingStore so each
         # profile's whitelist is isolated; falls back to the global store when
         # the source has no profile or the profile isn't registered.
+        if getattr(source, "is_bot", False):
+            bot_allowlist_raw = (
+                os.getenv("DISCORD_ALLOWED_BOTS", "")
+                or os.getenv("DISCORD_ALLOWED_BOT_USERS", "")
+                if source.platform == Platform.DISCORD
+                else ""
+            )
+            if bot_allowlist_raw:
+                allowed_bot_ids = {
+                    part.strip() for part in bot_allowlist_raw.split(",") if part.strip()
+                }
+                if "*" in allowed_bot_ids or user_id in allowed_bot_ids:
+                    return True
+            allow_bots_var = platform_allow_bots_map.get(source.platform)
+            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+                return True
+
         platform_name = source.platform.value if source.platform else ""
         pairing_store = self._pairing_store_for(source)
         if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):

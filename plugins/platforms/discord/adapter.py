@@ -25,7 +25,7 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Any, Tuple, cast
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -1259,19 +1259,28 @@ class DiscordAdapter(BasePlatformAdapter):
                 return False, False
         elif self._dedup.contains(message_id):
             return False, False
-        if message.author == self._client.user:
+        self_authored = message.author == self._client.user
+        if self_authored and not self._discord_self_message_allowed(message):
             return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
 
-        role_authorized = False
+        role_authorized = self_authored
         if getattr(message.author, "bot", False):
-            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-            if allow_bots == "none":
-                return False, False
-            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
-                return False, False
-            if (
+            allowed_bot_ids = self._discord_allowed_bot_users()
+            author_id = str(getattr(message.author, "id", ""))
+            explicitly_allowed = (
+                self_authored
+                or "*" in allowed_bot_ids
+                or author_id in allowed_bot_ids
+            )
+            if not explicitly_allowed:
+                allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                if allow_bots == "none":
+                    return False, False
+                if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+                    return False, False
+            if not self_authored and (
                 self._discord_bots_require_inline_mention()
                 and not self._self_is_raw_mentioned(message)
             ):
@@ -5707,6 +5716,11 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+        return self._discord_csv_id_set(raw)
+
+    @staticmethod
+    def _discord_csv_id_set(raw: Any) -> set:
+        """Normalize a list/scalar/CSV Discord ID setting into a set."""
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -5825,6 +5839,52 @@ class DiscordAdapter(BasePlatformAdapter):
             keys.add(f"#{parent_name}")
 
         return keys
+
+    def _discord_allowed_bot_users(self) -> set:
+        """Return bot user IDs explicitly allowed to trigger Discord sessions."""
+        raw = self.config.extra.get("allowed_bot_users")
+        if raw is None:
+            raw = self.config.extra.get("allowed_bots")
+        if raw is None:
+            raw = os.getenv("DISCORD_ALLOWED_BOTS", "") or os.getenv(
+                "DISCORD_ALLOWED_BOT_USERS", ""
+            )
+        return self._discord_csv_id_set(raw)
+
+    @staticmethod
+    def _discord_truthy(raw: Any, *, default: bool = False) -> bool:
+        """Parse bool-like Discord config values."""
+        if raw is None:
+            return default
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(raw)
+
+    def _discord_auto_thread_free_response(self) -> bool:
+        """Return whether free-response root messages should get auto-threads."""
+        configured = self.config.extra.get("auto_thread_free_response")
+        if configured is None:
+            configured = os.getenv("DISCORD_AUTO_THREAD_FREE_RESPONSE")
+        return self._discord_truthy(configured, default=False)
+
+    def _discord_self_message_channels(self) -> set:
+        """Return top-level Discord channel IDs where self messages are accepted."""
+        raw = self.config.extra.get("self_message_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_SELF_MESSAGE_CHANNELS", "")
+        return self._discord_csv_id_set(raw)
+
+    def _discord_self_message_allowed(self, message: Any) -> bool:
+        """Return True for opt-in top-level self-authored dispatch messages."""
+        dm_channel = getattr(discord, "DMChannel", ())
+        thread_channel = getattr(discord, "Thread", ())
+        if isinstance(message.channel, dm_channel) or isinstance(message.channel, thread_channel):
+            return False
+        allowed = self._discord_self_message_channels()
+        if not allowed:
+            return False
+        channel_id = str(getattr(message.channel, "id", ""))
+        return "*" in allowed or channel_id in allowed
 
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
@@ -6215,6 +6275,66 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
         return thread_name
+
+    @staticmethod
+    def _manual_job_dispatch_start_message(content: str) -> Optional[str]:
+        """Return the visible thread-starter message for job dispatch prompts."""
+        text = content or ""
+        if "manual-job-application-dispatch" not in text:
+            return None
+        if "one automated job application" not in text.lower():
+            return None
+
+        def _line_value(label: str) -> Optional[str]:
+            match = re.search(rf"(?im)^\s*{re.escape(label)}:\s*(.+?)\s*$", text)
+            if not match:
+                return None
+            value = re.sub(r"\s+", " ", match.group(1)).strip()
+            return value[:160] if value else None
+
+        company = _line_value("Company")
+        title = _line_value("Title")
+        if not company or not title:
+            queue_id = _line_value("Queue ID")
+            if queue_id:
+                parts = queue_id.split("|")
+                if not company and parts:
+                    company = parts[0].strip()
+                if not title and len(parts) > 1:
+                    title = parts[1].strip()
+
+        if company and title:
+            subject = f"{company}: {title}"
+        elif company or title:
+            subject = company or title
+        else:
+            subject = "this job"
+        return f"Starting application process for {subject}.\nI'll report the result in this thread."
+
+    async def _send_manual_job_dispatch_thread_start(self, thread: Any, content: str) -> None:
+        """Post a visible first message in auto-created job-dispatch threads."""
+        starter = self._manual_job_dispatch_start_message(content)
+        if not starter:
+            return
+        send = getattr(thread, "send", None)
+        if not callable(send):
+            logger.debug(
+                "[%s] Cannot post job-dispatch starter; thread %s has no send()",
+                self.name,
+                getattr(thread, "id", "unknown"),
+            )
+            return
+        try:
+            result = send(starter)
+            if hasattr(result, "__await__"):
+                await cast(Awaitable[Any], result)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to post job-dispatch starter in thread %s: %s",
+                self.name,
+                getattr(thread, "id", "unknown"),
+                exc,
+            )
 
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
@@ -7162,7 +7282,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                is_free_channel and not self._discord_auto_thread_free_response()
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -7183,6 +7305,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # event is dropped before it can trigger a second agent run.
                     # Fixes #51057.
                     self._dedup.is_duplicate(str(thread.id))
+                    await self._send_manual_job_dispatch_thread_start(thread, normalized_content)
                 else:
                     # Auto-threading is the configured routing target for this
                     # message; if it fails we must NOT silently fall back to an
@@ -9349,8 +9472,21 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "auto_thread_free_response" in discord_cfg and not os.getenv(
+        "DISCORD_AUTO_THREAD_FREE_RESPONSE"
+    ):
+        os.environ["DISCORD_AUTO_THREAD_FREE_RESPONSE"] = str(
+            discord_cfg["auto_thread_free_response"]
+        ).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+        os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+    allowed_bots = discord_cfg.get("allowed_bot_users", discord_cfg.get("allowed_bots"))
+    if allowed_bots is not None and not os.getenv("DISCORD_ALLOWED_BOTS"):
+        if isinstance(allowed_bots, list):
+            allowed_bots = ",".join(str(v) for v in allowed_bots)
+        os.environ["DISCORD_ALLOWED_BOTS"] = str(allowed_bots)
     seeded_extra = {}
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):

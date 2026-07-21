@@ -6740,9 +6740,21 @@ def _logout_default_provider_from_config() -> Optional[str]:
     config.yaml still selected an OAuth provider such as openai-codex for the
     agent model: there was no active auth provider to target, so logout printed
     "No provider is currently logged in" and never reset model.provider.
+
+    This also covers OAuth providers whose tokens live outside auth.json
+    entirely (qwen-oauth in the Qwen CLI credential file, google-gemini-cli in
+    the Google OAuth store). Selecting them via `hermes model` sets
+    model.provider without writing active_provider, so the config fallback is
+    the only way logout can find the target.
     """
     provider = _get_config_provider()
-    if provider in {"nous", "openai-codex", "xai-oauth"}:
+    if provider in {
+        "nous",
+        "openai-codex",
+        "xai-oauth",
+        "qwen-oauth",
+        "google-gemini-cli",
+    }:
         return provider
     return None
 

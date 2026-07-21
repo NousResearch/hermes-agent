@@ -78,6 +78,7 @@ _ensure_discord_mock()
 from gateway.platforms.base import MessageType  # noqa: E402
 from plugins.platforms.discord.adapter import (  # noqa: E402
     DiscordAdapter,
+    _is_valid_app_command_name,
     _normalize_app_command_mentions,
 )
 
@@ -1169,10 +1170,24 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
         ("</skill search:42> ocr-and-documents", "/skill search ocr-and-documents"),
         # Hyphens and underscores in command names are allowed by Discord.
         ("</my-cmd_x:42>", "/my-cmd_x"),
+        # Discord's CHAT_INPUT grammar is Unicode-aware and permits apostrophes.
+        ("</café:42>", "/café"),
+        ("</नमस्ते:42>", "/नमस्ते"),
+        ("</rock'n_roll:42>", "/rock'n_roll"),
+        ("</café नमस्ते:42>", "/café नमस्ते"),
+        ("</café समूह नमस्ते:42>", "/café समूह नमस्ते"),
+        # Every path token is independently bounded and must use lowercase
+        # wherever Unicode defines a lowercase variant.
+        ("</STATUS:42>", "</STATUS:42>"),
+        (f"</{'a' * 33}:42>", f"</{'a' * 33}:42>"),
+        ("</status Café:42>", "</status Café:42>"),
+        # Punctuation outside Discord's explicit -_' set is rejected.
+        ("</status!:42>", "</status!:42>"),
         # Discord separates command path tokens with literal spaces, not other
         # whitespace. Tabs/newlines must not be normalized across boundaries.
         ("</cron\tlist:42>", "</cron\tlist:42>"),
         ("</cron\nlist:42>", "</cron\nlist:42>"),
+        ("</cron  list:42>", "</cron  list:42>"),
         # Multiple application-command mentions in a single message all resolve.
         ("</status:1> and </help:2>", "/status and /help"),
         # No application-command mention: pass-through, no rewrites.
@@ -1184,6 +1199,22 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
 )
 def test_normalize_app_command_mentions(raw, expected):
     assert _normalize_app_command_mentions(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["café", "नमस्ते", "สวัสดี", "rock'n_roll"],
+)
+def test_valid_app_command_name_accepts_discord_unicode_grammar(name):
+    assert _is_valid_app_command_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["STATUS", "a" * 33, "status!", "has space", "tab\tname"],
+)
+def test_valid_app_command_name_rejects_discord_boundaries(name):
+    assert not _is_valid_app_command_name(name)
 
 
 def _slash_click_message(channel, *, command_payload, bot_user=None, author_id=42, mention_bot=False):
@@ -1228,6 +1259,42 @@ async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypat
     assert len(captured) == 1
     assert captured[0].text == "/status"
     assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_payload,expected_text,expected_type",
+    [
+        ("</café:101>", "/café", MessageType.COMMAND),
+        ("</नमस्ते:102>", "/नमस्ते", MessageType.COMMAND),
+        ("</rock'n_roll:103>", "/rock'n_roll", MessageType.COMMAND),
+        ("</café समूह नमस्ते:104>", "/café समूह नमस्ते", MessageType.COMMAND),
+        ("</STATUS:105>", "</STATUS:105>", MessageType.TEXT),
+        (f"</{'a' * 33}:106>", f"</{'a' * 33}:106>", MessageType.TEXT),
+    ],
+)
+async def test_clicked_slash_suggestion_enforces_discord_name_grammar(
+    adapter,
+    monkeypatch,
+    command_payload,
+    expected_text,
+    expected_type,
+):
+    """The real ingress path rewrites only valid Unicode CHAT_INPUT names."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload=command_payload)
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == expected_text
+    assert captured[0].message_type == expected_type
 
 
 @pytest.mark.asyncio

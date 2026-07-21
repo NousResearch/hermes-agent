@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
@@ -300,20 +301,57 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
-# Matches Discord application-command mention payloads.  When a user clicks an
-# autocomplete suggestion (rather than typing the slash command literally),
-# Discord delivers the message as `</name:command_id>` for top-level commands
-# and `</name sub:command_id>` / `</name group sub:command_id>` for subcommand
-# and grouped-subcommand variants.  Without normalisation these payloads fall
-# through the `/cmd` command dispatch entirely.  See #29528.
-_APP_COMMAND_MENTION_RE = re.compile(
-    r"</([a-zA-Z0-9_-]+(?: [a-zA-Z0-9_-]+){0,2}):\d+>"
+# Matches bounded Discord application-command mention candidates. Command path
+# tokens are validated separately against Discord's Unicode-aware CHAT_INPUT
+# name grammar before any text is rewritten. The path can contain at most three
+# 32-character tokens plus two literal spaces.
+_APP_COMMAND_MENTION_RE = re.compile(r"</([^<>:\r\n]{1,98}):([0-9]+)>")
+
+# Python's stdlib ``re`` has no Unicode script properties. Letters and numbers
+# are covered via their Unicode general categories; these are the combining
+# marks from the Devanagari and Thai scripts that Discord's grammar additionally
+# permits. Keep this aligned with discord.py's validator ranges.
+_DEVANAGARI_COMBINING_RANGES = (
+    (0x0900, 0x0903),
+    (0x093A, 0x093F),
+    (0x0940, 0x094F),
+    (0x0955, 0x0957),
+    (0x0962, 0x0963),
+)
+_THAI_COMBINING_RANGES = (
+    (0x0E31, 0x0E3A),
+    (0x0E47, 0x0E4E),
 )
 
 
+def _is_valid_app_command_name(name: str) -> bool:
+    """Return whether one token follows Discord's CHAT_INPUT name grammar."""
+    if not 1 <= len(name) <= 32 or name.lower() != name:
+        return False
+
+    for char in name:
+        if char in "-_'" or unicodedata.category(char)[0] in {"L", "N"}:
+            continue
+        codepoint = ord(char)
+        if any(start <= codepoint <= end for start, end in _DEVANAGARI_COMBINING_RANGES):
+            continue
+        if any(start <= codepoint <= end for start, end in _THAI_COMBINING_RANGES):
+            continue
+        return False
+    return True
+
+
 def _normalize_app_command_mentions(text: str) -> str:
-    """Convert ``</name:id>`` payloads back to plain ``/name`` slash text."""
-    return _APP_COMMAND_MENTION_RE.sub(lambda m: "/" + m.group(1), text)
+    """Convert valid ``</name:id>`` payloads back to plain slash text."""
+
+    def replace(match: re.Match) -> str:
+        path = match.group(1)
+        tokens = path.split(" ")
+        if 1 <= len(tokens) <= 3 and all(_is_valid_app_command_name(token) for token in tokens):
+            return "/" + path
+        return match.group(0)
+
+    return _APP_COMMAND_MENTION_RE.sub(replace, text)
 
 
 def check_discord_requirements() -> bool:

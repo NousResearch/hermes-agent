@@ -1080,6 +1080,82 @@ class TestProviderProfileLiveMetadataContextResolution:
         assert first == second == 65_536
         profile.fetch_model_metadata.assert_called_once()
 
+    def test_profile_metadata_cache_is_scoped_by_credential(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "credential-vendor"
+        profile.models_url = ""
+        profile.fetch_model_metadata.side_effect = lambda **kwargs: [
+            {
+                "id": "vendor/model",
+                "context_length": (
+                    65_536 if kwargs["api_key"] == "key-a" else 131_072
+                ),
+            },
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            first = get_model_context_length(
+                "vendor/model",
+                base_url="https://api.vendor.test/v1",
+                api_key="key-a",
+                provider="credential-vendor",
+            )
+            second = get_model_context_length(
+                "vendor/model",
+                base_url="https://api.vendor.test/v1",
+                api_key="key-b",
+                provider="credential-vendor",
+            )
+
+        assert first == 65_536
+        assert second == 131_072
+        assert profile.fetch_model_metadata.call_count == 2
+
+    def test_explicit_models_url_defines_profile_metadata_cache_scope(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "split-endpoint-vendor"
+        profile.models_url = "https://catalog.vendor.test/models"
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            first = get_model_context_length(
+                "vendor/model",
+                base_url="https://inference-a.vendor.test/v1",
+                provider="split-endpoint-vendor",
+            )
+            second = get_model_context_length(
+                "vendor/model",
+                base_url="https://inference-b.vendor.test/v1",
+                provider="split-endpoint-vendor",
+            )
+
+        assert first == second == 65_536
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_unmatched_routing_alias_does_not_inherit_sole_catalog_entry(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "routing-vendor"
+        profile.models_url = ""
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/concrete-model", "context_length": 40_960},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=262_144,
+            ),
+        ):
+            context_length = get_model_context_length(
+                "default:latency",
+                provider="routing-vendor",
+            )
+
+        assert context_length == 262_144
+
     def test_expired_profile_metadata_refreshes(self):
         profile = MagicMock(use_live_model_metadata=True)
         profile.name = "refreshing-vendor"

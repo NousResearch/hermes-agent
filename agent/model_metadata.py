@@ -113,8 +113,8 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
-_profile_model_metadata_cache: Dict[tuple[str, str], list[dict[str, Any]]] = {}
-_profile_model_metadata_cache_time: Dict[tuple[str, str], float] = {}
+_profile_model_metadata_cache: Dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+_profile_model_metadata_cache_time: Dict[tuple[str, str, str], float] = {}
 _PROFILE_MODEL_METADATA_CACHE_TTL = 300
 # Bounded-lifetime cache: after the first successful probe we remember the
 # server type so subsequent refreshes skip the full waterfall (no more 404
@@ -1146,12 +1146,17 @@ def _resolve_profile_context_length(
 ) -> Optional[int]:
     """Resolve context length through a provider profile's catalog hook."""
     profile_name = str(getattr(profile, "name", "unknown"))
-    effective_base_url = (
-        base_url
-        or str(getattr(profile, "models_url", "") or "")
+    catalog_url = (
+        str(getattr(profile, "models_url", "") or "")
+        or base_url
         or str(getattr(profile, "base_url", "") or "")
     )
-    cache_key = (profile_name, effective_base_url.rstrip("/"))
+    credential_fingerprint = (
+        hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+        if api_key
+        else ""
+    )
+    cache_key = (profile_name, catalog_url.rstrip("/"), credential_fingerprint)
     now = time.time()
     cached = _profile_model_metadata_cache.get(cache_key)
     cached_at = _profile_model_metadata_cache_time.get(cache_key, 0)
@@ -1204,19 +1209,15 @@ def _resolve_profile_context_length(
         None,
     )
     if matched is None:
-        valid_entries = entries
-        if len(valid_entries) == 1:
-            matched = valid_entries[0]
-        else:
-            matched = next(
-                (
-                    entry
-                    for entry in valid_entries
-                    if isinstance(entry.get("id"), str)
-                    and (model in entry["id"] or entry["id"] in model)
-                ),
-                None,
-            )
+        matched = next(
+            (
+                entry
+                for entry in entries
+                if isinstance(entry.get("id"), str)
+                and (model in entry["id"] or entry["id"] in model)
+            ),
+            None,
+        )
     return _extract_context_length(matched) if matched else None
 
 

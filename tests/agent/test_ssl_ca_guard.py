@@ -80,3 +80,35 @@ def test_skip_env_var_bypasses_guard(monkeypatch, tmp_path, value):
     monkeypatch.setenv("SSL_CERT_FILE", str(fake))
     verify_ca_bundle()
     verify_ca_bundle_with_fallback()
+
+
+def test_truststore_get_ca_certs_not_implemented_is_accepted(monkeypatch, tmp_path):
+    """A truststore-backed SSLContext (Windows OS trust store) raises
+    NotImplementedError from get_ca_certs(). The guard must accept the
+    already-loaded bundle rather than fail.
+
+    Regression for the empty-message ``Failed to initialize OpenAI client:``
+    seen on every fresh agent init on Windows (str(NotImplementedError()) == "").
+    """
+    from agent import ssl_guard
+
+    bundle = tmp_path / "bundle.pem"
+    bundle.write_text(
+        "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+
+    class _TruststoreLikeContext:
+        def get_ca_certs(self, binary_form=False):  # noqa: ARG002 - mirror ssl API
+            raise NotImplementedError()
+
+    # create_default_context(cafile=...) loads the bundle fine; only the
+    # post-load introspection is unsupported under truststore.
+    monkeypatch.setattr(
+        ssl_guard.ssl, "create_default_context", lambda *a, **k: _TruststoreLikeContext()
+    )
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+
+    # Must not raise on the explicit env bundle nor the certifi check.
+    verify_ca_bundle()
+    verify_ca_bundle_with_fallback()

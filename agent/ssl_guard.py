@@ -54,7 +54,20 @@ def _validate_bundle_path(label: str, value: str, *, require_substantial: bool =
         ctx = ssl.create_default_context(cafile=str(path))
     except Exception as exc:
         raise _ssl_err(f"{label} CA bundle at {value} cannot be loaded: {exc}") from exc
-    if not ctx.get_ca_certs():
+    try:
+        loaded_certs = ctx.get_ca_certs()
+    except NotImplementedError:
+        # A truststore-backed SSLContext (Windows OS trust store, installed via
+        # truststore.inject_into_ssl() — pip does this on Windows, and Hermes
+        # venvs ship a sitecustomize.py that injects it) does not implement
+        # get_ca_certs(); it raises NotImplementedError with an empty message.
+        # create_default_context(cafile=...) above already validated that the
+        # bundle is parseable/loadable, so accept it instead of failing on an
+        # introspection call we cannot run. Without this, every fresh agent
+        # init dies with "Failed to initialize OpenAI client:" (no detail,
+        # because str(NotImplementedError()) == "").
+        return
+    if not loaded_certs:
         raise _ssl_err(f"{label} CA bundle at {value} did not load any certificates")
 
 

@@ -9758,6 +9758,7 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                 reserved = False
                 reservation_lost = False
                 events = []
+                prompt_start = None
                 try:
                     # ponytail: board-wide writer lock spans only prompt acceptance;
                     # use durable in-flight ranges if dispatch latency becomes material.
@@ -9789,13 +9790,17 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                                 lines.append(
                                     f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
                                 )
+                        prompt_start = queue.SimpleQueue()
                         _run_prompt_submit(
                             f"__kanban__{int(time.time() * 1000)}",
                             sid,
                             session,
                             "\n\n".join(lines),
+                            start_handoff=prompt_start,
                         )
                 except Exception as exc:
+                    if prompt_start is not None:
+                        prompt_start.put(False)
                     if reservation_lost:
                         return False
                     logger.warning("TUI Kanban notification dispatch failed: %s", exc)
@@ -9803,6 +9808,8 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                         with session["history_lock"]:
                             session["running"] = False
                     return False
+                if prompt_start is not None:
+                    prompt_start.put(True)
                 if any(event.kind == "completed" for event in events):
                     try:
                         kb.remove_notify_sub(
@@ -10082,7 +10089,14 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    start_handoff: queue.SimpleQueue | None = None,
+) -> None:
     with session["history_lock"]:
         accepted_turn = session.get("running") and isinstance(
             session.get("inflight_turn"), dict
@@ -10101,15 +10115,25 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             agent.clear_interrupt()
         except Exception:
             pass
-    _emit("message.start", sid)
+    if start_handoff is None:
+        _emit("message.start", sid)
 
     def run():
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
-        one_turn_restore = session.pop("one_turn_model_restore", None)
+        one_turn_restore = None
         try:
+            if start_handoff is not None:
+                if not start_handoff.get():
+                    with session["history_lock"]:
+                        session["attached_images"] = images + list(
+                            session.get("attached_images", [])
+                        )
+                    return
+                _emit("message.start", sid)
+            one_turn_restore = session.pop("one_turn_model_restore", None)
             from tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,
@@ -10659,7 +10683,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
     run_thread = threading.Thread(target=run, daemon=True)
     session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        run_thread.start()
+    except Exception:
+        session.pop("_run_thread", None)
+        with session["history_lock"]:
+            session["attached_images"] = images + list(
+                session.get("attached_images", [])
+            )
+            session["running"] = False
+            _clear_inflight_turn(session)
+        raise
 
 
 @method("clipboard.paste")

@@ -4635,6 +4635,81 @@ def complete_task(
     return True
 
 
+def request_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running -> review`` and release the claim lock.
+
+    This is the first-class way for a worker to signal that its
+    implementation is complete and the task needs review before being
+    marked done.  The current run is closed with outcome
+    ``review_requested`` and the task's claim lock is cleared so the
+    dispatcher can pick it up for a review run.
+
+    ``reason`` is recorded in the ``review_requested`` event payload
+    and surfaced to the reviewer.  ``expected_run_id`` gates the
+    transition on the current run matching (same CAS pattern as
+    :func:`complete_task`).
+
+    Returns ``True`` on success, ``False`` if the task is not in
+    ``running`` status or the run id doesn't match.
+    """
+    now = int(time.time())
+
+    with write_txn(conn):
+        # Verify the task is in 'running' status.
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+
+        # Close the current run with outcome 'review_requested'.
+        run_id = _end_run(
+            conn, task_id,
+            outcome="review_requested",
+            status="review_requested",
+            summary=reason,
+        )
+
+        # Record the event.
+        _append_event(
+            conn, task_id, "review_requested",
+            {"reason": reason} if reason else {},
+            run_id=run_id,
+        )
+
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------

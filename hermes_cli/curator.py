@@ -694,5 +694,73 @@ def cli_main(argv=None) -> int:
     return int(fn(args) or 0)
 
 
+# ── Gateway /curator entry point (#68880, #68884 review) ───────────────
+#
+# ``run_slash`` is the concurrency-safe string-returning entry point used by
+# the gateway's /curator slash command.  It avoids the process-global
+# ``sys.stdout``/``sys.stderr`` swap that ``contextlib.redirect_stdout``
+# performs (which races with other gateway sessions writing to the same
+# streams) by collecting output into a per-call buffer under a serializing
+# lock.  Interactive subcommands that call ``input()`` are detected and
+# rejected with a targeted message instead of relying on ``EOFError``.
+
+import threading as _threading
+
+_curator_slash_lock = _threading.Lock()
+
+# Subcommands that prompt via input() and need ``-y`` on the gateway.
+_INTERACTIVE_SUBCOMMANDS = {"rollback"}
+
+
+def run_slash(text: str) -> str:
+    """Execute a ``/curator …`` string and return captured output.
+
+    Thread-safe and concurrency-safe: a module-level lock serializes
+    curator invocations so the process-global stdout/stderr redirect
+    can't race with other gateway sessions (#68884 review).
+
+    Interactive subcommands (``rollback``) that would call ``input()``
+    are rejected with a targeted message when ``-y`` is not present,
+    instead of relying on ``EOFError`` from a headless gateway.
+    """
+    import contextlib
+    import io
+    import shlex
+
+    text = (text or "").strip()
+    if text.startswith("/"):
+        text = text.lstrip("/")
+    if text.lower().startswith("curator"):
+        text = text[len("curator"):].lstrip()
+
+    try:
+        tokens = shlex.split(text) if text else []
+    except ValueError as exc:
+        return f"curator: could not parse arguments: {exc}"
+    if not tokens:
+        tokens = ["status"]
+
+    # Block interactive subcommands without -y on the gateway
+    if tokens[0] in _INTERACTIVE_SUBCOMMANDS and "-y" not in tokens and "--yes" not in tokens:
+        return (
+            f"curator: `{tokens[0]}` is interactive and requires `-y` "
+            f"when run from the gateway."
+        )
+
+    with _curator_slash_lock:
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                try:
+                    cli_main(tokens)
+                except SystemExit:
+                    pass  # argparse --help / errors
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"curator: {exc}"
+        out = (buf_out.getvalue() + buf_err.getvalue()).strip()
+    return out or "curator: (no output)"
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(cli_main())

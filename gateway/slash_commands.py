@@ -510,49 +510,17 @@ class GatewaySlashCommandsMixin:
         return output or t("gateway.kanban.no_output")
 
     async def _handle_curator_command(self, event: MessageEvent) -> str:
-        """Handle /curator — delegate to hermes_cli.curator (CLI parity, #68880).
+        """Handle /curator — delegate to hermes_cli.curator.run_slash (#68880).
 
-        Docs claim /curator works on gateway platforms; only the local CLI
-        was wired. Capture stdout/stderr from ``cli_main`` so the gateway
-        can return the report as a message. Interactive prompts (e.g.
-        rollback without -y) get EOF and cancel cleanly.
+        Uses the concurrency-safe ``run_slash`` entry point (serialized under
+        a lock, no process-global stdout/stderr swap) so concurrent gateway
+        sessions don't race on the stream redirect (#68884 review).
         """
-        import contextlib
-        import io
-        import shlex
-
         text = (event.text or "").strip()
-        if text.startswith("/"):
-            text = text.lstrip("/")
-        if text.lower().startswith("curator"):
-            text = text[len("curator"):].lstrip()
 
         try:
-            tokens = shlex.split(text) if text else []
-        except ValueError as exc:
-            return f"curator: could not parse arguments: {exc}"
-        if not tokens:
-            tokens = ["status"]
-
-        def _run() -> str:
-            from hermes_cli.curator import cli_main
-
-            buf_out = io.StringIO()
-            buf_err = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-                    try:
-                        cli_main(tokens)
-                    except SystemExit:
-                        # argparse --help / errors
-                        pass
-            except Exception as exc:  # pragma: no cover - defensive
-                return f"curator: {exc}"
-            out = (buf_out.getvalue() + buf_err.getvalue()).strip()
-            return out or "curator: (no output)"
-
-        try:
-            output = await asyncio.to_thread(_run)
+            from hermes_cli.curator import run_slash
+            output = await asyncio.to_thread(run_slash, text)
         except Exception as exc:  # pragma: no cover
             return f"curator: {exc}"
 

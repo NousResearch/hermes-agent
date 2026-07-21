@@ -115,13 +115,15 @@ Print mode (`-p`) skips this dialog entirely.
 
 Subcommands: `mcp`, `skills`, `hooks`, `agents`, `plugins`, `login`, `commit`, `rollback`, `update`, `status`, `wiki`.
 
-### Context window consideration
+### Model Selection (`Qwen3.8-Max-Preview`)
 
-Models default to a limited context window (e.g., 131k tokens) unless extended context is explicitly configured. When Hermes performs multi-file edits directly, raw file contents accumulate in its prompt context. Delegating to `qodercli` offloads file ingestion to Qoder's own workspace — Hermes sees only the delegation command and the summary result, preserving its context for orchestration and verification.
+Override the active model to leverage Alibaba Cloud's exclusive 2.4T-parameter flagship:
 
 ```
-terminal(command="qodercli -p 'Refactor src/db/ to SQLAlchemy' -m <model> --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
+terminal(command="qodercli -p 'Refactor src/db/ to SQLAlchemy' -m Qwen3.8-Max-Preview --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
 ```
+
+`Qwen3.8-Max-Preview` defaults to a **131k token context window** on standard invocations but supports up to **1M tokens** when Qoder manages extended repository contexts. Delegating multi-file edits to `qodercli` prevents flooding Hermes's context window by offloading raw file reads to Qoder's workspace — Hermes sees only the delegation command and summary result.
 
 ## Procedure
 

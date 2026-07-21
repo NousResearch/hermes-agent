@@ -83,6 +83,36 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+
+def _maybe_restore_primary_midrun(agent, interval: int) -> bool:
+    """Periodically retry the primary runtime while an in-turn fallback is live."""
+    if not getattr(agent, "_fallback_activated", False) or interval <= 0:
+        return False
+
+    fallback_iterations = getattr(agent, "_iters_since_fallback", 0) + 1
+    agent._iters_since_fallback = fallback_iterations
+    if fallback_iterations < interval:
+        return False
+
+    # Reset after every attempt so a cooldown-gated failure retries only after
+    # another full interval rather than on every subsequent API call.
+    agent._iters_since_fallback = 0
+    if not agent._restore_primary_runtime():
+        return False
+
+    logger.info(
+        "Mid-run primary restore: back on %s (%s) after %d fallback iterations",
+        agent.model,
+        agent.provider,
+        fallback_iterations,
+    )
+    if not getattr(agent, "quiet_mode", False):
+        agent._buffer_status(
+            f"🔄 Primary model restored: {agent.model} ({agent.provider})"
+        )
+    return True
+
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -758,6 +788,9 @@ def run_conversation(
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
+
+        from agent.verify_hooks import midrun_primary_restore_interval
+        _maybe_restore_primary_midrun(agent, midrun_primary_restore_interval())
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after

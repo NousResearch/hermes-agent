@@ -144,7 +144,7 @@ While the callback is pending, the user sees an interim bubble (`KAKAO_SYNC_TIME
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `KAKAO_SKILL_SECRET` | yes | — | Shared secret verified (constant-time) against the skill's custom header |
+| `KAKAO_SKILL_SECRET` | yes | — | Shared secret verified (constant-time) against the skill's custom header. Alternatively set `skill_secret` under `platforms.kakao` `extra` in `config.yaml` |
 | `KAKAO_SECRET_HEADER` | no | `X-Hermes-Kakao-Secret` | Header name carrying the secret; must match the skill config |
 | `KAKAO_HOST` | no | `0.0.0.0` | Webhook bind host |
 | `KAKAO_PORT` | no | `8647` | Webhook bind port |

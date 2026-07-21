@@ -462,8 +462,9 @@ class KakaoAdapter(BasePlatformAdapter):
         if not self.skill_secret:
             self._set_fatal_error(
                 "config_missing",
-                "KAKAO_SKILL_SECRET must be set (shared secret verifying inbound "
-                "skill requests -- Kakao does not sign webhooks)",
+                "KAKAO_SKILL_SECRET (or platforms.kakao extra.skill_secret) "
+                "must be set -- the shared secret verifies inbound skill "
+                "requests; Kakao does not sign webhooks",
                 retryable=False,
             )
             return False

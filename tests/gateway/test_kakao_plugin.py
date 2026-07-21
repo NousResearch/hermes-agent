@@ -479,10 +479,17 @@ class TestEnvEnablement:
 
 class TestCheckRequirementsAndValidate:
 
+    def test_independent_of_secret_env(self, monkeypatch):
+        # Runs on any install (no aiohttp needed): check_fn is a dependency
+        # gate only, so the secret env var must never change its result --
+        # the registry runs check_fn before it has a config, and gating on
+        # env there locked out extra-only setups.
+        monkeypatch.delenv("KAKAO_SKILL_SECRET", raising=False)
+        without_secret = check_requirements()
+        monkeypatch.setenv("KAKAO_SKILL_SECRET", "s")
+        assert check_requirements() == without_secret
+
     def test_passes_without_secret(self, monkeypatch):
-        # check_fn is a dependency gate only; the registry runs it before
-        # it has a config, so requiring the env secret here would break
-        # extra-only setups.
         pytest.importorskip("aiohttp")
         monkeypatch.delenv("KAKAO_SKILL_SECRET", raising=False)
         assert check_requirements()
@@ -519,17 +526,22 @@ class TestRegistryGate:
 
     @staticmethod
     def _registry():
+        # Build the entry from the real register() kwargs -- hermes_cli's
+        # register_platform() is a verbatim kwargs -> PlatformEntry
+        # passthrough -- so this pins the production wiring: if register()
+        # ever drops ``validate_config=``, create_adapter() would skip the
+        # credential gate and test_create_adapter_rejects_unconfigured
+        # fails, instead of a hand-built entry keeping it green.
         from gateway.platform_registry import PlatformEntry, PlatformRegistry
+
+        class _Ctx:
+            def register_platform(self, **kw):
+                self.kwargs = kw
+
+        ctx = _Ctx()
+        register(ctx)
         registry = PlatformRegistry()
-        registry.register(
-            PlatformEntry(
-                name="kakao",
-                label="Kakao",
-                adapter_factory=lambda cfg: KakaoAdapter(cfg),
-                check_fn=check_requirements,
-                validate_config=validate_config,
-            )
-        )
+        registry.register(PlatformEntry(**ctx.kwargs))
         return registry
 
     def test_create_adapter_with_extra_only_secret(self, monkeypatch):

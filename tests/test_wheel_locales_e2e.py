@@ -119,7 +119,10 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     with tarfile.open(tarballs[0]) as tf:
         # Members are prefixed with the sdist root dir, e.g.
         # hermes_agent-0.15.1/locales/en.yaml — match on the suffix.
-        catalogs = [m for m in tf.getnames() if "/locales/" in m and m.endswith(".yaml")]
+        members = tf.getnames()
+        catalogs = [m for m in members if "/locales/" in m and m.endswith(".yaml")]
+
+    assert any(m.endswith("/uv.lock") for m in members), "sdist missing uv.lock"
 
     # Compare against the canonical language list rather than a hardcoded floor
     # so adding/removing a catalog updates the guard automatically and a dropped

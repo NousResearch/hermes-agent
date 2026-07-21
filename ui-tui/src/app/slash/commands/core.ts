@@ -276,12 +276,12 @@ export const coreCommands: SlashCommand[] = [
 
   {
     help: 'toggle compact transcript',
-    name: 'compact',
+    name: 'density',
     run: (arg, ctx) => {
       const next = flagFromArg(arg, ctx.ui.compact)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /compact [on|off|toggle]')
+        return ctx.transcript.sys('usage: /density [on|off|toggle]')
       }
 
       patchUiState({ compact: next })

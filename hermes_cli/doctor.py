@@ -2307,16 +2307,61 @@ def run_doctor(args):
             mem0_cfg = _load_mem0_config()
             mem0_mode = mem0_cfg.get("mode", "platform")
             if mem0_mode == "oss":
-                # OSS mode: no top-level api_key; credentials are nested in
-                # oss.llm / oss.embedder / oss.vector_store configs.
+                # OSS mode: no top-level api_key.  Credentials live in
+                # ~/.hermes/.env (written by the wizard keyed by each
+                # provider's env_var) and are already loaded into os.environ
+                # by load_hermes_dotenv() at module import.  Some providers
+                # (Ollama) declare needs_key=False and need no credential at
+                # all.  Resolve required keys per the provider registry so
+                # wizard-created setups pass doctor and fully-local Ollama
+                # configs aren't falsely rejected.
+                from plugins.memory.mem0._oss_providers import (
+                    EMBEDDER_PROVIDERS,
+                    LLM_PROVIDERS,
+                )
+
                 oss_cfg = mem0_cfg.get("oss", {})
+                llm_provider = oss_cfg.get("llm", {}).get("provider", "")
+                embedder_provider = oss_cfg.get("embedder", {}).get("provider", "")
+                vector_provider = oss_cfg.get("vector_store", {}).get("provider", "")
                 llm_cfg = oss_cfg.get("llm", {}).get("config", {})
                 embedder_cfg = oss_cfg.get("embedder", {}).get("config", {})
-                vector_cfg = oss_cfg.get("vector_store", {}).get("config", {})
-                llm_key = llm_cfg.get("api_key", "")
-                embedder_key = embedder_cfg.get("api_key", "")
-                vector_provider = oss_cfg.get("vector_store", {}).get("provider", "")
-                if llm_key and embedder_key and vector_provider:
+
+                def _has_credential(kind: str, provider_id: str, cfg: dict) -> bool:
+                    """True if this OSS component has the credential it needs.
+
+                    A provider with ``needs_key=False`` (e.g. Ollama) needs
+                    no credential.  Otherwise the key is satisfied if it was
+                    written into mem0.json *or* loaded from .env into the
+                    environment (the wizard's actual write path).
+                    """
+                    registry = LLM_PROVIDERS if kind == "llm" else EMBEDDER_PROVIDERS
+                    entry = registry.get(provider_id, {})
+                    if not entry.get("needs_key", True):
+                        return True
+                    # Inline key in mem0.json (non-wizard path).
+                    if cfg.get("api_key"):
+                        return True
+                    # Wizard path: key written to .env, loaded by
+                    # load_hermes_dotenv() into os.environ.
+                    env_var = entry.get("env_var", "")
+                    return bool(env_var and os.environ.get(env_var, ""))
+
+                missing_parts: list[str] = []
+                if not llm_provider:
+                    missing_parts.append("oss.llm.provider")
+                elif not _has_credential("llm", llm_provider, llm_cfg):
+                    env_var = LLM_PROVIDERS.get(llm_provider, {}).get("env_var", "?")
+                    missing_parts.append(f"oss.llm key ({env_var})")
+                if not embedder_provider:
+                    missing_parts.append("oss.embedder.provider")
+                elif not _has_credential("embedder", embedder_provider, embedder_cfg):
+                    env_var = EMBEDDER_PROVIDERS.get(embedder_provider, {}).get("env_var", "?")
+                    missing_parts.append(f"oss.embedder key ({env_var})")
+                if not vector_provider:
+                    missing_parts.append("oss.vector_store.provider")
+
+                if not missing_parts:
                     check_ok("Mem0 OSS configured")
                     check_info(
                         f"mode=oss  user_id={mem0_cfg.get('user_id', '?')}  "
@@ -2326,16 +2371,13 @@ def run_doctor(args):
                         f"vector_store={vector_provider}"
                     )
                 else:
-                    missing_parts = []
-                    if not llm_key:
-                        missing_parts.append("oss.llm.config.api_key")
-                    if not embedder_key:
-                        missing_parts.append("oss.embedder.config.api_key")
-                    if not vector_provider:
-                        missing_parts.append("oss.vector_store.provider")
+                    hint = (
+                        "set the listed credential(s) in ~/.hermes/.env or "
+                        "rerun 'hermes memory setup'"
+                    )
                     _fail_and_issue(
                         "Mem0 OSS config incomplete",
-                        f"missing: {', '.join(missing_parts)} in ~/.hermes/mem0.json",
+                        f"missing: {', '.join(missing_parts)} — {hint}",
                         "Mem0 is set to OSS mode but config is incomplete",
                         issues,
                     )

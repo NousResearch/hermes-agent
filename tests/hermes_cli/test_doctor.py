@@ -348,6 +348,107 @@ class TestDoctorMemoryProviderSection:
         assert "Built-in memory active" not in out
 
 
+class TestDoctorMem0OSSCredentials:
+    """Doctor's Mem0 OSS check must resolve credentials via the provider
+    registry and ~/.hermes/.env — not from mem0.json keys the wizard never
+    writes — and must not require keys for providers that declare
+    needs_key=False (Ollama).  Regression for the hermes-sweeper review on
+    PR #59865.
+    """
+
+    def _make_oss_home(self, tmp_path, oss_cfg):
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        config = {"memory": {"provider": "mem0"}}
+        (home / "config.yaml").write_text(yaml.dump(config))
+        mem0_json = {
+            "mode": "oss",
+            "user_id": "u1",
+            "agent_id": "a1",
+            "oss": oss_cfg,
+        }
+        import json
+
+        (home / "mem0.json").write_text(json.dumps(mem0_json))
+        return home
+
+    def _run_and_capture(self, monkeypatch, tmp_path, oss_cfg, env_overrides=None):
+        home = self._make_oss_home(tmp_path, oss_cfg)
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        # _load_mem0_config() resolves the home via get_hermes_home() which
+        # reads the HERMES_HOME env var — set it so mem0.json is found.
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        # The wizard writes keys to .env; load_hermes_dotenv() (already
+        # imported at module level in doctor.py) loads them into os.environ.
+        # Simulate that by setting env vars directly — doctor reads
+        # os.environ, not the .env file, after load_hermes_dotenv() has run.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        for k, v in (env_overrides or {}).items():
+            monkeypatch.setenv(k, v)
+
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_oss_openai_keys_in_env_passes(self, monkeypatch, tmp_path):
+        """Wizard-created OpenAI OSS setup: keys only in .env, not mem0.json."""
+        oss_cfg = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        out = self._run_and_capture(
+            monkeypatch, tmp_path, oss_cfg, env_overrides={"OPENAI_API_KEY": "sk-test"}
+        )
+        assert "Mem0 OSS configured" in out
+        assert "Mem0 OSS config incomplete" not in out
+
+    def test_oss_ollama_no_keys_anywhere_passes(self, monkeypatch, tmp_path):
+        """Fully-local Ollama OSS config: needs_key=False, no keys required."""
+        oss_cfg = {
+            "llm": {"provider": "ollama", "config": {"model": "llama3.1:8b"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        out = self._run_and_capture(monkeypatch, tmp_path, oss_cfg)
+        assert "Mem0 OSS configured" in out
+        assert "Mem0 OSS config incomplete" not in out
+
+    def test_oss_openai_missing_key_fails_with_env_var_hint(self, monkeypatch, tmp_path):
+        """OSS with OpenAI LLM but no key in .env or mem0.json → fail, naming the env var."""
+        oss_cfg = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        out = self._run_and_capture(monkeypatch, tmp_path, oss_cfg)
+        assert "Mem0 OSS config incomplete" in out
+        assert "OPENAI_API_KEY" in out
+
+
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
     monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

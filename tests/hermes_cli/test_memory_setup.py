@@ -63,7 +63,11 @@ def test_curses_select_clears_after_picker_returns(monkeypatch):
 
 def test_cmd_setup_top_level_cancel_writes_nothing(monkeypatch):
     save_config = MagicMock()
-    load_config = MagicMock(side_effect=AssertionError("cancel should not load config"))
+    # load_config() is now called *before* the picker to compute the default
+    # cursor position (pre-selecting the currently active provider).  That
+    # call is expected on the cancel path too; the invariant that matters is
+    # that no config is *written* on cancel.
+    load_config = MagicMock(return_value={"memory": {}})
 
     monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("fake", "local", object())])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: kwargs["cancel_returns"])
@@ -72,7 +76,6 @@ def test_cmd_setup_top_level_cancel_writes_nothing(monkeypatch):
 
     memory_setup.cmd_setup(SimpleNamespace())
 
-    load_config.assert_not_called()
     save_config.assert_not_called()
 
 
@@ -196,3 +199,106 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     save_config.assert_not_called()
     provider.save_config.assert_not_called()
     assert not (tmp_path / ".env").exists()
+
+
+# ── picker default-cursor regression tests (PR #59865) ──
+
+
+def test_cmd_setup_picker_defaults_to_active_provider(monkeypatch):
+    """When config.memory.provider matches an available provider, the picker
+    cursor should default to that provider's row, not to 'Built-in only'."""
+    providers = [("mem0", "Mem0 cloud", object()), ("openviking", "local", object())]
+    captured = {}
+
+    def fake_select(title, items, default=0, cancel_returns=None):
+        captured["default"] = default
+        return cancel_returns
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: providers)
+    monkeypatch.setattr(memory_setup, "_curses_select", fake_select)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"memory": {"provider": "mem0"}}
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", MagicMock())
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    # mem0 is index 0 in providers, so default_idx should be 0 — not
+    # len(items)-1 (the "Built-in only" row).
+    assert captured["default"] == 0
+
+
+def test_cmd_setup_picker_falls_back_to_builtin_when_no_active_provider(monkeypatch):
+    """No provider configured → default cursor lands on 'Built-in only'."""
+    providers = [("mem0", "Mem0 cloud", object())]
+    captured = {}
+
+    def fake_select(title, items, default=0, cancel_returns=None):
+        captured["default"] = default
+        return cancel_returns
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: providers)
+    monkeypatch.setattr(memory_setup, "_curses_select", fake_select)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+    monkeypatch.setattr("hermes_cli.config.save_config", MagicMock())
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    # 1 provider + "Built-in only" = 2 items; builtin is index 1.
+    assert captured["default"] == 1
+
+
+def test_mem0_post_setup_picker_defaults_to_current_oss_mode(monkeypatch, tmp_path):
+    """Existing mem0.json with mode=oss → picker default is index 2 (Open Source)
+    and the label is annotated with '← current'."""
+    import json
+
+    from plugins.memory.mem0 import _setup as mem0_setup
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "mem0.json").write_text(json.dumps({"mode": "oss"}))
+
+    captured = {}
+
+    def fake_select(title, items, default=0):
+        captured["default"] = default
+        captured["items"] = items
+        return 0  # choose Platform to avoid running full OSS setup
+
+    monkeypatch.setattr(mem0_setup, "_curses_select", fake_select)
+    # Short-circuit the platform setup path so no network/files are touched.
+    monkeypatch.setattr(mem0_setup, "_setup_platform", lambda *a, **kw: None)
+
+    mem0_setup.post_setup(str(hermes_home), {"memory": {"provider": "mem0"}})
+
+    assert captured["default"] == 2
+    # The Open Source label should carry the "← current" marker.
+    oss_label = captured["items"][2][0]
+    assert "← current" in oss_label
+
+
+def test_mem0_post_setup_picker_defaults_to_platform_without_existing_config(
+    monkeypatch, tmp_path
+):
+    """No existing mem0.json → default is index 0 (Platform), no '← current' markers."""
+    from plugins.memory.mem0 import _setup as mem0_setup
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+
+    captured = {}
+
+    def fake_select(title, items, default=0):
+        captured["default"] = default
+        captured["items"] = items
+        return 0
+
+    monkeypatch.setattr(mem0_setup, "_curses_select", fake_select)
+    monkeypatch.setattr(mem0_setup, "_setup_platform", lambda *a, **kw: None)
+
+    mem0_setup.post_setup(str(hermes_home), {"memory": {"provider": "mem0"}})
+
+    assert captured["default"] == 0
+    for label, _ in captured["items"]:
+        assert "← current" not in label

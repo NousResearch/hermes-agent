@@ -1368,6 +1368,28 @@ export const ja = defineLocale({
     failedRename: 'プロファイルの名前変更に失敗しました'
   },
 
+  nattpasset: {
+    close: 'Nattpasset を閉じる',
+    title: 'Nattpasset',
+    subtitle: '成果を定義すれば、実装は Hermes が進めます。',
+    intro: '2 つの質問に答え、プロジェクトを確認して、実際のオペレーターミッションを開始します。',
+    goalLabel: '1. 成果',
+    goalQuestion: '朝までに何が変わっていてほしいですか？',
+    goalPlaceholder: '望む結果を自分の言葉で説明してください…',
+    criteriaLabel: '2. 完了の条件',
+    criteriaQuestion: '完了したとどう判断しますか？',
+    criteriaPlaceholder: '確認できる結果を 1 行に 1 つ…',
+    criteriaHint: '見たり確認したりできる条件を書いてください。実装方法の説明は不要です。',
+    scopeLabel: '3. プロジェクトと範囲',
+    noProject: 'Nattpasset を開始する前に、ワークスペースのあるプロジェクトを作成または選択してください。',
+    confirmScope: (name, path) => `${path} の ${name} が対象プロジェクトであることを確認します。`,
+    liveNotice:
+      'この最初のスライスは、実際の Hermes セッションですぐに開始します。アプリやランタイムの再起動をまたぐ耐久性はまだなく、Hermes は KVAR で正直に報告します。',
+    cancel: 'キャンセル',
+    launch: 'Nattpasset を開始',
+    launching: '開始中…'
+  },
+
   cron: {
     close: 'Cron を閉じる',
     title: 'スケジュール済みジョブ',
@@ -1526,7 +1548,8 @@ export const ja = defineLocale({
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
-      artifacts: 'アーティファクト'
+      artifacts: 'アーティファクト',
+      nattpasset: 'Nattpasset'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

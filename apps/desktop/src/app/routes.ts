@@ -14,6 +14,7 @@ export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
+export const NATTPASSET_ROUTE = '/nattpasset'
 
 export type AppView =
   | 'agents'
@@ -27,6 +28,7 @@ export type AppView =
   // session-title dropdown while a plugin page was showing.
   | 'extension'
   | 'messaging'
+  | 'nattpasset'
   | 'profiles'
   | 'settings'
   | 'skills'
@@ -38,6 +40,7 @@ export type AppRouteId =
   | 'command-center'
   | 'cron'
   | 'messaging'
+  | 'nattpasset'
   | 'new'
   | 'profiles'
   | 'settings'
@@ -56,6 +59,7 @@ export const APP_ROUTES = [
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
+  { id: 'nattpasset', path: NATTPASSET_ROUTE, view: 'nattpasset' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
@@ -119,6 +123,7 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'agents',
   'command-center',
   'cron',
+  'nattpasset',
   'profiles',
   'settings',
   'starmap'

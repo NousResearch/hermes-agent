@@ -1624,6 +1624,28 @@ export const zh: Translations = {
     failedRename: '重命名配置档案失败'
   },
 
+  nattpasset: {
+    close: '关闭 Nattpasset',
+    title: 'Nattpasset',
+    subtitle: '定义结果，Hermes 负责实施。',
+    intro: '回答两个问题、确认项目，然后启动真实的操作任务。',
+    goalLabel: '1. 结果',
+    goalQuestion: '到早上时，什么应该有所不同？',
+    goalPlaceholder: '用你自己的话描述想要的结果…',
+    criteriaLabel: '2. 完成意味着',
+    criteriaQuestion: '我们如何知道它已完成？',
+    criteriaPlaceholder: '每行写一个可观察的结果…',
+    criteriaHint: '请使用你能看到或验证的条件，无需描述实现方式。',
+    scopeLabel: '3. 项目和范围',
+    noProject: '启动 Nattpasset 前，请创建或选择一个带工作区的项目。',
+    confirmScope: (name, path) => `我确认位于 ${path} 的 ${name} 是目标项目。`,
+    liveNotice:
+      '此首个切片会立即在真实 Hermes 会话中启动。目前尚不能跨应用或运行时重启持久执行；Hermes 会在 KVAR 中如实报告。',
+    cancel: '取消',
+    launch: '启动 Nattpasset',
+    launching: '正在启动…'
+  },
+
   cron: {
     close: '关闭定时任务',
     title: '定时任务',
@@ -1780,7 +1802,8 @@ export const zh: Translations = {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
-      artifacts: '产物'
+      artifacts: '产物',
+      nattpasset: 'Nattpasset'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

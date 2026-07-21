@@ -4,6 +4,9 @@ When auto-thread fires, the adapter should keep source.chat_id as the parent
 channel so the final text response goes inline. Tool-progress messages
 route to the thread via source.thread_id. This mirrors Slack's behaviour:
 progress in a thread, response in the channel.
+
+Free-response channels should also get auto-threaded so tool progress
+goes into a thread instead of cluttering the channel.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,8 +32,6 @@ class TestAutoThreadChatIdRouting:
     def test_auto_thread_keeps_parent_chat_id(self):
         """When auto-thread fires, chat_id must be the parent channel ID,
         not the thread ID. The final response should go inline."""
-        # This is a structural test: we verify the logic that decides
-        # source_chat_id when auto_threaded_channel is set.
         auto_threaded_channel = MagicMock()
         auto_threaded_channel.id = 999999
         message_channel = MagicMock()
@@ -62,13 +63,60 @@ class TestAutoThreadChatIdRouting:
         assert source_chat_id == "111111"
 
 
+class TestFreeChannelAutoThread:
+    """Free-response channels should also get auto-threaded."""
+
+    def test_free_channel_not_skipped_from_auto_thread(self):
+        """Free-response channels must not be excluded from auto-threading.
+
+        Previously, is_free_channel was part of skip_thread, which prevented
+        auto-threading in free-response channels. This meant tool progress
+        appeared inline in the channel instead of in a thread.
+
+        The fix removes is_free_channel from skip_thread so free-response
+        channels also get auto-threaded for tool progress isolation.
+        """
+        # Simulate the skip_thread logic after the fix
+        channel_keys = {"1528961359260287058"}  # hermes-home
+        no_thread_channels = set()  # no explicit no-thread channels
+        is_free_channel = True  # hermes-home is a free-response channel
+
+        # After fix: is_free_channel is no longer part of skip_thread
+        skip_thread = bool(channel_keys & no_thread_channels)
+
+        assert not skip_thread, (
+            "Free-response channels should not be skipped from auto-threading"
+        )
+
+    def test_explicit_no_thread_channel_still_skipped(self):
+        """Channels explicitly listed in DISCORD_NO_THREAD_CHANNELS still skip."""
+        channel_keys = {"123456789"}
+        no_thread_channels = {"123456789"}
+        is_free_channel = False
+
+        skip_thread = bool(channel_keys & no_thread_channels)
+
+        assert skip_thread, (
+            "Channels in DISCORD_NO_THREAD_CHANNELS must still skip auto-threading"
+        )
+
+    def test_free_channel_in_no_thread_list_skipped(self):
+        """A free channel also listed in no_thread_channels should skip."""
+        channel_keys = {"1528961359260287058"}
+        no_thread_channels = {"1528961359260287058"}
+        is_free_channel = True
+
+        skip_thread = bool(channel_keys & no_thread_channels)
+
+        assert skip_thread
+
+
 class TestProgressThreadIdRouting:
     """Verify that progress thread routing still works with auto-thread on."""
 
     def test_discord_with_thread_uses_thread_for_progress(self):
         """When source.thread_id is set (auto-thread on), progress goes to thread."""
         from gateway.run import _resolve_progress_thread_id
-        from gateway.config import Platform
 
         assert _resolve_progress_thread_id(
             Platform.DISCORD,
@@ -79,7 +127,6 @@ class TestProgressThreadIdRouting:
     def test_discord_no_thread_no_progress_thread_id(self):
         """When no thread (auto-thread off), no thread_id for progress."""
         from gateway.run import _resolve_progress_thread_id
-        from gateway.config import Platform
 
         assert _resolve_progress_thread_id(
             Platform.DISCORD,

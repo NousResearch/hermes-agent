@@ -704,6 +704,28 @@ sessions:
 
 Active sessions are never auto-pruned, regardless of age.
 
+### Trigram Full-Text Index
+
+`session_search` is backed by two FTS5 indexes: a base word index and a
+secondary **trigram** index that adds CJK and arbitrary-substring recall. The
+trigram index has an INSERT/UPDATE/DELETE trigger on every message, so on a
+large `state.db` it roughly doubles full-text write cost and disk footprint
+(commonly the single largest contributor to `state.db` growth).
+
+If you don't need CJK or substring search, disable it:
+
+```yaml
+sessions:
+  trigram_fts: false   # default true; skip the trigram index
+```
+
+With it off, new databases never build the index and existing ones drop its
+triggers on the next open (so writes stop paying the cost immediately). CJK and
+substring queries transparently fall back to `LIKE` — the same path used when
+the SQLite build lacks the trigram tokenizer. To reclaim the disk an existing
+trigram index already occupies, run a maintenance pass (`optimize_fts()` drops
+the now-unused shadow table; a following `VACUUM` returns the pages to the OS).
+
 ### Manual Cleanup
 
 ```bash

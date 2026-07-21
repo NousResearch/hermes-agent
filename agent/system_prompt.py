@@ -282,10 +282,19 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
             getattr(agent, "_user_profile_enabled", True),
             skill_manage_available="skill_manage" in names,
         )
-    # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+    # Kanban WORKER lifecycle: only when the dispatcher spawned this process
+    # (HERMES_KANBAN_TASK set). Tool presence alone is not enough: orchestrator
+    # profiles carry kanban_show without a task id, and the worker protocol's
+    # mandatory ``kanban_show()`` first step fails there with "task_id is
+    # required" (issue #68592). Resolved once at __init__
+    # (_kanban_worker_guidance); the fallback below covers code paths that
+    # bypass agent_init.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
+    if (
+        _kanban_guidance is None
+        and os.environ.get("HERMES_KANBAN_TASK")
+        and "kanban_show" in names
+    ):
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,

@@ -1068,10 +1068,18 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Kanban WORKER lifecycle guidance is session-static: the dispatcher sets
+    # HERMES_KANBAN_TASK when spawning a worker. Tool presence alone is NOT the
+    # signal — orchestrator profiles (``kanban`` in the toolsets config) also
+    # carry kanban_show without a task id, and the worker protocol there makes
+    # every cron run call ``kanban_show()`` first and log "task_id is required"
+    # (issue #68592). Resolve once (init + each context compression).
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE
+        if os.environ.get("HERMES_KANBAN_TASK")
+        and "kanban_show" in agent.valid_tool_names
+        else ""
     )
     if agent.quiet_mode:
         return

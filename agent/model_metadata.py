@@ -4,6 +4,8 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
+import base64
+import hashlib
 import ipaddress
 import json
 import logging
@@ -581,8 +583,13 @@ def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
 
     LM Studio excludes caching because loaded context is transient — the user
     can reload the model with a different context_length at any time.
-   """
-    return provider == "lmstudio"
+
+    Codex OAuth excludes caching because its context window is account- and
+    entitlement-specific metadata supplied by the authenticated /models
+    endpoint. A fallback value written after a transient probe failure must
+    not prevent a later live probe from observing an updated allocation.
+    """
+    return (provider or "").strip().lower() in {"lmstudio", "openai-codex"}
 
 
 def _maybe_cache_local_context_length(
@@ -1918,32 +1925,72 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 }
 
 
-_codex_oauth_context_cache: Dict[str, int] = {}
-_codex_oauth_context_cache_time: float = 0.0
+_codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
-def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
-    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+def _codex_oauth_token_fingerprint(access_token: str) -> str:
+    """Return a non-secret cache key for a Codex OAuth access token."""
+    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
 
-    Codex OAuth imposes its own context limits that differ from the direct
-    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
-    `context_window` field in each model entry is the authoritative source.
 
-    Returns a ``{slug: context_window}`` dict. Empty on failure.
+def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
+    """Extract ``chatgpt_account_id`` from the Codex OAuth JWT.
+
+    The Codex ``/backend-api/codex/models`` endpoint returns the per-account
+    catalog only when the ``ChatGPT-Account-Id`` header is present; without
+    it, the endpoint returns ``{"models":[]}`` (HTTP 200) and the context
+    probe falls back to the hardcoded defaults — which can be stale or
+    wrong for the active account's plan. Mirrors the same extraction done
+    in ``auxiliary_client.py`` for the request path.
+
+    Returns ``None`` on any parse error rather than raising, so a bad
+    token still surfaces as a normal probe failure instead of crashing
+    the metadata resolver.
     """
-    global _codex_oauth_context_cache, _codex_oauth_context_cache_time
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        if not isinstance(claims, dict):
+            return None
+        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        return acct_id if isinstance(acct_id, str) and acct_id else None
+    except Exception:
+        return None
+
+
+def _fetch_codex_oauth_context_lengths_with_source(
+    access_token: str,
+) -> Tuple[Dict[str, int], bool]:
+    """Fetch Codex catalogue data and report whether it came from HTTP.
+
+    The in-process cache is scoped by token fingerprint because Codex model
+    availability and context windows can vary by account entitlement. The raw
+    token is never retained in the cache key. The boolean is false for a
+    same-token in-process hit, which must not be treated as a fresh provider
+    confirmation when deciding whether to update persistent state.
+    """
+    global _codex_oauth_context_cache
     now = time.time()
-    if (
-        _codex_oauth_context_cache
-        and now - _codex_oauth_context_cache_time < _CODEX_OAUTH_CONTEXT_CACHE_TTL
-    ):
-        return _codex_oauth_context_cache
+    cache_key = _codex_oauth_token_fingerprint(access_token)
+    cached = _codex_oauth_context_cache.get(cache_key)
+    if cached is not None:
+        cached_models, cached_at = cached
+        if now - cached_at < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+            return cached_models, False
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    acct_id = _extract_chatgpt_account_id(access_token)
+    if acct_id:
+        headers["ChatGPT-Account-Id"] = acct_id
 
     try:
         resp = requests.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers=headers,
             timeout=(5, 10),
             verify=_resolve_requests_verify(),
         )
@@ -1952,11 +1999,11 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
                 "Codex /models probe returned HTTP %s; falling back to hardcoded defaults",
                 resp.status_code,
             )
-            return {}
+            return {}, False
         data = resp.json()
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
-        return {}
+        return {}, False
 
     entries = data.get("models", []) if isinstance(data, dict) else []
     result: Dict[str, int] = {}
@@ -1969,32 +2016,50 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
             result[slug.strip()] = ctx
 
     if result:
-        _codex_oauth_context_cache = result
-        _codex_oauth_context_cache_time = now
+        _codex_oauth_context_cache[cache_key] = (result, now)
+    return result, True
+
+
+def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
+    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+
+    Codex OAuth imposes its own context limits that differ from the direct
+    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
+    `context_window` field in each model entry is the authoritative source.
+
+    Returns a ``{slug: context_window}`` dict. Empty on failure.
+    """
+    result, _fresh = _fetch_codex_oauth_context_lengths_with_source(access_token)
     return result
 
 
-def _resolve_codex_oauth_context_length(
+def _resolve_codex_oauth_context_length_with_source(
     model: str, access_token: str = ""
-) -> Optional[int]:
+) -> Tuple[Optional[int], str]:
     """Resolve a Codex OAuth model's real context window.
 
     Prefers a live probe of chatgpt.com/backend-api/codex/models (when we
     have a bearer token), then falls back to ``_CODEX_OAUTH_CONTEXT_FALLBACK``.
+
+    Returns ``(context_length, source)`` where source is ``"live"`` for a
+    value returned by a fresh authenticated endpoint probe, ``"memory"`` for
+    a same-token in-process catalogue hit, or ``"fallback"`` for the static
+    conservative table. Only ``"live"`` is eligible for persistent writes.
     """
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
-        return None
+        return None, ""
 
     if access_token:
-        live = _fetch_codex_oauth_context_lengths(access_token)
+        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live_source = "live" if fresh_probe else "memory"
         if model_bare in live:
-            return live[model_bare]
+            return live[model_bare], live_source
         # Case-insensitive match in case casing drifts
         model_lower = model_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
-                return ctx
+                return ctx, live_source
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
     model_lower = model_bare.lower()
@@ -2002,9 +2067,19 @@ def _resolve_codex_oauth_context_length(
         _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
     ):
         if slug in model_lower:
-            return ctx
+            return ctx, "fallback"
 
-    return None
+    return None, ""
+
+
+def _resolve_codex_oauth_context_length(
+    model: str, access_token: str = ""
+) -> Optional[int]:
+    """Resolve a Codex OAuth model's context length (compatibility wrapper)."""
+    context_length, _source = _resolve_codex_oauth_context_length_with_source(
+        model, access_token=access_token,
+    )
+    return context_length
 
 
 def _resolve_nous_context_length(
@@ -2094,9 +2169,9 @@ def get_model_context_length(
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
-    1. Persistent cache (previously discovered via probing).  Nous URLs
-       bypass the cache here so step 5b can always reconcile against
-       the authoritative portal /v1/models response.
+    1. Persistent cache (previously discovered via probing).  Nous URLs,
+       LM Studio, and Codex OAuth bypass the cache here so their provider
+       metadata can be reconciled against the authoritative live source.
     1b. AWS Bedrock static table (must precede custom-endpoint probe)
     2. Active endpoint metadata (/models for explicit custom endpoints)
     3. Local server query (for local endpoints)
@@ -2196,24 +2271,13 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
+    # Codex OAuth is excluded because the authenticated /models catalogue is
+    # account-specific and a fallback must never suppress later revalidation.
     if base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
-            # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
-            if provider == "openai-codex" and cached >= 400_000:
-                logger.info(
-                    "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
-                    "re-resolving via live /models probe",
-                    model, base_url, f"{cached:,}",
-                )
-                _invalidate_cached_context_length(model, base_url)
             # Invalidate stale 32k cache entries for Kimi-family models.
-            elif cached <= 32768 and _model_name_suggests_kimi(model):
+            if cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
                     "re-resolving via hardcoded defaults",
@@ -2452,9 +2516,14 @@ def get_model_context_length(
         # Codex OAuth enforces lower context limits than the direct OpenAI
         # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
         # on Codex). Authoritative source is Codex's own /models endpoint.
-        codex_ctx = _resolve_codex_oauth_context_length(model, access_token=api_key or "")
+        codex_ctx, codex_source = _resolve_codex_oauth_context_length_with_source(
+            model, access_token=api_key or "",
+        )
         if codex_ctx:
-            if base_url:
+            # Only a successful authenticated catalogue response is safe to
+            # persist. The static fallback is deliberately runtime-only so a
+            # transient OAuth/network failure cannot poison future probes.
+            if base_url and codex_source == "live":
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
     if effective_provider == "gmi" and base_url:

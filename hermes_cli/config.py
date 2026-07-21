@@ -8473,11 +8473,25 @@ def show_config():
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
-    telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
-    discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
-    print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
-    print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+    platforms = {
+        "Telegram": "TELEGRAM_BOT_TOKEN",
+        "Discord": "DISCORD_BOT_TOKEN",
+        "WhatsApp": "WHATSAPP_ENABLED",
+        "Signal": "SIGNAL_HTTP_URL",
+        "Slack": "SLACK_BOT_TOKEN",
+        "Email": "EMAIL_ADDRESS",
+        "SMS": "TWILIO_ACCOUNT_SID",
+        "DingTalk": "DINGTALK_CLIENT_ID",
+        "Feishu": "FEISHU_APP_ID",
+        "WeCom": "WECOM_BOT_ID",
+        "WeCom Callback": "WECOM_CALLBACK_CORP_ID",
+        "Weixin": "WEIXIN_ACCOUNT_ID",
+        "BlueBubbles": "BLUEBUBBLES_SERVER_URL",
+    }
+
+    for name, env_var in platforms.items():
+        configured = get_env_value(env_var)
+        print(f"  {name:16s} {'configured' if configured else color('not configured', Colors.DIM)}")
     
     # Skill config
     try:

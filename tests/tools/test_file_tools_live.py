@@ -301,6 +301,54 @@ class TestPatchReplace:
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
 
 
+class TestPatchV4A:
+    """V4A patch-mode application via the real ShellFileOperations backend."""
+
+    def test_valid_v4a_update_applies(self, ops, tmp_path):
+        path = tmp_path / "v4a.txt"
+        path.write_text("line one\nline two\nline three\n")
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {path}\n"
+            " line one\n"
+            "+INSERTED_LINE\n"
+            " line two\n"
+            "*** End Patch\n"
+        )
+        result = ops.patch_v4a(patch)
+        assert result.error is None
+        assert path.read_text() == "line one\nINSERTED_LINE\nline two\nline three\n"
+
+    def test_bare_unified_diff_errors_not_silent_success(self, ops, tmp_path):
+        """A bare unified diff (no '*** Update File:' header) must ERROR.
+
+        Regression guard: parse_v4a_patch() returns ([], None) for any patch
+        with no recognised V4A file headers, so without the patch_v4a guard
+        apply_v4a_operations() runs zero times and returns success=True while
+        writing nothing — a silent no-op false success that makes the agent
+        believe its edit landed.  The file must be UNCHANGED and the result
+        must carry an actionable error.
+        """
+        path = tmp_path / "bare.txt"
+        original = "line one\nline two\nline three\n"
+        path.write_text(original)
+        bare_diff = "@@\n line one\n+INSERTED_LINE\n line two"
+        result = ops.patch_v4a(bare_diff)
+        assert result.error is not None, (
+            "bare unified diff must surface an error, not a silent no-op success"
+        )
+        assert "No V4A file operations" in result.error
+        assert path.read_text() == original, "file must be untouched on malformed patch"
+
+    def test_whitespace_only_patch_is_noop_without_error(self, ops):
+        """An empty / whitespace-only patch is a legitimate no-op, not an error."""
+        result = ops.patch_v4a("   \n  \n")
+        assert result.error is None
+        assert not result.files_modified
+        assert not result.files_created
+        assert not result.files_deleted
+
+
 # ── search ───────────────────────────────────────────────────────────────
 
 class TestSearch:

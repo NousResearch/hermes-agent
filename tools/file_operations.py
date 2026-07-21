@@ -1701,7 +1701,27 @@ class ShellFileOperations(FileOperations):
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
-        
+
+        # Guard against a SILENT no-op "success".  parse_v4a_patch() returns
+        # ([], None) for any patch that contains no recognised V4A file
+        # headers (``*** Update/Add/Delete/Move File:``) — including the very
+        # common mistake of passing a bare unified diff (``@@``/``+``/``-``
+        # hunks with no header).  Without this guard apply_v4a_operations()
+        # runs its loop zero times and returns success=True with empty file
+        # lists, so the tool reports ``{"success": true, "files_modified":[…]}``
+        # while writing NOTHING to disk.  That false success is dangerous: the
+        # agent believes its edit landed.  Only an EMPTY/whitespace-only patch
+        # is a legitimate no-op; a non-empty patch that yields no operations is
+        # a malformed patch and must surface an actionable error.
+        if not operations and patch_content and patch_content.strip():
+            return PatchResult(error=(
+                "No V4A file operations found in patch. The patch is missing "
+                "the required '*** Update File:' / '*** Add File:' / "
+                "'*** Delete File:' header(s). If you passed a bare unified "
+                "diff (@@/+/- hunks), wrap it in V4A format, or use "
+                "mode='replace' with old_string/new_string instead."
+            ))
+
         # Apply operations
         result = apply_v4a_operations(operations, self)
         return result

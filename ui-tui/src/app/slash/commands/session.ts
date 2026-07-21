@@ -432,11 +432,23 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys('usage: /theme [auto|light|dark]')
       }
 
-      // Apply immediately, persist in the background.
-      applyConfiguredTuiTheme(value)
+      // Apply only after the write is confirmed (mirrors /indicator): a
+      // failed config.set must not leave the session showing a theme that
+      // reverts on restart. A few ms later than an optimistic flip, but the
+      // env/theme state and config.yaml never disagree.
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'theme', value })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value !== undefined && ctx.transcript.sys(`theme → ${value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (r.value === undefined) {
+              return
+            }
+
+            applyConfiguredTuiTheme(value)
+            ctx.transcript.sys(`theme → ${value}`)
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

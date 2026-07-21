@@ -240,6 +240,73 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     mock_run.assert_not_called()
 
 
+def test_check_for_updates_git_zero_pypi_newer_uses_no_count_sentinel(tmp_path, monkeypatch):
+    """A package-version update from PyPI is not an exact commit count."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    with patch("hermes_cli.banner._check_via_local_git", return_value=0) as mock_git, \
+         patch("hermes_cli.banner.check_via_pypi", return_value=1) as mock_pypi:
+        result = banner.check_for_updates()
+
+    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
+    mock_git.assert_called_once_with(repo_dir)
+    mock_pypi.assert_called_once()
+
+
+def test_check_for_updates_git_zero_pypi_failure_stays_up_to_date(tmp_path, monkeypatch):
+    """If PyPI cannot answer, keep the local-git zero result."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    with patch("hermes_cli.banner._check_via_local_git", return_value=0), \
+         patch("hermes_cli.banner.check_via_pypi", return_value=None) as mock_pypi:
+        result = banner.check_for_updates()
+
+    assert result == 0
+    mock_pypi.assert_called_once()
+
+
+def test_check_for_updates_git_positive_does_not_consult_pypi(tmp_path, monkeypatch):
+    """Exact git commit counts should not be replaced by package-version checks."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    with patch("hermes_cli.banner._check_via_local_git", return_value=7), \
+         patch("hermes_cli.banner.check_via_pypi") as mock_pypi:
+        result = banner.check_for_updates()
+
+    assert result == 7
+    mock_pypi.assert_not_called()
+
+
 def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     """Dev install: falls back to Path(__file__).parent.parent when HERMES_HOME has no git repo."""
     import hermes_cli.banner as banner

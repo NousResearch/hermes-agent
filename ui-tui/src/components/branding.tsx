@@ -413,6 +413,23 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Text>
         )}
 
+        {typeof info.update_behind === 'number' && info.update_behind < 0 && (
+          <Text bold color={t.color.warn}>
+            ! update available
+            <Text bold={false} color={t.color.warn} dimColor>
+              {' '}
+              - run{' '}
+            </Text>
+            <Text bold color={t.color.warn}>
+              {info.update_command || 'hermes update'}
+            </Text>
+            <Text bold={false} color={t.color.warn} dimColor>
+              {' '}
+              to update
+            </Text>
+          </Text>
+        )}
+
         {info.install_warning && (
           <Text bold color={t.color.warn} wrap="wrap">
             ! {info.install_warning}

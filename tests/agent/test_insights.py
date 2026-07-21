@@ -604,6 +604,77 @@ class TestGatewayFormatting:
 
 
 # =========================================================================
+# Cache token display (issue #18615)
+# =========================================================================
+
+class TestCacheTokenDisplay:
+    def _make_db_with_cache(self, db):
+        """Helper: create a session with significant cache tokens."""
+        db.create_session(session_id="s_cache", source="cli", model="claude-sonnet")
+        db.update_token_counts(
+            "s_cache",
+            input_tokens=2000,
+            output_tokens=800,
+            cache_read_tokens=50000,
+            cache_write_tokens=10000,
+        )
+        db._conn.commit()
+        return db
+
+    def test_terminal_format_shows_cache_when_present(self, db):
+        """Terminal format must include cache token line when cache > 0."""
+        self._make_db_with_cache(db)
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        assert "Cache tokens" in text
+        assert "50,000" in text or "60,000" in text  # read or total
+
+    def test_gateway_format_shows_cache_when_present(self, db):
+        """Gateway format must include cache in token breakdown when cache > 0."""
+        self._make_db_with_cache(db)
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_gateway(report)
+
+        assert "cache:" in text.lower()
+
+    def test_terminal_format_hides_cache_when_zero(self, db):
+        """Terminal format must NOT show cache line when all cache tokens are 0."""
+        db.create_session(session_id="s_nocache", source="cli", model="gpt-4o")
+        db.update_token_counts("s_nocache", input_tokens=1000, output_tokens=500)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        assert "Cache tokens" not in text
+
+    def test_gateway_format_hides_cache_when_zero(self, db):
+        """Gateway format must NOT mention cache when all cache tokens are 0."""
+        db.create_session(session_id="s_nocache", source="cli", model="gpt-4o")
+        db.update_token_counts("s_nocache", input_tokens=1000, output_tokens=500)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_gateway(report)
+
+        assert "cache" not in text.lower()
+
+    def test_total_tokens_include_cache(self, db):
+        """total_tokens must equal input + output + cache_read + cache_write."""
+        self._make_db_with_cache(db)
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        o = report["overview"]
+
+        assert o["total_tokens"] == 2000 + 800 + 50000 + 10000
+
+
+# =========================================================================
 # Edge cases
 # =========================================================================
 

@@ -924,6 +924,9 @@ class InsightsEngine:
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
+        cache_total = (o.get('total_cache_read_tokens') or 0) + (o.get('total_cache_write_tokens') or 0)
+        if cache_total:
+            lines.append(f"  Cache tokens:      {cache_total:<12,}  (read: {o.get('total_cache_read_tokens') or 0:,} / write: {o.get('total_cache_write_tokens') or 0:,})")
         lines.append(f"  Total tokens:      {o['total_tokens']:,}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
@@ -1039,7 +1042,9 @@ class InsightsEngine:
 
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
-        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        cache_total = (o.get('total_cache_read_tokens') or 0) + (o.get('total_cache_write_tokens') or 0)
+        cache_part = f" / cache: {cache_total:,}" if cache_total else ""
+        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,}{cache_part})")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")

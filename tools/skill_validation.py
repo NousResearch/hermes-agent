@@ -112,8 +112,10 @@ def skill_content_digest(skill_dir: Path) -> str:
         finally:
             os.close(fd)
         relative = relative_path.as_posix().encode("utf-8")
+        mode = stat.S_IMODE(opened.st_mode)
         digest.update(len(relative).to_bytes(4, "big"))
         digest.update(relative)
+        digest.update(mode.to_bytes(4, "big"))
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)
     return digest.hexdigest()

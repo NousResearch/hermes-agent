@@ -128,6 +128,20 @@ def test_validate_records_digest_bound_evidence_and_rejects_token_replay(tmp_pat
     assert "validation_token" in replay["error"]
 
 
+def test_content_digest_binds_executable_mode_bits(tmp_path):
+    from tools.skill_validation import skill_content_digest
+
+    with isolated_skills(tmp_path):
+        skill_dir = create_code_skill(PASSING_TEST, tmp_path)
+        script = skill_dir / "scripts" / "add.py"
+        script.chmod(0o644)
+        non_executable = skill_content_digest(skill_dir)
+        script.chmod(0o755)
+        executable = skill_content_digest(skill_dir)
+
+    assert executable != non_executable
+
+
 def test_validation_token_is_consumed_atomically_across_threads(tmp_path):
     with isolated_skills(tmp_path):
         skill_dir = create_code_skill(PASSING_TEST, tmp_path)

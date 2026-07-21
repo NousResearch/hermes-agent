@@ -46,6 +46,7 @@ import type {
   ProfileSoul,
   ProfilesResponse,
   SessionInfo,
+  SessionMessage,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillHubPreview,
@@ -567,13 +568,31 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for
 // the current/default profile.
-export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
+export async function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
   const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
 
-  return window.hermesDesktop.api<SessionMessagesResponse>({
+  const response = await window.hermesDesktop.api<{
+    data?: SessionMessage[]
+    messages?: SessionMessage[]
+    session_id?: string
+  }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
+
+  // The REST endpoint follows the OpenAI list envelope and returns transcript
+  // rows as `data`. Keep accepting `messages` for older/alternate backends, but
+  // normalize at this boundary so every hydration path sees one shape.
+  const messages = Array.isArray(response.messages) ? response.messages : response.data
+
+  if (!Array.isArray(messages)) {
+    throw new Error('Hermes session messages response did not contain a message list.')
+  }
+
+  return {
+    messages,
+    session_id: response.session_id || id
+  }
 }
 
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {

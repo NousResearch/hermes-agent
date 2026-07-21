@@ -22,6 +22,7 @@ import {
   speakText,
   transcribeAudio
 } from './hermes'
+import { chatMessageText, toChatMessages } from './lib/chat-messages'
 import { refreshActiveProfile } from './store/profile'
 
 const emptySessionsResponse = {
@@ -328,6 +329,29 @@ describe('Hermes REST helpers', () => {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
     })
+  })
+
+  it('normalizes persisted transcript rows before desktop hydration', async () => {
+    api.mockResolvedValue({
+      data: [
+        { content: 'first question', role: 'user', timestamp: 1 },
+        { content: 'first answer', role: 'assistant', timestamp: 2 },
+        { content: 'second question', role: 'user', timestamp: 3 },
+        { content: 'second answer', role: 'assistant', timestamp: 4 }
+      ],
+      object: 'list',
+      session_id: 'session-1'
+    })
+
+    const persisted = await getSessionMessages('session-1')
+    const hydrated = toChatMessages(persisted.messages)
+
+    expect(hydrated.map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', 'first question'],
+      ['assistant', 'first answer'],
+      ['user', 'second question'],
+      ['assistant', 'second answer']
+    ])
   })
 
   it('bounds blocking TTS synthesis timeouts by text length', () => {

@@ -56,6 +56,12 @@ class TestSupportsMediaInToolResults:
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False
 
+    def test_opencode_go_yes(self):
+        assert _supports_media_in_tool_results("opencode-go", "minimax-m3") is True
+
+    def test_opencode_go_glm_yes(self):
+        assert _supports_media_in_tool_results("opencode-go", "glm-5.1") is True
+
     def test_empty_provider_no(self):
         assert _supports_media_in_tool_results("", "anything") is False
         assert _supports_media_in_tool_results(None, "anything") is False  # type: ignore[arg-type]

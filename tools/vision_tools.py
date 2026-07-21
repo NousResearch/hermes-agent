@@ -766,6 +766,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
       * Anthropic Messages API (``anthropic`` provider, plus aggregators that
         proxy Claude — ``openrouter``, ``nous``, ``vertex``, ``bedrock``):
         ``tool_result`` blocks accept ``image`` content blocks.
+      * OpenCode Go (``opencode-go``): routes MiniMax models via
+        ``anthropic_messages`` api_mode; GLM/Kimi via ``chat_completions``.
+        Both wire shapes support image content inside tool-result messages.
       * OpenAI Chat Completions: tool messages accept array content with
         ``image_url`` parts.
       * OpenAI Responses (``openai-codex``): ``function_call_output.output``
@@ -794,8 +797,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in _AGGREGATORS:
         return True
 
-    # Native Anthropic
-    if p in {"anthropic", "claude", "anthropic-direct"}:
+    # Native Anthropic (and OpenCode Go which routes MiniMax via
+    # anthropic_messages api_mode — supports multimodal tool results)
+    if p in {"anthropic", "claude", "anthropic-direct", "opencode-go"}:
         return True
 
     # OpenAI Chat Completions and Responses

@@ -10501,9 +10501,27 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
+        from hermes_cli.clipboard import (
+            has_clipboard_image,
+            is_clipboard_auto_attach_enabled,
+            save_clipboard_image,
+        )
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
+
+    # #23984 — when the TUI marks this RPC as "auto" (i.e. it was triggered
+    # by an empty bracketed-paste event, not by an explicit hotkey or
+    # right-click), and the user has opted out of automatic clipboard
+    # probing, short-circuit before touching the OS clipboard. This is the
+    # path that gets spammed by leaked terminal control sequences over
+    # SSH / inside Docker / under Ghostty.
+    auto = bool(params.get("auto", False))
+    if auto and not is_clipboard_auto_attach_enabled():
+        return _ok(rid, {
+            "attached": False,
+            "skipped": True,
+            "message": "Clipboard auto-attach disabled (clipboard.auto_attach_image)",
+        })
 
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _hermes_home / "images"

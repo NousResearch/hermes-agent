@@ -3082,8 +3082,29 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
 
 
 def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
-    """Auto-attach clipboard images only for image-only paste gestures."""
-    return not pasted_text.strip()
+    """Auto-attach clipboard images only for image-only paste gestures.
+
+    Two short-circuits:
+      1. The pasted text is non-empty (user actually pasted text — never
+         probe the clipboard for an image in that case).
+      2. The user has explicitly opted out of auto-attach via
+         ``clipboard.auto_attach_image: false`` in config or
+         ``HERMES_DISABLE_CLIPBOARD_AUTO_ATTACH=1`` in the environment.
+         See issue #23984: leaked bracketed-paste markers from terminal
+         control sequences (Ghostty over SSH, mouse-report fragments,
+         focus events) made this fire constantly and bombarded users
+         with privacy prompts plus 'No image found in clipboard' lines.
+    """
+    if pasted_text.strip():
+        return False
+    try:
+        from hermes_cli.clipboard import is_clipboard_auto_attach_enabled
+        if not is_clipboard_auto_attach_enabled():
+            return False
+    except Exception:
+        # Defensive: never block paste handling because the gate failed.
+        pass
+    return True
 
 
 def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:

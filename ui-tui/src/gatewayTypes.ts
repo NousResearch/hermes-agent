@@ -355,6 +355,11 @@ export interface ClipboardPasteResponse {
   count?: number
   height?: number
   message?: string
+  // #23984 — set to true when the gateway short-circuited an `auto`
+  // probe because the user opted out via clipboard.auto_attach_image
+  // (or HERMES_DISABLE_CLIPBOARD_AUTO_ATTACH=1). Treated as silent on
+  // the TUI side so the auto-attach opt-out actually goes quiet.
+  skipped?: boolean
   token_estimate?: number
   width?: number
 }

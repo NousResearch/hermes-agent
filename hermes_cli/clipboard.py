@@ -18,11 +18,131 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+# ---------------------------------------------------------------------------
+# Auto-attach gate (#23984)
+# ---------------------------------------------------------------------------
+#
+# Some terminals (notably Ghostty over SSH) raise an OS-level privacy prompt
+# every time a process reads the system clipboard, *even for failed reads*.
+# Hermes' bracketed-paste handler treats any empty paste as "the user just
+# pasted an image" and probes the clipboard with osascript / pngpaste /
+# powershell etc. to extract image data. In environments where bracketed
+# paste markers leak from terminal control sequences (SSH escape sequences,
+# mouse-report fragments, focus events) those probes fire constantly and the
+# user is bombarded with "No image found in clipboard" messages plus, on
+# Ghostty, a re-armed privacy alert per probe.
+#
+# These helpers expose a deterministic opt-out. Once disabled, every
+# *automatic* clipboard image probe short-circuits to "no image" without
+# touching the OS clipboard at all. Explicit user actions (the `/paste`
+# slash command, ``image.attach`` RPC with a real path) are not affected.
+
+_AUTO_ATTACH_ENV_VAR = "HERMES_DISABLE_CLIPBOARD_AUTO_ATTACH"
+_AUTO_ATTACH_CONFIG_KEYS = ("clipboard", "auto_attach_image")
+
+
+def _coerce_truthy_env(raw: Optional[str]) -> Optional[bool]:
+    """Parse an env-var string into a tri-state truthy/falsy/unset.
+
+    Accepts the values Hermes uses elsewhere (``HERMES_LOG_LEVEL`` style):
+    ``"1" / "true" / "yes" / "on"`` are truthy; ``"0" / "false" / "no" /
+    "off"`` are falsy; everything else (and ``None`` / blank) is treated
+    as "not set" so the config value wins.
+    """
+    if raw is None:
+        return None
+    val = raw.strip().lower()
+    if not val:
+        return None
+    if val in ("1", "true", "yes", "on", "y", "t"):
+        return True
+    if val in ("0", "false", "no", "off", "n", "f"):
+        return False
+    return None
+
+
+def _coerce_config_bool(raw: Any) -> Optional[bool]:
+    """Coerce a YAML-parsed scalar into a tri-state bool.
+
+    Mirrors ``_coerce_truthy_env`` so config and env have identical
+    semantics. Returns ``None`` for missing / unrecognised values so the
+    caller can apply its own default.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return bool(raw)
+    if isinstance(raw, str):
+        return _coerce_truthy_env(raw)
+    return None
+
+
+def is_clipboard_auto_attach_enabled(
+    cfg: Optional[Dict[str, Any]] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Return True iff Hermes may probe the clipboard for images automatically.
+
+    Resolution order (first match wins):
+      1. ``HERMES_DISABLE_CLIPBOARD_AUTO_ATTACH=1`` env var → False
+         (also accepts ``true`` / ``yes`` / ``on``).
+      2. ``clipboard.auto_attach_image`` in the user's ``config.yaml`` →
+         that boolean's value.
+      3. Default → True (matches pre-#23984 behaviour).
+
+    Args:
+      cfg: Loaded config dict. When ``None`` we lazily call
+        ``hermes_cli.config.load_config`` so callers in hot paths don't
+        need to thread it through. Failure to load is treated as "no
+        config", not an error — the caller still gets a useful answer.
+      env: Override env mapping (defaults to ``os.environ``). The
+        parameter exists for tests; production callers pass nothing.
+    """
+    env_map = env if env is not None else os.environ
+
+    # Env var: an explicit "disable" flag wins over everything (matches the
+    # convention of HERMES_DISABLE_* knobs elsewhere in the project).
+    env_disable = _coerce_truthy_env(env_map.get(_AUTO_ATTACH_ENV_VAR))
+    if env_disable is True:
+        return False
+    if env_disable is False:
+        # Explicit "HERMES_DISABLE_...=0" forces enable, ignoring config.
+        return True
+
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "is_clipboard_auto_attach_enabled: config load failed: %s",
+                exc,
+            )
+            cfg = None
+
+    if isinstance(cfg, dict):
+        node: Any = cfg
+        for key in _AUTO_ATTACH_CONFIG_KEYS:
+            if isinstance(node, dict):
+                node = node.get(key)
+            else:
+                node = None
+                break
+        coerced = _coerce_config_bool(node)
+        if coerced is not None:
+            return coerced
+
+    return True
 
 
 def save_clipboard_image(dest: Path) -> bool:

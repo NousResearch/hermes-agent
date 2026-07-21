@@ -678,7 +678,17 @@ export function useMainApp(gw: GatewayClient) {
 
   const paste = useCallback(
     (quiet = false) =>
-      rpc<ClipboardPasteResponse>('clipboard.paste', { session_id: getUiState().sid }).then(r => {
+      rpc<ClipboardPasteResponse>('clipboard.paste', {
+        // #23984 — `quiet` callers are the auto path triggered by empty
+        // bracketed-paste events leaked from terminal control sequences
+        // (Ghostty over SSH, mouse-report fragments, focus events). The
+        // gateway honours `auto: true` together with the user-facing
+        // opt-out (clipboard.auto_attach_image / HERMES_DISABLE_…) and
+        // short-circuits before touching the OS clipboard, which avoids
+        // the privacy-prompt + 'No image found' spam on Ghostty.
+        auto: quiet,
+        session_id: getUiState().sid
+      }).then(r => {
         if (!r) {
           return
         }
@@ -687,6 +697,12 @@ export function useMainApp(gw: GatewayClient) {
           const meta = imageTokenMeta(r)
 
           return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
+        }
+
+        if (r.skipped) {
+          // Auto-attach disabled by config — never surface to the user
+          // (the whole point of the opt-out is to keep the TUI quiet).
+          return
         }
 
         if (!quiet) {

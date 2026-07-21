@@ -432,17 +432,33 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
 
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
-    """Find a model entry by exact match, then case-insensitive fallback."""
-    # Exact match
-    entry = models.get(model)
-    if isinstance(entry, dict):
-        return entry
+    """Find a model entry by exact match, then case-insensitive fallback.
 
-    # Case-insensitive match
-    model_lower = model.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower and isinstance(mdata, dict):
-            return mdata
+    Also retries with :cloud / -cloud suffixes stripped so that provider
+    profiles that append these suffixes (e.g. ollama-cloud) still resolve
+    correctly against models.dev keys that store the bare model name.
+    """
+    def _lookup(name: str) -> Optional[Dict[str, Any]]:
+        entry = models.get(name)
+        if isinstance(entry, dict):
+            return entry
+        name_lower = name.lower()
+        for mid, mdata in models.items():
+            if mid.lower() == name_lower and isinstance(mdata, dict):
+                return mdata
+        return None
+
+    result = _lookup(model)
+    if result is not None:
+        return result
+
+    # Strip :cloud or -cloud suffix and retry
+    for suffix in (":cloud", "-cloud"):
+        if model.lower().endswith(suffix):
+            stripped = model[: -len(suffix)]
+            result = _lookup(stripped)
+            if result is not None:
+                return result
 
     return None
 

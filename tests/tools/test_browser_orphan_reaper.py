@@ -271,22 +271,55 @@ class TestOrphanedChromiumCleanup:
 
         terminated_pids = []
 
-        def fake_terminate():
-            terminated_pids.append(orphan_proc.info["pid"])
-
-        orphan_proc.terminate = fake_terminate
-        live_proc.terminate = MagicMock()
-        user_chrome.terminate = MagicMock()
+        def fake_terminate(pid):
+            terminated_pids.append(pid)
 
         with patch("psutil.process_iter",
                    return_value=[orphan_proc, live_proc, user_chrome]), \
-             patch("psutil.wait_procs", return_value=([], [])):
+             patch(
+                 "tools.process_registry.ProcessRegistry._terminate_host_pid",
+                 side_effect=fake_terminate,
+             ):
             result = _kill_orphaned_chromium_processes("h_test1234")
 
-        assert result == 1  # only the orphan was killed
-        assert 2001 in terminated_pids
+        assert result == 1  # only the orphan root was selected
+        assert terminated_pids == [2001]
+        orphan_proc.terminate.assert_not_called()
         live_proc.terminate.assert_not_called()
         user_chrome.terminate.assert_not_called()
+
+    def test_kill_orphaned_chromium_uses_full_process_tree_termination(
+        self, fake_tmpdir
+    ):
+        """An orphan Chromium root is terminated together with its descendants.
+
+        The process registry owns the cross-platform tree-kill and escalation
+        behavior.  The browser orphan scanner must delegate to it rather than
+        terminating only the Chromium root object.
+        """
+        from tools.browser_tool import _kill_orphaned_chromium_processes
+
+        orphan_proc = MagicMock()
+        orphan_proc.info = {
+            "pid": 2001,
+            "name": "chrome",
+            "cmdline": [
+                "/usr/bin/chromium",
+                "--headless",
+                "--user-data-dir=/tmp/agent-browser-chrome-aaaa1111",
+            ],
+            "ppid": 1,
+        }
+
+        with patch("psutil.process_iter", return_value=[orphan_proc]), \
+             patch(
+                 "tools.process_registry.ProcessRegistry._terminate_host_pid"
+             ) as terminate_tree:
+            result = _kill_orphaned_chromium_processes("h_test1234")
+
+        assert result == 1
+        terminate_tree.assert_called_once_with(2001)
+        orphan_proc.terminate.assert_not_called()
 
 
 class TestOwnerPidCrossProcess:

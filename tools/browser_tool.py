@@ -1655,7 +1655,8 @@ def _kill_orphaned_chromium_processes(session_name: str) -> int:
         session_name: Used for logging context only; the actual kill
             criteria are orphaned parent + agent-browser cmdline pattern.
 
-    Returns the number of Chromium processes killed.
+    Returns the number of orphaned Chromium roots handed to the process-tree
+    terminator.
     """
     try:
         import psutil
@@ -1666,9 +1667,6 @@ def _kill_orphaned_chromium_processes(session_name: str) -> int:
         return 0
 
     killed = 0
-    # Collect the actual proc objects we terminated so we can wait on them
-    # without re-scanning the entire process table.
-    terminated_procs = []
 
     for proc in psutil.process_iter(["pid", "name", "cmdline", "ppid"]):
         try:
@@ -1684,28 +1682,23 @@ def _kill_orphaned_chromium_processes(session_name: str) -> int:
             # parent and must not be touched.
             if proc.info["ppid"] != 1:
                 continue
-            proc.terminate()
-            terminated_procs.append(proc)
+
+            # Chromium is a process tree.  Reuse the shared termination path
+            # so descendants (renderer, GPU, etc.) receive the same
+            # SIGTERM→SIGKILL escalation as the root instead of surviving as
+            # newly orphaned processes when the root is force-killed.
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry._terminate_host_pid(proc.info["pid"])
             killed += 1
             logger.info(
-                "Killed orphaned Chromium PID %d (session %s, daemon gone)",
+                "Reaped orphaned Chromium process tree rooted at PID %d "
+                "(session %s, daemon gone)",
                 proc.info["pid"], session_name)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
         except Exception as exc:
             logger.debug("Error scanning process %d for orphaned Chromium: %s",
                          getattr(proc, 'pid', -1), exc)
-
-    # Give SIGTERM a moment, then escalate to SIGKILL for any survivors
-    if terminated_procs:
-        gone, alive = psutil.wait_procs(terminated_procs, timeout=3)
-        for proc in alive:
-            try:
-                proc.kill()
-                logger.info("Force-killed orphaned Chromium PID %d (session %s)",
-                            proc.pid, session_name)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
 
     return killed
 

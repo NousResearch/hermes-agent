@@ -6185,6 +6185,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     and not mention_prefix
                     and not self._is_bot_tag_debounce_continuation(message)
                 ):
+                    logger.debug(
+                        "[Discord] require_mention: dropped message from %s in #%s "
+                        "(no mention; set discord.require_mention: false to allow)",
+                        getattr(message.author, "name", "unknown"),
+                        getattr(message.channel, "name", str(getattr(message.channel, "id", "?"))),
+                    )
                     return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
         auto_threaded_channel = None

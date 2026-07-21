@@ -254,7 +254,10 @@ TOOLSETS = {
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
-        "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "tools": [
+            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            "ha_inspect_config", "ha_manage_config",
+        ],
         "includes": []
     },
 

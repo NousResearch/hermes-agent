@@ -10,7 +10,7 @@ sidebar_position: 5
 Hermes Agent integrates with [Home Assistant](https://www.home-assistant.io/) in two ways:
 
 1. **Gateway platform** — subscribes to real-time state changes via WebSocket and responds to events
-2. **Smart home tools** — four LLM-callable tools for querying and controlling devices via the REST API
+2. **Smart home tools** — six LLM-callable tools for querying devices, controlling them, and optionally managing selected configuration
 
 ## Setup
 
@@ -48,7 +48,7 @@ Home Assistant will appear as a connected platform alongside any other messaging
 
 ## Available Tools
 
-Hermes Agent registers four tools for smart home control:
+Hermes Agent registers four device tools by default. Two additional configuration tools are available when configuration management is explicitly enabled.
 
 ### `ha_list_entities`
 
@@ -119,6 +119,29 @@ Set living room lights to blue at 50% brightness
 → ha_call_service(domain="light", service="turn_on",
     entity_id="light.living_room", data={"brightness": 128, "color_name": "blue"})
 ```
+
+## Safe Actions and Configuration Feedback
+
+Home Assistant configuration management is off by default. Enable it and the safe action policy in `~/.hermes/config.yaml`:
+
+```yaml
+homeassistant:
+  action_policy:
+    mode: safe
+    trusted_entities: []
+  config_management:
+    enabled: true
+    proposal_ttl_seconds: 900
+    history_limit: 500
+```
+
+In safe mode, exact light, fan, and media-player targets can run immediately. Broad targets and sensitive domains require a one-time interactive approval. Exact switch and scene targets can run immediately only when their entity IDs are listed under `trusted_entities`. Command-capable domains remain blocked.
+
+`ha_inspect_config` reports supported capabilities, lists or fetches configuration, and shows the local change history. `ha_manage_config` uses a mandatory `preview` → `apply` flow. Each preview covers one object, expires after the configured TTL, and is rejected if Home Assistant changed in the meantime. Apply and rollback approvals cannot be permanently remembered, bypassed by YOLO mode, or granted by a headless cron session.
+
+Supported configuration resources are automations, scripts, scenes, groups, standard helpers (`input_boolean`, `input_number`, `input_select`, `input_text`, `input_datetime`, `counter`, `timer`, and `schedule`), and entity/device/area metadata. Dashboards, integrations, add-ons, pairing, and device removal are outside this interface.
+
+Hermes stores proposal and audit records in the active profile under `state/homeassistant_changes.sqlite3` with owner-only permissions. Rollback is allowed only while the applied state is unchanged. Deleting a created object during rollback is allowed only when the audit record proves Hermes created that exact object.
 
 ## Gateway Platform: Real-Time Events
 

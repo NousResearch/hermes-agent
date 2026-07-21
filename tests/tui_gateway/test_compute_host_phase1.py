@@ -571,7 +571,11 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
             target["running"] = False
 
     def blocking_emit(frame):
-        if frame.get("type") == "turn.end" and frame.get("request_id") == "barrier-turn":
+        if (
+            frame.get("type") == "turn.end"
+            and frame.get("request_id") == "barrier-turn"
+            and frame.get("history_version") == 1
+        ):
             assert session.get("_compute_host_terminal_pending") == "barrier-turn"
             # Put the terminal frame on the wire first. The parent can process
             # it and dispatch a queued successor before this emit call returns
@@ -607,17 +611,23 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
         ),
         daemon=True,
     )
-    overlap = threading.Thread(
-        target=lambda: host._run_real_turn(
-            {
-                "sid": "barrier-sid",
-                "request_id": "overlap-turn",
-                "session_key": "barrier-key",
-                "text": "overlap",
-            }
-        ),
-        daemon=True,
-    )
+    poller_claimed: list[bool] = []
+
+    def competing_poller():
+        assert release_emit.wait(5)
+        with session["history_lock"]:
+            if (
+                session.get("running")
+                or session.get("_compute_host_terminal_pending")
+                or session.get("_compute_host_terminal_successor_pending")
+                or session.get("_compute_host_turn_admission")
+                or session.get("_compute_host_control_pending")
+            ):
+                return
+            session["running"] = True
+            poller_claimed.append(True)
+
+    poller = threading.Thread(target=competing_poller, daemon=True)
     try:
         first.start()
         assert emit_entered.wait(5)
@@ -643,19 +653,28 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
         assert control_error["message"] == "session busy"
         assert control_calls == []
 
-        # The parent may dispatch an already accepted queued prompt immediately
-        # after reading turn.end, before the emitting worker clears the barrier.
-        # It must wait through that transient hand-off instead of being dropped.
-        overlap.start()
+        # A fresh prompt can also arrive with a new request id immediately after
+        # the parent receives turn.end. Admission reserves that one successor
+        # before its executor worker waits, so a poller cannot overtake it.
+        host._handle_turn_start(
+            {
+                "sid": "barrier-sid",
+                "request_id": "fresh-successor",
+                "session_key": "barrier-key",
+                "text": "overlap",
+            }
+        )
         time.sleep(0.05)
-        assert overlap.is_alive()
+        assert session.get("_compute_host_terminal_successor_pending")
         assert not any(
             frame.get("type") == "turn.error"
-            and frame.get("request_id") == "overlap-turn"
+            and frame.get("request_id") == "fresh-successor"
+            and frame.get("message") == "session busy"
             for frame in _json_lines(out)
         )
         assert session["history_version"] == 1
 
+        poller.start()
         release_emit.set()
         end = _wait_for_frame(
             out,
@@ -666,20 +685,25 @@ def test_compute_host_terminal_barrier_spans_snapshot_through_turn_end_emit(
         overlap_end = _wait_for_frame(
             out,
             lambda frame: frame.get("type") == "turn.end"
-            and frame.get("request_id") == "overlap-turn",
+            and frame.get("request_id") == "fresh-successor"
+            and frame.get("history_version") == 2,
         )
         assert overlap_end["history_version"] == 2
         first.join(5)
-        overlap.join(5)
+        poller.join(5)
         assert not first.is_alive()
-        assert not overlap.is_alive()
+        assert not poller.is_alive()
+        assert poller_claimed == []
         assert run_texts == ["hello", "overlap"]
         assert "_compute_host_terminal_pending" not in session
+        assert "_compute_host_terminal_accepting_successor" not in session
+        assert "_compute_host_terminal_successor_pending" not in session
+        assert "_compute_host_turn_admission" not in session
     finally:
         release_emit.set()
         first.join(5)
-        if overlap.ident is not None:
-            overlap.join(5)
+        if poller.ident is not None:
+            poller.join(5)
         server._sessions.pop("barrier-sid", None)
         host.close()
 
@@ -703,6 +727,12 @@ def test_compute_host_terminal_barrier_survives_turn_end_emit_failure(monkeypatc
     release_error_emit = threading.Event()
     original_emit = host.emit
     run_texts: list[str] = []
+    parent_session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "session_key": "error-barrier-key",
+    }
 
     def run_prompt(_rid, _sid, target, text):
         with target["history_lock"]:
@@ -717,12 +747,22 @@ def test_compute_host_terminal_barrier_survives_turn_end_emit_failure(monkeypatc
             target["running"] = False
 
     def failing_terminal_emit(frame):
-        if frame.get("request_id") == "failing-end" and frame.get("type") in {
-            "turn.end",
-            "turn.error",
-        }:
+        is_failed_end = (
+            frame.get("type") == "turn.end"
+            and frame.get("request_id") == "failing-end"
+            and frame.get("history_version") == 1
+        )
+        is_replacement_error = (
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "failing-end"
+            and "forced turn.end write failure" in str(frame.get("message") or "")
+        )
+        if is_failed_end or is_replacement_error:
             assert session.get("_compute_host_terminal_pending") == "failing-end"
-            if frame.get("type") == "turn.end":
+            if is_failed_end:
+                # Model a flush/write wrapper that makes the line readable and
+                # only then reports failure to the emitting worker.
+                original_emit(frame)
                 raise OSError("forced turn.end write failure")
             # The replacement terminal frame is now readable by the parent, but
             # the emitting worker has not returned to barrier cleanup yet.
@@ -752,57 +792,596 @@ def test_compute_host_terminal_barrier_survives_turn_end_emit_failure(monkeypatc
         ),
         daemon=True,
     )
-    successor = threading.Thread(
-        target=lambda: host._run_real_turn(
-            {
-                "sid": "error-barrier-sid",
-                "request_id": "after-error",
-                "session_key": "error-barrier-key",
-                "text": "second",
-            }
-        ),
-        daemon=True,
-    )
     try:
         first.start()
         assert error_emit_entered.wait(5)
         assert session["_compute_host_terminal_pending"] == "failing-end"
 
-        successor.start()
-        time.sleep(0.05)
-        assert successor.is_alive()
-        assert run_texts == ["first"]
-        assert not any(
-            frame.get("type") == "turn.error"
-            and frame.get("request_id") == "after-error"
-            for frame in _json_lines(out)
+        first_end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "failing-end",
         )
+        assert first_end["history_version"] == 1
+        server._apply_compute_host_metadata_mirror(parent_session, first_end)
 
-        release_error_emit.set()
         first_error = _wait_for_frame(
             out,
             lambda frame: frame.get("type") == "turn.error"
             and frame.get("request_id") == "failing-end",
         )
         assert "forced turn.end write failure" in first_error["message"]
+        assert first_error["base_history_version"] == 0
+        assert first_error["history_version"] == 1
+        server._apply_compute_host_metadata_mirror(parent_session, first_error)
+        assert parent_session["history_version"] == 1
+        assert parent_session["history"] == session["history"]
+
+        # The parent preserves its RPC id separately but assigns every child
+        # submission a unique wire id before dispatching the mirrored successor.
+        host._handle_turn_start(
+            {
+                "sid": "error-barrier-sid",
+                "request_id": "error-successor",
+                "session_key": "error-barrier-key",
+                "history": list(parent_session["history"]),
+                "history_version": parent_session["history_version"],
+                "text": "second",
+            }
+        )
+        time.sleep(0.05)
+        assert session.get("_compute_host_terminal_successor_pending")
+        assert run_texts == ["first"]
+        assert not any(
+            frame.get("type") == "turn.error"
+            and frame.get("request_id") == "error-successor"
+            and frame.get("message") == "session busy"
+            for frame in _json_lines(out)
+        )
+
+        release_error_emit.set()
         successor_end = _wait_for_frame(
             out,
             lambda frame: frame.get("type") == "turn.end"
-            and frame.get("request_id") == "after-error",
+            and frame.get("request_id") == "error-successor"
+            and frame.get("history_version") == 2,
         )
-        assert successor_end["history_version"] == 2
+        assert successor_end["base_history_version"] == 1
+        server._apply_compute_host_metadata_mirror(parent_session, successor_end)
+        assert parent_session["history_version"] == 2
+        assert parent_session["history"] == session["history"]
         first.join(5)
-        successor.join(5)
         assert not first.is_alive()
-        assert not successor.is_alive()
         assert run_texts == ["first", "second"]
         assert "_compute_host_terminal_pending" not in session
+        assert "_compute_host_terminal_accepting_successor" not in session
+        assert "_compute_host_terminal_successor_pending" not in session
+        assert "_compute_host_turn_admission" not in session
     finally:
         release_error_emit.set()
         first.join(5)
-        if successor.ident is not None:
-            successor.join(5)
         server._sessions.pop("error-barrier-sid", None)
+        host.close()
+
+
+def test_compute_host_wire_admission_rejects_genuine_concurrent_turn():
+    """Executor delay cannot reclassify a request received while running."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": True,
+        "session_key": "busy-key",
+    }
+    server._sessions["busy-sid"] = session
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "busy-sid",
+                "request_id": "genuine-overlap",
+                "session_key": "busy-key",
+                "text": "must not run later",
+            }
+        )
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "genuine-overlap",
+        )
+        assert error["message"] == "session busy"
+        assert "_compute_host_turn_admission" not in session
+        assert not host._turn_futures
+    finally:
+        server._sessions.pop("busy-sid", None)
+        host.close()
+
+
+def test_compute_host_initial_admission_rejects_second_turn_before_session_exists(
+    monkeypatch,
+):
+    """The first wire frame owns a new SID even while its worker is queued."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_executor = threading.Event()
+    first_ran = threading.Event()
+    run_ids: list[str] = []
+
+    blocker = host._executor.submit(lambda: release_executor.wait(5))
+
+    def fake_run(frame):
+        run_ids.append(frame["request_id"])
+        host._release_real_turn_admission(frame)
+        first_ran.set()
+
+    monkeypatch.setattr(host, "_run_real_turn", fake_run)
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "new-sid",
+                "request_id": "first-new",
+                "session_key": "new-key",
+                "text": "first",
+            }
+        )
+        assert host._real_turn_admissions.get("new-sid")
+
+        host._handle_turn_start(
+            {
+                "sid": "new-sid",
+                "request_id": "second-new",
+                "session_key": "new-key",
+                "text": "second",
+            }
+        )
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "second-new",
+        )
+        assert error["message"] == "session busy"
+        assert run_ids == []
+
+        release_executor.set()
+        assert first_ran.wait(5)
+        assert run_ids == ["first-new"]
+        assert "new-sid" not in host._real_turn_admissions
+    finally:
+        release_executor.set()
+        blocker.result(timeout=5)
+        host.close()
+
+
+def test_compute_host_close_releases_cancelled_queued_initial_admission(monkeypatch):
+    """Executor cancellation cannot leak a host-level new-session reservation."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_executor = threading.Event()
+    blocker = host._executor.submit(lambda: release_executor.wait(5))
+    ran: list[bool] = []
+    monkeypatch.setattr(host, "_run_real_turn", lambda _frame: ran.append(True))
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "cancelled-queue-sid",
+                "request_id": "cancelled-queue-turn",
+                "session_key": "cancelled-queue-key",
+                "text": "must not run",
+            }
+        )
+        assert host._real_turn_admissions.get("cancelled-queue-sid")
+        host.close()
+        deadline = time.monotonic() + 2
+        while (
+            "cancelled-queue-sid" in host._real_turn_admissions
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert "cancelled-queue-sid" not in host._real_turn_admissions
+        assert ran == []
+    finally:
+        release_executor.set()
+        blocker.result(timeout=5)
+        host.close()
+
+
+def test_compute_host_interrupt_cancels_initial_admission_before_session_exists(
+    monkeypatch,
+):
+    """Stop can expire a new-SID admission while its executor worker is queued."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_executor = threading.Event()
+    blocker = host._executor.submit(lambda: release_executor.wait(5))
+    created: dict[str, dict] = {}
+
+    def ensure_session(_server, frame):
+        session = {
+            "agent": object(),
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "session_key": "cancel-initial-key",
+            "_compute_host_turn_admission": frame[
+                "_compute_host_admission_token"
+            ],
+        }
+        created["session"] = session
+        server._sessions["cancel-initial"] = session
+        return session
+
+    monkeypatch.setattr(host, "_ensure_server_session", ensure_session)
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "cancel-initial",
+                "request_id": "initial-to-cancel",
+                "session_key": "cancel-initial-key",
+                "text": "must not run",
+            }
+        )
+        assert host._real_turn_admissions.get("cancel-initial")
+        host._handle_interrupt(
+            {
+                "sid": "cancel-initial",
+                "request_id": "stop-initial",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interrupt.ack"
+            and frame.get("request_id") == "stop-initial",
+        )
+        assert ack["applied"] is True
+        assert "cancel-initial" not in host._real_turn_admissions
+
+        release_executor.set()
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "initial-to-cancel",
+        )
+        assert error["message"] == "turn admission expired"
+        assert created["session"]["running"] is False
+        assert "_compute_host_turn_admission" not in created["session"]
+    finally:
+        release_executor.set()
+        blocker.result(timeout=5)
+        server._sessions.pop("cancel-initial", None)
+        host.close()
+
+
+def test_compute_host_turn_admission_blocks_later_idle_control(monkeypatch):
+    """A wire-admitted turn cannot be overtaken before its worker runs."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "admission-key",
+        "_run_thread": None,
+    }
+    control_calls: list[str] = []
+
+    def occupy_executor():
+        blocker_started.set()
+        assert release_blocker.wait(5)
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            target["history"] = [{"role": "assistant", "content": text}]
+            target["history_version"] = 1
+            target["running"] = False
+
+    blocker = host._executor.submit(occupy_executor)
+    assert blocker_started.wait(5)
+    server._sessions["admission-sid"] = session
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    monkeypatch.setattr(
+        server,
+        "_mirror_slash_side_effects",
+        lambda _sid, _session, command: control_calls.append(command),
+    )
+
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "admission-sid",
+                "request_id": "admitted-turn",
+                "session_key": "admission-key",
+                "text": "turn",
+            }
+        )
+        assert session.get("_compute_host_turn_admission")
+
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "admission-sid",
+                "request_id": "late-compress",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        control_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.error"
+            and frame.get("request_id") == "late-compress",
+        )
+        assert control_error["message"] == "session busy"
+        assert control_calls == []
+
+        release_blocker.set()
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "admitted-turn",
+        )
+        assert end["history_version"] == 1
+        assert "_compute_host_turn_admission" not in session
+    finally:
+        release_blocker.set()
+        blocker.result(timeout=5)
+        server._sessions.pop("admission-sid", None)
+        host.close()
+
+
+def test_compute_host_idle_control_rejects_live_tail_and_snapshot_waits_for_control(
+    monkeypatch,
+):
+    """A live run tail and an active control both exclude terminal snapshotting."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release_tail = threading.Event()
+    tail = threading.Thread(target=lambda: release_tail.wait(5), daemon=True)
+    tail.start()
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "tail-key",
+        "_run_thread": tail,
+    }
+    mutations: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_mirror_slash_side_effects",
+        lambda _sid, _session, command: mutations.append(command),
+    )
+    server._sessions["tail-sid"] = session
+    try:
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "tail-sid",
+                "request_id": "control-during-tail",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        )
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.error"
+            and frame.get("request_id") == "control-during-tail",
+        )
+        assert error["message"] == "session busy"
+        assert mutations == []
+
+        release_tail.set()
+        tail.join(5)
+        with session["history_lock"]:
+            session["_compute_host_control_pending"] = "held-control"
+        snapshot_done = threading.Event()
+        snapshots: list[dict] = []
+
+        def await_snapshot():
+            snapshots.append(host._await_turn_quiescence(session, "tail-turn"))
+            snapshot_done.set()
+
+        waiter = threading.Thread(target=await_snapshot, daemon=True)
+        waiter.start()
+        time.sleep(0.05)
+        assert not snapshot_done.is_set()
+        assert "_compute_host_terminal_pending" not in session
+
+        with session["history_lock"]:
+            session.pop("_compute_host_control_pending", None)
+        assert snapshot_done.wait(5)
+        assert snapshots[0]["history_version"] == 0
+        assert session["_compute_host_terminal_pending"] == "tail-turn"
+        with session["history_lock"]:
+            session.pop("_compute_host_terminal_pending", None)
+        waiter.join(5)
+    finally:
+        release_tail.set()
+        tail.join(5)
+        server._sessions.pop("tail-sid", None)
+        host.close()
+
+
+def test_compute_host_interrupt_cancels_reserved_terminal_successor(monkeypatch):
+    """Stop expires a successor reservation before it can claim running=True."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+
+    class Agent:
+        def __init__(self):
+            self.interrupted = False
+
+        def interrupt(self):
+            self.interrupted = True
+
+    agent = Agent()
+    session = {
+        "agent": agent,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 1,
+        "running": False,
+        "session_key": "interrupt-key",
+        "_compute_host_terminal_pending": "owner",
+        "_compute_host_terminal_accepting_successor": "owner",
+    }
+    server._sessions["interrupt-sid"] = session
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_clear_pending", lambda *_a, **_k: None)
+    try:
+        host._handle_turn_start(
+            {
+                "sid": "interrupt-sid",
+                "request_id": "reserved-next",
+                "session_key": "interrupt-key",
+                "text": "must not run",
+            }
+        )
+        assert session.get("_compute_host_terminal_successor_pending")
+
+        host._handle_interrupt(
+            {
+                "sid": "interrupt-sid",
+                "request_id": "stop-reserved",
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interrupt.ack"
+            and frame.get("request_id") == "stop-reserved",
+        )
+        assert ack["applied"] is True
+        assert agent.interrupted is True
+        assert "_compute_host_terminal_successor_pending" not in session
+
+        error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "reserved-next",
+        )
+        assert error["message"] == "turn admission expired"
+        assert session["running"] is False
+        assert session["history_version"] == 1
+    finally:
+        with session["history_lock"]:
+            session.pop("_compute_host_terminal_pending", None)
+            session.pop("_compute_host_terminal_accepting_successor", None)
+        server._sessions.pop("interrupt-sid", None)
+        host.close()
+
+
+def test_compute_host_idle_control_reserves_mutation_against_turn_and_poller(
+    monkeypatch,
+):
+    """The idle gate covers the full mutation, not only its pre-check."""
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    mutation_started = threading.Event()
+    release_mutation = threading.Event()
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "control-key",
+    }
+    poller_claimed: list[bool] = []
+
+    def mutate(_sid, target, _command):
+        mutation_started.set()
+        assert release_mutation.wait(5)
+        with target["history_lock"]:
+            target["history"] = [{"role": "summary", "content": "compressed"}]
+            target["history_version"] = 1
+        return "compressed"
+
+    monkeypatch.setattr(server, "_mirror_slash_side_effects", mutate)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    server._sessions["control-sid"] = session
+    control_thread = threading.Thread(
+        target=lambda: host._handle_control(
+            {
+                "type": "control",
+                "sid": "control-sid",
+                "request_id": "compress-held",
+                "route_name": "slash.compress",
+                "command": "/compress",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        control_thread.start()
+        assert mutation_started.wait(5)
+        assert session.get("_compute_host_control_pending")
+
+        host._handle_turn_start(
+            {
+                "sid": "control-sid",
+                "request_id": "turn-during-control",
+                "session_key": "control-key",
+                "text": "must not run",
+            }
+        )
+        turn_error = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.error"
+            and frame.get("request_id") == "turn-during-control",
+        )
+        assert turn_error["message"] == "session busy"
+
+        with session["history_lock"]:
+            if not (
+                session.get("running")
+                or session.get("_compute_host_terminal_pending")
+                or session.get("_compute_host_terminal_successor_pending")
+                or session.get("_compute_host_turn_admission")
+                or session.get("_compute_host_control_pending")
+            ):
+                session["running"] = True
+                poller_claimed.append(True)
+        assert poller_claimed == []
+
+        release_mutation.set()
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "control.ack"
+            and frame.get("request_id") == "compress-held",
+        )
+        assert ack["history_version"] == 1
+        control_thread.join(5)
+        assert not control_thread.is_alive()
+        assert "_compute_host_control_pending" not in session
+        assert session["running"] is False
+    finally:
+        release_mutation.set()
+        control_thread.join(5)
+        server._sessions.pop("control-sid", None)
         host.close()
 
 

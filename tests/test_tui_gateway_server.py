@@ -252,7 +252,7 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
             {
                 "type": "turn.end",
                 "sid": "iso-sid",
-                "request_id": "submit",
+                "request_id": fake_supervisor.frames[0]["request_id"],
                 "history_version": 1,
             }
         )
@@ -260,6 +260,344 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         assert server._sessions["iso-sid"]["history_version"] == 1
     finally:
         server._sessions.pop("iso-sid", None)
+
+
+def test_parallel_prompt_submit_has_one_compute_host_owner(monkeypatch):
+    """The idle check and parent running claim are one atomic operation."""
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.frames = []
+            self.callbacks = {}
+            self.interrupts = []
+
+        def submit_turn(self, frame, *, on_complete=None):
+            self.frames.append(frame)
+            self.callbacks[frame["request_id"]] = on_complete
+            return frame["request_id"]
+
+        def interrupt(self, sid, request_id=None):
+            self.interrupts.append((sid, request_id))
+
+    fake = FakeSupervisor()
+    session = _session(agent_ready=threading.Event())
+    session["agent"] = None
+    server._sessions["parallel-iso"] = session
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"dashboard": {"turn_isolation": True}},
+    )
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    barrier = threading.Barrier(3)
+    responses = []
+
+    def submit(request_id, text):
+        barrier.wait()
+        responses.append(
+            server.handle_request(
+                {
+                    "id": request_id,
+                    "method": "prompt.submit",
+                    "params": {"session_id": "parallel-iso", "text": text},
+                }
+            )
+        )
+
+    threads = [
+        threading.Thread(target=submit, args=("parallel-a", "alpha")),
+        threading.Thread(target=submit, args=("parallel-b", "beta")),
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(5)
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(fake.frames) == 1
+        assert sorted(response["result"]["status"] for response in responses) == [
+            "queued",
+            "streaming",
+        ]
+        assert session["running"] is True
+        assert session["queued_prompt"]["text"] in {"alpha", "beta"}
+        assert session["queued_prompt"]["text"] != fake.frames[0]["text"]
+    finally:
+        server._sessions.pop("parallel-iso", None)
+
+
+def test_compute_host_busy_interrupt_cannot_overtake_initial_dispatch(monkeypatch):
+    """A queued busy interrupt is ordered after the accepted turn.start write."""
+
+    class InstrumentedRLock:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self._state_lock = threading.Lock()
+            self._owner = None
+            self._depth = 0
+            self.contended = threading.Event()
+
+        def __enter__(self):
+            ident = threading.get_ident()
+            with self._state_lock:
+                reentrant = self._owner == ident
+            if reentrant:
+                self._lock.acquire()
+            elif not self._lock.acquire(blocking=False):
+                self.contended.set()
+                self._lock.acquire()
+            with self._state_lock:
+                self._owner = ident
+                self._depth += 1
+            return self
+
+        def __exit__(self, *_exc):
+            with self._state_lock:
+                self._depth -= 1
+                if self._depth == 0:
+                    self._owner = None
+            self._lock.release()
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.events = []
+            self.interrupt_sent = threading.Event()
+
+        def submit_turn(self, frame, *, on_complete=None):
+            self.events.append(("turn.start", frame["request_id"]))
+            return frame["request_id"]
+
+        def interrupt(self, sid, request_id=None):
+            self.events.append(("interrupt", sid))
+            self.interrupt_sent.set()
+
+    fake = FakeSupervisor()
+    session = _session(agent_ready=threading.Event())
+    session["agent"] = None
+    dispatch_lock = InstrumentedRLock()
+    session["_compute_host_dispatch_lock"] = dispatch_lock
+    server._sessions["dispatch-order"] = session
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"dashboard": {"turn_isolation": True}},
+    )
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    original_submit = server._submit_prompt_to_compute_host
+    claim_reached = threading.Event()
+    release_dispatch = threading.Event()
+    responses = []
+
+    def delayed_submit(*args, **kwargs):
+        claim_reached.set()
+        assert release_dispatch.wait(5)
+        return original_submit(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_submit_prompt_to_compute_host", delayed_submit)
+
+    def submit(request_id, text):
+        responses.append(
+            server.handle_request(
+                {
+                    "id": request_id,
+                    "method": "prompt.submit",
+                    "params": {"session_id": "dispatch-order", "text": text},
+                }
+            )
+        )
+
+    first = threading.Thread(target=submit, args=("first", "alpha"), daemon=True)
+    second = threading.Thread(target=submit, args=("second", "beta"), daemon=True)
+    try:
+        first.start()
+        assert claim_reached.wait(5)
+        second.start()
+        assert dispatch_lock.contended.wait(5)
+
+        release_dispatch.set()
+        first.join(5)
+        second.join(5)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert fake.interrupt_sent.wait(5)
+        assert fake.events[0][0] == "turn.start"
+        assert fake.events[1] == ("interrupt", "dispatch-order")
+        assert sorted(response["result"]["status"] for response in responses) == [
+            "queued",
+            "streaming",
+        ]
+    finally:
+        release_dispatch.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+        server._sessions.pop("dispatch-order", None)
+
+
+def test_compute_host_busy_interrupt_is_scoped_to_captured_generation(monkeypatch):
+    """A delayed busy interrupt cannot stop the queued successor generation."""
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.interrupts = []
+
+        def interrupt(self, sid, request_id=None):
+            self.interrupts.append((sid, request_id))
+
+    class DeferredThread:
+        targets = []
+
+        def __init__(self, target=None, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.targets.append(self.target)
+
+    fake = FakeSupervisor()
+    drains = []
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        _compute_host_request_id="old-generation",
+    )
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(
+        server,
+        "_drain_queued_prompt",
+        lambda rid, sid, queued_session: drains.append((rid, sid, queued_session)),
+    )
+    monkeypatch.setattr(server.threading, "Thread", DeferredThread)
+
+    server._interrupt_busy_session("generation-sid", session, None)
+    assert len(DeferredThread.targets) == 1
+    with session["history_lock"]:
+        session["_compute_host_request_id"] = "new-generation"
+        session["running"] = False
+        session["queued_prompt"] = {"text": "successor"}
+    DeferredThread.targets[0]()
+
+    assert fake.interrupts == []
+    assert session["_busy_interrupt_pending"] is False
+    assert len(drains) == 1
+    assert drains[0][1:] == ("generation-sid", session)
+
+
+def test_compute_host_wire_ids_isolate_duplicate_terminal_from_successor(monkeypatch):
+    """A delivered-then-error old frame cannot consume a same-parent-rid successor."""
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.pending = {}
+            self.callbacks = {}
+
+        def submit_turn(self, frame, *, on_complete=None):
+            request_id = frame["request_id"]
+            self.pending[request_id] = on_complete
+            self.callbacks[request_id] = on_complete
+            return request_id
+
+        def complete(self, request_id, frame):
+            callback = self.pending.pop(request_id, None)
+            if callback is not None:
+                callback(frame)
+
+    fake = FakeSupervisor()
+    session = _session(agent_ready=threading.Event())
+    session["agent"] = None
+    server._sessions["wire-ids"] = session
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"dashboard": {"turn_isolation": True}},
+    )
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
+
+    try:
+        first = server.handle_request(
+            {
+                "id": "reused-parent-rid",
+                "method": "prompt.submit",
+                "params": {"session_id": "wire-ids", "text": "first"},
+            }
+        )
+        assert first["result"]["status"] == "streaming"
+        first_host_id = next(iter(fake.pending))
+        assert first_host_id != "reused-parent-rid"
+        first_callback = fake.callbacks[first_host_id]
+        fake.complete(
+            first_host_id,
+            {
+                "type": "turn.end",
+                "sid": "wire-ids",
+                "request_id": first_host_id,
+                "base_history_version": 0,
+                "history": [{"role": "assistant", "content": "first"}],
+                "history_version": 1,
+            },
+        )
+        assert session["running"] is False
+
+        second = server.handle_request(
+            {
+                "id": "reused-parent-rid",
+                "method": "prompt.submit",
+                "params": {"session_id": "wire-ids", "text": "second"},
+            }
+        )
+        assert second["result"]["status"] == "streaming"
+        second_host_id = next(iter(fake.pending))
+        assert second_host_id not in {first_host_id, "reused-parent-rid"}
+
+        # A duplicate callback from the old generation is ignored by the
+        # session ownership guard, even if an adapter invokes it directly.
+        first_callback(
+            {
+                "type": "turn.error",
+                "sid": "wire-ids",
+                "request_id": first_host_id,
+                "message": "late delivered-then-raise fallback",
+            }
+        )
+        assert session["running"] is True
+        assert session["_compute_host_request_id"] == second_host_id
+
+        # Real HostSupervisor behavior is even stricter: the duplicate old wire
+        # ID no longer has a pending callback and cannot consume the successor.
+        fake.complete(
+            first_host_id,
+            {
+                "type": "turn.error",
+                "sid": "wire-ids",
+                "request_id": first_host_id,
+                "message": "ignored duplicate",
+            },
+        )
+        assert second_host_id in fake.pending
+        fake.complete(
+            second_host_id,
+            {
+                "type": "turn.end",
+                "sid": "wire-ids",
+                "request_id": second_host_id,
+                "base_history_version": 1,
+                "history": [
+                    {"role": "assistant", "content": "first"},
+                    {"role": "assistant", "content": "second"},
+                ],
+                "history_version": 2,
+            },
+        )
+        assert session["running"] is False
+        assert session["history_version"] == 2
+        assert "_compute_host_request_id" not in session
+    finally:
+        server._sessions.pop("wire-ids", None)
 
 
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
@@ -318,6 +656,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     }
     assert inline_calls == [("fallback-turn", "iso-fallback", "hello")]
     assert session.get("_compute_host_active") is not True
+    assert "_compute_host_request_id" not in session
 
 
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
@@ -3338,6 +3677,7 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
 
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
+    poller_state = {}
 
     class _FakeWorker:
         def __init__(self, key, model, profile_home=None):
@@ -3349,6 +3689,11 @@ def test_init_session_fires_reset_hook(monkeypatch):
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda _sid, session: poller_state.update(session) or threading.Event(),
+    )
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
@@ -3368,8 +3713,17 @@ def test_init_session_fires_reset_hook(monkeypatch):
             types.SimpleNamespace(model="x"),
             history=[],
             cols=80,
+            initial_session_state={
+                "_compute_host_turn_admission": "reserved-before-poller",
+                "running": True,
+            },
         )
         assert ("on_session_reset", "session-key") in hooks
+        assert (
+            poller_state["_compute_host_turn_admission"]
+            == "reserved-before-poller"
+        )
+        assert poller_state["running"] is False
     finally:
         server._sessions.pop(sid, None)
 
@@ -3698,6 +4052,18 @@ def test_notification_poller_requeues_while_compute_host_terminal_frame_pending(
 
         with session["history_lock"]:
             session.pop("_compute_host_terminal_pending", None)
+            session["_compute_host_turn_admission"] = "admitted-before-worker"
+
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(),  # pyright: ignore[reportArgumentType]
+            "compute-barrier-sid",
+            session,
+        )
+        assert delivered == []
+        assert isolated_queue.qsize() == 1
+
+        with session["history_lock"]:
+            session.pop("_compute_host_turn_admission", None)
 
         server._notification_poller_loop(
             _StopAfterOneNotificationPoll(),  # pyright: ignore[reportArgumentType]
@@ -3710,6 +4076,69 @@ def test_notification_poller_requeues_while_compute_host_terminal_frame_pending(
         assert isolated_queue.empty()
     finally:
         server._sessions.pop("compute-barrier-sid", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+@pytest.mark.parametrize("shutdown_drain", [False, True])
+def test_notification_poller_clears_stale_stop_before_fresh_turn(
+    monkeypatch, shutdown_drain
+):
+    """A completion accepted after Stop cannot inherit its cancellation flag."""
+
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = []
+    session = _session(
+        session_key="post-stop-notification",
+        _turn_cancel_requested=True,
+        turn_settled=True,
+    )
+    event = {
+        "type": "completion",
+        "session_id": f"proc-post-stop-{shutdown_drain}",
+        "session_key": "post-stop-notification",
+        "command": "echo post-stop",
+        "exit_code": 0,
+        "output": "done",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    def deliver(_rid, _sid, target, text):
+        delivered.append(
+            (text, target["_turn_cancel_requested"], target["turn_settled"])
+        )
+        target["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", deliver)
+    server._sessions["post-stop-notification-sid"] = session
+    process_registry._completion_consumed.discard(event["session_id"])
+    if shutdown_drain:
+        stop_event = threading.Event()
+        stop_event.set()
+    else:
+        stop_event = _StopAfterOneNotificationPoll()
+
+    try:
+        server._notification_poller_loop(
+            stop_event,  # pyright: ignore[reportArgumentType]
+            "post-stop-notification-sid",
+            session,
+        )
+
+        assert len(delivered) == 1
+        assert "proc-post-stop" in delivered[0][0]
+        assert delivered[0][1:] == (False, False)
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("post-stop-notification-sid", None)
         process_registry._completion_consumed.discard(event["session_id"])
         while not isolated_queue.empty():
             isolated_queue.get_nowait()
@@ -4124,6 +4553,99 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
         server._sessions.pop("sid_a", None)
         process_registry._completion_consumed.discard(event["session_id"])
         process_registry._poll_observed.discard(event["session_id"])
+
+
+def test_post_turn_drain_clears_stale_stop_before_notification_turn(
+    monkeypatch, tmp_path
+):
+    """Stop mid-turn cannot cancel the post-turn drain's notification turn.
+
+    Interleaving: a Stop lands while a turn is running
+    (_turn_cancel_requested=True), the turn settles, and the post-turn
+    notification drain claims a completion event with running=True. The claim
+    must atomically clear _turn_cancel_requested and turn_settled — exactly
+    like the two poller claim paths — or the nested _run_prompt_submit drops
+    the event as cancelled-before-start after message.start was emitted:
+    the notification is lost and the UI never receives message.complete.
+    """
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda *args, **_kwargs: emitted.append(args)
+    )
+    turns = []
+
+    class _StopDuringTurnAgent:
+        model = "test-model"
+        provider = "test-provider"
+
+        def __init__(self, session_ref):
+            self._session_ref = session_ref
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            turns.append(prompt)
+            if len(turns) == 1:
+                # Stop arrives while this turn is still running — the same
+                # flag session.interrupt sets on a busy session.
+                with self._session_ref["history_lock"]:
+                    self._session_ref["_turn_cancel_requested"] = True
+                return {"final_response": "", "messages": [], "interrupted": True}
+            return {"final_response": "", "messages": []}
+
+    session = _session(session_key="post-stop-drain", running=True)
+    session["agent"] = _StopDuringTurnAgent(session)
+    event = {
+        "type": "completion",
+        "session_id": "proc_post_turn_drain_stop",
+        "session_key": "post-stop-drain",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "arrived mid-turn",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard(event["session_id"])
+    server._sessions["sid-post-stop-drain"] = session
+
+    try:
+        server._run_prompt_submit(
+            "rid-stop-drain", "sid-post-stop-drain", session, "primary-turn"
+        )
+
+        # The drained event must run as a real fresh turn, not be dropped.
+        assert len(turns) == 2
+        assert turns[0] == "primary-turn"
+        assert "proc_post_turn_drain_stop" in turns[1]
+        assert isolated_queue.empty()
+
+        # message.start must be terminally completed: the notification turn's
+        # message.complete follows every message.start (nothing left hanging).
+        start_indexes = [i for i, a in enumerate(emitted) if a[0] == "message.start"]
+        complete_indexes = [
+            i for i, a in enumerate(emitted) if a[0] == "message.complete"
+        ]
+        assert len(complete_indexes) == 2  # primary turn + notification turn
+        assert start_indexes and complete_indexes[-1] > start_indexes[-1]
+
+        # The claim consumed the stale Stop instead of inheriting it.
+        assert session["_turn_cancel_requested"] is False
+        assert session["turn_settled"] is True
+        assert session["running"] is False
+    finally:
+        server._sessions.pop("sid-post-stop-drain", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
 
 
 def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_threading(
@@ -7906,6 +8428,268 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         assert session.get("inflight_turn") is None
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_interrupt_flag_precedes_blocking_agent_interrupt(monkeypatch):
+    """Turn startup cannot clear a stop whose provider interrupt is still blocked."""
+
+    interrupt_entered = threading.Event()
+    release_interrupt = threading.Event()
+    clear_calls = []
+    created_threads = []
+
+    class BlockingAgent:
+        def interrupt(self):
+            interrupt_entered.set()
+            assert release_interrupt.wait(5)
+
+        def clear_interrupt(self):
+            clear_calls.append(True)
+
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    class DeferredThread:
+        def __init__(self, target=None, **_kwargs):
+            self.target = target
+            created_threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    session = _session(
+        agent=BlockingAgent(),
+        running=True,
+        _run_thread=LiveThread(),
+    )
+    server._sessions["interrupt-order"] = session
+    original_thread = threading.Thread
+    response = []
+    stop_thread = original_thread(
+        target=lambda: response.append(
+            server.handle_request(
+                {
+                    "id": "stop",
+                    "method": "session.interrupt",
+                    "params": {"session_id": "interrupt-order"},
+                }
+            )
+        ),
+        daemon=True,
+    )
+    try:
+        stop_thread.start()
+        assert interrupt_entered.wait(5)
+        monkeypatch.setattr(server.threading, "Thread", DeferredThread)
+
+        server._run_prompt_submit(
+            "turn", "interrupt-order", session, "must not start"
+        )
+
+        assert clear_calls == []
+        assert created_threads == []
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+    finally:
+        release_interrupt.set()
+        stop_thread.join(5)
+        server._sessions.pop("interrupt-order", None)
+    assert response and response[0].get("result")
+
+
+def test_explicit_interrupt_defers_new_prompt_until_provider_returns(monkeypatch):
+    """A prompt accepted after Stop cannot be consumed by its blocking interrupt."""
+
+    interrupt_entered = threading.Event()
+    release_interrupt = threading.Event()
+    dispatched = []
+
+    class BlockingAgent:
+        def interrupt(self):
+            interrupt_entered.set()
+            assert release_interrupt.wait(5)
+
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    session = _session(
+        agent=BlockingAgent(),
+        running=True,
+        _run_thread=LiveThread(),
+    )
+    server._sessions["explicit-interrupt-order"] = session
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, queued_session, text: dispatched.append(
+            (rid, sid, queued_session, text)
+        ),
+    )
+    responses = []
+    stop_thread = threading.Thread(
+        target=lambda: responses.append(
+            server.handle_request(
+                {
+                    "id": "stop",
+                    "method": "session.interrupt",
+                    "params": {"session_id": "explicit-interrupt-order"},
+                }
+            )
+        ),
+        daemon=True,
+    )
+    try:
+        stop_thread.start()
+        assert interrupt_entered.wait(5)
+        assert session["_interrupt_call_count"] == 1
+
+        # Model the old turn settling while its provider interrupt is still
+        # blocked. The next prompt must queue behind that call, not start early.
+        with session["history_lock"]:
+            session["running"] = False
+        prompt = server.handle_request(
+            {
+                "id": "next",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "explicit-interrupt-order",
+                    "text": "run after stop",
+                },
+            }
+        )
+        assert prompt is not None
+        assert prompt["result"]["status"] == "queued"
+        assert dispatched == []
+
+        release_interrupt.set()
+        stop_thread.join(5)
+        assert not stop_thread.is_alive()
+        assert responses and responses[0].get("result")
+        assert "_interrupt_call_count" not in session
+        assert session["queued_prompt"] is None
+        assert session["_turn_cancel_requested"] is False
+        assert len(dispatched) == 1
+        assert dispatched[0][1:] == (
+            "explicit-interrupt-order",
+            session,
+            "run after stop",
+        )
+    finally:
+        release_interrupt.set()
+        stop_thread.join(5)
+        server._sessions.pop("explicit-interrupt-order", None)
+
+
+def test_queued_prompt_claim_clears_stale_cancel_before_inline_start(monkeypatch):
+    """A post-Stop queued prompt starts instead of hitting the old cancel gate."""
+
+    clear_calls = []
+    created_threads = []
+
+    class Agent:
+        def clear_interrupt(self):
+            clear_calls.append(True)
+
+    class DeferredThread:
+        def __init__(self, target=None, **_kwargs):
+            self.target = target
+            created_threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    session = _session(
+        agent=Agent(),
+        running=False,
+        queued_prompt={"text": "post-stop", "transport": None},
+        _turn_cancel_requested=True,
+    )
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+    monkeypatch.setattr(server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    assert server._drain_queued_prompt("next", "post-stop-sid", session) is True
+    assert session["_turn_cancel_requested"] is False
+    assert session["running"] is True
+    assert clear_calls == [True]
+    assert len(created_threads) == 1
+
+
+def test_prompt_submit_queues_behind_pending_busy_interrupt(monkeypatch):
+    """A direct successor cannot start while the old interrupt is blocked."""
+
+    class Agent:
+        def interrupt(self):
+            raise AssertionError("pending interrupt must not be duplicated")
+
+    session = _session(
+        agent=Agent(),
+        running=False,
+        _busy_interrupt_pending=True,
+        _interrupt_call_count=1,
+    )
+    server._sessions["busy-order"] = session
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {"enabled": False, "mode": "off"},
+    )
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    try:
+        response = server.handle_request(
+            {
+                "id": "turn",
+                "method": "prompt.submit",
+                "params": {"session_id": "busy-order", "text": "successor"},
+            }
+        )
+    finally:
+        server._sessions.pop("busy-order", None)
+
+    assert response is not None
+    assert response["result"]["status"] == "queued"
+    assert session["running"] is False
+    assert session["queued_prompt"]["text"] == "successor"
+
+
+def test_queued_prompt_waits_for_busy_interrupt_completion(monkeypatch):
+    """Queue drain starts the successor only after the old interrupt returns."""
+
+    dispatched = []
+    session = _session(
+        running=False,
+        queued_prompt={"text": "successor", "transport": None},
+        _busy_interrupt_pending=True,
+        _interrupt_call_count=1,
+    )
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, queued_session, text: dispatched.append(
+            (rid, sid, queued_session, text)
+        ),
+    )
+
+    assert server._drain_queued_prompt("turn", "busy-order", session) is True
+    assert dispatched == []
+    assert session["running"] is False
+    assert session["queued_prompt"]["text"] == "successor"
+
+    session["_busy_interrupt_pending"] = False
+    session.pop("_interrupt_call_count")
+    assert server._drain_queued_prompt("turn", "busy-order", session) is True
+    assert dispatched == [("turn", "busy-order", session, "successor")]
 
 
 def test_clear_pending_without_sid_clears_all():

@@ -528,9 +528,10 @@ def _validate_cron_base_url(
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    Both absolute and relative paths are accepted and resolved against
+    HERMES_HOME/scripts/ (same logic as ``_run_job_script`` in
+    ``cron/scheduler.py``). The resolved path must be contained within
+    the scripts directory and must point to an existing file.
 
     Returns an error string if blocked, else None (valid).
     """
@@ -541,26 +542,39 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     raw = script.strip()
 
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
-        return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
-            f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
-        )
-
-    # Validate containment after resolution
-    from tools.path_security import validate_within_dir
-
+    # Resolve exactly like _run_job_script() in cron/scheduler.py:
+    # accept both absolute and relative paths, resolve against scripts_dir,
+    # then enforce containment + existence.
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
-    if containment_error:
+
+    p = Path(raw)
+    try:
+        p = p.expanduser()
+    except (RuntimeError, KeyError):
         return (
-            f"Script path escapes the scripts directory via traversal: {raw!r}"
+            f"Cannot expand '~' in script path: {raw!r}. "
+            f"Use a relative filename or absolute path within {scripts_dir}."
+        )
+    resolved = p.resolve() if p.is_absolute() else (scripts_dir / p).resolve()
+
+    try:
+        resolved.relative_to(scripts_dir.resolve())
+    except ValueError:
+        return (
+            f"Script path resolves outside the scripts directory: {raw!r}. "
+            f"Place scripts in {scripts_dir} and use just the filename."
         )
 
+    if not resolved.exists():
+        return (
+            f"Script not found: {resolved}. "
+            f"Place the script in {scripts_dir} before creating the job."
+        )
+    if not resolved.is_file():
+        return (
+            f"Script path is not a file: {resolved}"
+        )
     return None
 
 

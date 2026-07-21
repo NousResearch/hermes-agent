@@ -2,7 +2,7 @@ import React, { type PropsWithChildren, useContext, useInsertionEffect } from 'r
 import { c as _c } from 'react/compiler-runtime'
 
 import instances from '../instances.js'
-import { CURSOR_HOME, ERASE_SCREEN, ERASE_SCROLLBACK } from '../termio/csi.js'
+import { CURSOR_HOME, ERASE_SCREEN, ERASE_SCROLLBACK, MAIN_SCREEN_CURSOR_RESTORE } from '../termio/csi.js'
 import {
   DISABLE_MOUSE_TRACKING,
   enableMouseTrackingFor,
@@ -91,7 +91,7 @@ export function AlternateScreen(t0: Props) {
         // tracking (it unconditionally resets all four modes). Sending it
         // on every teardown means a crash mid-mount can't leak DEC modes
         // back to the host shell.
-        writeRaw(DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN)
+        writeRaw(DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN + MAIN_SCREEN_CURSOR_RESTORE)
       }
     }
 

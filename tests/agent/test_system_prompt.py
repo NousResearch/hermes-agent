@@ -145,3 +145,34 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+class TestTelegramHintImportGuard:
+    """agent/system_prompt.py must survive an inconsistent tree in which
+    agent/prompt_builder.py does not yet define TELEGRAM_RICH_MESSAGES_HINT
+    (partial deploy / auto-updater / mid-range git pull). See issue #68300.
+    """
+
+    def test_missing_symbol_degrades_instead_of_crashing(self, monkeypatch):
+        import importlib
+
+        import agent.prompt_builder as prompt_builder
+        import agent.system_prompt as system_prompt
+
+        # Simulate the intermediate tree: the symbol isn't defined yet.
+        monkeypatch.delattr(prompt_builder, "TELEGRAM_RICH_MESSAGES_HINT")
+        try:
+            # Re-executing the module top-level imports must NOT raise
+            # ImportError — the guarded import degrades to "".
+            reloaded = importlib.reload(system_prompt)
+            assert reloaded.TELEGRAM_RICH_MESSAGES_HINT == ""
+        finally:
+            # Restore the real module so later tests see the true symbol.
+            importlib.reload(prompt_builder)
+            importlib.reload(system_prompt)
+
+    def test_symbol_present_in_a_consistent_tree(self):
+        """Sanity: in a normal tree the real hint text is imported, not ''."""
+        from agent.system_prompt import TELEGRAM_RICH_MESSAGES_HINT
+
+        assert TELEGRAM_RICH_MESSAGES_HINT != ""

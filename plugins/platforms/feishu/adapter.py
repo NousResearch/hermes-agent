@@ -2872,6 +2872,22 @@ class FeishuAdapter(BasePlatformAdapter):
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,
             )
+            if not count and choice != "deny":
+                # The card was already updated synchronously to "Approved" by
+                # the callback response, but nothing was waiting — the wait
+                # already timed out (fail-closed deny) or was resolved via
+                # /approve. Correct the record so the user doesn't believe
+                # the command ran.
+                _chat = str(state.get("chat_id", "") or chat_id or "")
+                if _chat:
+                    try:
+                        await self.send(
+                            _chat,
+                            "⌛ That approval had already expired — the command "
+                            "was not run (it timed out or was resolved elsewhere).",
+                        )
+                    except Exception:
+                        logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 

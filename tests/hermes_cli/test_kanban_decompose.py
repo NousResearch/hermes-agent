@@ -7,8 +7,10 @@ and the assignee-fallback logic.
 
 from __future__ import annotations
 
+import asyncio
 import json as jsonlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -291,6 +293,111 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
         child = kb.get_task(conn, outcome.child_ids[0])
     # 'made_up' wasn't in roster, so assignee rewritten to 'fallback'
     assert child.assignee == "fallback"
+
+
+def test_auto_selection_skips_block_loop_triage_but_manual_decompose_works(
+    kanban_home,
+    monkeypatch,
+):
+    with kb.connect_closing() as conn:
+        fresh_id = kb.create_task(conn, title="fresh idea", triage=True)
+        escalated_id = kb.create_task(
+            conn,
+            title="review gate",
+            assignee="worker",
+        )
+        assert kb.claim_task(conn, escalated_id, claimer="worker") is not None
+        assert kb.block_task(
+            conn,
+            escalated_id,
+            reason="first review pause",
+            kind="needs_input",
+        )
+        assert kb.unblock_task(conn, escalated_id)
+        assert kb.claim_task(conn, escalated_id, claimer="worker") is not None
+        assert kb.block_task(
+            conn,
+            escalated_id,
+            reason="still waiting for a reviewer",
+            kind="needs_input",
+        )
+        escalated = kb.get_task(conn, escalated_id)
+
+    assert escalated is not None
+    assert escalated.status == "triage"
+    assert escalated.block_kind == "needs_input"
+    assert escalated.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
+    assert set(decomp.list_triage_ids()) == {fresh_id, escalated_id}
+
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    runner = GatewayKanbanWatchersMixin()
+    runner._running = True
+    auto_attempts = []
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def _skip_sleep(_delay):
+        return None
+
+    def _stop_after_tick(_conn, **_kwargs):
+        runner._running = False
+        return SimpleNamespace(
+            spawned=[],
+            reclaimed=0,
+            crashed=[],
+            timed_out=[],
+            promoted=0,
+            auto_blocked=[],
+        )
+
+    def _record_auto_attempt(task_id, **_kwargs):
+        auto_attempts.append(task_id)
+        return decomp.DecomposeOutcome(task_id, True, "selected")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": True,
+                "auto_decompose_per_tick": 3,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda _path: (None, "unavailable"),
+    )
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.to_thread", _run_inline)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", _skip_sleep)
+    monkeypatch.setattr(kb, "dispatch_once", _stop_after_tick)
+    with patch.object(decomp, "decompose_task", side_effect=_record_auto_attempt):
+        asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert auto_attempts == [fresh_id]
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "manual operator decision",
+        "title": "Resume reviewed work",
+        "body": "Proceed after explicit review.",
+    })
+    patches = _patch_list_profiles(["orchestrator", "worker"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(escalated_id, author="operator")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, escalated_id).status == "ready"
 
 
 def test_decompose_handles_malformed_llm_json(kanban_home):

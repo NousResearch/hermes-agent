@@ -80,6 +80,7 @@ import {
   chatMessageArraysEquivalent,
   isSessionGoneError,
   patchSessionWorkspace,
+  preferDisplayTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   resolveStoredSession,
@@ -137,7 +138,12 @@ function reconcileAuthoritativeMessages(
   liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
   const authoritative = toChatMessages(authoritativeMessages)
-  const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
+  // Runtime activate/resume can return a compressed model-context projection
+  // (or empty messages + inflight tails). Prefer a richer cached/persisted
+  // body for paint so switching back to a long session does not flash full
+  // history then collapse to only submitted prompts.
+  const displayBase = preferDisplayTranscript(authoritative, previousMessages)
+  const withLiveProjection = liveProjection ? appendLiveSessionProjection(displayBase, liveProjection) : displayBase
   const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
   const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
 
@@ -891,6 +897,11 @@ export function useSessionActions({
         // skip converting/reconciling the resume payload entirely — on a
         // 1000+-message session that second conversion plus the deep
         // equivalence compare costs over a second of main-thread time.
+        //
+        // Exception: when resume carries inflight/queued tails, still merge so
+        // live turns are not lost — but merge onto the richer persisted body
+        // (see preferDisplayTranscript), never replace it with a thinner
+        // runtime projection.
         const resumedStoredSessionId = resumed.session_key || resumed.resumed
 
         const prefetchMatchesResumedSession =
@@ -903,8 +914,13 @@ export function useSessionActions({
             ? localSnapshot
             : (() => {
                 const previousMessages = resumedSameSelectedSession
-                  ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
-                  : currentMessages
+                  ? preserveLocalPendingTurnMessages(
+                      prefetchApplied && localSnapshot.length > 0 ? localSnapshot : currentMessages,
+                      resumeStartMessages
+                    )
+                  : prefetchApplied && localSnapshot.length > 0
+                    ? localSnapshot
+                    : currentMessages
 
                 const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
 

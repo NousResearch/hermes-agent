@@ -1099,6 +1099,79 @@ def fetch_endpoint_model_metadata(
                 except Exception:
                     pass
 
+            # LiteLLM proxy: query /model/info to enrich entries with
+            # context_length from model_info.max_context_window, since
+            # litellm's /v1/models endpoint is OpenAI-compliant and omits
+            # context metadata.  Non-litellm servers return 404 quickly.
+            #
+            # The guard fires when ANY model in the cache lacks context_length
+            # (not just when ALL lack it).  Litellm proxies may front multiple
+            # backends where some upstreams do emit context_length — we still
+            # want to enrich the ones that don't.
+            if any(e.get("context_length") is None for e in cache.values()):
+                try:
+                    # Use proper URL parsing instead of str.replace to avoid
+                    # mangling hostnames (e.g. "v1host.com/v1" → "host.com").
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(candidate)
+                    path = parsed.path.rstrip("/")
+                    if path.endswith("/v1"):
+                        path = path[:-3]
+                    base_for_info = urlunparse(parsed._replace(path=path))
+                    info_url = base_for_info.rstrip("/") + "/model/info"
+                    info_resp = requests.get(info_url, headers=headers, timeout=5,
+                                             verify=_resolve_requests_verify(),
+                                             allow_redirects=False)
+                    if info_resp.ok:
+                        info_payload = info_resp.json()
+                        if not isinstance(info_payload, dict):
+                            # Not a dict — not a litellm response; skip silently.
+                            pass
+                        else:
+                            # /model/info uses "model_name" which may differ
+                            # from the "id" key in /v1/models (e.g. litellm
+                            # prepends provider prefixes).  Build a lookup from
+                            # model_name → context, then also try stripping
+                            # common prefixes for fuzzy matching.
+                            info_ctx: dict = {}
+                            for mi in info_payload.get("data", []):
+                                if not isinstance(mi, dict):
+                                    continue
+                                mn = mi.get("model_name")
+                                if not mn or not isinstance(mn, str):
+                                    continue
+                                minfo = mi.get("model_info")
+                                if not isinstance(minfo, dict):
+                                    continue
+                                ctx = minfo.get("max_context_window")
+                                if ctx is None:
+                                    ctx = minfo.get("max_input_tokens")
+                                if ctx is None:
+                                    ctx = minfo.get("max_model_len")
+                                if isinstance(ctx, int) and ctx > 0:
+                                    info_ctx[mn] = ctx
+
+                            if info_ctx:
+                                for cache_key, entry in cache.items():
+                                    if entry.get("context_length") is not None:
+                                        continue  # already resolved
+                                    # Exact match first
+                                    if cache_key in info_ctx:
+                                        entry["context_length"] = info_ctx[cache_key]
+                                        continue
+                                    # Strip common provider prefix from
+                                    # model_name and try again (e.g.
+                                    # "anthropic/deepseek-v4-pro" →
+                                    # "deepseek-v4-pro").
+                                    for mn, ctx in info_ctx.items():
+                                        if "/" in mn:
+                                            bare = mn.split("/", 1)[1]
+                                            if bare == cache_key:
+                                                entry["context_length"] = ctx
+                                                break
+                except Exception:
+                    pass
+
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
             return cache

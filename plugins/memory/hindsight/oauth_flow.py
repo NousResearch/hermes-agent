@@ -274,9 +274,16 @@ def start_loopback_flow_background(
     global _flow_thread
     config_path = config_path or resolve_config_path()
     with _status_lock:
-        if _status.state == "pending" and _flow_thread and _flow_thread.is_alive():
-            return get_flow_status()
-        _status.state, _status.detail = "pending", "waiting for browser consent"
+        # Idempotent while pending — but compute the decision under the lock and
+        # report status *after* releasing it: get_flow_status() re-acquires the
+        # (non-reentrant) _status_lock, so calling it here would deadlock.
+        already_pending = (
+            _status.state == "pending" and _flow_thread and _flow_thread.is_alive()
+        )
+        if not already_pending:
+            _status.state, _status.detail = "pending", "waiting for browser consent"
+    if already_pending:
+        return get_flow_status()
 
     def _run() -> None:
         try:

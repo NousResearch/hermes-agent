@@ -10,6 +10,7 @@ CSRF state → store the key as the provider's ``apiKey``.
 """
 
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -93,7 +94,10 @@ def test_connect_stores_minted_key(monkeypatch, tmp_path):
         # Stored where the Hindsight provider actually reads it.
         data = json.loads(cfg.read_text())
         assert data["apiKey"] == MINTED_KEY
-        assert (cfg.stat().st_mode & 0o777) == 0o600
+        # POSIX mode bits aren't enforced on Windows; keep the connect-path
+        # assertions cross-platform and guard only the permission check.
+        if os.name != "nt":
+            assert (cfg.stat().st_mode & 0o777) == 0o600
     finally:
         server.shutdown()
         server.server_close()
@@ -202,3 +206,33 @@ def test_background_flow_reports_connected(monkeypatch, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_second_start_while_pending_returns_status_without_deadlock(
+    monkeypatch, tmp_path
+):
+    """A repeated start while the first flow is still pending must return the
+    idempotent status, not deadlock. Regression: ``start_loopback_flow_background``
+    used to call ``get_flow_status()`` while holding the non-reentrant
+    ``_status_lock``, so a second start re-acquired the same lock and hung."""
+    monkeypatch.setattr(oauth_flow, "resolve_config_path", lambda: tmp_path / "c.json")
+    # No-op browser → the first flow blocks in the loopback wait and stays
+    # pending/alive, so the second start hits the idempotent branch.
+    import webbrowser
+
+    monkeypatch.setattr(webbrowser, "open", lambda *a, **k: None)
+
+    first = oauth_flow.start_loopback_flow_background(timeout=2.0)
+    assert first["state"] == "pending"
+
+    result: dict[str, object] = {}
+
+    def _second():
+        result["status"] = oauth_flow.start_loopback_flow_background(timeout=2.0)
+
+    t = threading.Thread(target=_second, daemon=True)
+    t.start()
+    t.join(timeout=5.0)
+
+    assert not t.is_alive(), "second start() deadlocked while a flow was pending"
+    assert result["status"]["state"] == "pending"

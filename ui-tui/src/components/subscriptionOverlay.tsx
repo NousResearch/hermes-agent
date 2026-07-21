@@ -533,23 +533,16 @@ function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   const back = () => onPatch({ screen: 'overview' })
 
   const rows: MenuRowSpec[] = choices.map(tier => {
-    // From Free every option is a start, not a move — show what the plan
-    // includes instead of a direction hint.
+    // From Free every option is a start — show what the plan includes;
+    // otherwise hint the direction of the move.
+    let suffix: string
     if (isFree) {
-      const credits = tier.monthly_credits ? ` · ${tier.monthly_credits} credits/mo` : ''
-
-      return {
-        label: `${tier.name} · ${tier.dollars_per_month_display}/mo${credits}`,
-        run: () => pick(tier)
-      }
+      suffix = tier.monthly_credits ? ` · ${tier.monthly_credits} credits/mo` : ''
+    } else {
+      suffix = tier.tier_order > currentOrder ? ' · upgrade' : ' · downgrade'
     }
 
-    const direction = tier.tier_order > currentOrder ? 'upgrade' : 'downgrade'
-
-    return {
-      label: `${tier.name} · ${tier.dollars_per_month_display}/mo · ${direction}`,
-      run: () => pick(tier)
-    }
+    return { label: `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`, run: () => pick(tier) }
   })
 
   rows.push({ label: 'Back', run: back })

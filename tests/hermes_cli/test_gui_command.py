@@ -155,6 +155,103 @@ def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
     assert launch_env["HERMES_DESKTOP_CWD"] == str(cwd)
 
 
+# ── macOS local-build codesign identity tests (#40187) ────────────────
+
+
+def _clear_signing_env(monkeypatch):
+    for key in (
+        "CSC_IDENTITY_AUTO_DISCOVERY",
+        "CSC_LINK",
+        "CSC_NAME",
+        "APPLE_SIGNING_IDENTITY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_local_build_signing_env_disables_auto_discovery_on_macos(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    assert cli_main._desktop_local_build_signing_env({}) == {
+        "CSC_IDENTITY_AUTO_DISCOVERY": "false"
+    }
+
+
+def test_local_build_signing_env_noop_off_macos(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    assert cli_main._desktop_local_build_signing_env({}) == {}
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    assert cli_main._desktop_local_build_signing_env({}) == {}
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"CSC_LINK": "/tmp/cert.p12"},
+        {"CSC_NAME": "Developer ID Application: Acme"},
+        {"APPLE_SIGNING_IDENTITY": "Developer ID Application: Acme"},
+    ],
+)
+def test_local_build_signing_env_respects_real_identity(monkeypatch, env):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    assert cli_main._desktop_local_build_signing_env(env) == {}
+
+
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_local_build_signing_env_respects_explicit_flag(monkeypatch, value):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    assert (
+        cli_main._desktop_local_build_signing_env(
+            {"CSC_IDENTITY_AUTO_DISCOVERY": value}
+        )
+        == {}
+    )
+
+
+def test_gui_pack_build_disables_codesign_auto_discovery(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)  # sets darwin
+    _clear_signing_env(monkeypatch)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    pack_env = mock_run.call_args_list[0].kwargs["env"]
+    assert pack_env["CSC_IDENTITY_AUTO_DISCOVERY"] == "false"
+
+
+def test_gui_source_build_leaves_codesign_env_untouched(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    _clear_signing_env(monkeypatch)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    build_ok = subprocess.CompletedProcess(["npm", "run", "build"], 0)
+    launch_ok = subprocess.CompletedProcess(["npm", "exec", "--", "electron", "."], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[build_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(source=True))
+
+    build_env = mock_run.call_args_list[0].kwargs["env"]
+    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in build_env
+
+
 def test_gui_exits_when_npm_missing(tmp_path, monkeypatch, capsys):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)

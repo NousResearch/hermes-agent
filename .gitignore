@@ -235,3 +235,6 @@ tmp/snapshots/secrets/*
 
 # Go Desktop/backend watchdog binary (built by Build-HermesGoWatchdog.ps1)
 scripts/windows/watchdog-go/dist/
+
+# Go build artifacts
+*.exe

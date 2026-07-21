@@ -87,6 +87,21 @@ def test_parrot_script_has_error_swallowing() -> None:
     assert "LLM_ERROR" in src, "_prompt_llm should swallow provider errors and tag them"
 
 
+def test_parrot_script_sandboxes_jinja() -> None:
+    """The mutator stores the model's output verbatim as the next organism's
+    ``prompt_template`` and that template is rendered each generation. A bare
+    ``jinja2.Template(...).render()`` of model-derived text is a Server-Side
+    Template Injection -> RCE sink, so the driver must render through a
+    sandboxed Jinja2 environment instead."""
+    src = (SKILL_DIR / "scripts" / "parrot_openrouter.py").read_text()
+    assert "SandboxedEnvironment" in src, (
+        "parrot driver must render templates with jinja2.sandbox.SandboxedEnvironment"
+    )
+    assert "jinja2.Template(" not in src, (
+        "bare jinja2.Template render is unsafe for model-derived templates (SSTI->RCE)"
+    )
+
+
 def test_skill_calls_out_agpl(frontmatter) -> None:
     """The upstream tool is AGPL-3.0. The skill MUST flag this so users don't
     import it into MIT-licensed code by accident."""

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import jinja2
+from jinja2.sandbox import SandboxedEnvironment
 from openai import OpenAI
 
 # Vendored problem types from upstream (AGPL — only run via subprocess in production)
@@ -57,12 +58,21 @@ def _prompt_llm(prompt: str) -> str:
         return f"<LLM_ERROR: {type(e).__name__}: {e}>"
 
 
+# The evolution loop stores raw model output as the next organism's
+# prompt_template (see ImproveParrotMutator.mutate), then renders it every
+# generation. Render through a sandboxed environment so a model-derived
+# template containing a Jinja2 gadget (``{{ ''.__class__... }}``) cannot
+# execute arbitrary Python on the host (SSTI -> RCE). The sandbox still
+# allows ordinary ``{{ phrase }}`` / attribute substitution.
+_SANDBOX = SandboxedEnvironment(autoescape=False)
+
+
 class ParrotOrganism(Organism):
     prompt_template: str
 
     def run(self, phrase: str) -> str:
         try:
-            prompt = jinja2.Template(self.prompt_template).render(phrase=phrase)
+            prompt = _SANDBOX.from_string(self.prompt_template).render(phrase=phrase)
         except jinja2.exceptions.TemplateError as e:
             return f"Error rendering prompt: {e}"
         if not prompt:
@@ -104,7 +114,7 @@ template in the LAST triple-backtick block of your response.
         learning_log_entries: list[LearningLogEntry],
     ) -> list[ParrotOrganism]:
         fc = failure_cases[0]
-        prompt = jinja2.Template(self.IMPROVEMENT_PROMPT_TEMPLATE).render(
+        prompt = _SANDBOX.from_string(self.IMPROVEMENT_PROMPT_TEMPLATE).render(
             organism=organism, failure_case=fc
         )
         try:

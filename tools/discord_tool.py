@@ -511,19 +511,30 @@ def _search_members(token: str, guild_id: str, query: str, limit: int = 20, **_k
 def _fetch_messages(
     token: str, channel_id: str, limit: int = 50,
     before: Optional[str] = None, after: Optional[str] = None,
+    message_id: Optional[str] = None,
     **_kwargs: Any,
 ) -> str:
-    """Fetch recent messages from a channel."""
-    try:
-        limit = int(limit)
-    except (TypeError, ValueError):
-        limit = 50
-    params: Dict[str, str] = {"limit": str(min(limit, 100))}
-    if before:
-        params["before"] = before
-    if after:
-        params["after"] = after
-    messages = _discord_request("GET", f"/channels/{channel_id}/messages", token, params=params)
+    """Fetch recent messages from a channel, or one specific message by id.
+
+    When message_id is provided (e.g. resolved from a Discord message
+    link), fetch that exact message directly instead of recent history.
+    """
+    if message_id:
+        msg = _discord_request(
+            "GET", f"/channels/{channel_id}/messages/{message_id}", token
+        )
+        messages = [msg]
+    else:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 50
+        params: Dict[str, str] = {"limit": str(min(limit, 100))}
+        if before:
+            params["before"] = before
+        if after:
+            params["after"] = after
+        messages = _discord_request("GET", f"/channels/{channel_id}/messages", token, params=params)
     result = []
     for msg in messages:
         author = msg.get("author", {})
@@ -665,7 +676,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("list_roles", "(guild_id)", "roles sorted by position"),
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
-    ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes; pass message_id to fetch one specific message (e.g. from a link)"),
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
@@ -843,7 +854,7 @@ def _build_schema(
         },
         "message_id": {
             "type": "string",
-            "description": "Discord message ID.",
+            "description": "Discord message ID. With fetch_messages, returns that single message (e.g. resolved from a message link).",
         },
         "query": {
             "type": "string",

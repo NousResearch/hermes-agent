@@ -428,6 +428,29 @@ class TestFetchMessages:
         assert call_params["before"] == "999"
         assert call_params["limit"] == "10"
 
+    @patch("tools.discord_tool._discord_request")
+    def test_fetch_messages_by_id(self, mock_req, monkeypatch):
+        """message_id fetches that exact message (e.g. from a message link)."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "2002",
+            "content": "Linked message",
+            "author": {"id": "7", "username": "linker", "global_name": "Linker", "bot": False},
+            "timestamp": "2024-02-02T08:00:00Z",
+            "edited_timestamp": None,
+            "attachments": [],
+            "pinned": False,
+        }
+        result = json.loads(
+            discord_core(action="fetch_messages", channel_id="11", message_id="2002")
+        )
+        # Hits the single-message endpoint, not the channel history list.
+        assert mock_req.call_args[0][0] == "GET"
+        assert mock_req.call_args[0][1] == "/channels/11/messages/2002"
+        assert result["count"] == 1
+        assert result["messages"][0]["id"] == "2002"
+        assert result["messages"][0]["content"] == "Linked message"
+
 
 # ---------------------------------------------------------------------------
 # Action: list_pins

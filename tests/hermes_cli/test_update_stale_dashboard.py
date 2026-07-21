@@ -171,6 +171,22 @@ class TestFindStaleDashboardPids:
         assert 99999 not in pids
         assert 12345 in pids
 
+    def test_lifecycle_wrapper_commands_ignored(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(20001, "/bin/sh -lc hermes dashboard --status || true"),
+                    _ps_line(20002, "/bin/sh -lc hermes dashboard --stop || true"),
+                    _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119 --no-open"),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert 20001 not in pids
+        assert 20002 not in pids
+        assert pids == [12345]
+
     def test_invalid_pid_lines_skipped(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(

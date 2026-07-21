@@ -250,6 +250,12 @@ export function syncThemeToTerminalBackground(): void {
       // every later signal (config pin, real OSC answer) still outranks it.
       const dark = !error && stdout.trim() === 'Dark'
 
+      // Mark resolved so a LATE OSC-10 foreground reply (also an inference)
+      // can't re-flip this committed guess after the fact — visible churn.
+      // A real OSC-11 background answer still corrects it: that listener
+      // intentionally doesn't gate on `resolved` (a measurement outranks an
+      // inference).
+      resolved = true
       process.env.HERMES_TUI_BACKGROUND = dark ? '#1e1e1e' : '#ffffff'
       reapplyTheme()
     })

@@ -12881,6 +12881,24 @@ def _(rid, params: dict) -> dict:
 _mcp_reload_lock = threading.Lock()
 
 
+def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
+    """Shared tail for both reload paths: honor ``always`` (persist the
+    confirm opt-out) and return the ok payload."""
+    if bool(params.get("always", False)):
+        try:
+            from cli import save_config_value as _save_cfg
+
+            _save_cfg("approvals.mcp_reload_confirm", False)
+        except Exception as _exc:
+            logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+
+    payload = {"status": "reloaded"}
+    if coalesced:
+        payload["coalesced"] = True
+
+    return _ok(rid, payload)
+
+
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -12935,26 +12953,16 @@ def _(rid, params: dict) -> dict:
 
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
-        if not _mcp_reload_lock.acquire(blocking=False):
-            # A reload is already in flight; wait for it to finish and reuse
-            # its result instead of tearing the freshly-built registry down.
-            with _mcp_reload_lock:
-                pass
-            return _ok(rid, {"status": "reloaded", "coalesced": True})
-
-        try:
-            shutdown_mcp_servers()
-            discover_mcp_tools()
-        finally:
-            _mcp_reload_lock.release()
-        if session:
+        def _refresh_session_agent() -> None:
+            """Rebuild THIS session's cached tool snapshot from the live
+            registry and push session.info. The agent snapshots tools once at
+            build and never re-reads the registry, so an explicit rebuild is
+            required (mirrors gateway/run.py::_execute_mcp_reload). Runs under
+            _mcp_reload_lock so the registry it reads can't be torn down by a
+            concurrent reload mid-refresh."""
+            if not session:
+                return
             agent = session["agent"]
-            # Rebuild the cached agent's tool snapshot so the current session
-            # picks up added/removed MCP tools without `/new` (which discards
-            # history).  The agent snapshots tools once at build and never
-            # re-reads the registry, so an explicit rebuild is required here.
-            # The user already consented to the prompt-cache invalidation via
-            # the confirm gate above.  Mirrors gateway/run.py::_execute_mcp_reload.
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
 
@@ -12970,22 +12978,30 @@ def _(rid, params: dict) -> dict:
                     "Failed to refresh cached agent tools after /reload-mcp: %s",
                     _exc,
                 )
-            _emit(
-                "session.info",
-                params.get("session_id", ""),
-                _session_info(agent, session),
-            )
+            _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
 
-        # Honor `always=true` by persisting the opt-out to config.
-        if bool(params.get("always", False)):
+        # Serialize reloads. The LEADER (won the non-blocking acquire) holds
+        # the lock across shutdown+discover AND its own agent refresh —
+        # releasing after discover would let a second reload tear the registry
+        # down while this one is still reading it to rebuild the snapshot. A
+        # FOLLOWER (lock busy) waits, then — still holding the lock — refreshes
+        # ITS OWN session against the freshly-built registry (skipping the
+        # redundant shutdown/discover), so a coalesced session still gets an
+        # updated tool snapshot rather than silently keeping stale tools.
+        if _mcp_reload_lock.acquire(blocking=False):
             try:
-                from cli import save_config_value as _save_cfg
+                shutdown_mcp_servers()
+                discover_mcp_tools()
+                _refresh_session_agent()
+            finally:
+                _mcp_reload_lock.release()
 
-                _save_cfg("approvals.mcp_reload_confirm", False)
-            except Exception as _exc:
-                logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+            return _finish_reload(rid, params, coalesced=False)
 
-        return _ok(rid, {"status": "reloaded"})
+        with _mcp_reload_lock:
+            _refresh_session_agent()
+
+        return _finish_reload(rid, params, coalesced=True)
     except Exception as e:
         return _err(rid, 5015, str(e))
 

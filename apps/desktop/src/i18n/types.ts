@@ -272,7 +272,6 @@ export interface Translations {
       providers: string
       providerAccounts: string
       providerApiKeys: string
-      providerCustomEndpoints: string
       gateway: string
       apiKeys: string
       keybinds: string
@@ -663,9 +662,18 @@ export interface Translations {
       noProviderKeys: string
       searchKeys: string
       noKeysMatch: string
-      localEndpoint: {
+      customEndpoint: {
         title: string
         description: string
+        baseUrlLabel: string
+        pasteApiKey: string
+        removeApiKey: string
+        removeConfirm: string
+        saved: string
+        apiKeyRemoved: string
+        failedLoad: string
+        failedSave: string
+        failedRemove: string
       }
       loading: string
     }

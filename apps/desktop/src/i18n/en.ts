@@ -314,7 +314,6 @@ export const en: Translations = {
       providers: 'Providers',
       providerAccounts: 'Accounts',
       providerApiKeys: 'API keys',
-      providerCustomEndpoints: 'Custom Endpoints',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
       keybinds: 'Keyboard Shortcuts',
@@ -772,9 +771,18 @@ export const en: Translations = {
       noProviderKeys: 'No provider API keys available.',
       searchKeys: 'Search providers…',
       noKeysMatch: 'No providers match your search.',
-      localEndpoint: {
-        title: 'Local / custom endpoint',
-        description: 'Point Hermes at any OpenAI-compatible endpoint (Zyphra, vLLM, llama.cpp, Ollama, etc).'
+      customEndpoint: {
+        title: 'Custom Endpoint',
+        description: 'OpenAI- or Anthropic-compatible endpoint. Models are discovered automatically in Settings → Model.',
+        baseUrlLabel: 'Custom Endpoint base URL',
+        pasteApiKey: 'Paste API Key',
+        removeApiKey: 'Remove API key',
+        removeConfirm: 'Remove the API key for Custom Endpoint?',
+        saved: 'Custom Endpoint saved to config.yaml.',
+        apiKeyRemoved: 'API key removed.',
+        failedLoad: 'Could not load Custom Endpoint',
+        failedSave: 'Could not save Custom Endpoint',
+        failedRemove: 'Could not remove API key'
       },
       loading: 'Loading providers...'
     },

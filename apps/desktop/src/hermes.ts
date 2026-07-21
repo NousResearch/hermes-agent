@@ -14,9 +14,8 @@ import type {
   CronJobCreatePayload,
   CronJobUpdates,
   CuratorStatusResponse,
-  CustomEndpointsResponse,
+  CustomEndpointConfig,
   CustomEndpointUpdate,
-  CustomEndpointValidationResponse,
   DebugShareResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -138,10 +137,7 @@ export type {
   CronJobSchedule,
   CronJobUpdates,
   CuratorStatusResponse,
-  CustomEndpoint,
-  CustomEndpointsResponse,
   CustomEndpointUpdate,
-  CustomEndpointValidationResponse,
   DebugShareResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
@@ -683,7 +679,7 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: '/api/config',
-    method: 'PUT',
+    method: 'POST',
     body: { config }
   })
 }
@@ -700,7 +696,7 @@ export function saveMemoryProviderConfig(provider: string, values: Record<string
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
-    method: 'PUT',
+    method: 'POST',
     body: { values }
   })
 }
@@ -716,7 +712,7 @@ export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> 
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: '/api/env',
-    method: 'PUT',
+    method: 'POST',
     body: { key, value }
   })
 }
@@ -734,39 +730,19 @@ export function validateProviderCredential(
   })
 }
 
-export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
-  return window.hermesDesktop.api<CustomEndpointsResponse>({
+export function getCustomEndpoint(): Promise<CustomEndpointConfig> {
+  return window.hermesDesktop.api<CustomEndpointConfig>({
+    ...profileScoped(),
     path: '/api/providers/custom-endpoints'
   })
 }
 
-export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
-  return window.hermesDesktop.api<CustomEndpointsResponse>({
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointConfig & { ok: boolean }> {
+  return window.hermesDesktop.api<CustomEndpointConfig & { ok: boolean }>({
+    ...profileScoped(),
     path: '/api/providers/custom-endpoints',
     method: 'POST',
     body: endpoint
-  })
-}
-
-export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
-  return window.hermesDesktop.api<CustomEndpointValidationResponse>({
-    path: '/api/providers/custom-endpoints/validate',
-    method: 'POST',
-    body: endpoint
-  })
-}
-
-export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
-    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
-    method: 'POST'
-  })
-}
-
-export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
-  return window.hermesDesktop.api<CustomEndpointsResponse>({
-    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
-    method: 'DELETE'
   })
 }
 
@@ -896,7 +872,7 @@ export function editLearningNode(id: string, content: string): Promise<{ message
   return window.hermesDesktop.api<{ message: string; ok: boolean }>({
     ...profileScoped(),
     path: '/api/learning/node',
-    method: 'PUT',
+    method: 'POST',
     body: { content, id }
   })
 }
@@ -905,7 +881,7 @@ export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boole
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
     ...profileScoped(),
     path: '/api/skills/toggle',
-    method: 'PUT',
+    method: 'POST',
     body: { name, enabled }
   })
 }
@@ -946,7 +922,7 @@ export function saveMcpServers(servers: Record<string, Record<string, unknown>>)
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: '/api/mcp/servers',
-    method: 'PUT',
+    method: 'POST',
     body: { servers }
   })
 }
@@ -982,7 +958,7 @@ export function toggleToolset(
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
-    method: 'PUT',
+    method: 'POST',
     body: { enabled }
   })
 }
@@ -1011,7 +987,7 @@ export function selectToolsetModel(
   return window.hermesDesktop.api<{ ok: boolean; name: string; model: string }>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/model`,
-    method: 'PUT',
+    method: 'POST',
     body: { model, provider }
   })
 }
@@ -1038,7 +1014,7 @@ export function selectToolsetProvider(
   return window.hermesDesktop.api<SelectToolsetProviderResponse>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
-    method: 'PUT',
+    method: 'POST',
     body: capability ? { provider, capability } : { provider }
   })
 }
@@ -1063,7 +1039,7 @@ export function selectTerminalBackend(backend: string): Promise<{ ok: boolean; b
   return window.hermesDesktop.api<{ ok: boolean; backend: string }>({
     ...profileScoped(),
     path: '/api/tools/terminal/backend',
-    method: 'PUT',
+    method: 'POST',
     body: { backend }
   })
 }
@@ -1095,7 +1071,7 @@ export function updateMessagingPlatform(
 ): Promise<{ ok: boolean; platform: string }> {
   return window.hermesDesktop.api<{ ok: boolean; platform: string }>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
-    method: 'PUT',
+    method: 'POST',
     body
   })
 }
@@ -1151,7 +1127,7 @@ export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<C
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
-    method: 'PUT',
+    method: 'POST',
     body: { updates }
   })
 }
@@ -1227,7 +1203,7 @@ export function getProfileSoul(name: string): Promise<ProfileSoul> {
 export function updateProfileSoul(name: string, content: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/profiles/${encodeURIComponent(name)}/soul`,
-    method: 'PUT',
+    method: 'POST',
     body: { content }
   })
 }
@@ -1322,7 +1298,7 @@ export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigRespons
   return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
     ...profileScoped(),
     path: '/api/model/moa',
-    method: 'PUT',
+    method: 'POST',
     body
   })
 }
@@ -1488,7 +1464,7 @@ export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ o
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
-    method: 'PUT',
+    method: 'POST',
     body: { enabled }
   })
 }
@@ -1544,7 +1520,7 @@ export function setCuratorPaused(paused: boolean): Promise<{ ok: boolean; paused
   return window.hermesDesktop.api<{ ok: boolean; paused: boolean }>({
     ...profileScoped(),
     path: '/api/curator/paused',
-    method: 'PUT',
+    method: 'POST',
     body: { paused }
   })
 }

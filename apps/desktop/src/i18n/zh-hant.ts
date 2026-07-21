@@ -209,7 +209,6 @@ export const zhHant = defineLocale({
       providers: '提供方',
       providerAccounts: '帳號',
       providerApiKeys: 'API 金鑰',
-      providerCustomEndpoints: '自訂端點',
       gateway: '閘道',
       apiKeys: '工具與金鑰',
       keybinds: '鍵盤快捷鍵',
@@ -786,9 +785,18 @@ export const zhHant = defineLocale({
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
       searchKeys: '搜尋提供方…',
       noKeysMatch: '沒有符合的提供方。',
-      localEndpoint: {
-        title: '本地 / 自訂端點',
-        description: '將 Hermes 指向任意 OpenAI 相容端點（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+            customEndpoint: {
+        title: '自訂端點',
+        description: 'OpenAI 或 Anthropic 相容端點。模型會在 設定 → 模型 中自動發現。',
+        baseUrlLabel: '自訂端點基礎 URL',
+        pasteApiKey: '貼上 API Key',
+        removeApiKey: '移除 API Key',
+        removeConfirm: '確定移除自訂端點的 API Key？',
+        saved: '自訂端點已儲存到 config.yaml。',
+        apiKeyRemoved: 'API Key 已移除。',
+        failedLoad: '無法載入自訂端點',
+        failedSave: '無法儲存自訂端點',
+        failedRemove: '無法移除 API Key'
       },
       loading: '正在載入提供方...'
     },

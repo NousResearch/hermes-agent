@@ -563,3 +563,99 @@ class TestBuildWebUIFlock:
     def test_lock_file_is_gitignored(self):
         gitignore = Path(__file__).resolve().parents[2] / ".gitignore"
         assert ".web_ui_build.lock" in gitignore.read_text(encoding="utf-8")
+
+
+class TestNpmInstallDevDepEnvForcing:
+    """Config-level guards so production/omit-dev env can't strip tsc/vite."""
+
+    def test_forces_npm_config_include_dev_and_clears_omit(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                env={
+                    "NODE_ENV": "production",
+                    "npm_config_omit": "dev",
+                    "npm_config_production": "true",
+                },
+            )
+        _, kwargs = mock_run.call_args
+        env = kwargs["env"]
+        assert env["npm_config_include"] == "dev"
+        assert env["npm_config_production"] == "false"
+        assert "npm_config_omit" not in env
+        assert env["CI"] == "1"
+
+
+class TestWebToolchainReadyAndRepair:
+    def test_toolchain_ready_requires_tsc_and_vite_shims(self, tmp_path):
+        from hermes_cli.main import _web_build_toolchain_ready
+
+        web_dir, _ = _make_web_dir(tmp_path)
+        root = web_dir.parent
+        assert _web_build_toolchain_ready(root) is False
+        bin_dir = root / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "tsc").touch()
+        assert _web_build_toolchain_ready(root) is False
+        (bin_dir / "vite").touch()
+        assert _web_build_toolchain_ready(root) is True
+
+    def test_build_repairs_when_node_modules_exists_without_tsc(self, tmp_path):
+        """Partial install (node_modules present, no tsc) triggers a repair install."""
+        from hermes_cli.main import _resolve_node_runtime_npm
+
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        # Simulate a production-omit install: tree exists, toolchain missing.
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / ".bin").mkdir()
+
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        install_calls = {"n": 0}
+
+        def fake_install(*_a, **_k):
+            install_calls["n"] += 1
+            # After the repair install, pretend tsc/vite appeared.
+            if install_calls["n"] >= 2:
+                bin_dir = tmp_path / "node_modules" / ".bin"
+                (bin_dir / "tsc").touch()
+                (bin_dir / "vite").touch()
+            return install_ok
+
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._run_npm_install_deterministic", side_effect=fake_install) as mock_install, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok), \
+             patch("hermes_cli.main._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main._write_web_ui_build_stamp"):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        # First silent install + one repair install.
+        assert mock_install.call_count == 2
+
+    def test_build_retries_install_on_tsc_not_found(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_fail = __import__("subprocess").CompletedProcess(
+            [], 127, stdout="sh: 1: tsc: not found\n", stderr=""
+        )
+        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+             patch("hermes_cli.main._run_with_idle_timeout", side_effect=[build_fail, build_ok]) as mock_build, \
+             patch("hermes_cli.main._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main._write_web_ui_build_stamp"), \
+             patch("hermes_cli.main._time.sleep"):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        # Initial install + repair install after tsc: not found.
+        assert mock_install.call_count == 2
+        assert mock_build.call_count == 2

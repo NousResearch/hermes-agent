@@ -917,8 +917,13 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
-      // Expand the keyed provider so its env row renders.
-      fireEvent.click(await screen.findByRole('button', { name: /ElevenLabs/ }))
+      // Expand the keyed provider so its env row renders. Wait for the
+      // selection to commit: on a freshly loaded panel this races the default
+      // provider initializer, and user intent must win that race.
+      const elevenLabs = await screen.findByRole('button', { name: /ElevenLabs/ })
+      fireEvent.click(elevenLabs)
+      await waitFor(() => expect(elevenLabs.getAttribute('aria-pressed')).toBe('true'))
+
       const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
 

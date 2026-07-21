@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import importlib
 import importlib.util
@@ -53,9 +54,16 @@ class _FakeCtx:
     def __init__(self, profile_name: str = "default") -> None:
         self.profile_name = profile_name
         self.hooks: list[str] = []
+        self.commands: dict[str, Any] = {}
+        self.command_options: dict[str, dict[str, Any]] = {}
+        self.llm = object()
 
     def register_hook(self, name: str, callback):
         self.hooks.append(name)
+
+    def register_command(self, name: str, handler, **kwargs):
+        self.commands[name] = handler
+        self.command_options[name] = kwargs
 
 
 @pytest.mark.parametrize(
@@ -239,6 +247,54 @@ def test_register_declares_required_hooks_and_manifest_lists_them():
     assert manifest["name"] == "truth-ledger"
     assert "on_session_start" in manifest.get("hooks", [])
     assert "post_llm_call" in manifest.get("hooks", [])
+    assert ctx.command_options["truth-ledger"]["admin_only"] is True
+
+
+def test_on_session_start_recovers_orphan_payload(tmp_path):
+    plugin = _load_truth_plugin_init()
+    plugin.register(_FakeCtx(profile_name="default"))
+    root = tmp_path / ".hermes" / "truth-ledger"
+
+    plugin._SEEN_ENVELOPES.clear()
+    plugin.on_post_llm_call(
+        session_id="orphan-session",
+        turn_id="orphan-turn",
+        platform="cli",
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(finish_reason=stop)",
+        delegate_depth=0,
+        is_subagent=False,
+        kanban_task_id=None,
+        speaker_id="user-1",
+        conversation_id=None,
+        thread_id=None,
+        user_message="Keep replies concise.",
+        assistant_response="Understood.",
+    )
+    pending = list((root / "spool" / "pending").glob("*.json"))
+    assert len(pending) == 1
+    pending[0].unlink()
+
+    plugin.on_session_start(session_id="new-session")
+
+    assert len(list((root / "spool" / "pending").glob("*.json"))) == 1
+
+
+def test_registered_process_command_binds_plugin_runtime_context(tmp_path):
+    plugin = _load_truth_plugin_init()
+    ctx = _FakeCtx()
+    plugin.register(ctx)
+
+    handler = ctx.commands["truth-ledger"]
+    rendered = asyncio.run(handler("process --limit 1 --apply --json"))
+    payload = json.loads(rendered)
+
+    assert payload["ok"] is True
+    assert payload["dry_run"] is False
+    assert payload["limit"] == 1
+    assert payload["claimed"] == 0
 
 
 def test_post_llm_call_is_fail_open_when_spool_fails(monkeypatch):

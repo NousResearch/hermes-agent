@@ -14096,6 +14096,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not canonical_cmd:
             return None
         policy = _policy_for_source(self.config, source)
+        plugin_admin_only = False
+        try:
+            from hermes_cli.commands import resolve_command
+            if resolve_command(canonical_cmd) is None:
+                from hermes_cli.plugins import get_plugin_commands
+                entry = get_plugin_commands().get(canonical_cmd)
+                plugin_admin_only = bool(entry and entry.get("admin_only"))
+        except Exception:
+            plugin_admin_only = False
+
+        if plugin_admin_only:
+            if policy.enabled and policy.is_admin(source.user_id):
+                return None
+            return (
+                f"⛔ /{canonical_cmd} is admin-only here. "
+                "Configure allow_admin_from for this scope and use an approved admin identity."
+            )
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(

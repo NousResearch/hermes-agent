@@ -389,3 +389,69 @@ def test_enqueue_rolls_back_payload_when_pending_record_write_fails(tmp_path, sp
 
     assert list(spool.payloads_dir.glob("*.json")) == []
     assert list(spool.pending_dir.glob("*.json")) == []
+
+
+def test_enqueue_is_durably_idempotent_across_spool_instances(tmp_path, spool_mod):
+    first_spool = spool_mod.TruthSpool(tmp_path)
+    second_spool = spool_mod.TruthSpool(tmp_path)
+
+    first = first_spool.enqueue(_source_envelope())
+    second = second_spool.enqueue(_source_envelope())
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["reason"] == "duplicate"
+    assert len(list(first_spool.pending_dir.glob("*.json"))) == 1
+    assert len(list(first_spool.payloads_dir.glob("*.json"))) == 1
+
+
+def test_ack_writes_durable_tombstone_that_suppresses_restart_duplicate(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue(_source_envelope())["ok"] is True
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+    assert spool.ack_processing(Path(claim["path"]))["ok"] is True
+
+    restarted = spool_mod.TruthSpool(tmp_path)
+    duplicate = restarted.enqueue(_source_envelope())
+
+    assert duplicate["ok"] is True
+    assert duplicate["reason"] == "duplicate"
+    assert list(restarted.pending_dir.glob("*.json")) == []
+    completed = list(restarted.completed_dir.glob("*.json"))
+    assert len(completed) == 1
+    assert _load_json(completed[0])["state"] == "acked"
+
+
+def test_recover_orphan_payload_reconstructs_pending_record_after_process_death(tmp_path, spool_mod, monkeypatch):
+    spool = spool_mod.TruthSpool(tmp_path)
+    original_write = spool_mod._write_private_json_atomic
+
+    def _simulate_process_death(path, payload):
+        if path.parent == spool.pending_dir:
+            raise SystemExit("synthetic process death")
+        return original_write(path, payload)
+
+    monkeypatch.setattr(spool_mod, "_write_private_json_atomic", _simulate_process_death)
+    with pytest.raises(SystemExit, match="synthetic process death"):
+        spool.enqueue(_source_envelope())
+
+    assert len(list(spool.payloads_dir.glob("*.json"))) == 1
+    assert list(spool.pending_dir.glob("*.json")) == []
+
+    monkeypatch.setattr(spool_mod, "_write_private_json_atomic", original_write)
+    restarted = spool_mod.TruthSpool(tmp_path)
+    assert restarted.recover_orphan_payloads() == 1
+    assert len(list(restarted.pending_dir.glob("*.json"))) == 1
+
+
+def test_claim_next_skips_retry_until_next_retry_at(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue(_source_envelope())["ok"] is True
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+
+    retry = spool.retry_processing(Path(claim["path"]), error_code="TEMP", delay_ms=60_000)
+
+    assert retry["ok"] is True
+    assert spool.claim_next(owner="too-early") is None

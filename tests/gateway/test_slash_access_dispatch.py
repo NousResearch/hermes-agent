@@ -235,6 +235,30 @@ async def test_backward_compat_no_admin_list_means_no_gate():
     assert "Tier: unrestricted" in result
 
 
+def test_admin_only_plugin_command_fails_closed_without_admin_policy(monkeypatch):
+    runner = _make_runner(platform_extra={})
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: {"truth-ledger": {"admin_only": True}},
+    )
+
+    denial = runner._check_slash_access(_make_source(user_id="anyone"), "truth-ledger")
+
+    assert denial is not None
+    assert "admin-only" in denial
+
+
+def test_admin_only_plugin_command_allows_only_configured_admin(monkeypatch):
+    runner = _make_runner(platform_extra={"allow_admin_from": ["111"]})
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: {"truth-ledger": {"admin_only": True}},
+    )
+
+    assert runner._check_slash_access(_make_source(user_id="111"), "truth-ledger") is None
+    assert runner._check_slash_access(_make_source(user_id="999"), "truth-ledger") is not None
+
+
 # ---------------------------------------------------------------------------
 # Scope isolation — DM vs group
 # ---------------------------------------------------------------------------

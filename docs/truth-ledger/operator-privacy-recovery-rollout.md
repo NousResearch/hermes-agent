@@ -9,14 +9,14 @@ Implemented now:
 - Opt-in plugin registration via `plugins/truth-ledger/plugin.yaml` and `register()` hooks in `plugins/truth-ledger/__init__.py`.
 - Hook coverage:
   - `post_llm_call` capture path: eligible-turn check -> source envelope build -> sanitize -> schema validate -> durable spool enqueue.
-  - `on_session_start` recovery path: stale `spool/processing` records are moved back to `pending` or quarantined.
-- Operator slash command: `/truth-ledger status|review|rebuild|retract|export` via `plugins/truth-ledger/commands.py`.
+  - `on_session_start` recovery path: orphan payloads are reconstructed into pending records, then stale `spool/processing` records are moved back to `pending` or quarantined.
+- Admin-only operator slash command: `/truth-ledger status|review|process|rebuild|retract|export` via `plugins/truth-ledger/commands.py`. Gateway dispatch fails closed unless the caller is listed in `allow_admin_from`.
 - Safety defaults:
-  - `rebuild`, `retract`, `export` are dry-run unless `--apply` is present.
+  - `process`, `rebuild`, `retract`, `export` are dry-run unless `--apply` is present.
   - `retract` is append-only (new `retract` event), never history rewrite.
 
 Not implemented yet (important for rollout expectations):
-- No bounded runtime drain from `spool/pending` into extraction/reconciliation/ledger during normal hook lifecycle.
+- No automatic runtime drain from `spool/pending`; processing is an explicit item-bounded operator action only.
 - No automatic promotion into curated memory (`USER.md`, `MEMORY.md`) or GBrain.
 - No automatic retention cleanup or hard-delete workflow.
 - No public config surface for truth-ledger thresholds/overrides yet.
@@ -67,6 +67,7 @@ Current on-disk layout from `TruthSpool` + commands/projection:
 - `spool/pending/*.json` (spool records)
 - `spool/processing/*.json` (claimed records)
 - `spool/dead-letter/*.json` (dead-lettered spool records)
+- `spool/completed/*.json` (durable acknowledgement tombstones)
 - `spool/payloads/*.json` (source envelopes referenced by spool records)
 - `ledger/YYYY-MM.jsonl` (append-only lifecycle events)
 - `views/current.jsonl` (derived active-state projection)
@@ -84,7 +85,7 @@ Permissions:
 Ownership model:
 - Canonical history: `ledger/*.jsonl` (append-only).
 - Derived/rebuildable: `views/current.jsonl`, `state/index.sqlite`.
-- Ephemeral queue: `spool/pending`, `spool/processing`.
+- Queue and durable completion evidence: `spool/pending`, `spool/processing`, `spool/dead-letter`, `spool/completed`.
 
 ## 5) Eligibility and omission gates
 
@@ -104,7 +105,7 @@ Omissions by design in current capture:
 
 Current dedupe behavior:
 - In-process dedupe `_SEEN_ENVELOPES` is lock-protected and FIFO-bounded to 1,024 envelope keys.
-- Durable spool/ledger idempotency remains the cross-process/restart safety boundary.
+- Durable spool records and completed tombstones suppress duplicate enqueue across process restarts. This is filesystem-scan-based idempotency, not a distributed exactly-once guarantee.
 
 ## 6) Privacy, redaction, and do-not-remember boundaries
 
@@ -131,17 +132,23 @@ All command examples are slash commands in a Hermes session:
 - `/truth-ledger review`
 - `/truth-ledger review --limit 50 --json`
 
-3) Rebuild current projection
+3) Process pending envelopes
+- Dry-run (default, no LLM or writes): `/truth-ledger process --limit 1 --json`
+- Apply: `/truth-ledger process --limit 1 --apply --json`
+- Allowed limit: 1–3. The snapshot is fixed at command start, so retries and new arrivals are deferred to a later invocation.
+- This is item-bounded only; ledger-history loading and projection rebuild can scan the full ledger.
+
+4) Rebuild current projection
 - Dry-run: `/truth-ledger rebuild --json`
 - Apply: `/truth-ledger rebuild --apply --json`
 - Apply mode creates backup of existing `views/current.jsonl` before replacement.
 
-4) Retract a fact (append-only)
+5) Retract a fact (append-only)
 - Dry-run: `/truth-ledger retract fact_<id> --json`
 - Apply: `/truth-ledger retract fact_<id> --apply --json`
 - Invalid fact IDs are rejected (`invalid_fact_id`).
 
-5) Export snapshot bundle
+6) Export snapshot bundle
 - Dry-run: `/truth-ledger export --json`
 - Apply default local path: `/truth-ledger export --apply --json`
 - Apply explicit local path: `/truth-ledger export --apply --destination /absolute/path/export.tar.gz --json`
@@ -162,11 +169,12 @@ Rebuild current projection:
 3. Confirm `after_sha256` changed as expected and `backup_path` exists.
 
 Stale processing recovery:
-- Automatic recovery runs on each `on_session_start` via `recover_stale_processing(stale_seconds=900)`.
+- Automatic recovery runs on each `on_session_start`: orphan payload recovery first, then `recover_stale_processing(stale_seconds=900)`.
 - If queue appears stuck, restarting Hermes session triggers the recovery hook.
 
 Corrupt ledger tail handling during projection rebuild:
 - Projection reader quarantines malformed terminal fragments into `errors/projection-corrupt-tail-*.jsonl` and rebuilds from valid prefix.
+- Ledger append validates its existing tail while holding the append lock. A malformed terminal fragment is preserved under `errors/append-corrupt-tail-*.jsonl`, the canonical file is truncated to its valid prefix, and only then may a new event be appended.
 
 ## 9) Retention and deletion policy (current state)
 
@@ -174,7 +182,7 @@ Current behavior:
 - No scheduled retention cleanup.
 - No automatic hard delete.
 - Dead-letter spool records persist until explicit operator cleanup.
-- Payload file is deleted when a record is acked or dead-lettered through spool flows.
+- Payload files are deleted when records are acknowledged or dead-lettered; acknowledgements retain a sanitized completed tombstone for durable dedupe.
 
 Operator implication:
 - Treat retention/deletion as explicit governance work, not implicit runtime behavior.
@@ -183,10 +191,11 @@ Operator implication:
 
 Recommended low-risk rollout:
 1. Enable plugin in one canary profile.
-2. Verify `status` and `review` outputs only.
-3. Exercise `rebuild --json` and `export --json` dry-runs before any apply actions.
-4. Run one controlled `export --apply` and validate tarball hash/permissions.
-5. Keep promotion to curated memory/GBrain disabled pending separate review gate.
+2. Configure `allow_admin_from` for the intended operator and verify unauthorized callers are denied.
+3. Verify `status` and `review`, then exercise `process --limit 1 --json`, `rebuild --json`, and `export --json` dry-runs before any apply actions.
+4. Apply processing to at most one canary envelope and review the resulting ledger/projection.
+5. Run one controlled `export --apply` and validate tarball hash/permissions.
+6. Keep promotion to curated memory/GBrain disabled pending separate review gate.
 
 Promotion gate (must remain explicit):
 - No automatic path from truth-ledger events to `USER.md` / `MEMORY.md` / GBrain.
@@ -220,7 +229,7 @@ In-process dedupe reaches 1,024 entries:
 - This is the expected FIFO bound. Durable spool/ledger idempotency remains the cross-process and restart boundary after older keys are evicted.
 
 Queue growth without ledger activity:
-- Expected with current implementation gap: runtime hooks enqueue/recover but do not yet drain pending envelopes into extraction/reconciliation/ledger automatically.
+- Expected until an authorized operator runs bounded `/truth-ledger process ... --apply`; runtime hooks never drain automatically.
 
 Permission issues writing under truth-ledger root:
 - Confirm profile `HERMES_HOME` location and filesystem ownership.
@@ -230,6 +239,8 @@ Permission issues writing under truth-ledger root:
 
 - [ ] Plugin enabled via `hermes plugins enable truth-ledger`.
 - [ ] `/truth-ledger status --json` returns `ok: true`.
+- [ ] Unauthorized callers are denied and the intended operator is present in `allow_admin_from`.
+- [ ] `/truth-ledger process --limit 1 --json` performs a non-mutating dry-run.
 - [ ] `/truth-ledger export --json` dry-run returns expected local path/includes.
 - [ ] `/truth-ledger rebuild --json` dry-run returns `before_sha256` field.
 - [ ] `/truth-ledger retract <fact_id> --json` dry-run succeeds only for valid fact id pattern.

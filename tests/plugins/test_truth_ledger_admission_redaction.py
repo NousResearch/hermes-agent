@@ -115,6 +115,19 @@ def test_do_not_remember_blocks_candidate(truth_ledger_modules):
     assert decision["reason"] == "do_not_remember"
 
 
+def test_do_not_remember_in_source_text_blocks_sanitized_extracted_value(truth_ledger_modules):
+    admission = truth_ledger_modules["admission"]
+    decision = admission.evaluate_candidate(
+        _candidate(value="concise"),
+        metadata={
+            "speaker_id": "user:42",
+            "source_text": "Do not remember that I prefer concise responses.",
+        },
+    )
+    assert decision["admit"] is False
+    assert decision["reason"] == "do_not_remember"
+
+
 def test_secret_value_is_rejected_and_redacted_in_reason(truth_ledger_modules):
     admission = truth_ledger_modules["admission"]
     decision = admission.evaluate_candidate(

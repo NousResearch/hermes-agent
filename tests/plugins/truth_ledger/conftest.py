@@ -20,11 +20,8 @@ def _load_truth_module(module_name: str):
     repo_root = Path(__file__).resolve().parents[3]
     plugin_dir = repo_root / "plugins" / "truth-ledger"
     mod_path = plugin_dir / f"{module_name}.py"
-    spec = importlib.util.spec_from_file_location(
-        f"hermes_plugins.truth_ledger.{module_name}",
-        mod_path,
-        submodule_search_locations=[str(plugin_dir)],
-    )
+    qualified_name = f"hermes_plugins.truth_ledger.{module_name}"
+    spec = importlib.util.spec_from_file_location(qualified_name, mod_path)
     if "hermes_plugins" not in sys.modules:
         ns = types.ModuleType("hermes_plugins")
         ns.__path__ = []

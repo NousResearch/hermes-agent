@@ -12,7 +12,13 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable
+
+try:
+    from .processor import process_pending as _process_pending
+except ImportError:
+    # commands.py is also loaded as a standalone module by focused unit tests.
+    _process_pending = None
 
 _FACT_ID_RE = re.compile(r"^fact_[A-Za-z0-9_-]+$")
 
@@ -405,6 +411,11 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument("--json", action="store_true")
     review.add_argument("--limit", type=int, default=20)
 
+    process = sub.add_parser("process", add_help=False)
+    process.add_argument("--json", action="store_true")
+    process.add_argument("--limit", type=int, default=1)
+    process.add_argument("--apply", action="store_true")
+
     rebuild = sub.add_parser("rebuild", add_help=False)
     rebuild.add_argument("--json", action="store_true")
     rebuild.add_argument("--apply", action="store_true")
@@ -424,8 +435,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _usage_text() -> str:
     return (
-        "Usage: /truth-ledger <status|review|rebuild|retract|export> [args]\n"
-        "Safe defaults: rebuild/retract/export run in dry-run mode unless --apply is provided."
+        "Usage: /truth-ledger <status|review|process|rebuild|retract|export> [args]\n"
+        "Safe defaults: process/rebuild/retract/export run in dry-run mode unless --apply is provided."
     )
 
 
@@ -447,6 +458,15 @@ def _format_result(result: dict[str, Any]) -> str:
             f"review_entries={result.get('review_entries', 0)} "
             f"dead_letter_entries={result.get('dead_letter_entries', 0)}"
         )
+    if action == "process":
+        mode = "apply" if not result.get("dry_run") else "dry-run"
+        return (
+            "truth-ledger process: "
+            f"mode={mode} limit={result.get('limit')} claimed={result.get('claimed', 0)} "
+            f"appended={result.get('appended', 0)} rejected={result.get('rejected', 0)} "
+            f"retried={result.get('retried', 0)} dead_lettered={result.get('dead_lettered', 0)} "
+            f"pending_after={result.get('pending_after', result.get('pending_before', 0))}"
+        )
     if action == "rebuild":
         mode = "apply" if not result.get("dry_run") else "dry-run"
         return (
@@ -466,7 +486,17 @@ def _format_result(result: dict[str, Any]) -> str:
     return json.dumps(result, separators=(",", ":"), ensure_ascii=False)
 
 
-def handle_truth_ledger_command(raw_args: str, root: Path | str | None = None) -> str:
+def _render_result(result: dict[str, Any], *, json_output: bool) -> str:
+    if json_output:
+        return json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _format_result(result)
+
+
+def handle_truth_ledger_command(
+    raw_args: str,
+    root: Path | str | None = None,
+    runtime_ctx: Any = None,
+) -> str | Awaitable[str]:
     tokens = shlex.split(raw_args or "")
     if not tokens or tokens[0] in {"-h", "--help", "help"}:
         return _usage_text()
@@ -476,6 +506,39 @@ def handle_truth_ledger_command(raw_args: str, root: Path | str | None = None) -
         args = parser.parse_args(tokens)
     except SystemExit:
         return _usage_text()
+
+    json_output = bool(getattr(args, "json", False))
+    if str(args.action or "") == "process":
+        process_limit = int(getattr(args, "limit", 1) or 1)
+        if process_limit < 1 or process_limit > 3:
+            return _render_result(
+                {
+                    "ok": False,
+                    "action": "process",
+                    "reason": "invalid_limit",
+                    "minimum": 1,
+                    "maximum": 3,
+                    "dry_run": not bool(getattr(args, "apply", False)),
+                },
+                json_output=json_output,
+            )
+        processor = _process_pending
+        if processor is None:
+            return _render_result(
+                {"ok": False, "action": "process", "reason": "processor_unavailable"},
+                json_output=json_output,
+            )
+
+        async def _run_process() -> str:
+            result = await processor(
+                root=_default_root(root),
+                ctx=runtime_ctx,
+                limit=process_limit,
+                apply=bool(getattr(args, "apply", False)),
+            )
+            return _render_result(result, json_output=json_output)
+
+        return _run_process()
 
     destination = getattr(args, "destination", "") or None
     result = dispatch_headless(
@@ -487,6 +550,4 @@ def handle_truth_ledger_command(raw_args: str, root: Path | str | None = None) -
         destination=destination,
     )
 
-    if bool(getattr(args, "json", False)):
-        return json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return _format_result(result)
+    return _render_result(result, json_output=json_output)

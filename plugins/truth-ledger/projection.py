@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
+
+try:
+    from .schemas import validate_document
+except ImportError:
+    # commands.py also loads this module directly in focused/headless contexts.
+    _schemas_path = Path(__file__).with_name("schemas.py")
+    _schemas_spec = importlib.util.spec_from_file_location("truth_ledger_schemas", _schemas_path)
+    if _schemas_spec is None or _schemas_spec.loader is None:
+        raise RuntimeError(f"unable to load Truth Ledger schemas from {_schemas_path}")
+    _schemas_mod = importlib.util.module_from_spec(_schemas_spec)
+    _schemas_spec.loader.exec_module(_schemas_mod)
+    validate_document = _schemas_mod.validate_document
 
 
 def _mkdir_private(path: Path) -> None:
@@ -63,6 +76,23 @@ def _event_fact(event: Mapping[str, Any]) -> Mapping[str, Any]:
     return event
 
 
+def _projection_record(event: Mapping[str, Any]) -> Dict[str, Any]:
+    fact = _event_fact(event)
+    return {
+        "schema_name": "truth-ledger.current-projection.v1",
+        "schema_version": 1,
+        "logical_key": {
+            "scope": fact.get("scope"),
+            "subject": fact.get("subject"),
+            "key": fact.get("key"),
+        },
+        "state": "active",
+        "fact_id": event.get("fact_id"),
+        "value": fact.get("value"),
+        "updated_at": event.get("occurred_at"),
+    }
+
+
 def rebuild_current_view(root: Path) -> Dict[str, Any]:
     root = Path(root)
     ledger_dir = root / "ledger"
@@ -106,13 +136,21 @@ def rebuild_current_view(root: Path) -> Dict[str, Any]:
                         active_by_logical.pop(old_key, None)
 
     current_path = views_dir / "current.jsonl"
+    written_active = 0
     fd, tmp_name = tempfile.mkstemp(prefix=".current-", suffix=".jsonl", dir=str(views_dir))
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             for event in sorted(active_by_logical.values(), key=lambda e: (e.get("occurred_at", ""), e.get("event_id", ""))):
-                fh.write(json.dumps(event, separators=(",", ":"), ensure_ascii=False))
+                record = _projection_record(event)
+                try:
+                    validate_document("current-projection.v1", record)
+                except ValueError:
+                    invalid_source_records += 1
+                    continue
+                fh.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False))
                 fh.write("\n")
+                written_active += 1
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_path, current_path)
@@ -126,7 +164,7 @@ def rebuild_current_view(root: Path) -> Dict[str, Any]:
 
     return {
         "applied": applied,
-        "active": len(active_by_logical),
+        "active": written_active,
         "path": str(current_path),
         "invalid_source_records": invalid_source_records,
         "quarantined_files": quarantined_files,

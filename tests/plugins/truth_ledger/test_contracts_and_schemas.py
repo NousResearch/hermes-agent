@@ -239,3 +239,20 @@ def test_current_projection_requires_explicit_null_or_value(schemas_mod):
     invalid_missing_value.pop("value")
     with pytest.raises(ValueError):
         schemas_mod.validate_document("current-projection.v1", invalid_missing_value)
+
+
+def test_schema_format_fields_are_normative(schemas_mod):
+    envelope = {
+        "schema_name": "truth-ledger.source-envelope.v1",
+        "schema_version": 1,
+        "captured_at": "not-a-date",
+        "profile": "default",
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "origin": {"platform": "cli", "conversation_id": None, "thread_id": None, "speaker_id": "u1"},
+        "input": {"user_message": "hello"},
+        "output": {"assistant_response": "hi"},
+    }
+
+    with pytest.raises(ValueError, match="date-time"):
+        schemas_mod.validate_document("source-envelope.v1", envelope)

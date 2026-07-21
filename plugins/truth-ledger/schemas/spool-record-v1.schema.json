@@ -19,7 +19,7 @@
     "schema_name": {"const": "truth-ledger.spool-record.v1"},
     "schema_version": {"const": 1},
     "envelope_id": {"type": "string", "pattern": "^env_[A-Za-z0-9_-]+$", "maxLength": 128},
-    "state": {"enum": ["pending", "processing", "dead_lettered"]},
+    "state": {"enum": ["pending", "processing", "dead_lettered", "acked"]},
     "captured_at": {"type": "string", "format": "date-time"},
     "attempt_count": {"type": "integer", "minimum": 0, "maximum": 100},
     "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
@@ -44,6 +44,7 @@
         "next_retry_at": {"type": "number"},
         "dead_letter_reason": {"type": "string", "maxLength": 256},
         "dead_letter_at": {"type": "number"},
+        "acked_at": {"type": "number"},
         "recovered_at": {"type": "number"},
         "decode_error": {"type": "boolean"}
       }

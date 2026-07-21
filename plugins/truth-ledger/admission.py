@@ -62,6 +62,10 @@ def evaluate_candidate(candidate: Mapping[str, Any], metadata: Mapping[str, Any]
     if source_channel in _PRIVATE_SOURCE_CHANNELS:
         return _reject("private_source")
 
+    source_text = str(metadata.get("source_text") or "")
+    if _DO_NOT_REMEMBER_RE.search(source_text):
+        return _reject("do_not_remember")
+
     scope = str(candidate.get("scope") or "").strip().lower()
     if scope not in ALLOWED_SCOPES:
         return _reject("invalid_scope")

@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 SCHEMAS_DIR = Path(__file__).with_name("schemas")
+
+_FORMAT_CHECKER = FormatChecker()
+
+
+@_FORMAT_CHECKER.checks("date-time", raises=(TypeError, ValueError))
+def _is_rfc3339_datetime(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.tzinfo is not None
 
 _SCHEMA_FILES = {
     "source-envelope.v1": "source-envelope-v1.schema.json",
@@ -37,7 +48,7 @@ def load_schema(schema_name: str) -> dict[str, Any]:
 def _get_validator(schema_name: str) -> Draft202012Validator:
     schema = load_schema(schema_name)
     Draft202012Validator.check_schema(schema)
-    return Draft202012Validator(schema)
+    return Draft202012Validator(schema, format_checker=_FORMAT_CHECKER)
 
 
 def validate_all_metaschemas() -> dict[str, str]:

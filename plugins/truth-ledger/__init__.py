@@ -3,6 +3,7 @@
 Composes lifecycle hooks and optional slash command registration:
   /truth-ledger status
   /truth-ledger review
+  /truth-ledger process [--limit N] [--apply]
   /truth-ledger rebuild [--apply]
   /truth-ledger retract <fact-id> [--apply]
   /truth-ledger export [--apply]
@@ -55,11 +56,15 @@ def register(ctx) -> None:
         ctx.register_hook("post_llm_call", on_post_llm_call)
 
     if hasattr(ctx, "register_command"):
+        def _handle_command(raw_args: str):
+            return handle_truth_ledger_command(raw_args, runtime_ctx=ctx)
+
         ctx.register_command(
             "truth-ledger",
-            handler=handle_truth_ledger_command,
-            description="Truth Ledger operator commands: status/review/rebuild/retract/export.",
-            args_hint="status|review|rebuild|retract <fact-id>|export",
+            handler=_handle_command,
+            description="Truth Ledger operator commands: status/review/process/rebuild/retract/export.",
+            args_hint="status|review|process|rebuild|retract <fact-id>|export",
+            admin_only=True,
         )
 
 
@@ -160,6 +165,7 @@ def on_post_llm_call(**kwargs: Any) -> None:
 def on_session_start(**_kwargs: Any) -> None:
     try:
         spool = TruthSpool(_truth_root())
+        spool.recover_orphan_payloads()
         spool.recover_stale_processing(stale_seconds=900)
     except Exception:
         _LOG.debug("truth-ledger on_session_start recovery failed (fail-open)", exc_info=True)

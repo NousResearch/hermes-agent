@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -181,3 +182,63 @@ def test_review_report_reads_nested_dead_letter_reason_from_flow(tmp_path):
     assert out["ok"] is True
     assert out["dead_letter_entries"] == 1
     assert out["dead_letter_preview"][0]["reason"] == "schema_mismatch"
+
+
+def test_process_command_is_bounded_dry_run_by_default_and_receives_runtime_context(tmp_path, monkeypatch):
+    mod = _load_commands_module()
+    runtime_ctx = object()
+    observed: dict = {}
+
+    async def fake_process_pending(*, root, ctx, limit, apply):
+        observed.update({"root": root, "ctx": ctx, "limit": limit, "apply": apply})
+        return {
+            "ok": True,
+            "action": "process",
+            "dry_run": not apply,
+            "limit": limit,
+            "would_process": 0,
+        }
+
+    monkeypatch.setattr(mod, "_process_pending", fake_process_pending)
+    rendered = asyncio.run(
+        mod.handle_truth_ledger_command(
+            "process --json",
+            root=tmp_path / "truth-ledger",
+            runtime_ctx=runtime_ctx,
+        )
+    )
+
+    payload = json.loads(rendered)
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert observed["ctx"] is runtime_ctx
+    assert observed["limit"] == 1
+    assert observed["apply"] is False
+
+
+def test_process_command_requires_explicit_apply_and_rejects_limit_above_hard_cap(tmp_path, monkeypatch):
+    mod = _load_commands_module()
+    calls: list[tuple[int, bool]] = []
+
+    async def fake_process_pending(*, root, ctx, limit, apply):
+        calls.append((limit, apply))
+        return {"ok": True, "action": "process", "dry_run": not apply, "limit": limit}
+
+    monkeypatch.setattr(mod, "_process_pending", fake_process_pending)
+    rendered = asyncio.run(
+        mod.handle_truth_ledger_command(
+            "process --limit 3 --apply --json",
+            root=tmp_path / "truth-ledger",
+            runtime_ctx=object(),
+        )
+    )
+    assert json.loads(rendered)["dry_run"] is False
+    assert calls == [(3, True)]
+
+    rejected = mod.handle_truth_ledger_command(
+        "process --limit 4 --json",
+        root=tmp_path / "truth-ledger",
+        runtime_ctx=object(),
+    )
+    assert json.loads(rejected)["ok"] is False
+    assert calls == [(3, True)]

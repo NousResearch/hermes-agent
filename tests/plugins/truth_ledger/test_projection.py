@@ -42,7 +42,7 @@ def test_rebuild_current_view_handles_assert_supersede_retract(tmp_path, project
 def test_rebuild_current_view_atomic_write(tmp_path, projection_mod):
     ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
     _append(ledger_file, {
-        "event_id": "e1", "event": "assert", "fact_id": "f1",
+        "event_id": "e1", "event": "assert", "fact_id": "fact_1",
         "scope": "user", "subject": "u1", "key": "lang", "value": "en",
         "occurred_at": "2026-07-17T20:00:00Z",
     })
@@ -53,8 +53,29 @@ def test_rebuild_current_view_atomic_write(tmp_path, projection_mod):
     current = tmp_path / "views" / "current.jsonl"
     lines = [json.loads(x) for x in current.read_text(encoding="utf-8").splitlines() if x.strip()]
     assert len(lines) == 1
-    assert lines[0]["fact_id"] == "f1"
+    assert lines[0]["fact_id"] == "fact_1"
     assert lines[0]["value"] == "en"
+    assert lines[0]["schema_name"] == "truth-ledger.current-projection.v1"
+    assert lines[0]["logical_key"] == {"scope": "user", "subject": "u1", "key": "lang"}
+    assert lines[0]["state"] == "active"
+    assert lines[0]["updated_at"] == "2026-07-17T20:00:00Z"
+
+
+def test_rebuild_current_view_writes_records_that_validate_against_projection_schema(
+    tmp_path, projection_mod
+):
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    _append(ledger_file, {
+        "event_id": "evt_1", "operation": "assert", "fact_id": "fact_1",
+        "fact": {"scope": "user", "subject": "u1", "key": "lang", "value": "en"},
+        "occurred_at": "2026-07-17T20:00:00Z",
+    })
+
+    out = projection_mod.rebuild_current_view(tmp_path)
+
+    rows = [json.loads(line) for line in Path(out["path"]).read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    projection_mod.validate_document("current-projection.v1", rows[0])
 
 
 def test_rebuild_current_view_accepts_operation_field_and_retract_supersedes(tmp_path, projection_mod):
@@ -182,6 +203,21 @@ def test_rebuild_current_view_reports_and_quarantines_invalid_source_lines(tmp_p
     assert out["active"] == 1
     assert out["invalid_source_records"] == 1
     assert out["quarantined_files"] == 1
+
+
+def test_rebuild_skips_generated_projection_records_that_fail_schema_validation(tmp_path, projection_mod):
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    _append(ledger_file, {
+        "event_id": "evt_bad", "operation": "assert", "fact_id": "fact_bad",
+        "fact": {"scope": "user", "subject": "u1", "key": "", "value": "en"},
+        "occurred_at": "2026-07-17T20:00:00Z",
+    })
+
+    out = projection_mod.rebuild_current_view(tmp_path)
+
+    assert out["active"] == 0
+    assert out["invalid_source_records"] == 1
+    assert Path(out["path"]).read_text(encoding="utf-8") == ""
 
 
 def test_rebuild_current_view_is_deterministic_after_derived_state_deletion(tmp_path, projection_mod):

@@ -6,19 +6,30 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
+
+_FORMAT_CHECKER = FormatChecker()
+
+
+@_FORMAT_CHECKER.checks("date-time", raises=(TypeError, ValueError))
+def _is_rfc3339_datetime(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.tzinfo is not None
 
 
 @lru_cache(maxsize=1)
 def _ledger_event_validator() -> Draft202012Validator:
     schema_path = Path(__file__).with_name("schemas") / "ledger-event-v1.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    return Draft202012Validator(schema)
+    return Draft202012Validator(schema, format_checker=_FORMAT_CHECKER)
 
 
 def _valid_ledger_event(document: Dict[str, Any]) -> bool:
@@ -121,6 +132,56 @@ class LedgerStore:
                     return offset, hashlib.sha256(raw_line).hexdigest()
         return None, None
 
+    def _repair_tail_for_append(self, ledger_file: Path) -> None:
+        """Make the canonical JSONL tail append-safe while preserving evidence."""
+        if not ledger_file.exists():
+            return
+        raw = ledger_file.read_bytes()
+        if not raw:
+            return
+
+        valid_end = 0
+        corrupt_from: int | None = None
+        cursor = 0
+        for raw_line in raw.splitlines(keepends=True):
+            line_end = cursor + len(raw_line)
+            has_newline = raw_line.endswith(b"\n")
+            candidate = raw_line[:-1] if has_newline else raw_line
+            try:
+                json.loads(candidate.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                corrupt_from = cursor
+                break
+            valid_end = line_end
+            cursor = line_end
+            if not has_newline:
+                with ledger_file.open("ab") as fh:
+                    fh.write(b"\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                return
+
+        if corrupt_from is None:
+            return
+
+        _mkdir_private(self.errors_dir)
+        quarantine = self.errors_dir / (
+            f"append-corrupt-tail-{ledger_file.stem}-{time.time_ns()}.jsonl"
+        )
+        with quarantine.open("wb") as fh:
+            fh.write(raw[corrupt_from:])
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(quarantine, 0o600)
+        except OSError:
+            pass
+
+        with ledger_file.open("r+b") as fh:
+            fh.truncate(valid_end)
+            fh.flush()
+            os.fsync(fh.fileno())
+
     def append_event(self, event: Dict[str, Any], event_key: str) -> Dict[str, Any]:
         event_copy = dict(event)
         event_copy.setdefault("occurred_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
@@ -183,6 +244,7 @@ class LedgerStore:
 
         try:
             with _FileLock(self.append_lock, timeout_seconds=0.2):
+                self._repair_tail_for_append(ledger_file)
                 with self._connect() as conn:
                     cur = conn.execute(
                         "SELECT status, event_id, ledger_file FROM event_journal WHERE event_key = ?",

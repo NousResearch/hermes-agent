@@ -310,6 +310,28 @@ def test_extract_timeout_is_retry_with_jitter_delay():
     assert 0 <= out["retry_delay_ms"] <= 100
 
 
+def test_extract_timeout_dead_letters_when_persisted_attempt_budget_is_exhausted():
+    extractor = _load_extractor_module()
+
+    def _slow(**_kwargs):
+        time.sleep(0.05)
+        return _FakeStructuredResult(parsed={"schema_name": "truth-ledger.fact-candidates.v1", "facts": []})
+
+    llm = _FakeLLM(_slow)
+    settings = extractor.ExtractorSettings(timeout_seconds=0.01, max_attempts=6)
+    out = _run(
+        extractor.extract_candidates(
+            ctx=_FakeCtx(llm),
+            envelope=_envelope(attempt_count=6),
+            settings=settings,
+        )
+    )
+
+    assert out["status"] == "dead_letter"
+    assert out["reason"] == "permanent_failure"
+    assert out["dead_letter"]["reason_code"] == "extraction_failed"
+
+
 def test_extract_http_5xx_is_retry_then_dead_letter_when_attempts_exhausted():
     extractor = _load_extractor_module()
 

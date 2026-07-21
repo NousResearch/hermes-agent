@@ -175,3 +175,45 @@ def test_append_event_retries_after_post_intent_append_lock_timeout(tmp_path, le
     ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
     lines = [line for line in ledger_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
+
+
+def test_append_event_repairs_partial_tail_before_reporting_indexed(tmp_path, ledger_mod, projection_mod):
+    store = ledger_mod.LedgerStore(tmp_path)
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    ledger_file.write_bytes(b'{"event_id":"partial"')
+
+    out = store.append_event(event=_valid_event("evt_after_partial"), event_key="after-partial")
+
+    assert out["status"] == "indexed"
+    parsed = ledger_mod.scan_jsonl_with_tail_quarantine(ledger_file, tmp_path / "errors")
+    assert [event["event_id"] for event in parsed] == ["evt_after_partial"]
+    assert projection_mod.rebuild_current_view(tmp_path)["active"] == 1
+    assert list((tmp_path / "errors").glob("append-corrupt-tail-*.jsonl"))
+
+
+def test_append_event_quarantines_malformed_final_line_and_preserves_valid_prefix(tmp_path, ledger_mod):
+    store = ledger_mod.LedgerStore(tmp_path)
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    first = _valid_event("evt_first")
+    ledger_file.write_bytes(
+        json.dumps(first, separators=(",", ":")).encode("utf-8") + b"\n{not-json}\n"
+    )
+
+    out = store.append_event(event=_valid_event("evt_second"), event_key="second")
+
+    assert out["status"] == "indexed"
+    parsed = ledger_mod.scan_jsonl_with_tail_quarantine(ledger_file, tmp_path / "errors")
+    assert [event["event_id"] for event in parsed] == ["evt_first", "evt_second"]
+
+
+def test_append_event_normalizes_valid_final_record_missing_newline(tmp_path, ledger_mod):
+    store = ledger_mod.LedgerStore(tmp_path)
+    ledger_file = tmp_path / "ledger" / "2026-07.jsonl"
+    first = _valid_event("evt_first")
+    ledger_file.write_bytes(json.dumps(first, separators=(",", ":")).encode("utf-8"))
+
+    out = store.append_event(event=_valid_event("evt_second"), event_key="second")
+
+    assert out["status"] == "indexed"
+    parsed = ledger_mod.scan_jsonl_with_tail_quarantine(ledger_file, tmp_path / "errors")
+    assert [event["event_id"] for event in parsed] == ["evt_first", "evt_second"]

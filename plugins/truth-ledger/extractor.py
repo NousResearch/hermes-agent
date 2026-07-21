@@ -230,12 +230,22 @@ async def extract_candidates(
             timeout=cfg.timeout_seconds,
         )
     except asyncio.TimeoutError:
-        delay_ms = _retry_delay_ms(attempt_count=attempt_count, settings=cfg, rng=rand)
+        if attempt_count < cfg.max_attempts:
+            delay_ms = _retry_delay_ms(attempt_count=attempt_count, settings=cfg, rng=rand)
+            return {
+                "status": "retry",
+                "reason": "timeout",
+                "attempt_count": attempt_count + 1,
+                "retry_delay_ms": delay_ms,
+            }
         return {
-            "status": "retry",
-            "reason": "timeout",
-            "attempt_count": attempt_count + 1,
-            "retry_delay_ms": delay_ms,
+            "status": "dead_letter",
+            "reason": "permanent_failure",
+            "dead_letter": _dead_letter(
+                envelope=envelope,
+                reason_code=_REASON_EXTRACTION_FAILED,
+                last_error="extraction timeout retry budget exhausted",
+            ),
         }
     except Exception as exc:
         transient = _transient_http(exc)

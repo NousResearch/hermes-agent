@@ -1830,6 +1830,15 @@ class TestPluginCommands:
         entry = mgr._plugin_commands["metricas"]
         assert entry["args_hint"] == "dias:7 formato:json"
 
+    def test_register_command_can_mark_plugin_command_admin_only(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("dangerous", lambda a: a, admin_only=True)
+
+        assert mgr._plugin_commands["dangerous"]["admin_only"] is True
+
     def test_register_command_args_hint_whitespace_trimmed(self):
         """args_hint leading/trailing whitespace is stripped."""
         mgr = PluginManager()

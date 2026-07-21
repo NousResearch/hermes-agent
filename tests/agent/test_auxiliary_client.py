@@ -1980,6 +1980,55 @@ class TestGetProviderChain:
             chain = _get_provider_chain()
         assert chain[0] == ("openrouter", sentinel)
 
+    def test_module_docstring_matches_provider_chain(self):
+        """Regression for #31326: the module docstring must not advertise a
+        text-task auto-detect chain that ``_get_provider_chain()`` does not
+        return. Specifically, Native Anthropic must NOT appear in the text
+        auto-detect chain documented at the top of ``auxiliary_client.py``
+        because Anthropic is reached only via Step 1 (main provider = anthropic)
+        or via an explicit ``auxiliary.<task>.provider`` override.
+        """
+        import agent.auxiliary_client as _mod
+        doc = _mod.__doc__ or ""
+        # Find the text-task chain section.
+        text_section_marker = "Resolution order for text tasks"
+        vision_section_marker = "Resolution order for vision/multimodal tasks"
+        assert text_section_marker in doc
+        assert vision_section_marker in doc
+        text_section = doc.split(text_section_marker, 1)[1].split(vision_section_marker, 1)[0]
+        # Native Anthropic is documented elsewhere (the "Native Anthropic is
+        # *not* in either auto-detect chain" paragraph) but must not appear
+        # as a numbered step inside the text-task chain block itself.
+        for forbidden in ("Native Anthropic", "native anthropic"):
+            for line in text_section.splitlines():
+                stripped = line.strip()
+                if stripped.startswith(tuple(f"{i}." for i in range(1, 10))):
+                    assert forbidden not in stripped, (
+                        f"Text-task auto-detect chain still advertises {forbidden!r} "
+                        f"in docstring step: {stripped!r}. _get_provider_chain() does "
+                        f"not include Anthropic — keep the docstring in sync. (#31326)"
+                    )
+        # Sanity: the documented chain labels in the docstring match the labels
+        # actually returned by _get_provider_chain() (modulo Step 1 = main
+        # provider, which is described in prose rather than a chain entry).
+        chain_labels = {label for label, _ in _get_provider_chain()}
+        # _get_provider_chain entries map to docstring tokens:
+        #   openrouter → "OpenRouter"
+        #   nous       → "Nous Portal"
+        #   local/custom → "Custom endpoint"
+        #   api-key    → "Direct API-key providers"
+        for label, marker in [
+            ("openrouter", "OpenRouter"),
+            ("nous", "Nous Portal"),
+            ("local/custom", "Custom endpoint"),
+            ("api-key", "Direct API-key providers"),
+        ]:
+            if label in chain_labels:
+                assert marker in text_section, (
+                    f"_get_provider_chain() returns {label!r} but docstring "
+                    f"does not mention {marker!r} in the text-task chain section."
+                )
+
 
 class TestTryPaymentFallback:
     """_try_payment_fallback skips the failed provider and tries alternatives."""

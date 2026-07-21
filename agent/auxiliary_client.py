@@ -10,23 +10,27 @@ Resolution order for text tasks (auto mode):
   2. OpenRouter  (OPENROUTER_API_KEY)
   3. Nous Portal (~/.hermes/auth.json active provider)
   4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
-
-Resolution order for vision/multimodal tasks (auto mode):
-  1. Selected main provider, if it is one of the supported vision backends below
-  2. OpenRouter
-  3. Nous Portal
-  4. Native Anthropic
-  5. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN,
+     DeepSeek, Alibaba, etc.)
   6. None
 
-Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
-fallback chain: OpenAI gates this endpoint behind an undocumented,
-shifting model allow-list, so "just try Codex with a hardcoded model"
-rots on its own.  Codex is used only when the user's main provider *is*
-openai-codex (Step 1 above) or when a caller explicitly requests it with
+Resolution order for vision/multimodal tasks (auto mode):
+  1. Selected main provider, if it is one of the supported vision backends
+     (skipped for ``nous`` unless a dedicated strict vision backend resolves,
+     and for providers known to lack image input — see
+     ``_PROVIDERS_WITHOUT_VISION``)
+  2. OpenRouter (vision-capable aggregator fallback)
+  3. Nous Portal (vision-capable aggregator fallback)
+  4. None
+
+Native Anthropic is *not* in either auto-detect chain — Anthropic is only
+used when the user's main provider is Anthropic (Step 1 of either chain)
+or when a caller explicitly requests it via ``auxiliary.<task>.provider``.
+Codex OAuth (ChatGPT-account auth) is also intentionally not in either
+chain: OpenAI gates this endpoint behind an undocumented, shifting model
+allow-list, so "just try Codex with a hardcoded model" rots on its own.
+Codex is used only when the user's main provider *is* openai-codex
+(Step 1 of the text chain) or when a caller explicitly requests it with
 a model (auxiliary.<task>.provider + auxiliary.<task>.model).
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section

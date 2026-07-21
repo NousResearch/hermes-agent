@@ -1232,6 +1232,12 @@ class WeixinAdapter(BasePlatformAdapter):
             if persisted:
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+        # Always load persisted user_id (iLink user ID) for typing ticket
+        self._ilink_user_id = ""
+        if self._account_id:
+            persisted = load_weixin_account(hermes_home, self._account_id)
+            if persisted:
+                self._ilink_user_id = str(persisted.get("user_id") or "").strip()
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
@@ -1669,12 +1675,15 @@ class WeixinAdapter(BasePlatformAdapter):
             return
         if self._typing_cache.get(user_id):
             return
+        # getconfig must be called with the BOT's own iLink user ID, not the sender's ID,
+        # otherwise the API returns ret=-4 with no typing_ticket
+        ilink_user_id = self._ilink_user_id or user_id
         try:
             response = await _get_config(
                 self._poll_session,
                 base_url=self._base_url,
                 token=self._token,
-                user_id=user_id,
+                user_id=ilink_user_id,
                 context_token=context_token,
             )
             typing_ticket = str(response.get("typing_ticket") or "")

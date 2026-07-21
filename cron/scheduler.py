@@ -2656,9 +2656,66 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _build_run_stats_section(
+    elapsed_seconds: float,
+    tokens: dict[str, int],
+    blocked_calls: Optional[dict[str, int]] = None,
+) -> str:
+    """Build a compact ``### Run Statistics`` line for cron output docs.
+
+    Collapses redundant fields (input≈prompt, output≈completion) and omits
+    zero-valued cache-write.  Cache-read, reasoning tokens, and blocked tool
+    calls appear inline as parenthetical annotations only when non-zero.
+    """
+    _in = tokens.get("input_tokens", 0)
+    _out = tokens.get("output_tokens", 0)
+    _total = tokens.get("total_tokens", 0)
+    _cache_read = tokens.get("cache_read_tokens", 0)
+    _reasoning = tokens.get("reasoning_tokens", 0)
+
+    if _cache_read and _in:
+        _cache_pct = 100 * _cache_read / _in
+        _cache_str = f" ({_human_tok(_cache_read)}={_cache_pct:.0f}% cache)"
+    elif _cache_read:
+        _cache_str = f" ({_human_tok(_cache_read)} cache)"
+    else:
+        _cache_str = ""
+    if _reasoning and _out:
+        _reason_pct = 100 * _reasoning / _out
+        _reason_str = f" ({_human_tok(_reasoning)}={_reason_pct:.0f}% think)"
+    elif _reasoning:
+        _reason_str = f" ({_human_tok(_reasoning)} think)"
+    else:
+        _reason_str = ""
+
+    _blocked_parts = []
+    if blocked_calls:
+        _blocked_parts = [f"{count} {name}" for name, count in sorted(blocked_calls.items())]
+    _blocked_str = f" — blocked: {', '.join(_blocked_parts)}" if _blocked_parts else ""
+
+    return (
+        f"### Run Statistics\n"
+        f"{elapsed_seconds:.1f}s · {_human_tok(_total)} tok = "
+        f"in:{_human_tok(_in)}{_cache_str}, "
+        f"out:{_human_tok(_out)}{_reason_str}"
+        f"{_blocked_str}\n"
+    )
+
+
+def _human_tok(n: int) -> str:
+    """Format a token count for compact display: 0 → '0', 500 → '500', 15044 → '15.0k'."""
+    if n >= 1_000_000:
+        s = f"{n / 1_000_000:.1f}M"
+        return s.replace(".0M", "M")
+    if n >= 1_000:
+        s = f"{n / 1_000:.1f}k"
+        return s.replace(".0k", "k")
+    return str(n)
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
-) -> tuple[bool, str, str, Optional[str]]:
+) -> tuple[bool, str, str, Optional[str], Optional[dict]]:
     """
     Execute a single cron job.
 
@@ -2673,7 +2730,11 @@ def run_job(
     every existing caller is unchanged.
 
     Returns:
-        Tuple of (success, full_output_doc, final_response, error_message)
+        Tuple of (success, full_output_doc, final_response, error, run_metadata)
+
+        run_metadata is a dict with ``duration_seconds`` (float) and
+        ``tokens`` (dict token-type → count), or an empty dict when not applicable
+        (e.g. script-only jobs, prompt injection blocked, etc.).
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
@@ -2701,7 +2762,7 @@ def run_job(
         if not script_path:
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
-            return False, "", "", err
+            return False, "", "", err, None
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
@@ -2715,8 +2776,10 @@ def run_job(
             except OSError:
                 _prior_cwd = None
 
+        _no_agent_start = time.time()
         try:
             ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
+            _no_agent_elapsed = round(time.time() - _no_agent_start, 1)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2743,7 +2806,7 @@ def run_job(
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
-            return False, doc, alert, output
+            return False, doc, alert, output, None
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
         # means "nothing to report this tick", same as empty stdout.
@@ -2758,7 +2821,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None
 
         if not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -2769,7 +2832,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None
 
         doc = (
             f"# Cron Job: {job_name}\n\n"
@@ -2779,7 +2842,7 @@ def run_job(
             f"---\n\n"
             f"{output}\n"
         )
-        return True, doc, output, None
+        return True, doc, output, None, None
 
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
@@ -2876,7 +2939,7 @@ def run_job(
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None
 
     try:
         prompt = _build_job_prompt(job, prerun_script=prerun_script)
@@ -2902,10 +2965,10 @@ def run_job(
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
-        return False, blocked_doc, "", str(block_exc)
+        return False, blocked_doc, "", str(block_exc), None
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
+        return True, "", SILENT_MARKER, None, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -2913,6 +2976,7 @@ def run_job(
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    _job_start: Optional[float] = None  # set before agent.run_conversation
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -3429,6 +3493,7 @@ def run_job(
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
+        _job_start = time.time()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
@@ -3566,13 +3631,89 @@ def run_job(
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
+        # ── Collect run-time metrics: wall-clock duration and token usage ──
+        _job_elapsed = round(time.time() - _job_start, 1) if _job_start is not None else 0.0
+        _token_keys = (
+            "input_tokens", "output_tokens", "total_tokens",
+            "prompt_tokens", "completion_tokens",
+            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        )
+        _job_tokens: dict[str, int] = {}
+        for _key in _token_keys:
+            _val = result.get(_key, 0)
+            _job_tokens[_key] = int(_val) if _val else 0
+        _blocked_calls = result.get("blocked_calls") or {}
+        # Aggregate subagent token counts from delegate_task tool results.
+        # Scan for role:"tool" messages whose content is a delegate_task
+        # JSON response ({"results": [...], ...}).  Verify the preceding
+        # assistant message's tool_calls contain delegate_task or
+        # async_delegation so we don't match other tools (web_search, etc.)
+        # that also use a "results" key.
+        _delegate_tool_names = frozenset({"delegate_task", "async_delegation"})
+        _messages = result.get("messages") or []
+        _prev_assistant = None
+        for _msg in _messages:
+            if _msg.get("role") == "assistant":
+                _prev_assistant = _msg
+                continue
+            if _msg.get("role") != "tool":
+                continue
+            _content = _msg.get("content", "")
+            if not _content or not isinstance(_content, str):
+                continue
+            if _prev_assistant is None:
+                continue
+            _tc = _prev_assistant.get("tool_calls") or []
+            if not any(
+                t.get("function", {}).get("name") in _delegate_tool_names
+                for t in _tc
+            ):
+                continue
+            try:
+                _parsed = json.loads(_content)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            _children = _parsed.get("results") if isinstance(_parsed, dict) else None
+            if not isinstance(_children, list):
+                continue
+            for _child in _children:
+                if not isinstance(_child, dict):
+                    continue
+                _tokens = _child.get("tokens")
+                if isinstance(_tokens, dict):
+                    try:
+                        _child_in = int(_tokens.get("input", 0) or 0)
+                        _child_out = int(_tokens.get("output", 0) or 0)
+                    except (TypeError, ValueError):
+                        _child_in = 0
+                        _child_out = 0
+                else:
+                    _child_in = 0
+                    _child_out = 0
+                _job_tokens["input_tokens"] = _job_tokens.get("input_tokens", 0) + _child_in
+                _job_tokens["output_tokens"] = _job_tokens.get("output_tokens", 0) + _child_out
+                _job_tokens["prompt_tokens"] = _job_tokens.get("prompt_tokens", 0) + _child_in
+                _job_tokens["completion_tokens"] = _job_tokens.get("completion_tokens", 0) + _child_out
+                _job_tokens["total_tokens"] = _job_tokens.get("total_tokens", 0) + _child_in + _child_out
+                try:
+                    _job_tokens["cache_read_tokens"] = _job_tokens.get("cache_read_tokens", 0) + int(_child.get("cache_read_tokens", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    _job_tokens["reasoning_tokens"] = _job_tokens.get("reasoning_tokens", 0) + int(_child.get("reasoning_tokens", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+
+        _stats_section = _build_run_stats_section(_job_elapsed, _job_tokens, _blocked_calls)
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
+{_stats_section}
 ## Prompt
 
 {prompt}
@@ -3581,20 +3722,47 @@ def run_job(
 
 {logged_response}
 """
-        
+
+        # Compose statistics into the delivery payload so delivered messages
+        # also include run stats, not just the saved output file.
+        if final_response.strip():
+            final_response = f"{final_response}\n\n{_stats_section}"
+
         logger.info("Job '%s' completed successfully", job_name)
-        return True, output, final_response, None
+        _success_metadata = {
+            "duration_seconds": _job_elapsed,
+            "tokens": _job_tokens,
+        }
+        if _blocked_calls:
+            _success_metadata["blocked_calls"] = _blocked_calls
+        return True, output, final_response, None, _success_metadata
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
+        # ── Collect run stats for failure output (best-effort) ──
+        _fail_elapsed: Optional[float] = None
+        _fail_tokens: dict[str, int] = {}
+        if _job_start is not None:
+            _fail_elapsed = round(time.time() - _job_start, 1)
+            if agent is not None:
+                for _field in ("session_total_tokens", "session_input_tokens", "session_output_tokens"):
+                    _val = getattr(agent, _field, 0)
+                    _fail_tokens[_field.replace("session_", "")] = int(_val) if _val else 0
+        _fail_blocked = getattr(agent, "session_blocked_calls", None) or {}
+        _fail_stats = (
+            _build_run_stats_section(_fail_elapsed, _fail_tokens, _fail_blocked)
+            if _fail_elapsed is not None
+            else ""
+        )
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
-
+{_fail_stats}
 ## Prompt
 
 {prompt}
@@ -3605,7 +3773,10 @@ def run_job(
 {error_msg}
 ```
 """
-        return False, output, "", error_msg
+        _fail_metadata = None
+        if _fail_elapsed is not None:
+            _fail_metadata = {"duration_seconds": _fail_elapsed, "tokens": _fail_tokens}
+        return False, output, "", error_msg, _fail_metadata
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
@@ -3775,7 +3946,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(
+            success, output, final_response, error, run_metadata = run_job(
                 job, defer_agent_teardown=_deferred_agents
             )
         except BaseException:
@@ -3855,7 +4026,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error, run_metadata=run_metadata)
         finish_execution(execution_id, success=success, error=error)
         return True
 

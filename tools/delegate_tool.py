@@ -2188,6 +2188,8 @@ def _run_single_child(
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
+        _cache_read_tokens = getattr(child, "session_cache_read_tokens", 0)
+        _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -2205,6 +2207,16 @@ def _run_single_child(
                     _output_tokens if isinstance(_output_tokens, (int, float)) else 0
                 ),
             },
+            "cache_read_tokens": (
+                _cache_read_tokens
+                if isinstance(_cache_read_tokens, (int, float))
+                else 0
+            ),
+            "reasoning_tokens": (
+                _reasoning_tokens
+                if isinstance(_reasoning_tokens, (int, float))
+                else 0
+            ),
             "tool_trace": tool_trace,
             # Captured before the finally block calls child.close() so the
             # parent thread can fire subagent_stop with the correct role.

@@ -110,7 +110,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     _Codex401ThenSuccessAgent.refresh_attempts = 0
     _Codex401ThenSuccessAgent.last_init = {}
 
-    success, output, final_response, error = cron_scheduler.run_job(
+    success, output, final_response, error, _ = cron_scheduler.run_job(
         {"id": "job-1", "name": "Codex Refresh Test", "prompt": "ping", "model": "gpt-5.3-codex"}
     )
 

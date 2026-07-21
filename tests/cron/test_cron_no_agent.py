@@ -203,7 +203,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    success, doc, final_response, error, _ = run_job(job)
     assert success is True
     assert error is None
     assert "RAM 92% on host" in final_response
@@ -221,7 +221,7 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     job = create_job(
         prompt=None, schedule="every 5m", script="quiet.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    success, doc, final_response, error, _ = run_job(job)
     assert success is True
     assert error is None
     assert final_response == SILENT_MARKER
@@ -238,7 +238,7 @@ def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     job = create_job(
         prompt=None, schedule="every 5m", script="gated.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    success, doc, final_response, error, _ = run_job(job)
     assert success is True
     assert final_response == SILENT_MARKER
 
@@ -254,7 +254,7 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     job = create_job(
         prompt=None, schedule="every 5m", script="broken.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    success, doc, final_response, error, _ = run_job(job)
     assert success is False
     assert error is not None
     assert "oops" in final_response or "exited with code 3" in final_response

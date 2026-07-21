@@ -224,7 +224,7 @@ class TestTickWorkdirPartition:
             # Return a minimal tuple matching run_job's signature.
             with order_lock:
                 calls.append((job["id"], threading.current_thread().name))
-            return True, "output", "response", None
+            return True, "output", "response", None, None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
         monkeypatch.setattr(sched, "save_job_output", lambda _jid, _o: None)
@@ -339,7 +339,7 @@ class TestRunJobTerminalCwd:
             "schedule_display": "manual",
         }
 
-        success, _output, response, error = sched.run_job(job)
+        success, _output, response, error, _ = sched.run_job(job)
         assert success is True, f"run_job failed: error={error!r} response={response!r}"
 
         # AIAgent was built with skip_context_files=False (feature ON).

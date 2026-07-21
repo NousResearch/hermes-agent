@@ -27,6 +27,36 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _ensure_final_response_message(messages, final_response, interrupted):
+    """Persist a visible assistant row for every delivered final response.
+
+    A provider can finish with an assistant message that contains structured
+    reasoning but no visible ``content``.  The gateway still delivers the
+    recovered ``final_response`` to the live client, so treating that
+    reasoning-only tail as a durable answer makes the response disappear when
+    the transcript is reopened.
+    """
+    if not final_response or interrupted:
+        return False
+
+    try:
+        tail = messages[-1] if messages else None
+        tail_role = tail.get("role") if isinstance(tail, dict) else None
+        tail_content = tail.get("content") if isinstance(tail, dict) else None
+    except Exception:
+        tail_role = None
+        tail_content = None
+
+    if tail_role == "assistant":
+        if isinstance(tail_content, str) and tail_content.strip():
+            return False
+        if isinstance(tail_content, list) and tail_content:
+            return False
+
+    messages.append({"role": "assistant", "content": final_response})
+    return True
+
+
 def finalize_turn(
     agent,
     *,
@@ -220,13 +250,7 @@ def finalize_turn(
         # single chokepoint every recovery ``break`` flows through, so the
         # invariant "delivered final_response ⇒ assistant row in transcript"
         # holds regardless of which path produced it. (#43849 / #44100)
-        if final_response and not interrupted:
-            try:
-                _tail_role = messages[-1].get("role") if messages else None
-            except Exception:
-                _tail_role = None
-            if _tail_role != "assistant":
-                messages.append({"role": "assistant", "content": final_response})
+        _ensure_final_response_message(messages, final_response, interrupted)
 
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the

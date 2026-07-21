@@ -1102,6 +1102,27 @@ class TestOptionalEnvVarsRegistry:
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
 
+    def test_discord_runtime_controls_registered(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        expected = {
+            "DISCORD_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL_NAME",
+            "DISCORD_REQUIRE_MENTION",
+            "DISCORD_FREE_RESPONSE_CHANNELS",
+            "DISCORD_AUTO_THREAD",
+            "DISCORD_IGNORE_NO_MENTION",
+            "DISCORD_ALLOW_BOTS",
+            "DISCORD_IGNORED_CHANNELS",
+            "DISCORD_NO_THREAD_CHANNELS",
+        }
+
+        missing = expected - set(OPTIONAL_ENV_VARS)
+        assert not missing, f"Missing Discord runtime controls: {sorted(missing)}"
+
+        for name in expected:
+            assert OPTIONAL_ENV_VARS[name]["category"] == "messaging"
+
     def test_tavily_in_env_vars_by_version(self):
         """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
         from hermes_cli.config import ENV_VARS_BY_VERSION

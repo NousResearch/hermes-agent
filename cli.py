@@ -3715,8 +3715,10 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = _hermes_home / 'config.yaml'
+    # Use the same precedence as load_cli_config: user config first, then project config.
+    # Resolve HERMES_HOME live (not the import-time cache) so a runtime/test
+    # change of HERMES_HOME targets the right file — parity with save_config().
+    user_config_path = get_hermes_home() / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
     

@@ -3160,12 +3160,24 @@ def _persist_model_switch(result) -> None:
     if result.base_url:
         save_config_value("model.base_url", result.base_url)
     else:
-        # Clear any stale base_url when switching to a provider that doesn't use
-        # one (e.g. custom endpoint -> native provider). Reads coalesce null to
-        # absent (`model_cfg.get("base_url") or ""`), so a null is equivalent to
-        # removal without needing a key-delete. Leaving the old value would
-        # route the new model at the previous custom host (#48305).
-        save_config_value("model.base_url", None)
+        # Clear stale base_url ONLY when switching to a built-in provider
+        # (anthropic, openai, etc.) that has a hardcoded endpoint in the resolver
+        # registry. For user-defined providers declared in `custom_providers:`,
+        # the user-supplied base_url IS the provider's own default and must be
+        # preserved — otherwise the resolver falls back to OpenRouter and the
+        # next agent call returns HTTP 401: Missing Authentication header.
+        # Use the same targeted save_config_value write (NOT save_config(cfg)) so
+        # sibling model.* keys survive (#48305). Mirrors hermes_cli/web_server.py.
+        from hermes_cli.config import load_config
+
+        custom_provider_names = {
+            (entry.get("name") or "").strip().lower()
+            for entry in (load_config().get("custom_providers") or [])
+            if isinstance(entry, dict)
+        }
+        target = (result.target_provider or "").strip().lower()
+        if target not in custom_provider_names:
+            save_config_value("model.base_url", None)
 
 
 def _snapshot_agent_model_runtime(agent) -> dict:

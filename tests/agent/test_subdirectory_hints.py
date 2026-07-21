@@ -219,6 +219,24 @@ class TestSubdirectoryHintTracker:
         assert "Subdirectory context discovered:" in result
         assert "AGENTS.md" in result
 
+    def test_loads_all_supported_hint_files_in_same_directory(self, tmp_path):
+        """A directory with multiple supported hint files should surface all of them."""
+        sub = tmp_path / "pkg"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Agent rules")
+        (sub / ".cursorrules").write_text("Cursor rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(sub / "module.py")}
+        )
+
+        assert result is not None
+        assert "Agent rules" in result
+        assert "Cursor rules" in result
+        assert "pkg/AGENTS.md" in result
+        assert "pkg/.cursorrules" in result
+
     def test_truncation_of_large_hints(self, tmp_path):
         """Hint files over the limit are truncated."""
         sub = tmp_path / "bigdir"

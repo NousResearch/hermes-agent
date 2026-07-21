@@ -2013,7 +2013,10 @@ class TestResponsesEndpoint:
                 mock_run.return_value = (
                     {
                         "final_response": "2",
-                        "messages": list(first_history),
+                        "messages": [
+                            {"role": "system", "content": "private prompt"},
+                            *first_history,
+                        ],
                         "api_calls": 1,
                     },
                     {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -2036,7 +2039,10 @@ class TestResponsesEndpoint:
                 mock_run.return_value = (
                     {
                         "final_response": "3",
-                        "messages": list(second_history),
+                        "messages": [
+                            {"role": "system", "content": "private prompt"},
+                            *second_history,
+                        ],
                         "api_calls": 1,
                     },
                     {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -2057,6 +2063,69 @@ class TestResponsesEndpoint:
             assert stored_history == second_history
             assert stored_history.count(first_history[0]) == 1
             assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
+
+    def test_response_history_does_not_duplicate_when_transcript_has_system_message(self):
+        """A system-prefixed full transcript must remain linear and system-free."""
+        prior = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "one"},
+        ]
+        result = {
+            "messages": [
+                {"role": "system", "content": "private prompt"},
+                *prior,
+                {"role": "user", "content": "turn 2"},
+                {"role": "assistant", "content": "two"},
+            ]
+        }
+
+        stored = APIServerAdapter._build_response_conversation_history(
+            prior, "turn 2", result, "two"
+        )
+
+        assert stored == [*prior, {"role": "user", "content": "turn 2"}, {"role": "assistant", "content": "two"}]
+        assert not any(message["role"] == "system" for message in stored)
+
+    def test_response_history_keeps_system_prefixed_turn_only_suffix(self):
+        """A system prefix alone must not misclassify a turn-only result."""
+        prior = [{"role": "user", "content": "turn 1"}]
+        result = {
+            "messages": [
+                {"role": "system", "content": "private prompt"},
+                {"role": "assistant", "content": "turn 2 answer"},
+            ]
+        }
+
+        stored = APIServerAdapter._build_response_conversation_history(
+            prior, "turn 2", result, "turn 2 answer"
+        )
+
+        assert stored == [
+            *prior,
+            {"role": "user", "content": "turn 2"},
+            {"role": "assistant", "content": "turn 2 answer"},
+        ]
+
+    def test_response_history_keeps_user_system_prefixed_turn_only_suffix_once(self):
+        """A system-prefixed suffix containing its user turn is not full history."""
+        prior = [{"role": "user", "content": "turn 1"}]
+        result = {
+            "messages": [
+                {"role": "system", "content": "private prompt"},
+                {"role": "user", "content": "turn 2"},
+                {"role": "assistant", "content": "turn 2 answer"},
+            ]
+        }
+
+        stored = APIServerAdapter._build_response_conversation_history(
+            prior, "turn 2", result, "turn 2 answer"
+        )
+
+        assert stored == [
+            *prior,
+            {"role": "user", "content": "turn 2"},
+            {"role": "assistant", "content": "turn 2 answer"},
+        ]
 
     @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
@@ -2090,7 +2159,9 @@ class TestResponsesEndpoint:
                 "session_id": "api-test-session",
             },
         )
-        full_agent_transcript = prior_history + [
+        full_agent_transcript = [
+            {"role": "system", "content": "private prompt"},
+            *prior_history,
             {"role": "user", "content": "Read new file"},
             {
                 "role": "assistant",

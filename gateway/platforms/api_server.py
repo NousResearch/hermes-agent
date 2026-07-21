@@ -4427,17 +4427,37 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_messages = result.get("messages") if isinstance(result, dict) else None
 
         if isinstance(agent_messages, list) and agent_messages:
+            # The agent's API transcript may include its private system prompt
+            # as a leading message.  ResponseStore is client conversation
+            # state: persisting system messages both leaks the prompt and makes
+            # prefix detection miss, duplicating the full transcript each turn.
+            system_prefix = 0
+            while (
+                system_prefix < len(agent_messages)
+                and isinstance(agent_messages[system_prefix], dict)
+                and agent_messages[system_prefix].get("role") == "system"
+            ):
+                system_prefix += 1
+            stored_messages = agent_messages[system_prefix:]
             turn_start = APIServerAdapter._response_messages_turn_start_index(
                 conversation_history,
                 user_message,
                 result,
             )
             if turn_start:
-                return list(agent_messages)
+                return stored_messages
+
+            # A legacy caller may return only this turn, but still include the
+            # private system prefix.  Its first non-system message is the
+            # current user turn, so preserve prior history without appending
+            # that user a second time.
+            current_user = {"role": "user", "content": user_message}
+            if stored_messages and stored_messages[0] == current_user:
+                return prior + stored_messages
 
             full_history = prior
             full_history.append(current_user)
-            full_history.extend(agent_messages)
+            full_history.extend(stored_messages)
             return full_history
 
         full_history = prior
@@ -4456,13 +4476,22 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(agent_messages, list) or not agent_messages:
             return 0
 
+        system_prefix = 0
+        while (
+            system_prefix < len(agent_messages)
+            and isinstance(agent_messages[system_prefix], dict)
+            and agent_messages[system_prefix].get("role") == "system"
+        ):
+            system_prefix += 1
+        transcript = agent_messages[system_prefix:]
+
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         expected_prefix = prior + [current_user]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
-            return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
-            return len(prior)
+        if transcript[:len(expected_prefix)] == expected_prefix:
+            return system_prefix + len(expected_prefix)
+        if prior and transcript[:len(prior)] == prior:
+            return system_prefix + len(prior)
         return 0
 
     @classmethod

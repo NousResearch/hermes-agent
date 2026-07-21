@@ -92,17 +92,24 @@ def guess_mime_type(filename: str) -> str:
     return _EXT_TO_MIME.get(ext, "application/octet-stream")
 
 
+def _normalize_mime(mime_type: str) -> str:
+    """Strip parameters and whitespace from a MIME type for classification."""
+    return mime_type.split(";", 1)[0].strip().lower()
+
+
 def is_image(filename: str, mime_type: str = "") -> bool:
     """判断是否为图片类型。"""
-    if mime_type.startswith("image/"):
-        return True
+    if mime_type:
+        normalized = _normalize_mime(mime_type)
+        if normalized.startswith("image/"):
+            return True
     ext = os.path.splitext(filename)[-1].lower()
     return ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".tiff", ".ico"}
 
 
 def get_image_format(mime_type: str) -> int:
     """获取 TIM 图片格式编号。"""
-    return _MIME_TO_IMAGE_FORMAT.get(mime_type.lower(), 255)
+    return _MIME_TO_IMAGE_FORMAT.get(_normalize_mime(mime_type), 255)
 
 
 def md5_hex(data: bytes) -> str:

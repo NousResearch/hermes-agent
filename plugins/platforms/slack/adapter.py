@@ -3141,7 +3141,8 @@ class SlackAdapter(BasePlatformAdapter):
         if subtype in {"message_changed", "message_deleted"}:
             return
 
-        original_text = event.get("text", "")
+        raw_original_text = event.get("text", "")
+        original_text = raw_original_text
 
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a
@@ -3181,7 +3182,11 @@ class SlackAdapter(BasePlatformAdapter):
                 # Only append if the blocks contain text not already present
                 # in the plain text field (avoids duplication).
                 stripped_blocks = blocks_text.strip()
-                if stripped_blocks and stripped_blocks not in text.strip():
+                if (
+                    stripped_blocks
+                    and stripped_blocks not in text.strip()
+                    and stripped_blocks not in raw_original_text.strip()
+                ):
                     logger.debug(
                         "Slack: extracted additional text from blocks "
                         "(likely quoted/forwarded content): %s",

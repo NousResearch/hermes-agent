@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 
 import agent.secret_scope as secret_scope
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
@@ -1288,7 +1288,14 @@ class TestBangPrefixCommands:
     command before downstream processing.
     """
 
-    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+    def _make_event(
+        self,
+        text,
+        thread_ts=None,
+        channel_type="im",
+        channel="D123",
+        blocks=None,
+    ):
         evt = {
             "text": text,
             "user": "U_USER",
@@ -1298,7 +1305,23 @@ class TestBangPrefixCommands:
         }
         if thread_ts:
             evt["thread_ts"] = thread_ts
+        if blocks is not None:
+            evt["blocks"] = blocks
         return evt
+
+    @staticmethod
+    def _rich_text_block(text):
+        return [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": text}],
+                    }
+                ],
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_bang_known_command_is_rewritten_to_slash(self, adapter):
@@ -1316,8 +1339,102 @@ class TestBangPrefixCommands:
         await adapter._handle_slack_message(self._make_event("!model gpt-5.4"))
 
         msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text.startswith("/model gpt-5.4")
+        assert msg_event.text == "/model gpt-5.4"
         assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("incoming", "expected"),
+        [
+            ("!model gpt-5.6-sol", "/model gpt-5.6-sol"),
+            ("!stop", "/stop"),
+            ("!queue next task", "/queue next task"),
+            ("!new", "/new"),
+            ("!stop@hermes", "/stop@hermes"),
+            ("!nice work", "!nice work"),
+        ],
+    )
+    async def test_rich_text_bang_command_is_normalized_once(
+        self, adapter, incoming, expected
+    ):
+        """Slack's duplicate rich-text representation must not be appended
+        after the plain field has been normalized from ``!cmd`` to ``/cmd``.
+        """
+        await adapter._handle_slack_message(
+            self._make_event(incoming, blocks=self._rich_text_block(incoming))
+        )
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == expected
+
+    @pytest.mark.asyncio
+    async def test_rich_text_bang_model_dispatches_and_persists_session_override(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Drive Slack ingress through real gateway command dispatch and assert
+        the resulting model override, rather than querying pre-existing state.
+        """
+        import gateway.run as gateway_run
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  default: old-model\n  provider: custom\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+        switch_inputs = []
+
+        def fake_switch_model(**kwargs):
+            switch_inputs.append(kwargs["raw_input"])
+            if kwargs["raw_input"] != "gpt-5.6-sol":
+                return ModelSwitchResult(
+                    success=False,
+                    error_message="unexpected model input",
+                )
+            return ModelSwitchResult(
+                success=True,
+                new_model="gpt-5.6-sol",
+                target_provider="custom",
+                provider_changed=False,
+                api_key="test-key",
+                base_url="https://example.invalid/v1",
+                api_mode="chat_completions",
+                provider_label="Custom",
+            )
+
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        runner._is_user_authorized = MagicMock(return_value=True)
+        dispatched_events = []
+
+        async def dispatch(event):
+            dispatched_events.append(event)
+            return await runner._handle_message(event)
+
+        adapter.handle_message = dispatch
+
+        incoming = "!model gpt-5.6-sol"
+        await adapter._handle_slack_message(
+            self._make_event(
+                incoming,
+                thread_ts="1111111111.000001",
+                blocks=self._rich_text_block(incoming),
+            )
+        )
+
+        assert switch_inputs == ["gpt-5.6-sol"]
+        assert len(dispatched_events) == 1
+        session_key = runner._session_key_for_source(dispatched_events[0].source)
+        assert runner._session_model_overrides[session_key]["model"] == "gpt-5.6-sol"
+        persisted = await runner.async_session_store.get_model_override(session_key)
+        assert persisted["model"] == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
     async def test_bang_works_inside_thread(self, adapter):

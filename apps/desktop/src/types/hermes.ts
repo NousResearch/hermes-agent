@@ -416,6 +416,8 @@ export interface SessionMessage {
   codex_reasoning_items?: unknown
   content: unknown
   context?: unknown
+  message_id?: string
+  platform_message_id?: string
   name?: string
   reasoning?: null | string
   reasoning_content?: null | string
@@ -436,10 +438,16 @@ export interface SessionMessagesResponse {
 export interface SessionResumeResponse {
   inflight?: null | {
     assistant?: string
+    submission_id?: string
     streaming?: boolean
     user?: string
   }
   queued?: null | {
+    following_prompt?: null | {
+      submission_id?: string
+      user?: string
+    }
+    submission_id?: string
     user?: string
   }
   info?: SessionRuntimeInfo

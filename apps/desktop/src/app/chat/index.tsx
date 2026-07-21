@@ -5,7 +5,7 @@ import type * as React from 'react'
 import { Suspense, useCallback, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
-import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import type { SubmitTextOptions, SubmitTextResult } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
@@ -78,7 +78,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
-  onSubmit: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
+  onSubmit: (text: string, options?: SubmitTextOptions) => Promise<SubmitTextResult> | SubmitTextResult
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>

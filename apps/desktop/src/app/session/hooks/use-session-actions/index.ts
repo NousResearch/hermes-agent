@@ -8,8 +8,7 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { migrateSessionDraft } from '@/store/composer'
-import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
+import { clearQueuedPrompts, removeQueuedPromptById } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -71,6 +70,7 @@ import {
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   chatMessageArraysEquivalent,
+  hasLocalPendingTurnMessages,
   isSessionGoneError,
   patchSessionWorkspace,
   preserveLocalPendingTurnMessages,
@@ -127,14 +127,36 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResponse['messages'],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>,
+  authoritativeIdleTranscript = false
 ): ChatMessage[] {
+  for (const message of authoritativeMessages) {
+    const durableMessageId = message.message_id ?? message.platform_message_id
+
+    if (durableMessageId?.startsWith('desktop:')) {
+      removeQueuedPromptById(durableMessageId.slice('desktop:'.length))
+    }
+  }
+
   const authoritative = toChatMessages(authoritativeMessages)
   const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
   const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
+
+  const withPendingTurn = preserveLocalPendingTurnMessages(
+    reconciled,
+    previousMessages,
+    Boolean(liveProjection) || authoritativeIdleTranscript
+  )
 
   return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
+}
+
+function hasLiveProjection(response: Pick<SessionResumeResponse, 'inflight' | 'queued'>): boolean {
+  return Boolean(response.inflight || response.queued)
+}
+
+function hasLiveProjectionContract(response: Pick<SessionResumeResponse, 'inflight' | 'queued'>): boolean {
+  return Object.prototype.hasOwnProperty.call(response, 'inflight') || Object.prototype.hasOwnProperty.call(response, 'queued')
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -671,10 +693,18 @@ export function useSessionActions({
               dropSessionState(cachedRuntimeId)
             } else {
               const runtimeInfo = applyRuntimeInfo(activated.info)
+              const activatedHasLiveProjection = hasLiveProjection(activated)
+              const activatedIsAuthoritativelyIdle =
+                hasLiveProjectionContract(activated) && !activatedHasLiveProjection && activated.running === false
 
               let activatedMessages =
-                activated.messages.length || activated.inflight || activated.queued
-                  ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages, activated)
+                activated.messages.length || activatedHasLiveProjection || activatedIsAuthoritativelyIdle
+                  ? reconcileAuthoritativeMessages(
+                      activated.messages,
+                      cachedViewState.messages,
+                      activatedHasLiveProjection ? activated : undefined,
+                      activatedIsAuthoritativelyIdle
+                    )
                   : cachedViewState.messages
 
               const running = Boolean(activated.running ?? cachedViewState.busy)
@@ -699,7 +729,12 @@ export function useSessionActions({
                   persisted.session_id === activatedStoredSessionId
 
                 if (persisted && persistedMatchesActivatedSession) {
-                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
+                  activatedMessages = reconcileAuthoritativeMessages(
+                    persisted.messages,
+                    activatedMessages,
+                    undefined,
+                    true
+                  )
                 }
               }
 
@@ -854,12 +889,15 @@ export function useSessionActions({
         const prefetchMatchesResumedSession =
           !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
 
-        const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
+        const resumedHasLiveProjection = hasLiveProjection(resumed)
+        const resumedIsAuthoritativelyIdle =
+          hasLiveProjectionContract(resumed) && !resumedHasLiveProjection && resumed.running === false
 
         const preferredMessages =
           prefetchApplied &&
           prefetchMatchesResumedSession &&
-          !hasLiveProjection &&
+          !resumedHasLiveProjection &&
+          !hasLocalPendingTurnMessages(localSnapshot) &&
           resumed.messages.length <= prefetchedMessageCount
             ? localSnapshot
             : (() => {
@@ -867,7 +905,12 @@ export function useSessionActions({
                   ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
                   : currentMessages
 
-                const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
+                const resumedMessages = reconcileAuthoritativeMessages(
+                  resumed.messages,
+                  previousMessages,
+                  resumedHasLiveProjection ? resumed : undefined,
+                  resumedIsAuthoritativelyIdle
+                )
 
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()

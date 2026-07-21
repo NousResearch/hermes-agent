@@ -11,6 +11,7 @@ import {
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
+  hasLocalPendingTurnMessages,
   isSessionGoneError,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
@@ -293,6 +294,14 @@ describe('reconcileResumeMessages', () => {
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
+  it('detects optimistic rows that disqualify the resume fast path', () => {
+    expect(hasLocalPendingTurnMessages([msg('1-user', 'user', 'persisted')])).toBe(false)
+    expect(hasLocalPendingTurnMessages([msg('user-local', 'user', 'pending')])).toBe(true)
+    expect(
+      hasLocalPendingTurnMessages([msg('assistant-stream-1', 'assistant', 'partial', { pending: true })])
+    ).toBe(true)
+  })
+
   it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
     const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
 
@@ -327,6 +336,28 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  it('does not stack failed optimistic copies on repeated authoritative text', () => {
+    // Incident regression: three accepted "continue" turns were persisted,
+    // while two failed local attempts remained optimistic in the stale
+    // renderer. Reconnect hydration must show the three authoritative turns,
+    // not all five rows.
+    const authoritative = [
+      msg('stored-user-1', 'user', 'continue'),
+      msg('stored-user-2', 'user', 'continue'),
+      msg('stored-user-3', 'user', 'continue')
+    ]
+
+    const previous = [
+      msg('stored-user-1', 'user', 'continue'),
+      msg('stored-user-2', 'user', 'continue'),
+      msg('stored-user-3', 'user', 'continue'),
+      msg('user-optimistic-1', 'user', 'continue'),
+      msg('user-optimistic-2', 'user', 'continue')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, previous, true)).toBe(authoritative)
+  })
 })
 
 describe('appendLiveSessionProjection', () => {
@@ -338,9 +369,10 @@ describe('appendLiveSessionProjection', () => {
       inflight: {
         user: 'current prompt',
         assistant: 'partial answer',
+        submission_id: 'entry-current',
         streaming: true
       },
-      queued: { user: 'newest prompt' }
+      queued: { user: 'newest prompt', submission_id: 'entry-next' }
     })
 
     expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
@@ -351,12 +383,16 @@ describe('appendLiveSessionProjection', () => {
       'partial answer',
       'newest prompt'
     ])
+    expect(restored[2]?.id).toBe('submission:entry-current')
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+    expect(restored[4]?.id).toBe('submission:entry-next')
   })
 
   it('preserves the original array when no live projection exists', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 
-    expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
+    expect(
+      appendLiveSessionProjection(stored, { inflight: null, queued: null, session_id: 'runtime-1' })
+    ).toBe(stored)
   })
 })

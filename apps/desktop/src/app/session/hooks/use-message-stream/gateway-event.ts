@@ -15,6 +15,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { removeQueuedPromptById } from '@/store/composer-queue'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -469,6 +470,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
+        if (typeof payload?.submission_id === 'string' && payload.submission_id) {
+          removeQueuedPromptById(payload.submission_id)
+        }
+
         // Turn ended — drop any blocking prompt still open for THIS session
         // (e.g. interrupted, or the approval already resolved). Scoped to the
         // session so a background turn finishing can't wipe the active chat's
@@ -765,6 +770,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
+
+        if (payload?.terminal === true && typeof payload.submission_id === 'string' && payload.submission_id) {
+          removeQueuedPromptById(payload.submission_id)
+        }
 
         // A turn that errors out has also ended — drop any open blocking prompt
         // for this session so an approval/sudo/secret overlay can't linger past

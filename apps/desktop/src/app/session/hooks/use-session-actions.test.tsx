@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
+import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -711,6 +711,200 @@ describe('resumeSession failure recovery', () => {
     expect($messages.get().map(message => message.id)).toContain('user-optimistic')
   })
 
+  it('reconciles a persisted Desktop submission with its optimistic row exactly once', async () => {
+    $queuedPromptsBySession.set({
+      'stored-1': [
+        {
+          id: 'entry-123',
+          text: 'persist me once',
+          attachments: [],
+          attempts: 1,
+          queuedAt: 1
+        }
+      ]
+    })
+    setMessages([
+      {
+        id: 'stored-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'earlier question' }]
+      },
+      {
+        id: 'stored-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'earlier answer' }]
+      },
+      {
+        id: 'submission:entry-123',
+        role: 'user',
+        parts: [{ type: 'text', text: 'persist me once' }]
+      }
+    ])
+
+    const storedMessages = [
+      { content: 'earlier question', role: 'user', timestamp: 1 },
+      { content: 'earlier answer', role: 'assistant', timestamp: 2 },
+      {
+        content: 'persist me once',
+        message_id: 'desktop:entry-123',
+        role: 'user',
+        timestamp: 3
+      }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          running: false,
+          inflight: null,
+          queued: null,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-1"
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    const matching = resumedState?.messages.filter(message => message.id === 'submission:entry-123') ?? []
+    expect(matching).toHaveLength(1)
+    expect(JSON.stringify(matching[0])).toContain('persist me once')
+    expect(getQueuedPrompts('stored-1')).toEqual([])
+  })
+
+  it('drops an unmatched optimistic tail when resume explicitly reports the backend idle', async () => {
+    setMessages([
+      {
+        id: 'stored-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'earlier question' }]
+      },
+      {
+        id: 'stored-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'earlier answer' }]
+      },
+      {
+        id: 'submission:stale-entry',
+        role: 'user',
+        parts: [{ type: 'text', text: 'stale optimistic tail' }]
+      }
+    ])
+
+    const storedMessages = [
+      { content: 'earlier question', role: 'user', timestamp: 1 },
+      { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          running: false,
+          inflight: null,
+          queued: null,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-1"
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    expect(resumedState?.messages.map(message => message.id)).not.toContain('submission:stale-entry')
+    expect(JSON.stringify(resumedState?.messages)).not.toContain('stale optimistic tail')
+  })
+
+  it('drops cached optimistic messages when warm activation explicitly reports idle', async () => {
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([['stored-1', 'runtime-warm']])
+    } satisfies MutableRefObject<Map<string, string>>
+    const cachedState = createClientSessionState('stored-1')
+
+    cachedState.messages = [
+      {
+        id: 'submission:stale-entry',
+        role: 'user',
+        parts: [{ type: 'text', text: 'stale optimistic tail' }]
+      }
+    ]
+    const sessionStateByRuntimeIdRef = {
+      current: new Map([['runtime-warm', cachedState]])
+    } satisfies MutableRefObject<Map<string, ClientSessionState>>
+
+    setSessions([storedSession({ message_count: 1 })])
+    vi.mocked(getSessionMessages).mockRejectedValue(new Error('REST unavailable'))
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'runtime-warm',
+          session_key: 'stored-1',
+          messages: [],
+          running: false,
+          inflight: null,
+          queued: null,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    expect(resumedState?.messages).toEqual([])
+  })
+
   it('restores the in-flight turn and queued user prompt after a full renderer restart', async () => {
     const storedMessages = [
       { content: 'earlier question', role: 'user', timestamp: 1 },
@@ -731,9 +925,10 @@ describe('resumeSession failure recovery', () => {
           inflight: {
             user: 'current prompt',
             assistant: 'partial answer',
+            submission_id: 'current-entry',
             streaming: true
           },
-          queued: { user: 'newest prompt' },
+          queued: { user: 'newest prompt', submission_id: 'queued-entry' },
           info: {}
         } as never
       }
@@ -757,6 +952,8 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('current prompt')
     expect(renderedMessages).toContain('partial answer')
     expect(renderedMessages).toContain('newest prompt')
+    expect(resumedState?.messages.map(message => message.id)).toContain('submission:current-entry')
+    expect(resumedState?.messages.map(message => message.id)).toContain('submission:queued-entry')
   })
 
   it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {

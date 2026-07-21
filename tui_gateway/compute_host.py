@@ -352,6 +352,7 @@ class ComputeHost:
             from tui_gateway import server
 
             session = self._ensure_server_session(server, frame)
+            submission_id = str(frame.get("client_submission_id") or "")
             with session["history_lock"]:
                 if session.get("running"):
                     self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
@@ -359,7 +360,11 @@ class ComputeHost:
                 session["running"] = True
                 session["_turn_cancel_requested"] = False
                 session["last_active"] = time.time()
-                server._start_inflight_turn(session, frame.get("text") if "text" in frame else frame.get("prompt"))
+                server._start_inflight_turn(
+                    session,
+                    frame.get("text") if "text" in frame else frame.get("prompt"),
+                    submission_id,
+                )
             self.emit({"type": "turn.started", "sid": sid, "request_id": request_id, "started_ns": now_ns()})
             try:
                 server._ensure_session_db_row(session)
@@ -376,7 +381,13 @@ class ComputeHost:
             except Exception:
                 pass
             text = frame.get("text") if "text" in frame else frame.get("prompt", "")
-            server._run_prompt_submit(request_id, sid, session, text)
+            server._run_prompt_submit(
+                request_id,
+                sid,
+                session,
+                text,
+                submission_id=submission_id,
+            )
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 run_thread.join()

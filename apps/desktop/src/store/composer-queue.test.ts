@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ComposerAttachment } from './composer'
 import {
@@ -6,10 +6,17 @@ import {
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
+  flushQueuedPromptMutations,
   getQueuedPrompts,
+  incrementQueuedPromptAttempts,
+  markQueuedPromptAcceptedAtomic,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
+  removeQueuedPromptById,
+  QUEUED_PROMPT_ACCEPTANCE_RETRY_MS,
+  queuedPromptAwaitingCompletion,
+  resetQueuedPromptAttempts,
   shouldAutoDrain,
   updateQueuedPrompt,
   updateQueuedPromptText
@@ -28,7 +35,8 @@ function attachment(id: string, kind: ComposerAttachment['kind'] = 'file'): Comp
 }
 
 describe('composer queue store', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await flushQueuedPromptMutations()
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
     $queuedPromptsBySession.set({})
   })
@@ -107,8 +115,9 @@ describe('composer queue store', () => {
     expect(window.localStorage.getItem(QUEUE_STORAGE_KEY)).toBeNull()
   })
 
-  it('persists queue entries into local storage', () => {
+  it('persists queue entries into local storage', async () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'persist me' })
+    await flushQueuedPromptMutations()
 
     const raw = window.localStorage.getItem(QUEUE_STORAGE_KEY)
     expect(raw).toBeTruthy()
@@ -116,10 +125,27 @@ describe('composer queue store', () => {
     const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
     expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
   })
+
+  it('persists one shared automatic retry count on the queue entry', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'retry me' })
+
+    expect(entry?.attempts).toBe(0)
+    expect(incrementQueuedPromptAttempts(entry!.id)?.attempts).toBe(1)
+    expect(incrementQueuedPromptAttempts(entry!.id)?.attempts).toBe(2)
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.attempts).toBe(2)
+    await flushQueuedPromptMutations()
+    expect(JSON.parse(String(window.localStorage.getItem(QUEUE_STORAGE_KEY)))[SESSION_KEY][0].attempts).toBe(2)
+
+    expect(resetQueuedPromptAttempts(entry!.id)).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.attempts).toBe(0)
+  })
+
+
 })
 
 describe('migrateQueuedPrompts', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await flushQueuedPromptMutations()
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
     $queuedPromptsBySession.set({})
   })
@@ -134,6 +160,14 @@ describe('migrateQueuedPrompts', () => {
     expect($queuedPromptsBySession.get()['rt-old']).toBeUndefined()
   })
 
+  it('removes an accepted entry by identity after its runtime key migrates', () => {
+    const entry = enqueueQueuedPrompt('rt-old', { attachments: [], text: 'submit once' })
+
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(true)
+    expect(removeQueuedPromptById(entry!.id)).toBe(true)
+    expect(getQueuedPrompts('rt-new')).toEqual([])
+  })
+
   it('appends after existing target entries (FIFO preserved)', () => {
     enqueueQueuedPrompt('rt-new', { attachments: [], text: 'already here' })
     enqueueQueuedPrompt('rt-old', { attachments: [], text: 'migrated' })
@@ -141,6 +175,29 @@ describe('migrateQueuedPrompts', () => {
     migrateQueuedPrompts('rt-old', 'rt-new')
 
     expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['already here', 'migrated'])
+  })
+
+  it('keeps an older source entry ahead of a newer target entry', () => {
+    const now = vi.spyOn(Date, 'now')
+    now.mockReturnValue(100)
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'older source' })
+    now.mockReturnValue(200)
+    enqueueQueuedPrompt('rt-new', { attachments: [], text: 'newer target' })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['older source', 'newer target'])
+    now.mockRestore()
+  })
+
+  it('holds accepted custody until its bounded replay lease expires', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'retain me' })!
+    await flushQueuedPromptMutations()
+    const accepted = await markQueuedPromptAcceptedAtomic(entry.id)
+    const acceptedAt = accepted!.acceptedAt!
+
+    expect(queuedPromptAwaitingCompletion(accepted!, acceptedAt + QUEUED_PROMPT_ACCEPTANCE_RETRY_MS - 1)).toBe(true)
+    expect(queuedPromptAwaitingCompletion(accepted!, acceptedAt + QUEUED_PROMPT_ACCEPTANCE_RETRY_MS)).toBe(false)
   })
 
   it('is a no-op when source is empty or keys match', () => {

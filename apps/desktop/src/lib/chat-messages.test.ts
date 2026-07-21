@@ -14,6 +14,32 @@ import {
 } from './chat-messages'
 
 describe('toChatMessages', () => {
+  it('maps a durable Desktop submission identity onto the optimistic user id', () => {
+    const messages = toChatMessages([
+      {
+        role: 'user',
+        content: 'persist me once',
+        message_id: 'desktop:queued-123',
+        timestamp: 1
+      }
+    ])
+
+    expect(messages[0]?.id).toBe('submission:queued-123')
+  })
+
+  it('maps the REST transcript identity alias onto the optimistic user id', () => {
+    const messages = toChatMessages([
+      {
+        role: 'user',
+        content: 'persist me once',
+        platform_message_id: 'desktop:queued-rest-123',
+        timestamp: 1
+      }
+    ])
+
+    expect(messages[0]?.id).toBe('submission:queued-rest-123')
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },

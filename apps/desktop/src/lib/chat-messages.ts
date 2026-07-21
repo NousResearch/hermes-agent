@@ -25,6 +25,8 @@ export type GatewayEventPayload = {
   text?: string
   rendered?: string
   status?: string
+  submission_id?: string
+  terminal?: boolean
   message?: string
   id?: string
   name?: string
@@ -882,8 +884,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const durableMessageId = message.message_id ?? message.platform_message_id
+    const stableSubmissionId = durableMessageId?.startsWith('desktop:')
+      ? `submission:${durableMessageId.slice('desktop:'.length)}`
+      : null
+
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
+      id: stableSubmissionId ?? `${message.timestamp || Date.now()}-${index}-${message.role}`,
       role: message.role,
       parts,
       timestamp: message.timestamp

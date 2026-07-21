@@ -3,11 +3,16 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
+import {
+  $queuedPromptsBySession,
+  enqueueQueuedPrompt,
+  flushQueuedPromptMutations,
+  getQueuedPrompts
+} from '@/store/composer-queue'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
-import type { SubmitTextOptions } from './use-prompt-actions/utils'
+import type { SubmitTextOptions, SubmitTextResult } from './use-prompt-actions/utils'
 
 function Harness({
   enabled = true,
@@ -18,7 +23,7 @@ function Harness({
   enabled?: boolean
   runtimeMap: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
-  submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
+  submitText: (text: string, options?: SubmitTextOptions) => Promise<SubmitTextResult> | SubmitTextResult
 }) {
   useBackgroundQueueDrain({
     enabled,
@@ -31,15 +36,20 @@ function Harness({
 }
 
 describe('useBackgroundQueueDrain', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await flushQueuedPromptMutations()
     vi.useRealTimers()
+    window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    $queuedPromptsBySession.set({})
     clearAllSessionStates()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
+    await flushQueuedPromptMutations()
     vi.restoreAllMocks()
     vi.useRealTimers()
+    window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
     $queuedPromptsBySession.set({})
     clearAllSessionStates()
   })
@@ -48,7 +58,11 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const queued = enqueueQueuedPrompt('stored-session-a', {
+      text: 'continue in the background',
+      attachments: []
+    })
+
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
@@ -56,13 +70,38 @@ describe('useBackgroundQueueDrain', () => {
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
         attachments: [],
+        clientSubmissionId: queued!.id,
         fromQueue: true,
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
     })
 
-    await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+    await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('removes exact queue custody immediately for a durable duplicate admission', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const queued = enqueueQueuedPrompt('stored-session-a', { text: 'already admitted', attachments: [] })
+    const submitText = vi.fn(async () => ({ accepted: true as const, status: 'duplicate' as const }))
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toEqual([]))
+    expect(queued).not.toBeNull()
+  })
+
+  it('retains a queue lease for queued backend admission', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    enqueueQueuedPrompt('stored-session-a', { text: 'queued prompt', attachments: [] })
+    const submitText = vi.fn(async () => ({ accepted: true as const, status: 'queued' as const }))
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(getQueuedPrompts('stored-session-a')[0]?.acceptedAt).toEqual(expect.any(Number)))
   })
 
   it('leaves the selected session queue to the mounted ChatBar drainer', async () => {
@@ -100,18 +139,50 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    const queued = enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
         attachments: [],
+        clientSubmissionId: queued!.id,
         fromQueue: true,
         sessionId: null,
         storedSessionId: 'stored-session-a'
       })
     })
+  })
+
+  it('claims one queue entry once when two drain owners overlap', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    let accept: ((accepted: boolean) => void) | null = null
+
+    const submitText = vi.fn(
+      () =>
+        new Promise<boolean>(resolve => {
+          accept = resolve
+        })
+    )
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'continue once', attachments: [] })
+
+    render(
+      <>
+        <Harness runtimeMap={runtimeMap} submitText={submitText} />
+        <Harness runtimeMap={runtimeMap} submitText={submitText} />
+      </>
+    )
+
+    await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      accept?.(true)
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
   })
 
   it('retries a rejected background drain without waiting for another queue or busy-state change', async () => {
@@ -137,6 +208,6 @@ describe('useBackgroundQueueDrain', () => {
     })
 
     expect(submitText).toHaveBeenCalledTimes(2)
-    expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
   })
 })

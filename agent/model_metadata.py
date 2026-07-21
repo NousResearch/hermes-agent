@@ -1094,8 +1094,58 @@ def fetch_endpoint_model_metadata(
                         gen_settings = props.get("default_generation_settings", {})
                         n_ctx = gen_settings.get("n_ctx")
                         model_alias = props.get("model_alias", "")
-                        if n_ctx and model_alias and model_alias in cache:
-                            cache[model_alias]["context_length"] = n_ctx
+                        # Router mode: n_ctx is 0 (dummy value). Query the loaded
+                        # model's port directly via /models to find it.
+                        if not n_ctx:
+                            for model_entry in payload.get("data", []):
+                                if not isinstance(model_entry, dict):
+                                    continue
+                                status = model_entry.get("status", {})
+                                # Router mode uses status.value (not status.state)
+                                if status.get("value") != "loaded":
+                                    continue
+                                model_args = status.get("args", [])
+                                # Extract port from --port argument in loaded model's args
+                                # args can be a list (router mode) or string (single server)
+                                loaded_port = None
+                                if isinstance(model_args, list):
+                                    # Router mode: args is a list like ["--port", "52139"]
+                                    for i, arg in enumerate(model_args):
+                                        if arg == "--port" and i + 1 < len(model_args):
+                                            try:
+                                                loaded_port = int(model_args[i + 1])
+                                            except (ValueError, IndexError):
+                                                pass
+                                            break
+                                elif isinstance(model_args, str):
+                                    # Single server mode: args is a string like "--port 52139"
+                                    for arg in model_args.split():
+                                        if arg.startswith("--port="):
+                                            try:
+                                                loaded_port = int(arg.split("=", 1)[1])
+                                            except (ValueError, IndexError):
+                                                pass
+                                            break
+                                if loaded_port:
+                                    try:
+                                        props_resp2 = requests.get(
+                                            f"http://127.0.0.1:{loaded_port}/props",
+                                            headers=headers, timeout=5,
+                                        )
+                                        if props_resp2.ok:
+                                            props2 = props_resp2.json()
+                                            gen_settings2 = props2.get("default_generation_settings", {})
+                                            n_ctx2 = gen_settings2.get("n_ctx")
+                                            model_alias2 = props2.get("model_alias", "")
+                                            if n_ctx2 and model_alias2 and model_alias2 in cache:
+                                                n_ctx = n_ctx2
+                                                model_alias = model_alias2
+                                                break
+                                    except Exception:
+                                        pass
+                            # Apply the resolved context length
+                            if n_ctx and model_alias and model_alias in cache:
+                                cache[model_alias]["context_length"] = n_ctx
                 except Exception:
                     pass
 

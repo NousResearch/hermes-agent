@@ -256,6 +256,7 @@ print(results)
 | `openai.vision(...)` | Does not exist. Use `openai.chat_completions(messages=[...])` with `image_url` blocks |
 | `from pixeltable.iterators import FrameIterator` | Deprecated. Use `from pixeltable.functions.video import frame_iterator` |
 | `t.col.similarity('query')` | Positional arg deprecated. Use `t.col.similarity(string='query')` |
+| `t.col.select()` / `t.col.count()` / `.show()` / `.head()` | Removed in Pixeltable 0.6.8+. Use `t.select(t.col)...` and `t.count()`. (`t.col.count(pattern)` is the string UDF, not a row count.) |
 | `pxt.Table(...)` or `pxt.connect(...)` | Do not exist. Use `pxt.create_table(...)` and `pxt.get_table(...)` |
 | `for row in data: model.predict(row)` | Use computed columns instead — they auto-execute on insert |
 

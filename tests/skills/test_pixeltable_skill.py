@@ -175,14 +175,25 @@ class TestSupportFiles:
         assert 'mcp_servers:' in text, 'MCP reference must contain mcp_servers: config.yaml entry'
         assert 'mcpServers' not in text, 'MCP reference must not use mcpServers'
         assert 'pixeltable' in text.lower(), 'MCP reference must mention pixeltable'
+        assert 'git+https://github.com/pixeltable/mcp-server-pixeltable-developer' in text, \
+            'MCP reference must install the server from git (not bare PyPI uvx)'
 
     def test_mcp_reference_uses_hermes_tool_prefix(self) -> None:
         text = MCP_REF.read_text()
-        assert 'mcp_pixeltable_' in text, \
-            'MCP reference must document Hermes mcp_pixeltable_ tool prefix'
-        # Reject bare pixeltable_* Hermes names (mcp_pixeltable_* substring is OK).
-        bare = re.findall(r'(?<!mcp_)pixeltable_(?:create_table|insert_data|query_table)\b', text)
-        assert not bare, f'MCP reference must not teach bare pixeltable_* tool names: {bare}'
+        # Live MCP tools are mostly pixeltable_*; Hermes server key pixeltable → double prefix.
+        assert 'mcp_pixeltable_pixeltable_create_table' in text, \
+            'MCP reference must document Hermes name mcp_pixeltable_pixeltable_create_table'
+        assert 'mcp_pixeltable_execute_python' in text, \
+            'MCP reference must document Hermes name mcp_pixeltable_execute_python'
+        assert 'Agent uses: pixeltable_' not in text, \
+            'Examples must not call MCP tools without the Hermes mcp_ prefix'
+        assert '`pixeltable_create_table`' not in text, \
+            'Do not document bare MCP tool names as Hermes-callable tools'
+
+    def test_setup_emits_git_mcp_install(self) -> None:
+        text = SETUP_SH.read_text()
+        assert 'git+https://github.com/pixeltable/mcp-server-pixeltable-developer' in text, \
+            'setup.sh must emit git+ uvx args for the MCP server'
 
     def test_pipeline_reference_has_examples(self) -> None:
         text = PIPELINE_REF.read_text()
@@ -232,3 +243,9 @@ class TestApiCorrectness:
 
     def test_collect_pattern_present(self, skill_text: str) -> None:
         assert '.collect()' in skill_text, 'SKILL.md must show .collect() to terminate queries'
+
+    def test_columnref_query_helpers_pitfall(self, skill_text: str) -> None:
+        assert 't.select(t.col)' in skill_text, \
+            'SKILL.md must warn that ColumnRef query helpers were removed (use t.select)'
+        assert 't.count()' in skill_text, \
+            'SKILL.md must document t.count() for row counts'

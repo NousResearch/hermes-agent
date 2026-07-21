@@ -28,7 +28,10 @@ if command -v uvx &>/dev/null; then
     echo "  mcp_servers:"
     echo "    pixeltable:"
     echo "      command: uvx"
-    echo "      args: [mcp-server-pixeltable-developer]"
+    echo "      args:"
+    echo "        - --from"
+    echo "        - git+https://github.com/pixeltable/mcp-server-pixeltable-developer"
+    echo "        - mcp-server-pixeltable-developer"
 else
     echo "uvx not found. Install uv (https://docs.astral.sh/uv/) for MCP server support."
 fi

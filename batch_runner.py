@@ -1010,7 +1010,7 @@ class BatchRunner:
             checkpoint_data["completed_prompts"] = sorted(completed_prompts_set)
             self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
         except Exception as ckpt_err:
-            print(f"âš ï¸  Warning: Failed to save final checkpoint: {ckpt_err}")
+            print(f"⚠️ Warning: Failed to save final checkpoint: {ckpt_err}")
         
         # Calculate success rates
         for tool_name in total_tool_stats:

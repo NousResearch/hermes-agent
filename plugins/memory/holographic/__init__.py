@@ -172,11 +172,15 @@ class HolographicMemoryProvider(MemoryProvider):
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
 
         self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
+        # The store may have adopted a persisted hrr_dim that differs from
+        # the configured value (see MemoryStore._load_or_persist_hrr_dim).
+        # The store is the single source of truth — the retriever must agree
+        # with it, or every query is rejected as a dimension mismatch.
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
             hrr_weight=hrr_weight,
-            hrr_dim=hrr_dim,
+            hrr_dim=self._store.hrr_dim,
         )
         self._session_id = session_id
 

@@ -103,17 +103,19 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
 
     Returns 1.0 for identical vectors, near 0.0 for random (unrelated) vectors,
     and -1.0 for perfectly anti-correlated vectors.
+
+    Raises ValueError if a and b have different shapes. Callers in the
+    retrieval pipeline are expected to filter mismatched vectors out at
+    decode time (see retrieval._safe_phases) — this is an exceptional
+    contract, not a soft "unrelated" score, because 0.0 would read as a
+    meaningful (anti-)correlation signal downstream, e.g. in contradiction
+    scoring, instead of the "this comparison is meaningless" it actually is.
     """
     _require_numpy()
     if a.shape != b.shape:
-        logger.debug(
-            "HRR similarity: dimension mismatch (a.shape=%s, b.shape=%s) — "
-            "returning neutral 0.0. Vectors were likely encoded with different "
-            "hrr_dim configs; run rebuild_all_vectors() to migrate.",
-            a.shape,
-            b.shape,
+        raise ValueError(
+            f"dimension mismatch: {a.shape} vs {b.shape} — run rebuild_all_vectors()"
         )
-        return 0.0
     return float(np.mean(np.cos(a - b)))
 
 

@@ -141,6 +141,28 @@ class TestDimMismatchDoesNotCrash:
         results = retriever.contradict(category="project")
         assert isinstance(results, list)
 
+    def test_probe_all_rows_skipped_returns_empty_and_warns_once(self, tmp_path, caplog):
+        """When every fact vector in a category mismatches the retriever's
+        dim (e.g. a whole category migrated at a different time), probe()
+        must return [] (not fall through to a keyword-search that finds
+        stale/irrelevant hits) and log exactly one warning naming
+        rebuild_all_vectors."""
+        import logging
+
+        db_path = tmp_path / "all_skip.db"
+        store = MemoryStore(str(db_path), hrr_dim=256)
+        store.add_fact("Peppi owns the deploy pipeline.", category="project")
+        retriever = FactRetriever(store=store, hrr_dim=1024)
+        try:
+            with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic.retrieval"):
+                results = retriever.probe("peppi", category="project")
+            assert results == []
+            warnings = [r for r in caplog.records if "skipped" in r.message.lower()]
+            assert len(warnings) == 1
+            assert "rebuild_all_vectors" in warnings[0].message
+        finally:
+            store.close()
+
     def test_skip_warning_logged_once_per_operation(self, mismatched_dim_retriever, caplog):
         import logging
         from plugins.memory.holographic import retrieval as retrieval_mod

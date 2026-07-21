@@ -243,6 +243,34 @@ class TestProviderShutdown:
         assert MemoryStore._shared == {}
 
 
+class TestProviderRetrieverDimAgreement:
+    """The provider must not construct FactRetriever with the raw configured
+    hrr_dim — MemoryStore may have adopted a different persisted dim, and the
+    retriever must agree with the store or every query is rejected as a
+    dimension mismatch (issue #68682 follow-up)."""
+
+    def test_provider_retriever_uses_store_adopted_dim(self, db_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        # First session: persist hrr_dim=256.
+        seed = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 256})
+        seed.initialize("seed-session")
+        seed._store.add_fact("Peppi works on the backend team.", category="project")
+        seed.shutdown()
+
+        # Second session: config now says 1024, but the DB already has 256.
+        provider = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 1024})
+        try:
+            provider.initialize("later-session")
+            assert provider._store.hrr_dim == 256
+            assert provider._retriever.hrr_dim == 256
+            # Must not raise, and must actually find the seeded fact.
+            results = provider._retriever.search("backend", min_trust=0.0)
+            assert isinstance(results, list)
+        finally:
+            provider.shutdown()
+
+
 class TestHrrDimPersistence:
     """A stored hrr_dim must survive process restarts. Before this fix,
     hrr_dim came only from the constructor/config, so a config change
@@ -288,3 +316,48 @@ class TestHrrDimPersistence:
             assert store2.hrr_dim == 1024
         finally:
             store2.close()
+
+    def test_rebuild_bank_skips_corrupt_vector_without_crashing(self, db_path):
+        """A legacy mixed-dim DB must not crash add_fact/_rebuild_bank — a
+        stray vector at the wrong dimension must be skipped, counted, and
+        excluded from the bank's fact_count, not fed into hrr.bundle()."""
+        import numpy as np
+
+        store = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            store.add_fact("A fact with a valid 1024-dim vector.", category="mix")
+            # Simulate a leftover fact vector from a prior 256-dim session by
+            # writing a mismatched-length blob directly.
+            bad_vec = np.zeros(256, dtype=np.float64)
+            store._conn.execute(
+                "INSERT INTO facts (content, category, hrr_vector) VALUES (?, ?, ?)",
+                ("A corrupt fact from an old session.", "mix", bad_vec.tobytes()),
+            )
+            store._conn.commit()
+
+            # Must not raise (bundle() broadcasting different-length vectors).
+            store._rebuild_bank("mix")
+
+            row = store._conn.execute(
+                "SELECT fact_count FROM memory_banks WHERE bank_name = 'cat:mix'"
+            ).fetchone()
+            assert row["fact_count"] == 1  # only the accepted 1024-dim vector
+        finally:
+            store.close()
+
+    def test_second_instance_on_shared_connection_adopts_dim(self, db_path):
+        """A second MemoryStore attaching to an already-initialised shared
+        connection must adopt the same persisted dim as the first instance,
+        not keep its own constructor value. _init_db (and therefore dim
+        adoption) only runs once per shared connection — the fix must sync
+        the dim onto every later attacher, not just the first."""
+        a = MemoryStore(db_path, hrr_dim=256)
+        try:
+            b = MemoryStore(db_path, hrr_dim=1024)
+            try:
+                assert b.hrr_dim == 256
+                assert a.hrr_dim == b.hrr_dim
+            finally:
+                b.close()
+        finally:
+            a.close()

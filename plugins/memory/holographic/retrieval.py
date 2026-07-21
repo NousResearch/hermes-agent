@@ -40,13 +40,14 @@ def _safe_phases(data: bytes, expected_dim: int) -> "hrr.np.ndarray | None":
     return vec
 
 
-def _warn_skipped(operation: str, skipped: int) -> None:
+def _warn_skipped(operation: str, skipped: int, unit: str = "vector(s)") -> None:
     if skipped:
         logger.warning(
-            "%s: skipped %d vector(s) with mismatched/corrupt data; "
+            "%s: skipped %d %s with mismatched/corrupt data; "
             "run rebuild_all_vectors() to migrate.",
             operation,
             skipped,
+            unit,
         )
 
 
@@ -176,6 +177,12 @@ class FactRetriever:
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
         probe_key = hrr.bind(entity_vec, role_entity)
 
+        # Tracks vectors skipped for dim mismatch/corruption across BOTH the
+        # bank-vector attempt below and the per-fact fallback loop further
+        # down, so a single probe() call emits exactly one aggregated
+        # warning instead of one per code path.
+        skipped = 0
+
         # Try category-specific bank first, then all facts
         if category:
             bank_name = f"cat:{category}"
@@ -191,7 +198,10 @@ class FactRetriever:
                     return self._score_facts_by_vector(
                         extracted, category=category, limit=limit
                     )
-                _warn_skipped("probe (bank vector)", 1)
+                # Bank vector itself was corrupt/mismatched — fall through to
+                # per-fact scoring below, but don't warn yet; the per-fact
+                # loop's aggregated warning covers this probe() call too.
+                skipped += 1
 
         # Score against individual fact vectors directly
         where = "WHERE hrr_vector IS NOT NULL"
@@ -216,7 +226,6 @@ class FactRetriever:
             return self.search(entity, category=category, limit=limit)
 
         scored = []
-        skipped = 0
         for row in rows:
             fact = dict(row)
             fact_vec = _safe_phases(fact.pop("hrr_vector"), self.hrr_dim)
@@ -500,7 +509,7 @@ class FactRetriever:
                         "shared_entities": sorted(ents1 & ents2),
                     })
 
-        _warn_skipped("contradict", skipped)
+        _warn_skipped("contradict", skipped, unit="fact pair(s)")
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
         return contradictions[:limit]
 

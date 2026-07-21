@@ -158,18 +158,33 @@ class MemoryStore:
                     isolation_level=None,
                 )
                 conn.row_factory = sqlite3.Row
-                entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                entry = {
+                    "conn": conn,
+                    "lock": threading.RLock(),
+                    "refs": 0,
+                    "ready": False,
+                    "hrr_dim": None,
+                }
                 MemoryStore._shared[self._key] = entry
             entry["refs"] += 1
             self._entry = entry
             self._conn = entry["conn"]
             self._lock = entry["lock"]
 
-        # Initialise the schema once per shared connection.
+        # Initialise the schema once per shared connection. Every instance
+        # attaching to an *already* initialised connection must still adopt
+        # the dim that the first instance settled on — _init_db (and dim
+        # adoption) only runs once per shared connection, so without this an
+        # instance whose own constructor/config hrr_dim differs would keep
+        # that stale value and silently disagree with every sibling sharing
+        # the same connection.
         with self._lock:
             if not self._entry["ready"]:
                 self._init_db()
                 self._entry["ready"] = True
+                self._entry["hrr_dim"] = self.hrr_dim
+            else:
+                self.hrr_dim = self._entry["hrr_dim"]
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -198,25 +213,32 @@ class MemoryStore:
         be applied silently, mixing vector dimensions within one database and
         crashing similarity() on the mismatch. The persisted dim is now the
         source of truth; if none is stored yet, persist the constructor value.
+
+        Race-safe across processes: INSERT OR IGNORE followed by a read-back,
+        rather than SELECT-then-write, so two processes racing to initialise
+        a fresh database can never overwrite each other's chosen dim — both
+        end up agreeing on whichever value actually landed first.
         """
+        self._conn.execute(
+            "INSERT OR IGNORE INTO _meta (key, value) VALUES ('hrr_dim', ?)",
+            (str(self.hrr_dim),),
+        )
+        self._conn.commit()
         row = self._conn.execute(
             "SELECT value FROM _meta WHERE key = 'hrr_dim'"
         ).fetchone()
-        if row is not None:
-            stored_dim = int(row["value"])
-            if stored_dim != self.hrr_dim:
-                logger.info(
-                    "holographic memory: persisted hrr_dim=%d overrides configured "
-                    "hrr_dim=%d for %s. Call rebuild_all_vectors(dim=%d) to migrate "
-                    "existing vectors if you intended the config change.",
-                    stored_dim,
-                    self.hrr_dim,
-                    self.db_path,
-                    self.hrr_dim,
-                )
-            self.hrr_dim = stored_dim
-        else:
-            self._persist_hrr_dim(self.hrr_dim)
+        stored_dim = int(row["value"])
+        if stored_dim != self.hrr_dim:
+            logger.warning(
+                "holographic memory: keeping persisted hrr_dim=%d for %s; "
+                "configured hrr_dim=%d is ignored. Call rebuild_all_vectors(dim=%d) "
+                "to migrate existing vectors if you intended the config change.",
+                stored_dim,
+                self.db_path,
+                self.hrr_dim,
+                self.hrr_dim,
+            )
+        self.hrr_dim = stored_dim
 
     def _persist_hrr_dim(self, dim: int) -> None:
         self._conn.execute(
@@ -592,10 +614,20 @@ class MemoryStore:
             self._conn.commit()
 
     def _rebuild_bank(self, category: str) -> None:
-        """Full rebuild of a category's memory bank from all its fact vectors."""
+        """Full rebuild of a category's memory bank from all its fact vectors.
+
+        Decodes each fact vector defensively: a legacy vector left over from
+        a different hrr_dim (or otherwise corrupt) is skipped and counted
+        rather than fed into hrr.bundle(), which would crash on the length
+        mismatch. fact_count reflects only the vectors actually bundled.
+        """
         with self._lock:
             if not self._hrr_available:
                 return
+
+            # Lazy import to avoid a store<->retrieval import cycle (same
+            # pattern as search_facts() below).
+            from plugins.memory.holographic.retrieval import _safe_phases
 
             bank_name = f"cat:{category}"
             rows = self._conn.execute(
@@ -608,7 +640,28 @@ class MemoryStore:
                 self._conn.commit()
                 return
 
-            vectors = [hrr.bytes_to_phases(row["hrr_vector"]) for row in rows]
+            vectors = []
+            skipped = 0
+            for row in rows:
+                vec = _safe_phases(row["hrr_vector"], self.hrr_dim)
+                if vec is None:
+                    skipped += 1
+                    continue
+                vectors.append(vec)
+
+            if skipped:
+                logger.warning(
+                    "_rebuild_bank(%s): skipped %d vector(s) with mismatched/corrupt "
+                    "data; run rebuild_all_vectors() to migrate.",
+                    category,
+                    skipped,
+                )
+
+            if not vectors:
+                self._conn.execute("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
+                self._conn.commit()
+                return
+
             bank_vector = hrr.bundle(*vectors)
             fact_count = len(vectors)
 
@@ -633,6 +686,23 @@ class MemoryStore:
         """Recompute all HRR vectors + banks from text. For recovery/migration.
 
         Returns the number of facts processed.
+
+        Ordering: the new dim is applied to self.hrr_dim up front (every
+        vector computed below must use it), but _meta.hrr_dim is only
+        persisted *after* every vector and bank has been rewritten. If the
+        process is interrupted mid-rebuild, the persisted dim still points
+        at the value that matches the (fully-rewritten) vectors from the
+        *previous* successful rebuild, rather than advertising a new dim
+        while vectors are only partially migrated.
+
+        Note: this does not wrap the rebuild in a single SQL transaction.
+        This store deliberately uses one-statement-per-transaction autocommit
+        (see the shared-connection registry comment above __init__) so a
+        failing write can never pin the write lock; _compute_hrr_vector() and
+        _rebuild_bank() each commit their own statements internally, so an
+        outer BEGIN/COMMIT here would be silently fragmented by those inner
+        commits and provide no real atomicity. The metadata-last ordering
+        above is the safe, idiom-consistent mitigation.
         """
         with self._lock:
             if not self._hrr_available:
@@ -640,7 +710,6 @@ class MemoryStore:
 
             if dim is not None:
                 self.hrr_dim = dim
-                self._persist_hrr_dim(dim)
 
             rows = self._conn.execute(
                 "SELECT fact_id, content, category FROM facts"
@@ -653,6 +722,11 @@ class MemoryStore:
 
             for category in categories:
                 self._rebuild_bank(category)
+
+            if dim is not None:
+                self._persist_hrr_dim(dim)
+                if self._entry is not None:
+                    self._entry["hrr_dim"] = dim
 
             return len(rows)
 

@@ -547,6 +547,19 @@ def test_stranded_in_ready_uses_latest_ready_transition():
     assert [d for d in diags if d.kind == "stranded_in_ready"] == []
 
 
+def test_stranded_in_ready_treats_dashboard_status_ready_as_transition():
+    """Dashboard drag-drop writes ``kind='status'`` with payload.status=ready.
+    That manual move must reset the stranded timer just like ``reclaimed``."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo", created_at=now - 4 * 3600)
+    events = [
+        _event("created", ts=now - 4 * 3600),
+        _event("status", ts=now - 5 * 60, status="ready"),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
 def test_stranded_in_ready_severity_escalates_with_age():
     """warning → error → critical at 2x and 6x threshold."""
     now = 100_000

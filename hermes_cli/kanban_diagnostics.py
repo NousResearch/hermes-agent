@@ -925,13 +925,21 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     # Find the most recent event that put this task into ready.
     # ``created`` covers tasks born ready; ``promoted`` covers parent-
     # done auto-promotion; ``reclaimed`` covers TTL/crash recovery;
-    # ``unblocked`` covers human-driven resumes.
+    # ``unblocked`` covers human-driven resumes. The dashboard's
+    # drag-drop / patch path writes a generic ``status`` event with
+    # payload.status="ready" instead of a dedicated ready-transition
+    # kind, so count that too.
     READY_TRANSITION_KINDS = {
         "created", "promoted", "reclaimed", "unblocked",
     }
     last_ready_ts = 0
     for ev in events:
-        if _event_kind(ev) in READY_TRANSITION_KINDS:
+        kind = _event_kind(ev)
+        payload = _parse_payload(ev) if kind == "status" else {}
+        if (
+            kind in READY_TRANSITION_KINDS
+            or (kind == "status" and payload.get("status") == "ready")
+        ):
             t = _event_ts(ev)
             last_ready_ts = max(last_ready_ts, t)
 

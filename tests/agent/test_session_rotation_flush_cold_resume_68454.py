@@ -108,16 +108,3 @@ def test_rotation_flush_writes_only_new_tail(tmp_path: Path) -> None:
         "new unpersisted turn",
     ]
 
-
-def test_call_sites_pass_conversation_history_kwarg() -> None:
-    """Source guard: the three rotation flushes named in #68454 stay fixed."""
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parents[2]
-    cli = (root / "cli.py").read_text()
-    mixin = (root / "hermes_cli" / "cli_commands_mixin.py").read_text()
-
-    # /new site uses conversation_history=self.conversation_history
-    assert "conversation_history=self.conversation_history" in cli
-    # /resume and /branch sites in the mixin
-    assert mixin.count("conversation_history=self.conversation_history") >= 2

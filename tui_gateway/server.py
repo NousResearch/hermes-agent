@@ -9686,6 +9686,111 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
+    """Inject one claimed terminal Kanban notification for this TUI session."""
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return False
+
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception:
+        return False
+
+    # ponytail: scans all boards at most twice per second; add a subscription index if board count grows.
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        boards = [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+
+    seen_db_paths = set()
+    for board_meta in boards:
+        board = board_meta.get("slug") or kb.DEFAULT_BOARD
+        try:
+            db_path = str(kb.kanban_db_path(board).resolve())
+        except Exception:
+            db_path = f"board:{board}"
+        if db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(db_path)
+
+        try:
+            conn = kb.connect(board=board)
+        except Exception as exc:
+            logger.debug("TUI Kanban poll cannot open board %s: %s", board, exc)
+            continue
+        try:
+            subs = kb.list_notify_subs(conn)
+            for sub in subs:
+                if (
+                    (sub.get("platform") or "").lower() != "tui"
+                    or str(sub.get("chat_id") or "") != session_key
+                ):
+                    continue
+
+                with session["history_lock"]:
+                    if session.get("running") or session.get("_finalized"):
+                        return False
+                    session["running"] = True
+
+                old_cursor = cursor = 0
+                try:
+                    old_cursor, cursor, events = kb.claim_unseen_events_for_sub(
+                        conn,
+                        task_id=sub["task_id"],
+                        platform=sub["platform"],
+                        chat_id=sub["chat_id"],
+                        thread_id=sub.get("thread_id") or "",
+                        kinds=("completed", "blocked", "gave_up", "crashed", "timed_out"),
+                    )
+                    if not events:
+                        with session["history_lock"]:
+                            session["running"] = False
+                        continue
+
+                    lines = []
+                    for event in events:
+                        if event.kind == "blocked" and event.payload and event.payload.get("reason"):
+                            lines.append(
+                                f"⏸ Kanban {event.task_id} blocked: {event.payload['reason']}"
+                            )
+                        else:
+                            lines.append(
+                                f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
+                            )
+                    _emit("message.start", sid)
+                    _run_prompt_submit(
+                        f"__kanban__{int(time.time() * 1000)}",
+                        sid,
+                        session,
+                        "\n\n".join(lines),
+                    )
+                    return True
+                except Exception as exc:
+                    if cursor != old_cursor:
+                        try:
+                            kb.rewind_notify_cursor(
+                                conn,
+                                task_id=sub["task_id"],
+                                platform=sub["platform"],
+                                chat_id=sub["chat_id"],
+                                thread_id=sub.get("thread_id") or "",
+                                claimed_cursor=cursor,
+                                old_cursor=old_cursor,
+                            )
+                        except Exception:
+                            logger.warning("TUI Kanban poll failed to rewind cursor", exc_info=True)
+                    logger.warning("TUI Kanban notification dispatch failed: %s", exc)
+                    with session["history_lock"]:
+                        session["running"] = False
+                    return False
+        except Exception as exc:
+            logger.debug("TUI Kanban poll failed for board %s: %s", board, exc)
+        finally:
+            conn.close()
+    return False
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9702,7 +9807,13 @@ def _notification_poller_loop(
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    next_kanban_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
+        now = time.monotonic()
+        if now >= next_kanban_poll:
+            next_kanban_poll = now + 0.5
+            if _poll_tui_kanban_subscriptions(sid, session):
+                continue
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:

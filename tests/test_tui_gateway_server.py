@@ -2923,6 +2923,215 @@ class _StopAfterOneNotificationPoll:
         return self._checks > 1
 
 
+def test_notification_poller_delivers_tui_kanban_subscription(monkeypatch, tmp_path):
+    """A TUI subscription wakes the durable session that created the task."""
+    import queue as _queue_mod
+
+    from hermes_cli import kanban_db as kb
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="wake Main", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="tui",
+            chat_id="live-tui-key",
+        )
+        kb.block_task(conn, task_id, reason="needs input")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked'",
+            (task_id,),
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+
+    class _EmptyQueue:
+        def get(self, **_kwargs):
+            raise _queue_mod.Empty
+
+        def empty(self):
+            return True
+
+    delivered = []
+    session = _session(session_key="live-tui-key")
+    server._sessions["live-tui"] = session
+    monkeypatch.setattr(process_registry, "completion_queue", _EmptyQueue())
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "live-tui", session
+        )
+        conn = kb.connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+        assert (delivered, cursor) == (
+            [f"⏸ Kanban {task_id} blocked: needs input"],
+            event_id,
+        )
+    finally:
+        server._sessions.pop("live-tui", None)
+
+
+def test_notification_poller_tui_kanban_preserves_busy_and_foreign_cursors(
+    monkeypatch, tmp_path
+):
+    """A busy or foreign TUI session cannot consume a Kanban notification."""
+    import queue as _queue_mod
+
+    from hermes_cli import kanban_db as kb
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="mine", assignee="worker")
+        foreign_task_id = kb.create_task(conn, title="foreign", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.add_notify_sub(
+            conn,
+            task_id=foreign_task_id,
+            platform="tui",
+            chat_id="foreign-key",
+        )
+        kb.block_task(conn, task_id, reason="wait")
+        kb.block_task(conn, foreign_task_id, reason="not mine")
+    finally:
+        conn.close()
+
+    class _EmptyQueue:
+        def get(self, **_kwargs):
+            raise _queue_mod.Empty
+
+        def empty(self):
+            return True
+
+    delivered = []
+    session = _session(session_key="live-key", running=True)
+    server._sessions["live"] = session
+    monkeypatch.setattr(process_registry, "completion_queue", _EmptyQueue())
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args: pytest.fail("busy session must not inject a notification"),
+    )
+
+    try:
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        conn = kb.connect()
+        try:
+            cursors = {
+                sub["task_id"]: sub["last_event_id"]
+                for sub in kb.list_notify_subs(conn)
+            }
+        finally:
+            conn.close()
+        assert cursors == {task_id: 0, foreign_task_id: 0}
+
+        session["running"] = False
+
+        def _deliver(_rid, _sid, active_session, text):
+            delivered.append(text)
+            active_session["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+
+        conn = kb.connect()
+        try:
+            cursors = {
+                sub["task_id"]: sub["last_event_id"]
+                for sub in kb.list_notify_subs(conn)
+            }
+        finally:
+            conn.close()
+        assert len(delivered) == 1
+        assert cursors[task_id] > 0
+        assert cursors[foreign_task_id] == 0
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_notification_poller_tui_kanban_rewinds_failed_injection(monkeypatch, tmp_path):
+    """A failed TUI injection leaves the claimed Kanban event retryable."""
+    import queue as _queue_mod
+
+    from hermes_cli import kanban_db as kb
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="retry wake", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.block_task(conn, task_id, reason="retry me")
+    finally:
+        conn.close()
+
+    class _EmptyQueue:
+        def get(self, **_kwargs):
+            raise _queue_mod.Empty
+
+        def empty(self):
+            return True
+
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+    monkeypatch.setattr(process_registry, "completion_queue", _EmptyQueue())
+
+    def _fail_injection(*_args):
+        raise RuntimeError("injection failed")
+
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        _fail_injection,
+    )
+
+    try:
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        conn = kb.connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+        assert cursor == 0
+        assert session["running"] is False
+
+        delivered = []
+
+        def _deliver(_rid, _sid, active_session, text):
+            delivered.append(text)
+            active_session["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+
+        conn = kb.connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+        assert len(delivered) == 1
+        assert cursor > 0
+    finally:
+        server._sessions.pop("live", None)
+
+
 def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     monkeypatch,
 ):

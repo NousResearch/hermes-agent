@@ -59,12 +59,69 @@ MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Config key (per subsystem). A single boolean: the approval gate is OFF by
-# default (writes flow freely, the pre-gate behaviour), and ON means stage /
-# prompt every write for the user's approval. There is intentionally no third
-# "block all writes" state — to disable a subsystem entirely use its own
-# enable flag (e.g. ``memory.memory_enabled: false``).
+# Config key (per subsystem). The legacy boolean kept its position; the new
+# ``write_mode`` admits an explicit-only state (#68807) that closes the gap
+# between ``write_approval: false`` (foreground + background review both write
+# freely) and ``write_approval: true`` (every write requires the user to
+# approve, even one the user just requested inline).
 CONFIG_KEY = "write_approval"
+MODE_CONFIG_KEY = "write_mode"
+WRITE_MODE_OFF = "off"
+WRITE_MODE_STAGED = "staged"
+WRITE_MODE_EXPLICIT_ONLY = "explicit_only"
+_VALID_WRITE_MODES = frozenset(
+    {WRITE_MODE_OFF, WRITE_MODE_STAGED, WRITE_MODE_EXPLICIT_ONLY}
+)
+# Origin tags an explicit user request. Anything that does NOT carry this
+# flag — background_review, cron, the agent deciding on its own to save a
+# fact — is treated as "proactive" and blocked under ``explicit_only``.
+ORIGIN_FOREGROUND = "foreground"
+ORIGIN_BACKGROUND_REVIEW = "background_review"
+ORIGIN_CRON = "cron"
+ORIGIN_EXPLICIT_USER = "explicit_user"
+
+
+def resolve_write_mode(subsystem: str) -> str:
+    """Return the effective write mode for ``subsystem``.
+
+    Reads ``<subsystem>.write_mode`` first (the new three-state value), then
+    falls back to the legacy ``<subsystem>.write_approval`` boolean so users
+    who set the old flag keep the exact behaviour they had:
+
+    * ``write_mode`` set to one of ``off | staged | explicit_only`` —
+      returns it directly (after lower-casing + validating).
+    * ``write_approval: false`` (or unset, default) → ``off``.
+    * ``write_approval: true`` → ``staged``.
+
+    Unknown / unparseable values default to ``off`` so a typo in the new
+    config key can't accidentally turn the gate on. Issue #68807.
+    """
+    if subsystem not in _SUBSYSTEMS:
+        return WRITE_MODE_OFF
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+    except Exception:
+        return WRITE_MODE_OFF
+    raw_mode = cfg_get(cfg, subsystem, MODE_CONFIG_KEY, default=None)
+    if isinstance(raw_mode, str):
+        normalized = raw_mode.strip().lower()
+        if normalized in _VALID_WRITE_MODES:
+            return normalized
+        # Unknown string — fall through to the boolean for backward read
+        # compatibility, but don't lose the typo: log once and treat as off
+        # so the gate can never sneak on via a malformed config value.
+        logger.warning(
+            "Unknown %s.%s=%r; valid values are %s. Falling back to the "
+            "legacy write_approval boolean.",
+            subsystem,
+            MODE_CONFIG_KEY,
+            raw_mode,
+            sorted(_VALID_WRITE_MODES),
+        )
+    if _normalize_enabled(cfg_get(cfg, subsystem, CONFIG_KEY, default=False)):
+        return WRITE_MODE_STAGED
+    return WRITE_MODE_OFF
 
 
 # ---------------------------------------------------------------------------
@@ -77,16 +134,15 @@ def write_approval_enabled(subsystem: str) -> bool:
     Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
     ``False`` (gate off — writes flow freely) for any unset / invalid value so
     existing installs keep their current behaviour until the user opts in.
+
+    Kept as a thin wrapper over :func:`resolve_write_mode` so existing call
+    sites continue to behave exactly the way they did before ``explicit_only``
+    shipped. They get True iff the mode is ``staged`` — anything more nuanced
+    needs :func:`is_write_authorized` (issue #68807).
     """
     if subsystem not in _SUBSYSTEMS:
         return False
-    try:
-        from hermes_cli.config import load_config, cfg_get
-        cfg = load_config()
-        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
-    except Exception:
-        return False
-    return _normalize_enabled(raw)
+    return resolve_write_mode(subsystem) == WRITE_MODE_STAGED
 
 
 def _normalize_enabled(value: Any) -> bool:
@@ -101,6 +157,59 @@ def _normalize_enabled(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
     return False
+
+
+def _normalize_origin(origin: str | None) -> str:
+    """Map a caller-supplied origin tag to the internal taxonomy.
+
+    ``explicit_user`` is the only value that authorizes writes under
+    ``explicit_only`` mode. The legacy names (``foreground``, ``cron``,
+    ``background_review``) keep their identity so existing call sites
+    don't have to change anything; everything else falls back to
+    ``foreground`` so a missing tag isn't rewarded.
+    """
+    if origin in (
+        ORIGIN_EXPLICIT_USER,
+        ORIGIN_FOREGROUND,
+        ORIGIN_BACKGROUND_REVIEW,
+        ORIGIN_CRON,
+    ):
+        return origin
+    return ORIGIN_FOREGROUND
+
+
+def is_write_authorized(subsystem: str, origin: str) -> bool:
+    """Return True when a write tagged with ``origin`` may commit immediately.
+
+    The decision tree (issue #68807)::
+
+        mode = off              → always authorized (pre-gate behaviour)
+        mode = staged           → NEVER authorized here; the call site has
+                                  to route through stage_write + approve
+        mode = explicit_only    → authorized iff origin == "explicit_user"
+
+    Anything else (a missing / unknown subsystem, an unknown mode, etc.)
+    defaults to **authorized** because the existing users who haven't
+    opted in to either gate behave exactly the way they did before this
+    helper existed. The explicit-only flow is purely additive.
+    """
+    mode = resolve_write_mode(subsystem)
+    if mode == WRITE_MODE_OFF:
+        return True
+    if mode == WRITE_MODE_STAGED:
+        return False
+    if mode == WRITE_MODE_EXPLICIT_ONLY:
+        return _normalize_origin(origin) == ORIGIN_EXPLICIT_USER
+    return True
+
+
+def is_write_blocked(subsystem: str, origin: str) -> bool:
+    """Inverse of :func:`is_write_authorized` for ergonomic call sites.
+
+    Centralising the negation keeps the "deny-list" wording consistent
+    in user-facing messages.
+    """
+    return not is_write_authorized(subsystem, origin)
 
 
 # ---------------------------------------------------------------------------

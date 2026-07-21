@@ -417,6 +417,27 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_does_not_inherit_ambient_llm_base_url(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_BASE_URL", "https://openrouter.example/v1")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai-codex",
+            "llm_model": "gpt-5.5",
+        })
+
+        assert "HINDSIGHT_API_LLM_BASE_URL" not in env
+
+    def test_embedded_profile_env_keeps_configured_llm_base_url(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_BASE_URL", "https://openrouter.example/v1")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai_compatible",
+            "llm_model": "custom-model",
+            "llm_base_url": "http://localhost:11434/v1",
+        })
+
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "http://localhost:11434/v1"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

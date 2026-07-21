@@ -1,7 +1,6 @@
 """Tests for gateway /reasoning command and hot reload behavior."""
 
 import asyncio
-import inspect
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock
@@ -78,8 +77,11 @@ class TestReasoningCommand:
         assert "level" in result and "show" in result and "hide" in result
 
     def test_reasoning_is_known_command(self):
-        source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
-        assert '"reasoning"' in source
+        from hermes_cli.commands import is_gateway_known_command, resolve_command
+
+        definition = resolve_command("reasoning")
+        assert definition is not None and definition.name == "reasoning"
+        assert is_gateway_known_command(definition.name)
 
     def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("high --global") == ("high", True)

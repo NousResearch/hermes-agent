@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -203,6 +203,12 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+
+    # Internal, wire-INVISIBLE capability envelope supplied by a trusted
+    # platform adapter.  Excluded from to_dict/from_dict so persisted or relayed
+    # message data cannot manufacture authority.  build_session_key consumes
+    # only its non-secret capability discriminator.
+    security_context: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`
@@ -936,6 +942,30 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     ns = _session_key_namespace(profile)
+
+    def _scoped(key: str) -> str:
+        security_context = getattr(source, "security_context", None)
+        if security_context is None:
+            return key
+        from gateway.security_context import SecurityContext, SecurityContextError
+        if not isinstance(security_context, SecurityContext):
+            raise SecurityContextError("invalid_source_security_context")
+        # Use canonical JSON hashed to a fixed-width discriminator. Delimiter
+        # characters inside principal/tenant IDs can never create aliasing.
+        scope_payload = {
+            "principal_id": security_context.principal_id,
+            "tenant_id": security_context.tenant_id,
+            "capability_hash": security_context.capability_hash,
+        }
+        scope_hash = hashlib.sha256(
+            json.dumps(
+                scope_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        return f"{key}:security:{scope_hash}"
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -944,8 +974,8 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_chat_id}"
+                return _scoped(f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}")
+            return _scoped(f"{ns}:{platform}:dm:{dm_chat_id}")
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
@@ -960,11 +990,11 @@ def build_session_key(
             )
         if dm_participant_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_participant_id}"
+                return _scoped(f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}")
+            return _scoped(f"{ns}:{platform}:dm:{dm_participant_id}")
         if source.thread_id:
-            return f"{ns}:{platform}:dm:{source.thread_id}"
-        return f"{ns}:{platform}:dm"
+            return _scoped(f"{ns}:{platform}:dm:{source.thread_id}")
+        return _scoped(f"{ns}:{platform}:dm")
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -989,7 +1019,7 @@ def build_session_key(
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
 
-    return ":".join(key_parts)
+    return _scoped(":".join(key_parts))
 
 
 class _SessionFlight:

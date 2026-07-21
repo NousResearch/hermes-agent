@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from gateway.security_context import SecurityContext
 
 logger = logging.getLogger(__name__)
 
@@ -1819,6 +1820,15 @@ class MessageEvent:
     # particular key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Immutable per-message capability envelope.  Only registry-declared
+    # trusted adapters may supply this; gateway/run.py rejects every other
+    # source before model invocation.
+    security_context: Optional[SecurityContext] = None
+
+    # Gateway-stamped, wire-invisible provenance. Adapters must not populate
+    # this themselves; GatewayRunner overwrites it in its per-instance handler.
+    _adapter_security_capability: Any = field(default=None, repr=False, compare=False)
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -2211,6 +2221,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+SecurityPreflight = Callable[[MessageEvent], Awaitable[Optional[MessageEvent]]]
 
 
 def resolve_channel_prompt(
@@ -2439,6 +2450,9 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Host-owned intake gate for an exact live-trusted adapter instance.
+        # Legacy adapters leave this unset and retain their existing behavior.
+        self._security_preflight: Optional[SecurityPreflight] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2893,6 +2907,18 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_security_preflight(
+        self, preflight: Optional[SecurityPreflight]
+    ) -> None:
+        """Install the host-owned gate that runs before all adapter effects."""
+        self._security_preflight = preflight
+
+    async def revalidate_security_context(
+        self, context: SecurityContext, tool_name: str
+    ) -> None:
+        """Live effect/read authorization hook for reviewed secure adapters."""
+        raise PermissionError("adapter does not support security revalidation")
 
     def set_topic_recovery_fn(
         self,
@@ -4769,6 +4795,24 @@ class BasePlatformAdapter(ABC):
         """
         if not self._message_handler:
             return
+
+        # This is deliberately the first operation after the inert handler
+        # presence check. A trusted-adapter denial must precede command
+        # coercion, topic/session recovery, guard healing, queue/debounce
+        # mutation, lifecycle tasks, hooks, typing and delivery.
+        security_preflight = getattr(self, "_security_preflight", None)
+        if security_preflight is not None:
+            try:
+                event = await security_preflight(event)
+            except PermissionError as exc:
+                logger.warning(
+                    "[%s] Trusted adapter security preflight denied message: %s",
+                    self.name,
+                    exc,
+                )
+                return
+            if event is None:
+                return
 
         coerce_plaintext_gateway_command(event)
 

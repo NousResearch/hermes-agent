@@ -29,6 +29,8 @@ Usage (gateway side):
 """
 
 import logging
+import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -96,6 +98,11 @@ class PlatformEntry:
     # ── Privacy ──
     # If True, session descriptions redact PII (phone numbers, etc.)
     pii_safe: bool = False
+
+    # Deprecated compatibility field. Registration is plugin-controlled, so
+    # this value is never authority. Host config SecurityContextTrustGrant is
+    # the sole trust source; retaining the field avoids breaking old plugins.
+    trusted_security_context: bool = False
 
     # ── Display ──
     # Emoji for CLI/gateway display (e.g. "💬")
@@ -167,6 +174,7 @@ class PlatformRegistry:
     """
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._entries: dict[str, PlatformEntry] = {}
         # Deferred platform loaders: name -> zero-arg callable that imports the
         # owning plugin module (which calls register() and populates _entries).
@@ -181,6 +189,9 @@ class PlatformRegistry:
         # actually asks for that platform (gateway start, cron delivery,
         # `hermes setup`/`gateway status`, send_message).
         self._deferred: dict[str, Callable[[], None]] = {}
+        # Host-owned creation provenance. Plugin-controlled adapter attributes
+        # are never accepted as evidence that a factory produced an instance.
+        self._adapter_origins: dict[int, tuple[weakref.ReferenceType, PlatformEntry]] = {}
 
     # -- deferred loading ----------------------------------------------------
 
@@ -235,28 +246,58 @@ class PlatformRegistry:
         wins -- this lets plugins override built-in adapters if desired).
         """
         # A concrete registration supersedes any pending deferred loader.
-        self._deferred.pop(entry.name, None)
-        if entry.name in self._entries:
-            prev = self._entries[entry.name]
-            logger.info(
-                "Platform '%s' re-registered (was %s, now %s)",
-                entry.name,
-                prev.source,
-                entry.source,
-            )
-        self._entries[entry.name] = entry
+        with self._lock:
+            self._deferred.pop(entry.name, None)
+            if entry.name in self._entries:
+                prev = self._entries[entry.name]
+                logger.info(
+                    "Platform '%s' re-registered (was %s, now %s)",
+                    entry.name,
+                    prev.source,
+                    entry.source,
+                )
+            self._entries[entry.name] = entry
         logger.debug("Registered platform adapter: %s (%s)", entry.name, entry.source)
 
     def unregister(self, name: str) -> bool:
         """Remove a platform entry.  Returns True if it existed."""
-        self._deferred.pop(name, None)
-        return self._entries.pop(name, None) is not None
+        with self._lock:
+            self._deferred.pop(name, None)
+            return self._entries.pop(name, None) is not None
+
+    def adapter_matches_entry(self, adapter: Any, entry: PlatformEntry) -> bool:
+        """Return whether this exact live instance was created by this entry."""
+        with self._lock:
+            origin = self._adapter_origins.get(id(adapter))
+            return bool(
+                origin
+                and origin[0]() is adapter
+                and origin[1] is entry
+                and self._entries.get(entry.name) is entry
+            )
+
+    def adapter_matches_current_entry(
+        self, adapter: Any, name: str
+    ) -> Optional[PlatformEntry]:
+        """Atomically return the current exact origin entry, else ``None``."""
+        with self._lock:
+            entry = self._entries.get(name)
+            origin = self._adapter_origins.get(id(adapter))
+            if (
+                entry is not None
+                and origin
+                and origin[0]() is adapter
+                and origin[1] is entry
+            ):
+                return entry
+            return None
 
     def get(self, name: str) -> Optional[PlatformEntry]:
         """Look up a platform entry by name."""
         if name not in self._entries:
             self._resolve(name)
-        return self._entries.get(name)
+        with self._lock:
+            return self._entries.get(name)
 
     def all_entries(self) -> list[PlatformEntry]:
         """Return all registered platform entries."""
@@ -317,6 +358,29 @@ class PlatformRegistry:
 
         try:
             adapter = entry.adapter_factory(config)
+            try:
+                adapter_id = id(adapter)
+                origin = (
+                    weakref.ref(
+                        adapter,
+                        lambda _ref, key=adapter_id: self._adapter_origins.pop(key, None),
+                    ),
+                    entry,
+                )
+                # Provenance is first-writer-wins for the lifetime of an exact
+                # instance. A replacement factory returning a captured adapter
+                # cannot relabel it as originating from the spoofed entry.
+                with self._lock:
+                    existing = self._adapter_origins.get(adapter_id)
+                    if (
+                        self._entries.get(name) is entry
+                        and (existing is None or existing[0]() is None)
+                    ):
+                        self._adapter_origins[adapter_id] = origin
+            except TypeError:
+                # Non-weak-referenceable legacy adapters keep working, but can
+                # never satisfy the stronger SecurityContext trust boundary.
+                pass
             return adapter
         except Exception as e:
             logger.error(

@@ -307,6 +307,54 @@ def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
     assert "id" not in message_item
 
 
+def test_preflight_codex_input_items_normalizes_oversized_paired_call_ids():
+    oversized_call_id = "codex_mcp__node_repl_js_" + ("a" * 42)
+    assert len(oversized_call_id) == 66
+
+    raw_items = [
+        {
+            "type": "function_call",
+            "call_id": oversized_call_id,
+            "name": "mcp.node_repl.js",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": oversized_call_id,
+            "output": "ok",
+        },
+    ]
+
+    first = _preflight_codex_input_items(raw_items)
+    second = _preflight_codex_input_items(raw_items)
+
+    normalized_call_id = first[0]["call_id"]
+    assert normalized_call_id == first[1]["call_id"]
+    assert normalized_call_id == second[0]["call_id"]
+    assert normalized_call_id != oversized_call_id
+    assert len(normalized_call_id) == 64
+
+
+def test_preflight_codex_input_items_keeps_short_paired_call_ids():
+    raw_items = [
+        {
+            "type": "function_call",
+            "call_id": "call_short",
+            "name": "terminal",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_short",
+            "output": "ok",
+        },
+    ]
+
+    items = _preflight_codex_input_items(raw_items)
+
+    assert [item["call_id"] for item in items] == ["call_short", "call_short"]
+
+
 # ---------------------------------------------------------------------------
 # _preflight_codex_api_kwargs — built-in (provider-executed) tools must pass
 # through validation.  Regression guard for the xAI native web_search

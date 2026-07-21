@@ -294,6 +294,25 @@ _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 # ids (msg_...) stay well under this cap and are worth keeping for
 # prefix-cache hits. Drop only the oversized ones on replay.
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
+_MAX_RESPONSES_CALL_ID_LENGTH = 64
+
+
+def _normalize_responses_call_id(value: str) -> str:
+    """Return a stable Responses-compatible tool call id.
+
+    Codex app-server can mint MCP call ids longer than the Responses API's
+    64-character input limit. Background review replays those calls through
+    the Responses transport, so normalize only at this outbound boundary.
+    The stable suffix keeps matching function_call/function_call_output pairs
+    aligned without mutating the stored conversation or live app-server ids.
+    """
+    call_id = value.strip()
+    if len(call_id) <= _MAX_RESPONSES_CALL_ID_LENGTH:
+        return call_id
+
+    digest = hashlib.sha256(call_id.encode("utf-8", errors="replace")).hexdigest()[:16]
+    prefix_length = _MAX_RESPONSES_CALL_ID_LENGTH - len(digest) - 1
+    return f"{call_id[:prefix_length]}_{digest}"
 
 
 def _normalize_responses_message_status(value: Any, *, default: str = "completed") -> str:
@@ -633,7 +652,7 @@ def _preflight_codex_input_items(
             normalized.append(
                 {
                     "type": "function_call",
-                    "call_id": call_id.strip(),
+                    "call_id": _normalize_responses_call_id(call_id),
                     "name": name.strip(),
                     "arguments": arguments,
                 }
@@ -674,7 +693,7 @@ def _preflight_codex_input_items(
                 normalized.append(
                     {
                         "type": "function_call_output",
-                        "call_id": call_id.strip(),
+                        "call_id": _normalize_responses_call_id(call_id),
                         "output": cleaned if cleaned else "",
                     }
                 )
@@ -685,7 +704,7 @@ def _preflight_codex_input_items(
             normalized.append(
                 {
                     "type": "function_call_output",
-                    "call_id": call_id.strip(),
+                    "call_id": _normalize_responses_call_id(call_id),
                     "output": output,
                 }
             )

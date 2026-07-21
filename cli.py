@@ -6190,6 +6190,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             logger.debug("Failed to inline paste placeholders", exc_info=True)
 
+    def enqueue_external_user_message(self, text: str, source: str = "external") -> bool:
+        """Queue a normal user turn submitted by a local control surface.
+
+        This is the stable ingress helper for transports that should behave
+        like `/queue`: the message is delivered by ``process_loop`` as the
+        next user turn and does not interrupt or steer an in-flight agent.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return False
+        if not hasattr(self, "_pending_input") or self._pending_input is None:
+            self._pending_input = queue.Queue()
+        self._pending_input.put(cleaned)
+        logging.debug("queued external user message from %s", source)
+        return True
+
     def _reset_input_buffer(self, buffer) -> None:
         """Clear an input buffer after a programmatic submit (best-effort)."""
         try:

@@ -50,6 +50,7 @@ Usage:
 """
 
 import atexit
+import contextvars
 import functools
 import json
 import logging
@@ -4718,6 +4719,81 @@ def _running_in_docker() -> bool:
         return False
 
 
+# Per-context interactivity override for the browser install decision. None
+# means "unset — fall back to session/platform detection below". A ContextVar
+# (NOT threading.local, NOT a process-global env var) so it is task/thread-local
+# and scoped to exactly the context that sets it. It handles the single-shot CLI
+# runs (`hermes chat -q` and `-z/--oneshot`) whose stdin may still be an attached
+# TTY even though there is no prompt loop to answer a first-use install prompt,
+# so ``sys.stdin.isatty()`` alone would misread them (see #66393 / PR #66422).
+_browser_session_interactive: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "_browser_session_interactive",
+    default=None,
+)
+
+
+def set_browser_session_interactive(interactive: bool) -> contextvars.Token:
+    """Bind whether the current context can answer an interactive browser
+    first-use / install prompt. Returns a token to pass to
+    :func:`reset_browser_session_interactive`.
+    """
+    return _browser_session_interactive.set(interactive)
+
+
+def reset_browser_session_interactive(token: contextvars.Token) -> None:
+    """Restore the value from :func:`set_browser_session_interactive`."""
+    _browser_session_interactive.reset(token)
+
+
+def _is_non_interactive_session() -> bool:
+    """Whether this is a session with no human to answer a browser install
+    prompt (gateway, cron, single-shot CLI query, daemon, pipe).
+
+    Resolution order, most specific first:
+
+    1. An explicit per-context override (:func:`set_browser_session_interactive`),
+       set for the single-shot CLI query paths (`chat -q`, `-z/--oneshot`) whose
+       stdin may still be an attached TTY. This makes the decision session-level
+       rather than process-level.
+    2. Real session/platform context. A live gateway session binds
+       ``HERMES_SESSION_PLATFORM`` via contextvars (``gateway/session_context``),
+       and cron sets ``HERMES_CRON_SESSION``. Reading these is leak-proof for
+       their in-process (asyncio) children, unlike ``sys.stdin.isatty()``. The
+       interactive CLI/REPL binds neither, so this stays False there and the
+       intentional install-on-demand flow is kept. (Cron deliberately binds an
+       empty platform, so it is matched by ``HERMES_CRON_SESSION``, not the
+       platform var.)
+    3. Fallback TTY heuristic — covers detached daemons and piped/closed stdin.
+       A plain interactive terminal stays interactive.
+    """
+    explicit = _browser_session_interactive.get()
+    if explicit is not None:
+        return not explicit
+
+    try:
+        from gateway.session_context import get_session_env
+
+        if get_session_env("HERMES_SESSION_PLATFORM", "").strip():
+            return True
+    except Exception:
+        pass
+
+    if os.environ.get("HERMES_CRON_SESSION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+
+    try:
+        return not sys.stdin.isatty()
+    except Exception:
+        # Defensive: if isatty() raises (closed fd), assume non-interactive so
+        # the tool is safely gated rather than advertised-but-unusable.
+        return True
+
+
 def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
@@ -4730,6 +4806,13 @@ def check_browser_requirements() -> bool:
     In **cloud mode** (Browserbase, Browser Use, or Firecrawl): the CLI
     and the provider's required credentials must be present. The cloud
     provider hosts its own Chromium, so no local browser binary is needed.
+
+    In **non-interactive sessions** (gateway, cron, one-shot ``chat -q``,
+    subagents) the bare ``npx`` fallback is not sufficient — there is no human
+    to answer a first-use install prompt or wait for a slow download, so
+    agent-browser must be explicitly installed. Without a real install the tool
+    is gated (removed from the model's toolset) and a log line points at the
+    install command. See :func:`_is_non_interactive_session`.
 
     Returns:
         True if all requirements are met, False otherwise
@@ -4751,6 +4834,12 @@ def check_browser_requirements() -> bool:
     try:
         browser_cmd = _find_agent_browser(validate=False)
     except FileNotFoundError:
+        if _is_non_interactive_session():
+            logger.info(
+                "Browser tool gated in non-interactive session: "
+                "agent-browser CLI not found. Install with "
+                "`hermes acp --setup-browser` or `npm install -g agent-browser`."
+            )
         return False
 
     # On Termux, the bare npx fallback is too fragile to treat as a satisfied
@@ -4761,10 +4850,29 @@ def check_browser_requirements() -> bool:
         return False
 
     # In cloud mode, also require provider credentials. Cloud browsers
-    # don't need a local Chromium binary.
+    # don't need a local Chromium binary, and the CLI only drives the remote
+    # session, so the npx fallback is acceptable there — check credentials and
+    # return before the local-only npx gate below.
     provider = _get_cloud_provider()
     if provider is not None:
         return provider.is_configured()
+
+    # Local mode, non-interactive (gateway, cron, one-shot, subagents): the bare
+    # npx fallback is unreliable because there is no human to answer a first-use
+    # prompt or wait for a slow npx download/Chromium install. Require a real
+    # agent-browser install, so the tool is not advertised-but-unusable (#66393).
+    if (
+        _is_non_interactive_session()
+        and " " in browser_cmd
+        and browser_cmd.split()[0].endswith("npx")
+    ):
+        logger.info(
+            "Browser tool gated in non-interactive session: only the npx "
+            "fallback ('%s') is available; a real install is required. Install "
+            "with `hermes acp --setup-browser` or `npm install -g agent-browser`.",
+            browser_cmd,
+        )
+        return False
 
     # Local mode with Lightpanda can provide text/navigation tools without a
     # local Chromium install. Chrome fallback, screenshots, and browser_vision

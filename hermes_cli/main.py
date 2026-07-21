@@ -2471,6 +2471,18 @@ def cmd_chat(args):
             accept_hooks=getattr(args, "accept_hooks", False),
         )
 
+    # A single-query chat run (`hermes chat -q "..."`) is non-interactive: one
+    # turn, then exit, with no prompt loop to answer a browser first-use/install
+    # prompt. Its stdin may still be an attached TTY, so mark the context so the
+    # browser tool is gated out when only the npx fallback is available (#66393).
+    if getattr(args, "query", None):
+        try:
+            from tools.browser_tool import set_browser_session_interactive
+
+            set_browser_session_interactive(False)
+        except Exception:
+            pass
+
     # Import and run the CLI
     from cli import main as cli_main
 

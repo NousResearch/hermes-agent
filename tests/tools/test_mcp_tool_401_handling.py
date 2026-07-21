@@ -30,6 +30,38 @@ def test_is_auth_error_detects_oauth_non_interactive():
     assert _is_auth_error(OAuthNonInteractiveError("no browser")) is True
 
 
+def test_is_auth_error_detects_nested_oauth_non_interactive():
+    from tools.mcp_tool import _is_auth_error
+    from tools.mcp_oauth import OAuthNonInteractiveError
+
+    exc = ExceptionGroup(
+        "transport task group",
+        [ExceptionGroup("oauth callback", [OAuthNonInteractiveError("user_skipped")])],
+    )
+    assert _is_auth_error(exc) is True
+
+
+def test_is_auth_error_detects_auth_leaf_in_mixed_group():
+    from tools.mcp_tool import _is_auth_error
+    from tools.mcp_oauth import OAuthNonInteractiveError
+
+    exc = ExceptionGroup(
+        "transport teardown",
+        [RuntimeError("cleanup failed"), OAuthNonInteractiveError("user_skipped")],
+    )
+    assert _is_auth_error(exc) is True
+
+
+def test_is_auth_error_rejects_all_non_auth_group():
+    from tools.mcp_tool import _is_auth_error
+
+    exc = ExceptionGroup(
+        "transport failures",
+        [RuntimeError("closed"), ValueError("bad config")],
+    )
+    assert _is_auth_error(exc) is False
+
+
 def test_is_auth_error_detects_httpx_401():
     from tools.mcp_tool import _is_auth_error
     import httpx
@@ -40,6 +72,16 @@ def test_is_auth_error_detects_httpx_401():
     assert _is_auth_error(exc) is True
 
 
+def test_is_auth_error_detects_nested_httpx_401():
+    from tools.mcp_tool import _is_auth_error
+    import httpx
+
+    response = MagicMock()
+    response.status_code = 401
+    leaf = httpx.HTTPStatusError("unauth", request=MagicMock(), response=response)
+    assert _is_auth_error(ExceptionGroup("transport", [leaf])) is True
+
+
 def test_is_auth_error_rejects_httpx_500():
     from tools.mcp_tool import _is_auth_error
     import httpx
@@ -48,6 +90,16 @@ def test_is_auth_error_rejects_httpx_500():
     response.status_code = 500
     exc = httpx.HTTPStatusError("oops", request=MagicMock(), response=response)
     assert _is_auth_error(exc) is False
+
+
+def test_is_auth_error_rejects_nested_httpx_500():
+    from tools.mcp_tool import _is_auth_error
+    import httpx
+
+    response = MagicMock()
+    response.status_code = 500
+    leaf = httpx.HTTPStatusError("oops", request=MagicMock(), response=response)
+    assert _is_auth_error(ExceptionGroup("transport", [leaf])) is False
 
 
 def test_is_auth_error_rejects_generic_exception():

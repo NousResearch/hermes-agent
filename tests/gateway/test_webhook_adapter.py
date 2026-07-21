@@ -1789,6 +1789,48 @@ class TestCustomSignatureHeader:
         req = _mock_request(headers={"X-Auth-Token": "wrong"})
         assert adapter._validate_signature(req, b"{}", secret, route) is False
 
+    def test_custom_header_md5_scheme(self):
+        """HMAC-MD5 hex digest validates under hmac-md5."""
+        adapter = _make_adapter()
+        body = b'{"data": {"type": "pledge"}}'
+        secret = "md5-provider-secret"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Provider-Signature",
+            "signature_scheme": "hmac-md5",
+        }
+        sig = hmac.new(secret.encode(), body, hashlib.md5).hexdigest()
+        req = _mock_request(headers={"X-Provider-Signature": sig})
+        assert adapter._validate_signature(req, body, secret, route) is True
+        req = _mock_request(headers={"X-Provider-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, body, secret, route) is False
+
+    def test_custom_header_sha1_scheme(self):
+        """Legacy HMAC-SHA1 hex digest validates under hmac-sha1."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "legacy-secret"
+        route = {
+            "secret": secret,
+            "signature_header": "X-Hub-Signature",
+            "signature_scheme": "hmac-sha1",
+            "signature_prefix": "sha1=",
+        }
+        sig = "sha1=" + hmac.new(secret.encode(), body, hashlib.sha1).hexdigest()
+        req = _mock_request(headers={"X-Hub-Signature": sig})
+        assert adapter._validate_signature(req, body, secret, route) is True
+
+    def test_custom_header_scheme_digest_mismatch_rejects(self):
+        """An MD5 digest sent to an hmac-sha256 route rejects (and vice
+        versa) — the scheme pins the algorithm, no cross-acceptance."""
+        adapter = _make_adapter()
+        body = b'{"x": 1}'
+        secret = "s"
+        md5_sig = hmac.new(secret.encode(), body, hashlib.md5).hexdigest()
+        route = {"secret": secret, "signature_header": "X-Sig"}  # default sha256
+        req = _mock_request(headers={"X-Sig": md5_sig})
+        assert adapter._validate_signature(req, body, secret, route) is False
+
     def test_custom_header_unknown_scheme_fails_closed(self):
         """An unknown scheme (possible via hot-reloaded dynamic routes)
         rejects rather than falling back to a weaker check."""
@@ -1841,7 +1883,7 @@ class TestCustomSignatureHeader:
             "bad": {
                 "secret": "s",
                 "signature_header": "X-Sig",
-                "signature_scheme": "hmac-md5",
+                "signature_scheme": "hmac-sha512",
             }
         }
         adapter = _make_adapter(routes=routes, host="127.0.0.1")

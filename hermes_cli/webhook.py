@@ -319,8 +319,13 @@ def _cmd_test(args):
         if scheme == "token":
             value = secret
         else:
+            algo = {
+                "hmac-sha256": hashlib.sha256,
+                "hmac-sha1": hashlib.sha1,
+                "hmac-md5": hashlib.md5,
+            }.get(scheme, hashlib.sha256)
             value = hmac.new(
-                secret.encode(), payload.encode(), hashlib.sha256
+                secret.encode(), payload.encode(), algo
             ).hexdigest()
         headers[signature_header] = prefix + value
     else:

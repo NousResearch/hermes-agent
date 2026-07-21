@@ -58,10 +58,11 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_sub.add_argument(
         "--signature-scheme",
         default="",
-        choices=["hmac-sha256", "token"],
+        choices=["hmac-sha256", "hmac-sha1", "hmac-md5", "token"],
         help="How the custom header is validated: 'hmac-sha256' (hex "
-        "HMAC-SHA256 of the raw body, default) or 'token' (plain "
-        "constant-time compare against the secret, GitLab-style). "
+        "HMAC digest of the raw body, default), 'hmac-sha1'/'hmac-md5' "
+        "(same, for providers that offer nothing stronger), or 'token' "
+        "(plain constant-time compare against the secret, GitLab-style). "
         "Requires --signature-header.",
     )
     wh_sub.add_argument(

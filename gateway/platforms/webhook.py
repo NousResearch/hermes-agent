@@ -106,9 +106,18 @@ _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 # Validation schemes accepted for a route-level custom signature header
 # (signature_header):
-#   hmac-sha256 — header carries the hex HMAC-SHA256 digest of the raw body
+#   hmac-sha256 — header carries the hex HMAC digest of the raw body
+#   hmac-sha1 / hmac-md5 — same, with a weaker digest; only for providers
+#     that offer nothing stronger. HMAC with these digests is still a
+#     sound MAC — collision attacks on the bare hash do not transfer to
+#     HMAC — but prefer hmac-sha256 when the provider supports it.
 #   token       — header carries the shared secret verbatim (GitLab-style)
-_SIGNATURE_SCHEMES = frozenset({"hmac-sha256", "token"})
+_SIGNATURE_HMAC_ALGOS = {
+    "hmac-sha256": hashlib.sha256,
+    "hmac-sha1": hashlib.sha1,
+    "hmac-md5": hashlib.md5,
+}
+_SIGNATURE_SCHEMES = frozenset({"token", *_SIGNATURE_HMAC_ALGOS})
 _RATE_WINDOW_SECONDS = 60.0
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -1027,10 +1036,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 provided = provided[len(prefix):]
             if scheme == "token":
                 return _hmac_str_equal(provided, secret)
-            if scheme == "hmac-sha256":
-                expected = hmac.new(
-                    secret.encode(), body, hashlib.sha256
-                ).hexdigest()
+            algo = _SIGNATURE_HMAC_ALGOS.get(scheme)
+            if algo:
+                expected = hmac.new(secret.encode(), body, algo).hexdigest()
                 return _hmac_str_equal(provided, expected)
             # Unknown scheme: connect() rejects this for startup routes, but
             # hot-reloaded dynamic routes can still carry one — fail closed.

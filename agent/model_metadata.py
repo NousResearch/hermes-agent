@@ -1121,13 +1121,24 @@ def _resolve_endpoint_context_length(
     endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
     matched = endpoint_metadata.get(model)
     if not matched:
-        if len(endpoint_metadata) == 1:
+        # No exact-key hit. Fall back to a token-boundary-aware fuzzy match
+        # (publisher slugs and packaging suffixes) instead of a bare
+        # bidirectional substring test, which would let ``gpt-4`` borrow the
+        # window of an unrelated ``gpt-4o-mini``. When several ids are
+        # compatible, prefer the most specific (longest) one so selection is
+        # deterministic rather than dependent on dict iteration order.
+        compatible = [
+            key for key in endpoint_metadata
+            if _endpoint_ids_compatible(model, key)
+        ]
+        if compatible:
+            best = sorted(compatible, key=lambda k: (-len(k), k))[0]
+            matched = endpoint_metadata[best]
+        elif len(endpoint_metadata) == 1:
+            # Single-model endpoints are unambiguous: only one model is served,
+            # so its window is the right answer even when the configured id
+            # string drifts (e.g. a quantized GGUF filename).
             matched = next(iter(endpoint_metadata.values()))
-        else:
-            for key, entry in endpoint_metadata.items():
-                if model in key or key in model:
-                    matched = entry
-                    break
     if matched:
         context_length = matched.get("context_length")
         if isinstance(context_length, int):
@@ -1496,6 +1507,46 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     if "/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model:
         return True
     return False
+
+
+# Characters that separate tokens inside a model id (slug `/`, dashes, dots,
+# Ollama `model:tag` colons, underscores). A fuzzy id match is only trusted
+# when it lands on one of these boundaries — see ``_endpoint_ids_compatible``.
+_MODEL_ID_BOUNDARY = frozenset("-_.:/")
+
+
+def _endpoint_ids_compatible(configured: str, candidate: str) -> bool:
+    """Return True if a *configured* model id and an endpoint *candidate* id
+    plausibly name the same model, allowing only token-boundary differences.
+
+    Endpoint ``/models`` listings often differ from the configured id by a
+    publisher slug (``org/llama-3.3`` vs ``llama-3.3``) or a packaging suffix
+    (``…-instruct`` vs ``…-instruct-fp8``). Matching those is intentional.
+
+    What is NOT safe is a bare infix match: requesting ``gpt-4`` must not match
+    ``gpt-4o-mini`` just because the characters happen to line up — that borrows
+    an unrelated model's context window. We therefore require the shorter id to
+    occur in the longer one delimited by a separator (``-_.:/``) or the string
+    boundary on both sides.
+    """
+    a = (configured or "").strip().lower()
+    b = (candidate or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    start = 0
+    while True:
+        idx = long.find(short, start)
+        if idx == -1:
+            return False
+        before_ok = idx == 0 or long[idx - 1] in _MODEL_ID_BOUNDARY
+        after = idx + len(short)
+        after_ok = after == len(long) or long[after] in _MODEL_ID_BOUNDARY
+        if before_ok and after_ok:
+            return True
+        start = idx + 1
 
 
 def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:

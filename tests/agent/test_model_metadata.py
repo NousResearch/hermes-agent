@@ -1185,6 +1185,95 @@ class TestGetModelContextLength:
 
 
 # =========================================================================
+# _resolve_endpoint_context_length — fuzzy match must respect token boundaries
+# =========================================================================
+
+class TestResolveEndpointContextLength:
+    """Regression tests for the custom/Nous/GMI/Novita context resolver.
+
+    Bug: the fallback used a bare bidirectional substring test
+    (``model in key or key in model``) and returned the first iteration-order
+    hit. Requesting ``gpt-4`` against an endpoint that lists ``gpt-4o-mini``
+    matched (``"gpt-4" in "gpt-4o-mini"``) and silently borrowed the wrong
+    model's context window. The fix requires the fuzzy match to land on a token
+    boundary and picks the most specific candidate deterministically.
+    """
+
+    def setup_method(self):
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+
+    def test_rejects_non_boundary_substring(self):
+        """``gpt-4`` must not borrow ``gpt-4o-mini`` / ``gpt-4o`` windows: the
+        char after the match (``o``) is not a token boundary, so there is no
+        real match and the resolver returns None to let the caller fall back."""
+        import agent.model_metadata as mm
+        meta = {
+            "gpt-4o-mini": {"context_length": 128_000},
+            "gpt-4o": {"context_length": 200_000},
+        }
+        with patch.object(mm, "fetch_endpoint_model_metadata", return_value=meta):
+            ctx = mm._resolve_endpoint_context_length(
+                "gpt-4", "https://api.example.com/v1"
+            )
+        assert ctx is None
+
+    def test_boundary_suffix_still_matches(self):
+        """A packaging suffix (``-fp8``) is a legitimate boundary match and the
+        configured id must resolve to that model's window — not the distractor."""
+        import agent.model_metadata as mm
+        meta = {
+            "org/llama-3.3-70b-instruct-fp8": {"context_length": 131_072},
+            "org/qwen-2.5-72b": {"context_length": 32_768},
+        }
+        with patch.object(mm, "fetch_endpoint_model_metadata", return_value=meta):
+            ctx = mm._resolve_endpoint_context_length(
+                "llama-3.3-70b-instruct", "https://api.example.com/v1"
+            )
+        assert ctx == 131_072
+
+    def test_prefers_most_specific_candidate(self):
+        """When several ids are boundary-compatible, the longest (most specific)
+        wins regardless of dict order — bare ``gpt-4`` must not shadow the
+        dated turbo variant the user actually configured."""
+        import agent.model_metadata as mm
+        meta = {
+            "gpt-4": {"context_length": 8_192},
+            "gpt-4-turbo-2024-04-09": {"context_length": 128_000},
+        }
+        with patch.object(mm, "fetch_endpoint_model_metadata", return_value=meta):
+            ctx = mm._resolve_endpoint_context_length(
+                "gpt-4-turbo", "https://api.example.com/v1"
+            )
+        assert ctx == 128_000
+
+    def test_single_model_fallback_preserved(self):
+        """Single-model endpoints stay unambiguous: the lone model's window is
+        used even when the configured id string drifts (quantized filename)."""
+        import agent.model_metadata as mm
+        meta = {"Qwen3.5-9B-Q4_K_M.gguf": {"context_length": 131_072}}
+        with patch.object(mm, "fetch_endpoint_model_metadata", return_value=meta):
+            ctx = mm._resolve_endpoint_context_length(
+                "qwen3.5:9b", "http://myserver.example.com:8080/v1"
+            )
+        assert ctx == 131_072
+
+    def test_endpoint_ids_compatible_boundaries(self):
+        """Unit-level boundary semantics for the matcher helper."""
+        from agent.model_metadata import _endpoint_ids_compatible
+        # Slug prefix and packaging suffix are boundary matches.
+        assert _endpoint_ids_compatible("llama-3.3", "org/llama-3.3")
+        assert _endpoint_ids_compatible("llama-3.3-instruct", "llama-3.3-instruct-fp8")
+        # Case-insensitive exact.
+        assert _endpoint_ids_compatible("GPT-4", "gpt-4")
+        # Mid-token overlaps must be rejected.
+        assert not _endpoint_ids_compatible("gpt-4", "gpt-4o-mini")
+        assert not _endpoint_ids_compatible("gpt-4", "gpt-4o")
+        assert not _endpoint_ids_compatible("", "anything")
+
+
+# =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe
 # =========================================================================
 

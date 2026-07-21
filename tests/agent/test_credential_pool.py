@@ -379,6 +379,70 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 402
 
 
+def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeypatch):
+    """A 402 must exhaust every pool entry backed by the same API key.
+
+    Regression: the same key can back more than one pool entry — e.g. an
+    explicit pool entry plus a ``model_config`` entry auto-seeded from
+    ``model.api_key`` (both carry the identical ``runtime_api_key``).  When
+    ``mark_exhausted_and_rotate`` is called with ``api_key_hint`` it matched
+    only the *first* such entry, leaving the sibling OK.  ``_select_unlocked()``
+    then kept handing back the same depleted key, so the billing-recovery
+    ``continue`` loop in the conversation retry path never converged — the
+    request hung ~2.5min until the client disconnected, with no 402 ever
+    surfaced to the user.  All entries sharing the failed key must be
+    exhausted so the pool reaches "no available entries" and the error
+    propagates immediately.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    shared_key = "sk-deepseek-shared"
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom": [
+                    {
+                        "id": "cred-explicit",
+                        "label": "520555",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": shared_key,
+                        "base_url": "https://api.deepseek.com",
+                    },
+                    {
+                        "id": "cred-model-config",
+                        "label": "model_config",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": shared_key,
+                        "base_url": "https://api.deepseek.com",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("custom")
+
+    # First 402 on the shared key: rotation must NOT hand back a sibling
+    # entry that wraps the same depleted key — it must converge to None.
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=402,
+        api_key_hint=shared_key,
+    )
+    assert next_entry is None
+
+    # Both entries are now exhausted (not just the first match).
+    statuses = {entry.id: entry.last_status for entry in pool.entries()}
+    assert statuses["cred-explicit"] == STATUS_EXHAUSTED
+    assert statuses["cred-model-config"] == STATUS_EXHAUSTED
+
+
 def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
     """OpenAI Codex token_invalidated must mark the credential DEAD, not exhausted.
 

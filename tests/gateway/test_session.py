@@ -278,7 +278,9 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_includes_platform_notes(self):
+    def test_slack_prompt_no_tools_shows_disclaimer(self):
+        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+        from unittest.mock import patch
         config = GatewayConfig(
             platforms={
                 Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
@@ -292,7 +294,100 @@ class TestBuildSessionContextPrompt:
             user_name="bob",
         )
         ctx = build_session_context(source, config)
-        prompt = build_session_context_prompt(ctx)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        assert "cannot search" in prompt.lower()
+        assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
+        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
+
+    def test_slack_prompt_with_tools_shows_capability(self):
+        """When slack toolset is loaded, prompt must advertise API access."""
+        from unittest.mock import patch
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=True):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        assert "have access" in prompt.lower() or "you can" in prompt.lower()
+        assert "you do not have access" not in prompt.lower()
+
+    def test_slack_tools_loaded_detects_real_mcp_registration(self):
+        """Regression (review of #63234): a connected MCP server whose tools
+        are ACTUALLY registered in the live registry must be detected as
+        Slack capability, without mocking _slack_tools_loaded itself -- this
+        exercises the real tools.mcp_tool registration signal the earlier
+        (mocked-wholesale) tests didn't reach. Native SLACK_BOT_TOKEN/toolset
+        config is intentionally left unset so only the MCP path can pass."""
+        import os as _os
+        from unittest.mock import patch
+        from gateway.session import _slack_tools_loaded
+        import tools.mcp_tool as _mcp_tool_mod
+
+        # No native slack toolset / token configured.
+        with patch.dict(_os.environ, {}, clear=False):
+            _os.environ.pop("SLACK_BOT_TOKEN", None)
+
+            # Simulate a connected MCP server ("company-slack") that has
+            # registered a real tool, via the actual tracking function used
+            # by the live registration path (tools/mcp_tool.py:_track_mcp_tool_server),
+            # not a mock of the capability check.
+            _mcp_tool_mod._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
+            try:
+                assert _slack_tools_loaded() is True, (
+                    "A connected MCP server with 'slack' in its name and "
+                    "registered tools must be detected as Slack capability"
+                )
+            finally:
+                _mcp_tool_mod._forget_mcp_tool_server("mcp-company-slack_post_message")
+
+    def test_slack_tools_loaded_false_when_no_matching_mcp_server(self):
+        """An MCP server unrelated to Slack must not grant Slack capability."""
+        import os as _os
+        from unittest.mock import patch
+        from gateway.session import _slack_tools_loaded
+        import tools.mcp_tool as _mcp_tool_mod
+
+        with patch.dict(_os.environ, {}, clear=False):
+            _os.environ.pop("SLACK_BOT_TOKEN", None)
+            _mcp_tool_mod._track_mcp_tool_server("mcp-github_create_issue", "github")
+            try:
+                assert _slack_tools_loaded() is False
+            finally:
+                _mcp_tool_mod._forget_mcp_tool_server("mcp-github_create_issue")
+
+    def test_slack_prompt_includes_platform_notes(self):
+        """Legacy: backward-compat alias -- no tools loaded shows disclaimer."""
+        from unittest.mock import patch
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()

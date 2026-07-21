@@ -5969,6 +5969,21 @@ def has_registered_mcp_tools() -> bool:
         return bool(_mcp_tool_server_names)
 
 
+def get_registered_mcp_server_names() -> set:
+    """Return the set of MCP server names that have actually registered at
+    least one tool into the registry (post-connection, post check_fn/include-
+    exclude filtering) -- i.e. the real, availability-filtered signal, not
+    just what's present in config.yaml under ``mcp_servers``.
+
+    Used by capability-aware prompt building (e.g. gateway/session.py's
+    Slack platform note) to detect an MCP server that provides a given
+    platform's capability regardless of what its config key is named.
+    """
+    with _lock:
+        return set(_mcp_tool_server_names.values())
+
+
+
 def refresh_agent_mcp_tools(
     agent,
     *,

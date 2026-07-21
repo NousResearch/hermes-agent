@@ -342,6 +342,52 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def _slack_tools_loaded() -> bool:
+    """True iff the agent will actually have Slack tools this session.
+
+    Two independent paths grant Slack capability:
+      1. Native `slack` toolset enabled via `hermes tools` (opt-in, default
+         OFF) AND `SLACK_BOT_TOKEN` set — the tool's `check_fn` gates on it
+         at registry time, so config alone isn't enough.
+      2. An MCP server that has ACTUALLY registered tools into the live
+         registry (tools/mcp_tool.get_registered_mcp_server_names()), whose
+         name suggests Slack. This is the real, availability-filtered
+         signal (post-connection, post include/exclude filtering) rather
+         than just what's listed in config.yaml -- a configured-but-
+         unconnected or zero-tool MCP server must not claim capability.
+         Named MCP servers are process-wide (one gateway connects each MCP
+         server once, not per-session), so this check is intentionally NOT
+         scoped further per-session -- unlike the earlier get_all_tool_names()
+         approach this replaces, which conflated ALL built-in tool names
+         process-wide, this only inspects the small, purpose-built MCP
+         server-name map.
+
+    Returns False (safe default — keeps the stale-API disclaimer) on any
+    error so a bad config can never silently promise tools the agent lacks.
+    """
+    try:
+        from tools.mcp_tool import get_registered_mcp_server_names
+        if any("slack" in name.lower() for name in get_registered_mcp_server_names()):
+            return True
+    except Exception:
+        pass
+
+    if not (os.environ.get("SLACK_BOT_TOKEN") or "").strip():
+        return False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        # include_default_mcp_servers=True (the default) so a Slack MCP
+        # server that's enabled by default for this platform (not
+        # explicitly listed) is also counted, in addition to the native
+        # 'slack' toolset.
+        enabled = _get_platform_tools(cfg, "slack")
+        return "slack" in enabled
+    except Exception:
+        return False
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
 
@@ -517,15 +563,29 @@ def build_session_context_prompt(
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
-        )
+        # Inject the Slack capability note only when the agent actually has
+        # Slack tools loaded this session — native `slack` toolset opt-in,
+        # or a connected MCP server that has registered Slack tools.
+        # Otherwise keep the stale-API disclaimer honest so we never
+        # promise tools the agent lacks. Mirrors the Discord pattern below.
+        if _slack_tools_loaded():
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack and have access "
+                "to Slack-specific tools. You CAN search channel history, post "
+                "messages, react to messages, and perform other Slack operations "
+                "via the available Slack toolset."
+            )
+        else:
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack. "
+                "You do NOT have access to Slack-specific APIs — you cannot search "
+                "channel history, pin/unpin messages, manage channels, or list users. "
+                "Do not promise to perform these actions. The gateway may inline the "
+                "current message's Slack block/attachment payload when available, but "
+                "you still cannot call Slack APIs yourself."
+            )
         if context.shared_multi_user_session:
             lines.append(
                 "In shared Slack threads, use the current turn's sender prefix "

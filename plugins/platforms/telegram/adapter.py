@@ -795,6 +795,11 @@ class TelegramAdapter(BasePlatformAdapter):
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
         )
+        # Custom script-backed inline-button callbacks (see
+        # _parse_callback_handlers for the config contract).
+        self._callback_handlers: List[Dict[str, Any]] = self._parse_callback_handlers(
+            self.config.extra.get("callback_handlers")
+        )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         self._choice_picker_state: Dict[str, dict] = {}
@@ -6237,6 +6242,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- Custom script-backed callbacks (extra.callback_handlers) ---
+        handler = self._resolve_callback_handler(data)
+        if handler is not None:
+            await self._handle_custom_script_callback(
+                query,
+                data,
+                handler,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -6274,6 +6293,189 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    @staticmethod
+    def _parse_callback_handlers(raw: Any) -> List[Dict[str, Any]]:
+        """Validate ``platforms.telegram.extra.callback_handlers`` config.
+
+        Operators can wire external systems to inline-keyboard buttons
+        without patching the adapter. Each entry routes callback data
+        matching one of its prefixes to a local script:
+
+            platforms:
+              telegram:
+                extra:
+                  callback_handlers:
+                    - prefixes: ["ccc:", "ai:"]
+                      script: ~/workspace/scripts/ccc-decision-callback.sh
+                      timeout: 30          # optional, seconds (default 30)
+                      keep_keyboard: false # optional (default false)
+
+        The script receives the raw callback data as its single argument.
+        Exit 0 = success: the button press is acknowledged, and unless
+        ``keep_keyboard`` is set the message keyboard is stripped so the
+        action cannot fire twice. The last line of the script's stdout
+        (if any) is used as the acknowledgement label, so the handler
+        controls user-facing text. Non-zero exit surfaces the last stderr
+        line to the user. Reserved adapter prefixes cannot be claimed.
+        """
+        if not isinstance(raw, list):
+            if raw is not None:
+                logger.warning(
+                    "telegram callback_handlers ignored: expected a list, got %s",
+                    type(raw).__name__,
+                )
+            return []
+        reserved = (
+            "mp", "mpg", "mpv", "mm", "mc", "mb", "mx", "mg", "cp",
+            "gt", "ea", "cl", "update_prompt",
+        )
+        handlers: List[Dict[str, Any]] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                logger.warning("telegram callback_handlers: dropping non-dict entry %r", entry)
+                continue
+            prefixes = entry.get("prefixes")
+            script = entry.get("script")
+            if not isinstance(prefixes, list) or not prefixes or not script:
+                logger.warning(
+                    "telegram callback_handlers: entry needs 'prefixes' (non-empty list) "
+                    "and 'script'; dropping %r", entry,
+                )
+                continue
+            clean_prefixes = []
+            for prefix in prefixes:
+                prefix_str = str(prefix)
+                if not prefix_str:
+                    continue
+                head = prefix_str.split(":", 1)[0]
+                if head in reserved:
+                    logger.warning(
+                        "telegram callback_handlers: prefix %r collides with a "
+                        "built-in adapter callback; dropping it", prefix_str,
+                    )
+                    continue
+                clean_prefixes.append(prefix_str)
+            if not clean_prefixes:
+                continue
+            try:
+                timeout = float(entry.get("timeout", 30))
+            except (TypeError, ValueError):
+                timeout = 30.0
+            handlers.append({
+                "prefixes": tuple(clean_prefixes),
+                "script": str(_Path(str(script)).expanduser()),
+                "timeout": max(1.0, min(timeout, 300.0)),
+                "keep_keyboard": bool(entry.get("keep_keyboard", False)),
+            })
+        return handlers
+
+    def _resolve_callback_handler(self, data: str) -> Optional[Dict[str, Any]]:
+        """Return the configured callback handler matching *data*, if any."""
+        for handler in self._callback_handlers:
+            if data.startswith(handler["prefixes"]):
+                return handler
+        return None
+
+    async def _handle_custom_script_callback(
+        self,
+        query,
+        data: str,
+        handler: Dict[str, Any],
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Dispatch a configured inline-button callback to its script.
+
+        Always answers the callback query — unanswered queries leave the
+        Telegram client shimmering for ~30s and eventually surface
+        "query is too old" to the user.
+        """
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ Not authorized.")
+            return
+
+        script_path = _Path(handler["script"])
+        if not script_path.exists():
+            await query.answer(text="❌ Callback handler script missing")
+            logger.error(
+                "[%s] callback handler script missing: %s", self.name, script_path
+            )
+            return
+
+        success = False
+        label = "✓ Done"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(script_path),
+                data,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=handler["timeout"],
+            )
+            stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+            if proc.returncode == 0:
+                success = True
+                if stdout_text:
+                    # Script owns the acknowledgement text (last stdout line).
+                    label = stdout_text.splitlines()[-1][:180]
+                logger.info("[%s] callback handler ok: %s", self.name, data)
+            else:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                detail = (
+                    stderr_text.splitlines()[-1] if stderr_text
+                    else f"exit {proc.returncode}"
+                )
+                label = f"❌ {detail[:160]}"
+                logger.error(
+                    "[%s] callback handler failed: %s rc=%s stderr=%s",
+                    self.name, data, proc.returncode, stderr_text,
+                )
+        except asyncio.TimeoutError:
+            label = "❌ Handler timed out"
+            logger.error("[%s] callback handler timed out: %s", self.name, data)
+        except Exception as exc:
+            label = f"❌ Handler error: {exc}"
+            logger.error(
+                "[%s] callback handler exception: %s err=%s",
+                self.name, data, exc, exc_info=True,
+            )
+
+        await query.answer(text=label)
+        if not success or handler["keep_keyboard"]:
+            return
+
+        # Terminal action succeeded — append the outcome and strip the
+        # keyboard so it can't fire twice. Preserve HTML: producers that
+        # send buttons typically use parse_mode=HTML.
+        user_display = getattr(query.from_user, "first_name", "User")
+        original_html = (
+            getattr(query.message, "text_html", None) or ""
+        ) if query.message else ""
+        appended = (
+            f"{original_html}\n\n— <i>{_html.escape(label)} "
+            f"by {_html.escape(str(user_display))}</i>"
+        )
+        try:
+            await query.edit_message_text(
+                text=appended,
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception:
+            pass  # non-fatal if edit fails
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

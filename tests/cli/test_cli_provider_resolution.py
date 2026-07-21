@@ -882,3 +882,57 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_ensure_runtime_credentials_passes_target_model_to_resolver(monkeypatch):
+    """Regression: ``_ensure_runtime_credentials`` must pass the active
+    ``self.model`` as ``target_model`` to ``resolve_runtime_provider`` so
+    the api_mode / base_url are derived for the model actually being used,
+    not the config default.
+
+    Before the fix, the resolver used ``model_cfg.default`` (e.g.
+    ``minimax-m3`` → ``anthropic_messages``) and so the resulting
+    ``self.api_mode`` was wrong for any chat invoked with ``-m <other>``.
+    """
+    cli = _import_cli()
+    captured_kwargs = {}
+
+    def _runtime_resolve(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "provider": "opencode-go",
+            "api_mode": "chat_completions",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error",
+        lambda exc: str(exc),
+    )
+
+    # User runs: hermes chat -m qwen3.7-plus
+    shell = cli.HermesCLI(
+        model="qwen3.7-plus", provider="opencode-go", compact=True, max_turns=1
+    )
+
+    assert shell.model == "qwen3.7-plus"
+    assert shell.requested_provider == "opencode-go"
+
+    assert shell._ensure_runtime_credentials() is True
+
+    # The fix: resolver must receive the active model so it can pick the
+    # right api_mode (chat_completions for qwen3.7-plus, not
+    # anthropic_messages that the minimax-m3 default would imply).
+    assert captured_kwargs.get("target_model") == "qwen3.7-plus", (
+        f"_ensure_runtime_credentials must pass self.model as target_model; "
+        f"got kwargs={captured_kwargs!r}"
+    )
+    # And the resulting CLI state should reflect the chat_completions
+    # resolution, not whatever the config default would have implied.
+    assert shell.api_mode == "chat_completions"
+    assert shell.base_url == "https://opencode.ai/zen/go/v1"

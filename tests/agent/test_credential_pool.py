@@ -116,7 +116,7 @@ def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "manual",
-                        "access_token": "***",
+                        "access_token": "sk-or-v3-primary-key",
                     },
                     {
                         "id": "cred-2",
@@ -124,7 +124,7 @@ def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 1,
                         "source": "manual",
-                        "access_token": "***",
+                        "access_token": "sk-or-v3-secondary-key",
                     },
                 ]
             },
@@ -1184,6 +1184,229 @@ def test_write_credential_pool_preserves_known_provider_owned_oauth_state(tmp_pa
     assert persisted["refresh_token"] == f"refresh-{sentinel}"
     assert persisted["agent_key"] == f"agent-{sentinel}"
 
+
+
+def test_write_credential_pool_evicts_placeholder_only_entry(tmp_path, monkeypatch):
+    """Placeholder-only entries are evicted; real entries survive. (#38799)"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "placeholder-entry",
+            "label": "placeholder",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "none",
+        },
+        {
+            "id": "real-entry",
+            "label": "real",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "manual",
+            "access_token": "sk-or-v3-real-secret-value",
+        },
+    ])
+
+    entries = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["openrouter"]
+    assert len(entries) == 1
+    assert entries[0]["id"] == "real-entry"
+
+
+def test_write_credential_pool_prevents_placeholder_from_masking_real_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "placeholder-entry",
+            "label": "placeholder",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "none",
+        },
+        {
+            "id": "real-entry",
+            "label": "real",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "manual",
+            "access_token": "sk-or-v3-real-secret-value",
+        },
+    ])
+
+    entry = load_pool("openrouter").peek()
+
+    assert entry is not None
+    assert entry.id == "real-entry"
+
+
+def test_write_credential_pool_preserves_oauth_entry_with_refresh_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [{
+        "id": "oauth-entry",
+        "label": "oauth",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual",
+        "access_token": "none",
+        "refresh_token": "refresh-token",
+    }])
+
+    entry = load_pool("openrouter").peek()
+
+    assert entry is not None
+    assert entry.id == "oauth-entry"
+    assert entry.refresh_token == "refresh-token"
+
+
+def test_write_credential_pool_preserves_nous_entry_with_agent_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": ["inference:invoke"],
+        "exp": int(time.time() + 3600),
+    })
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("nous", [{
+        "id": "nous-entry",
+        "label": "nous",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "device_code",
+        "access_token": "none",
+        "agent_key": token,
+        "scope": "inference:invoke",
+    }])
+
+    entry = load_pool("nous").peek()
+
+    assert entry is not None
+    assert entry.id == "nous-entry"
+    assert entry.runtime_api_key == token
+
+
+def test_write_credential_pool_evicts_all_placeholder_variants(tmp_path, monkeypatch):
+    """Every member of _PLACEHOLDER_SECRET_VALUES triggers eviction. (#38799)"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import _PLACEHOLDER_SECRET_VALUES, write_credential_pool
+
+    entries = [
+        {
+            "id": f"entry-{i}",
+            "label": placeholder,
+            "auth_type": "api_key",
+            "priority": i,
+            "source": "manual",
+            "access_token": placeholder,
+        }
+        for i, placeholder in enumerate(sorted(_PLACEHOLDER_SECRET_VALUES))
+    ]
+    write_credential_pool("openrouter", entries)
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["openrouter"]
+    assert persisted == []
+
+
+def test_write_credential_pool_keeps_entry_with_real_secret(tmp_path, monkeypatch):
+    """An entry with a genuine access_token is not evicted. (#38799)"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "real-entry",
+            "label": "real",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "sk-or-v3-real-secret-value",
+        }
+    ])
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["openrouter"]
+    assert len(persisted) == 1
+    assert persisted[0]["access_token"] == "sk-or-v3-real-secret-value"
+
+
+def test_write_credential_pool_keeps_entry_with_real_api_key_even_if_access_token_is_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "mixed-secret-entry",
+            "label": "mixed-secret-entry",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "access_token": "none",
+            "api_key": "sk-or-v3-real-api-key",
+        }
+    ])
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["openrouter"]
+    assert len(persisted) == 1
+    assert persisted[0]["api_key"] == "sk-or-v3-real-api-key"
+
+
+def test_write_credential_pool_evicts_placeholder_api_key_field(tmp_path, monkeypatch):
+    """Entries with api_key set to a placeholder (no access_token) are evicted. (#38799)"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "api-key-placeholder",
+            "label": "api-key-placeholder",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "manual",
+            "api_key": "none",
+        }
+    ])
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["openrouter"]
+    assert persisted == []
+
+
+def test_write_credential_pool_keeps_entry_with_no_token(tmp_path, monkeypatch):
+    """Entries with neither access_token nor api_key are NOT evicted. (#38799)"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("nous", [
+        {
+            "id": "tokenless-device",
+            "label": "device-code",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            # No access_token or api_key — placeholder check must not evict
+        }
+    ])
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["nous"]
+    assert len(persisted) == 1
+    assert persisted[0]["id"] == "tokenless-device"
 
 
 def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):

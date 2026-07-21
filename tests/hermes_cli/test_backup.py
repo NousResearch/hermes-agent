@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import zipfile
 from argparse import Namespace
@@ -1402,8 +1403,9 @@ class TestSafeCopyDb:
         conn.commit()
         conn.close()
 
-        result = _safe_copy_db(src, dst)
-        assert result is True
+        ok, err = _safe_copy_db(src, dst)
+        assert ok is True
+        assert err is None
 
         conn = sqlite3.connect(str(dst))
         rows = conn.execute("SELECT x FROM t").fetchall()
@@ -1422,13 +1424,28 @@ class TestSafeCopyDb:
         conn.commit()
         conn.close()
 
-        result = _safe_copy_db(src, dst)
-        assert result is True
+        ok, err = _safe_copy_db(src, dst)
+        assert ok is True
+        assert err is None
 
         conn = sqlite3.connect(str(dst))
         rows = conn.execute("SELECT x FROM t").fetchall()
         conn.close()
         assert rows == [("wal-test",)]
+
+    def test_unreadable_database_fails_closed_with_reason(self, tmp_path):
+        """A present-but-unreadable DB (e.g. zeroed by storage failure,
+        issue #68474) must fail closed AND surface the sqlite error so
+        callers can record why the file was not captured."""
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "zeroed.db"
+        src.write_bytes(b"\x00" * 4096)  # valid size, no SQLite header
+        dst = tmp_path / "copy.db"
+
+        ok, err = _safe_copy_db(src, dst)
+        assert ok is False
+        assert err is not None and "not a database" in err
+        assert not dst.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1563,6 +1580,60 @@ class TestQuickSnapshot:
             hermes_home=hermes_home, max_file_size=1 << 30
         )
         assert (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
+
+    def test_failed_db_capture_is_loud_and_recorded(self, hermes_home, capsys):
+        """An existing state.db that cannot be captured (e.g. zeroed to null
+        bytes, issue #68474) must not ride through silently: the failure is
+        printed prominently and persisted in the manifest for forensics,
+        while the small files the snapshot exists to protect still land."""
+        from hermes_cli.backup import create_quick_snapshot
+        (hermes_home / "state.db").write_bytes(b"\x00" * 8192)
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert not (snap_dir / "state.db").exists()
+        assert (snap_dir / "cron" / "jobs.json").exists()
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" not in meta["files"]
+        assert "not a database" in meta["failed"]["state.db"]
+
+        out = capsys.readouterr().out
+        assert "could not capture state.db" in out
+        assert "Snapshot INCOMPLETE" in out
+        assert "NOT protected" in out
+
+    def test_failed_plain_copy_is_recorded(self, hermes_home, capsys):
+        """Non-DB copy failures (OSError from shutil.copy2) are recorded in
+        the manifest too, not just logged."""
+        from hermes_cli.backup import create_quick_snapshot
+        real_copy2 = shutil.copy2
+
+        def failing_copy2(src, dst, **kw):
+            if str(src).endswith(".env"):
+                raise OSError("disk full")
+            return real_copy2(src, dst, **kw)
+
+        with patch("hermes_cli.backup.shutil.copy2", side_effect=failing_copy2):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        with open(hermes_home / "state-snapshots" / snap_id / "manifest.json") as f:
+            meta = json.load(f)
+        assert ".env" not in meta["files"]
+        assert "disk full" in meta["failed"][".env"]
+        assert "Snapshot INCOMPLETE" in capsys.readouterr().out
+
+    def test_clean_snapshot_has_no_failed_key(self, hermes_home, capsys):
+        """The failed key and the INCOMPLETE warning appear only on failure."""
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        with open(hermes_home / "state-snapshots" / snap_id / "manifest.json") as f:
+            meta = json.load(f)
+        assert "failed" not in meta
+        assert "Snapshot INCOMPLETE" not in capsys.readouterr().out
 
     def test_list_snapshots(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots

@@ -19,7 +19,7 @@ import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 
@@ -253,27 +253,28 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
-def _safe_copy_db(src: Path, dst: Path) -> bool:
+def _safe_copy_db(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to. Fail closed if a consistent snapshot cannot
     be created: copying only the live main file can omit committed WAL data.
+
+    Returns ``(ok, error)``: ``(True, None)`` on success, ``(False, reason)``
+    on failure. The reason string lets callers persist WHY a present file
+    could not be captured (e.g. ``file is not a database`` for a zeroed
+    state.db, issue #68474) instead of dropping it silently.
     """
     conn = None
     backup_conn = None
+    error: Optional[str] = None
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
         conn.backup(backup_conn)
-        return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
+        error = str(exc)
     finally:
         for connection in (backup_conn, conn):
             if connection is not None:
@@ -281,6 +282,16 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
                     connection.close()
                 except Exception:
                     pass
+    if error is not None:
+        # Remove the partial destination AFTER closing the connections: on
+        # Windows an open handle makes unlink fail with a (swallowed)
+        # PermissionError, silently leaving a broken copy in the snapshot.
+        try:
+            dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False, error
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +412,7 @@ def run_backup(args) -> None:
                         suffix=".db", delete=False, dir=str(out_path.parent)
                     ) as tmp:
                         tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
+                    if _safe_copy_db(abs_path, tmp_db)[0]:
                         zf.write(tmp_db, arcname=str(rel_path))
                         total_bytes += tmp_db.stat().st_size
                         tmp_db.unlink(missing_ok=True)
@@ -858,6 +869,15 @@ def create_quick_snapshot(
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
+    # rel_path -> reason, for files that EXISTED but could not be captured.
+    # Persisted in the manifest and reported loudly: a present-but-unreadable
+    # state.db (e.g. zeroed to null bytes, issue #68474) must not ride
+    # through an update behind an apparently-successful snapshot.
+    failed: Dict[str, str] = {}
+
+    def _record_failure(rel_name: str, reason: str) -> None:
+        failed[rel_name] = reason
+        print(f"  ⚠ Snapshot: could not capture {rel_name}: {reason}")
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
@@ -886,13 +906,16 @@ def create_quick_snapshot(
                     # board DB with an open WAL (the gateway may hold it at
                     # snapshot time) is captured consistently.
                     if sub.suffix == ".db":
-                        if not _safe_copy_db(sub, dst):
+                        ok, err = _safe_copy_db(sub, dst)
+                        if not ok:
+                            _record_failure(sub_rel, err or "SQLite safe copy failed")
                             continue
                     else:
                         shutil.copy2(sub, dst)
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                    _record_failure(sub_rel, str(exc))
             continue
 
         if not src.is_file():
@@ -906,15 +929,18 @@ def create_quick_snapshot(
 
         try:
             if src.suffix == ".db":
-                if not _safe_copy_db(src, dst):
+                ok, err = _safe_copy_db(src, dst)
+                if not ok:
+                    _record_failure(rel, err or "SQLite safe copy failed")
                     continue
             else:
                 shutil.copy2(src, dst)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
+            _record_failure(rel, str(exc))
 
-    if not manifest:
+    if not manifest and not failed:
         shutil.rmtree(snap_dir, ignore_errors=True)
         return None
 
@@ -927,8 +953,25 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
+    if failed:
+        # Forensic record: which existing files this snapshot could NOT
+        # protect, and why. Keeps the "was it already broken before the
+        # update?" question answerable after the fact (issue #68474).
+        meta["failed"] = failed
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    if failed:
+        names = ", ".join(sorted(failed))
+        print(
+            f"  ⚠ Snapshot INCOMPLETE: {len(failed)} existing file(s) could not "
+            f"be captured ({names}) — they are NOT protected by this snapshot. "
+            f"If this is unexpected, investigate before relying on it "
+            f"(the file may be corrupted or locked)."
+        )
+        logger.warning(
+            "Quick snapshot %s incomplete: failed to capture %s", snap_id, names
+        )
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
@@ -1247,7 +1290,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
-                            if not _safe_copy_db(abs_path, tmp_db):
+                            if not _safe_copy_db(abs_path, tmp_db)[0]:
                                 logger.warning(
                                     "Full-zip backup aborted: SQLite snapshot failed for %s",
                                     rel_path,

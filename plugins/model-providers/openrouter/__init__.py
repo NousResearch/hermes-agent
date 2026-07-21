@@ -54,18 +54,17 @@ class OpenRouterProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        """Fetch from public OpenRouter catalog — no auth required.
+        """Fetch from OpenRouter's policy-filtered catalog.
 
-        Note: Tool-call capability filtering is applied by hermes_cli/models.py
-        via fetch_openrouter_models() → _openrouter_model_supports_tools(), not
-        here. The picker early-returns via the dedicated openrouter path before
-        reaching this method, so filtering here would be unreachable.
+        The authenticated ``/models/user`` endpoint reflects the account's
+        provider preferences, privacy settings, and guardrails. Tool-call
+        capability filtering remains in hermes_cli/models.py for the picker.
         """
         global _CACHE  # noqa: PLW0603
         if _CACHE is not None:
             return _CACHE
         try:
-            result = super().fetch_models(api_key=None, base_url=base_url, timeout=timeout)
+            result = super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
             if result is not None:
                 _CACHE = result
             return result
@@ -175,7 +174,7 @@ openrouter = OpenRouterProfile(
     description="OpenRouter — unified API for 200+ models",
     signup_url="https://openrouter.ai/keys",
     base_url="https://openrouter.ai/api/v1",
-    models_url="https://openrouter.ai/api/v1/models",
+    models_url="https://openrouter.ai/api/v1/models/user",
     fallback_models=(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",

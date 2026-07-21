@@ -97,7 +97,11 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
-
+_openrouter_catalog_cache_at: float = 0.0
+_openrouter_policy_catalog_cache: dict[str, dict[str, Any]] | None = None
+_openrouter_policy_catalog_cache_at: float = 0.0
+_OPENROUTER_USER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
+_OPENROUTER_CATALOG_CACHE_TTL = 300.0
 
 
 
@@ -1443,21 +1447,100 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def _fetch_openrouter_policy_catalog(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]] | None:
+    """Fetch OpenRouter's catalog filtered by account privacy and guardrails.
+
+    ``/models/user`` is authenticated and reflects the account's current
+    provider preferences, privacy settings, and guardrails.  ``None`` means
+    the policy-aware catalog could not be verified; an empty dict is a valid
+    response meaning the account currently has no eligible models.
+    """
+    global _openrouter_policy_catalog_cache, _openrouter_policy_catalog_cache_at
+
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    now = time.time()
+    if (
+        _openrouter_policy_catalog_cache is not None
+        and not force_refresh
+        and (now - _openrouter_policy_catalog_cache_at) < _OPENROUTER_CATALOG_CACHE_TTL
+    ):
+        return dict(_openrouter_policy_catalog_cache)
+
+    req = urllib.request.Request(
+        _OPENROUTER_USER_MODELS_URL,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": _HERMES_USER_AGENT,
+        },
+    )
+    try:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    items = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(items, list):
+        return None
+
+    catalog: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if model_id:
+            catalog[model_id] = item
+
+    _openrouter_policy_catalog_cache = catalog
+    _openrouter_policy_catalog_cache_at = now
+    return dict(catalog)
+
+
+def _openrouter_policy_model_ids(
+    *,
+    force_refresh: bool = False,
+) -> list[str] | None:
+    """Return model IDs eligible under the current OpenRouter policy."""
+    catalog = _fetch_openrouter_policy_catalog(force_refresh=force_refresh)
+    if catalog is None:
+        return None
+    return list(catalog)
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    global _openrouter_catalog_cache
+    """Return tool-capable curated models allowed by OpenRouter's policy.
 
-    if _openrouter_catalog_cache is not None and not force_refresh:
+    The picker is intentionally fail-closed: if the authenticated
+    policy-aware catalog cannot be fetched, it returns a stale filtered picker
+    cache when available, otherwise an empty list. It never falls back to the
+    unfiltered public catalog or a static snapshot that could violate the
+    account's current privacy settings.
+    """
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_at
+
+    now = time.time()
+    if (
+        _openrouter_catalog_cache is not None
+        and not force_refresh
+        and (now - _openrouter_catalog_cache_at) < _OPENROUTER_CATALOG_CACHE_TTL
+    ):
         return list(_openrouter_catalog_cache)
 
-    # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
-    # snapshot when the manifest is unreachable. Both are curated lists that
-    # drive the picker; the OpenRouter live /v1/models filter (tool support,
-    # free pricing) is applied on top either way.
+    # Prefer the remotely-hosted curated catalog manifest; fall back to the
+    # in-repo snapshot only to determine which policy-eligible models Hermes
+    # should feature in its picker.
     try:
         from hermes_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
@@ -1466,28 +1549,12 @@ def fetch_openrouter_models(
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
 
-    try:
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/models",
-            headers={"Accept": "application/json"},
-        )
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception:
-        return list(_openrouter_catalog_cache or fallback)
-
-    live_items = payload.get("data", [])
-    if not isinstance(live_items, list):
-        return list(_openrouter_catalog_cache or fallback)
-
-    live_by_id: dict[str, dict[str, Any]] = {}
-    for item in live_items:
-        if not isinstance(item, dict):
-            continue
-        mid = str(item.get("id") or "").strip()
-        if not mid:
-            continue
-        live_by_id[mid] = item
+    live_by_id = _fetch_openrouter_policy_catalog(
+        timeout=timeout,
+        force_refresh=force_refresh,
+    )
+    if live_by_id is None:
+        return list(_openrouter_catalog_cache or [])
 
     curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
@@ -1501,20 +1568,17 @@ def fetch_openrouter_models(
         if not _openrouter_model_supports_tools(live_item):
             continue
         if preferred_id == silent_default:
-            # Keep the silent-default badge through the live refresh so the
-            # picker shows which model Hermes lands on when none is selected.
             desc = "default"
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
-    if not curated:
-        return list(_openrouter_catalog_cache or fallback)
-
-    first_id, first_desc = curated[0]
-    if not first_desc:
+    if curated and not curated[0][1]:
+        first_id, _ = curated[0]
         curated[0] = (first_id, "recommended")
+
     _openrouter_catalog_cache = curated
+    _openrouter_catalog_cache_at = now
     return list(curated)
 
 
@@ -2979,14 +3043,24 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     entry is removed. Used by ``/model --refresh`` and
     ``hermes model --refresh``.
     """
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_at
+    global _openrouter_policy_catalog_cache, _openrouter_policy_catalog_cache_at
+
     try:
+        normalized = normalize_provider(provider) if provider is not None else None
+        if provider is None or normalized == "openrouter":
+            _openrouter_catalog_cache = None
+            _openrouter_catalog_cache_at = 0.0
+            _openrouter_policy_catalog_cache = None
+            _openrouter_policy_catalog_cache_at = 0.0
+
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()
             return
         cache = _load_provider_models_cache()
-        normalized = normalize_provider(provider) or provider or ""
+        normalized = normalized or provider or ""
         if normalized in cache:
             del cache[normalized]
             _save_provider_models_cache(cache)
@@ -4684,6 +4758,41 @@ def validate_requested_model(
                 f"model listing.  Many Anthropic-compatible proxies do not "
                 f"implement GET /v1/models.  The model name has been accepted "
                 f"without verification."
+            ),
+        }
+
+    if normalized == "openrouter":
+        eligible_models = _openrouter_policy_model_ids()
+        if eligible_models is None:
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    "Could not verify OpenRouter's privacy-filtered model catalog. "
+                    "The model was not selected; check OPENROUTER_API_KEY and retry."
+                ),
+            }
+        eligible_set = set(eligible_models)
+        if requested_for_lookup in eligible_set:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        suggestions = get_close_matches(requested_for_lookup, eligible_models, n=3, cutoff=0.5)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = " Similar policy-eligible models: " + ", ".join(f"`{s}`" for s in suggestions)
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"`{requested}` is not available under the current OpenRouter "
+                f"provider/privacy/guardrail policy and was not selected."
+                f"{suggestion_text}"
             ),
         }
 

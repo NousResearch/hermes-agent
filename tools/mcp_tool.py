@@ -107,7 +107,7 @@ import time
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional
+from typing import Any, Coroutine, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -5726,7 +5726,42 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def _filter_servers_by_toolset_allowlist(
+    servers: Dict[str, dict], enabled_toolsets: Optional[Iterable[str]]
+) -> Dict[str, dict]:
+    """Restrict ``servers`` to those named in ``enabled_toolsets``, when scoped.
+
+    MCP server names are first-class toolset names (see
+    ``hermes_cli.tools_config.enabled_mcp_server_names`` /
+    ``cron.scheduler._merge_mcp_into_per_job_toolsets``): a profile's
+    ``platform_toolsets.cli`` list names the exact MCP servers it wants
+    (e.g. ``codegraph``, ``git_context``, ``bitwarden``) directly alongside
+    native toolsets. Every caller that already resolved a scoped toolset
+    list (dispatcher-spawned kanban workers via ``--toolsets``, cron jobs
+    via ``_resolve_cron_enabled_toolsets``) can pass it straight through
+    here to stop physically spawning MCP server subprocesses the worker's
+    tool surface doesn't include — not just filtering which already-running
+    servers' tools reach ``get_tool_definitions()`` afterward.
+
+    ``enabled_toolsets=None`` (the default for interactive CLI/gateway/
+    dashboard sessions, which want every configured server available)
+    performs no filtering at all — this is opt-in, so ordinary user
+    sessions never lose MCP servers they haven't explicitly scoped away.
+    An allowlist containing ``"all"`` or ``"*"`` is likewise treated as
+    unrestricted, matching the sentinel convention used by
+    ``get_tool_definitions(enabled_toolsets=...)`` elsewhere.
+    """
+    if enabled_toolsets is None:
+        return servers
+    allowed = {str(t).strip() for t in enabled_toolsets if str(t).strip()}
+    if not allowed or "all" in allowed or "*" in allowed:
+        return servers
+    return {name: cfg for name, cfg in servers.items() if name in allowed}
+
+
+def discover_mcp_tools(
+    enabled_toolsets: Optional[Iterable[str]] = None,
+) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -5734,6 +5769,17 @@ def discover_mcp_tools() -> List[str]:
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
+
+    Args:
+        enabled_toolsets: Optional allowlist of toolset/MCP-server names to
+            restrict discovery to (see
+            :func:`_filter_servers_by_toolset_allowlist`). ``None`` (the
+            default) connects every configured server, matching prior
+            behavior for interactive sessions. Pass the caller's already-
+            resolved worker/job toolset list to avoid booting MCP servers
+            outside that scope — the fix for dispatcher workers each
+            independently connecting the full MCP fleet regardless of
+            their ``--toolsets`` pin.
 
     Returns:
         List of all registered MCP tool names.
@@ -5745,6 +5791,12 @@ def discover_mcp_tools() -> List[str]:
     servers = _load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")
+        return []
+    servers = _filter_servers_by_toolset_allowlist(servers, enabled_toolsets)
+    if not servers:
+        logger.debug(
+            "No MCP servers within the resolved toolset allowlist -- skipping discovery"
+        )
         return []
 
     with _lock:

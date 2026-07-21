@@ -397,7 +397,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
@@ -13213,6 +13213,34 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _parse_cli_toolsets_arg(raw: Any) -> Optional[List[str]]:
+    """Normalize the ``--toolsets``/``-t`` CLI arg into a list, or ``None``.
+
+    ``args.toolsets`` is a comma-separated string on the real argparse path
+    (``-t web,terminal,codegraph``) but tests and some callers pass a
+    list/tuple directly (mirrors the tolerant parsing already done for
+    ``cmd_chat``'s ``toolsets`` param in ``cli.py``). Returns ``None`` when
+    unset so ``discover_mcp_tools``/``start_background_mcp_discovery`` fall
+    back to their unrestricted default (connect every configured server) —
+    scoping MCP discovery is opt-in based on whether the invocation actually
+    pinned a toolset list, never forced onto ordinary interactive sessions.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        parsed = [t.strip() for t in raw.split(",") if t.strip()]
+        return parsed or None
+    if isinstance(raw, (list, tuple)):
+        parsed = []
+        for item in raw:
+            if isinstance(item, str):
+                parsed.extend(t.strip() for t in item.split(",") if t.strip())
+            elif item:
+                parsed.append(str(item))
+        return parsed or None
+    return None
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo: chokepoint guarantee that HERMES_YOLO_MODE is set before ANY
@@ -13260,6 +13288,7 @@ def _prepare_agent_startup(args) -> None:
             start_background_mcp_discovery(
                 logger=logger,
                 thread_name="cli-mcp-discovery",
+                enabled_toolsets=_parse_cli_toolsets_arg(getattr(args, "toolsets", None)),
             )
         except Exception:
             logger.debug(
@@ -13273,7 +13302,9 @@ def _prepare_agent_startup(args) -> None:
             # not own a later bounded/executor startup path.
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            discover_mcp_tools(
+                enabled_toolsets=_parse_cli_toolsets_arg(getattr(args, "toolsets", None))
+            )
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",

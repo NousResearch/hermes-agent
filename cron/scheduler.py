@@ -3323,9 +3323,19 @@ def run_job(
         # ticks short-circuit on already-connected servers inside
         # register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
+        #
+        # Resolved BEFORE the call (rather than reusing the enabled_toolsets
+        # passed to AIAgent below) so the MCP allowlist and the agent's own
+        # toolset scoping can never drift apart, and so a job scoped to a
+        # handful of native toolsets doesn't physically boot every MCP
+        # server configured on the profile — each cron tick was previously
+        # connecting the full fleet regardless of the job's own toolset
+        # allowlist (contributing to the 58-watchdog resource/context
+        # explosion across concurrently-running workers/jobs).
+        _job_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
         try:
             from tools.mcp_tool import discover_mcp_tools
-            _mcp_tools = discover_mcp_tools()
+            _mcp_tools = discover_mcp_tools(enabled_toolsets=_job_enabled_toolsets)
             if _mcp_tools:
                 logger.info(
                     "Job '%s': %d MCP tool(s) available",

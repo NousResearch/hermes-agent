@@ -919,6 +919,15 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "updates.committed_local_changes": {
+        "type": "select",
+        "description": (
+            "What to do when the update branch has committed local patches. "
+            "'refuse' stops safely; 'rebase' backs up and rebases a linear "
+            "patch stack, dropping patches already present upstream."
+        ),
+        "options": ["refuse", "rebase"],
+    },
     "updates.refresh_cua_driver": {
         "type": "bool",
         "description": (

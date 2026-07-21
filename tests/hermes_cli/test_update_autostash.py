@@ -398,6 +398,7 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_config, "load_config", lambda *a, **kw: {})
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
 
 
@@ -535,6 +536,7 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    local_ahead_count="0",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
@@ -554,6 +556,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-list" in joined and "origin/main..HEAD" in joined:
+            return SimpleNamespace(stdout=f"{local_ahead_count}\n", stderr="", returncode=0)
         if "rev-list" in joined:
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "--ff-only" in joined:
@@ -603,6 +607,102 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+def test_cmd_update_rebased_changes_fall_through_full_pipeline(monkeypatch, tmp_path):
+    """A successful reconciliation needs no separate pipeline-forcing path."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda *a, **kw: {"updates": {"committed_local_changes": "rebase"}},
+    )
+    reconcile_calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_reconcile_committed_local_changes",
+        lambda *args: reconcile_calls.append(args)
+        or hermes_main._CommittedLocalChangesOutcome("rebased", ahead_count=2),
+    )
+    syntax_checks = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_validate_critical_files_syntax",
+        lambda root: syntax_checks.append(root) or (True, None, None),
+    )
+    post_pull_steps = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_refresh_active_lazy_features",
+        lambda *args, **kwargs: post_pull_steps.append("lazy-features"),
+    )
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, local_ahead_count="2"
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert len(reconcile_calls) == 1
+    assert reconcile_calls[0][3] == "rebase"
+    assert syntax_checks == [tmp_path]
+    assert post_pull_steps == ["lazy-features"]
+    assert not [c for c in recorded if "reset" in c and "--hard" in c]
+
+
+@pytest.mark.parametrize("status", ["refused", "failed"])
+def test_cmd_update_never_resets_when_reconciliation_stops(
+    monkeypatch, tmp_path, status
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        hermes_main,
+        "_reconcile_committed_local_changes",
+        lambda *args: hermes_main._CommittedLocalChangesOutcome(status),
+    )
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, local_ahead_count="2"
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert not [c for c in recorded if "reset" in c and "--hard" in c]
+
+
+def test_cmd_update_preserves_update_stash_when_reconciliation_stops(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        hermes_main,
+        "_stash_local_changes_if_needed",
+        lambda *a, **kw: "abc123deadbeef",
+    )
+    restores = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_restore_stashed_changes",
+        lambda *a, **kw: restores.append(1) or True,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_reconcile_committed_local_changes",
+        lambda *args: hermes_main._CommittedLocalChangesOutcome("failed"),
+    )
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, local_ahead_count="2"
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert restores == []
+    assert not [c for c in recorded if "reset" in c and "--hard" in c]
+    assert "preserved in stash" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

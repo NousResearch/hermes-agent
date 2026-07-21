@@ -53,7 +53,10 @@ When the update runs **without a terminal** — from the desktop/chat app's "Upd
 updates:
   non_interactive_local_changes: stash   # default: keep + auto-restore
   # non_interactive_local_changes: discard  # throw local source edits away
+  committed_local_changes: refuse        # set to rebase to preserve local commits
 ```
+
+Committed local patches are handled separately. `updates.committed_local_changes` defaults to `refuse`; set it to `rebase` to back up and rebase a linear patch stack automatically. Upstream-equivalent and empty patches are dropped, while merge commits and genuine conflicts stop the update safely.
 
 - `stash` (default) — auto-stash, pull, then auto-restore your changes on top of the updated code. Nothing is lost; if a restore hits conflicts they're preserved in a git stash for manual recovery.
 - `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.

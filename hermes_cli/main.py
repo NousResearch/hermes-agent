@@ -424,6 +424,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -7380,6 +7381,249 @@ def _discard_stashed_changes(
     return True
 
 
+@dataclass(frozen=True)
+class _CommittedLocalChangesOutcome:
+    """Result of reconciling commits that exist only on the local branch."""
+
+    status: str
+    ahead_count: int = 0
+    backup_ref: Optional[str] = None
+    detail: Optional[str] = None
+
+
+def _backup_ref_created_at(
+    git_cmd: list[str], cwd: Path, ref: str
+) -> Optional[int]:
+    """Return a backup ref's reflog creation time, or ``None`` if unknown."""
+    result = subprocess.run(
+        git_cmd
+        + ["reflog", "show", "-n", "1", "--date=unix", "--format=%gd", ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    selector = result.stdout.strip()
+    marker = selector.rpartition("@{")
+    if not marker[1] or not marker[2].endswith("}"):
+        return None
+    try:
+        return int(marker[2][:-1])
+    except ValueError:
+        return None
+
+
+def _create_committed_local_changes_backup(
+    git_cmd: list[str],
+    cwd: Path,
+    branch: str,
+    head_sha: str,
+    *,
+    keep: int = 5,
+) -> Optional[str]:
+    """Create and prune durable pre-rebase refs without trusting ref names.
+
+    Each ref gets an explicit reflog, whose timestamp is the source of truth
+    for retention. Refs with missing/unparseable creation metadata are kept.
+    """
+    from datetime import datetime, timezone
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    prefix = f"refs/hermes/update-backups/{branch}/"
+    backup_ref = f"{prefix}{timestamp}"
+    created = subprocess.run(
+        git_cmd + ["update-ref", "--create-reflog", backup_ref, head_sha],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        return None
+
+    listed = subprocess.run(
+        git_cmd + ["for-each-ref", "--format=%(refname)", prefix],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return backup_ref
+
+    dated_refs: list[tuple[int, str]] = []
+    for ref in listed.stdout.splitlines():
+        ref = ref.strip()
+        if not ref:
+            continue
+        created_at = _backup_ref_created_at(git_cmd, cwd, ref)
+        if created_at is not None:
+            dated_refs.append((created_at, ref))
+
+    dated_refs.sort(key=lambda item: item[0])
+    for _created_at, stale_ref in dated_refs[: max(0, len(dated_refs) - keep)]:
+        subprocess.run(
+            git_cmd + ["update-ref", "-d", stale_ref],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    return backup_ref
+
+
+def _reconcile_committed_local_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    branch: str,
+    mode: str,
+    pre_pull_sha: Optional[str],
+) -> _CommittedLocalChangesOutcome:
+    """Safely reconcile commits that prevent an ff-only update.
+
+    ``refuse`` is the default. ``rebase`` creates a durable backup ref, then
+    rebases a linear local patch stack while dropping commits that are empty or
+    already equivalent upstream. The caller owns the existing hard-reset path
+    when this returns ``no_local_commits``.
+    """
+    remote_ref = f"origin/{branch}"
+    ahead = subprocess.run(
+        git_cmd + ["rev-list", "--count", f"{remote_ref}..HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if ahead.returncode != 0:
+        detail = (ahead.stderr or ahead.stdout or "could not count local commits").strip()
+        print("✗ Could not inspect committed local changes safely.")
+        if detail:
+            print(f"  {detail.splitlines()[0]}")
+        return _CommittedLocalChangesOutcome("failed", detail=detail)
+
+    try:
+        ahead_count = int(ahead.stdout.strip())
+    except ValueError:
+        detail = f"invalid local commit count: {ahead.stdout.strip()!r}"
+        print(f"✗ Could not inspect committed local changes safely ({detail}).")
+        return _CommittedLocalChangesOutcome("failed", detail=detail)
+
+    if ahead_count == 0:
+        return _CommittedLocalChangesOutcome("no_local_commits")
+
+    if mode != "rebase":
+        print(
+            f"  ✗ Local {branch} is ahead of {remote_ref} by {ahead_count} commit(s) "
+            "— refusing to reset committed local work."
+        )
+        print(
+            "    Set updates.committed_local_changes: rebase in config.yaml "
+            "to preserve and rebase a linear local patch stack automatically."
+        )
+        return _CommittedLocalChangesOutcome("refused", ahead_count=ahead_count)
+
+    merges = subprocess.run(
+        git_cmd + ["rev-list", "--merges", "--count", f"{remote_ref}..HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        merge_count = int(merges.stdout.strip()) if merges.returncode == 0 else -1
+    except ValueError:
+        merge_count = -1
+    if merge_count < 0:
+        detail = (merges.stderr or "could not inspect the local commit graph").strip()
+        print("✗ Could not verify that the local patch stack is linear.")
+        return _CommittedLocalChangesOutcome(
+            "failed", ahead_count=ahead_count, detail=detail
+        )
+    if merge_count:
+        detail = f"local patch stack contains {merge_count} merge commit(s)"
+        print(f"  ✗ {detail}; automatic rebase is disabled for this history.")
+        print(f"    Reconcile manually, then re-run `hermes update --branch {branch}`.")
+        return _CommittedLocalChangesOutcome(
+            "refused", ahead_count=ahead_count, detail=detail
+        )
+
+    if not pre_pull_sha:
+        detail = "could not capture the pre-rebase HEAD"
+        print(f"✗ {detail}; refusing to rewrite committed local work.")
+        return _CommittedLocalChangesOutcome(
+            "failed", ahead_count=ahead_count, detail=detail
+        )
+
+    backup_ref = _create_committed_local_changes_backup(
+        git_cmd, cwd, branch, pre_pull_sha
+    )
+    if backup_ref is None:
+        detail = "could not create durable pre-rebase backup ref"
+        print(f"✗ {detail}; refusing to rewrite committed local work.")
+        return _CommittedLocalChangesOutcome(
+            "failed", ahead_count=ahead_count, detail=detail
+        )
+
+    print(
+        f"  → Rebasing {ahead_count} committed local patch(es) onto {remote_ref}..."
+    )
+    print(f"    Backup: {backup_ref}")
+    rebased = subprocess.run(
+        git_cmd
+        + ["rebase", "--empty=drop", "--no-keep-empty", remote_ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if rebased.returncode == 0:
+        remaining = subprocess.run(
+            git_cmd + ["rev-list", "--count", f"{remote_ref}..HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        remaining_count = remaining.stdout.strip() if remaining.returncode == 0 else "?"
+        print(
+            f"  ✓ Local patches rebased ({remaining_count} remain; "
+            "upstream-equivalent patches were dropped)."
+        )
+        return _CommittedLocalChangesOutcome(
+            "rebased", ahead_count=ahead_count, backup_ref=backup_ref
+        )
+
+    detail = (rebased.stderr or rebased.stdout or "git rebase failed").strip()
+    print("✗ Could not rebase committed local patches automatically.")
+    if detail:
+        print(f"  {detail.splitlines()[0]}")
+    aborted = subprocess.run(
+        git_cmd + ["rebase", "--abort"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    current = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    restored = (
+        aborted.returncode == 0
+        and current.returncode == 0
+        and current.stdout.strip() == pre_pull_sha
+    )
+    if restored:
+        print("  ✓ Rebase aborted; the original committed state is restored.")
+    else:
+        print("  ✗ Automatic rebase abort did not restore the original HEAD.")
+        print("    Do not run another update. Recover with:")
+        print(f"      git -C {cwd} rebase --abort")
+        print(f"      git -C {cwd} reset --hard {backup_ref}")
+    print(f"  Durable backup: {backup_ref}")
+    return _CommittedLocalChangesOutcome(
+        "failed",
+        ahead_count=ahead_count,
+        backup_ref=backup_ref,
+        detail=detail,
+    )
+
+
 # =========================================================================
 # Fork detection and upstream management for `hermes update`
 # =========================================================================
@@ -10748,18 +10992,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or not (sys.stdin.isatty() and sys.stdout.isatty())
     )
     discard_local_changes = False
-    if _non_interactive_update:
-        try:
-            from hermes_cli.config import load_config
+    committed_local_changes_mode = "refuse"
+    try:
+        from hermes_cli.config import load_config
 
-            _update_cfg = (load_config() or {}).get("updates", {})
-            if isinstance(_update_cfg, dict):
+        _update_cfg = (load_config() or {}).get("updates", {})
+        if isinstance(_update_cfg, dict):
+            _committed_mode = str(
+                _update_cfg.get("committed_local_changes", "refuse")
+            ).lower()
+            if _committed_mode in {"refuse", "rebase"}:
+                committed_local_changes_mode = _committed_mode
+            if _non_interactive_update:
                 _mode = str(_update_cfg.get("non_interactive_local_changes", "stash")).lower()
                 discard_local_changes = _mode == "discard"
-        except Exception as exc:
-            # Never let a config read failure change the safe default.
-            logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
-            discard_local_changes = False
+    except Exception as exc:
+        # Never let a config read failure change either safe default.
+        logger.debug("Could not read update behavior settings: %s", exc)
+        discard_local_changes = False
+        committed_local_changes_mode = "refuse"
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -11077,25 +11328,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                # force-pushed or rebase). Reconcile committed local patches
+                # according to config before retaining the historical reset
+                # fallback for histories with no local commits to preserve.
+                reconciliation = _reconcile_committed_local_changes(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    branch,
+                    committed_local_changes_mode,
+                    pre_pull_sha,
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
-                    )
+                if reconciliation.status in {"refused", "failed"}:
                     sys.exit(1)
+                if reconciliation.status == "no_local_commits":
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

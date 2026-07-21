@@ -353,7 +353,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
-  'updates.non_interactive_local_changes': ['stash', 'discard']
+  'updates.non_interactive_local_changes': ['stash', 'discard'],
+  'updates.committed_local_changes': ['refuse', 'rebase']
 }
 
 // Voice/model name fields render as a free-input combobox (Input + datalist)
@@ -545,7 +546,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     reasoningEffort: 'Subagent Reasoning Effort'
   },
   updates: {
-    nonInteractiveLocalChanges: 'In-App Update Local Changes'
+    nonInteractiveLocalChanges: 'In-App Update Local Changes',
+    committedLocalChanges: 'Committed Update Patches'
   }
 })
 
@@ -626,7 +628,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   updates: {
     nonInteractiveLocalChanges:
-      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
+      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.',
+    committedLocalChanges:
+      'When the update branch has local commits, stop safely (refuse) or back up and rebase a linear patch stack (rebase).'
   }
 })
 
@@ -772,7 +776,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
       'delegation.reasoning_effort',
-      'updates.non_interactive_local_changes'
+      'updates.non_interactive_local_changes',
+      'updates.committed_local_changes'
     ]
   }
 ]

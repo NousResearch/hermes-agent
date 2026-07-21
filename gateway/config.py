@@ -1324,6 +1324,9 @@ def load_gateway_config() -> GatewayConfig:
             elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:
                 gw_data["reset_triggers"] = gateway_section["reset_triggers"]
 
+            if "reset_by_platform" in yaml_cfg:
+                gw_data["reset_by_platform"] = yaml_cfg["reset_by_platform"]
+
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
             elif isinstance(gateway_section, dict) and "always_log_local" in gateway_section:

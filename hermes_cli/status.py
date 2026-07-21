@@ -6,6 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import shutil
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
@@ -97,6 +98,34 @@ def _effective_provider_label() -> str:
             effective = "custom"
 
     return provider_label(effective)
+
+
+def _sudo_status(terminal_backend: str = "local") -> tuple[bool, str]:
+    """Return whether sudo is available along with a human-readable label."""
+    if terminal_backend != "local":
+        return False, "unknown (remote backend)"
+
+    sudo_password = os.getenv("SUDO_PASSWORD", "")
+    if sudo_password:
+        return True, "enabled (SUDO_PASSWORD)"
+
+    if not shutil.which("sudo"):
+        return False, "disabled"
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return False, "disabled"
+
+    if result.returncode == 0:
+        return True, "enabled (non-interactive)"
+    return False, "disabled"
 
 
 from hermes_constants import is_termux as _is_termux
@@ -428,8 +457,8 @@ def show_status(args):
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
 
-    sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
+    sudo_enabled, sudo_label = _sudo_status(terminal_env)
+    print(f"  Sudo:         {check_mark(sudo_enabled)} {sudo_label}")
 
     # =========================================================================
     # Messaging Platforms

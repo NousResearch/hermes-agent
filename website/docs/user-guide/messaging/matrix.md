@@ -452,8 +452,11 @@ matrix:
 
 When a summary succeeds, the card is edited so the advisory interpretation is
 primary and the full command moves into a collapsible details section (plaintext
-fallback still includes the full command). Summaries are presentation-only and
-do not change approval policy.
+fallback still includes the full command). Hermes records summarized or terminal
+presentation state only after the corresponding edit succeeds. Summary and
+terminal edits are serialized per approval so a terminal replacement wins any
+resolution race. Summaries are presentation-only and do not change approval
+policy.
 
 ### Media Limits
 

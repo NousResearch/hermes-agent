@@ -1354,6 +1354,49 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
+    def test_filters_completed_and_cancelled(self, agent):
+        """Completed/cancelled items must not be resurrected (issue #7597)."""
+        todos = [
+            {"id": "1", "content": "still pending", "status": "pending"},
+            {"id": "2", "content": "in progress", "status": "in_progress"},
+            {"id": "3", "content": "done", "status": "completed"},
+            {"id": "4", "content": "nope", "status": "cancelled"},
+        ]
+        history = [
+            {"role": "user", "content": "plan"},
+            {
+                "role": "tool",
+                "content": json.dumps({"todos": todos}),
+                "tool_call_id": "c1",
+            },
+        ]
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        restored = agent._todo_store.read()
+        restored_ids = {item["id"] for item in restored}
+        assert restored_ids == {"1", "2"}
+        assert len(restored) == 2
+
+    def test_filter_log_message(self, agent, capsys):
+        """Log message should report filtered count."""
+        todos = [
+            {"id": "1", "content": "active", "status": "pending"},
+            {"id": "2", "content": "done", "status": "completed"},
+        ]
+        history = [
+            {
+                "role": "tool",
+                "content": json.dumps({"todos": todos}),
+                "tool_call_id": "c1",
+            },
+        ]
+        agent.quiet_mode = False
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        captured = capsys.readouterr()
+        assert "1 todo item(s) from history" in captured.out
+        assert "1 filtered" in captured.out
+
 
 class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):

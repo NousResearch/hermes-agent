@@ -3741,10 +3741,18 @@ class AIAgent:
                 continue
 
         if last_todo_response:
+            # Filter out completed/cancelled items when restoring from history,
+            # matching the logic in format_for_injection() -- these are intentionally
+            # excluded from context compression and should not be resurrected when
+            # the next turn hydrates the store from conversation history.
+            active_items = [
+                item for item in last_todo_response
+                if item.get("status") in ("pending", "in_progress")
+            ]
             # Replay the items into the store (replace mode)
-            self._todo_store.write(last_todo_response, merge=False)
+            self._todo_store.write(active_items, merge=False)
             if not self.quiet_mode:
-                self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+                self._vprint(f"{self.log_prefix}📋 Restored {len(active_items)} todo item(s) from history ({len(last_todo_response) - len(active_items)} filtered)")
         _set_interrupt(False)
 
     @classmethod

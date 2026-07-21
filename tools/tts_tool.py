@@ -961,6 +961,31 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
+    # Strip emojis and special chars that TTS reads aloud
+    import re
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002702-\U000027B0"  # dingbats
+        "\U000024C2-\U0001F251"
+        "\U0001f926-\U0001f937"
+        "\U00010000-\U0010ffff"
+        "\u200d"                 # zero width joiner
+        "\u2640-\u2642"          # gender symbols
+        "\ufe0f"                 # variation selector
+        "]+",
+        flags=re.UNICODE
+    )
+    text = emoji_pattern.sub('', text).strip()
+    # Also strip markdown bold/italic markers that TTS reads
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)  # **bold** → bold
+    text = re.sub(r'\*(.+?)\*', r'\1', text)        # *italic* → italic
+    text = re.sub(r'`(.+?)`', r'\1', text)           # `code` → code
+    text = re.sub(r'~~(.+?)~~', r'\1', text)         # ~~strike~~ → strike
+
     kwargs = {"voice": voice}
     if speed != 1.0:
         pct = round((speed - 1.0) * 100)

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -728,12 +729,91 @@ class TestWeixinMediaBuilder:
         item = builder(
             encrypt_query_param="eq",
             aes_key_for_api=expected_aes,
+            aes_key_hex=fake_hex_key,
             ciphertext_size=1024,
             plaintext_size=1000,
             filename="photo.jpg",
             rawfilemd5="abc123",
         )
         assert item["image_item"]["media"]["aes_key"] == expected_aes
+
+    def test_image_builder_includes_aeskey_hex_and_hd_size(self):
+        adapter = _make_adapter()
+        _, builder = adapter._outbound_media_builder("photo.jpg")
+        fake_hex_key = "0123456789abcdef0123456789abcdef"
+        item = builder(
+            encrypt_query_param="eq",
+            aes_key_for_api="ignored",
+            aes_key_hex=fake_hex_key,
+            ciphertext_size=1024,
+            plaintext_size=1000,
+            filename="photo.jpg",
+            rawfilemd5="abc123",
+        )
+        # aeskey is the hex form of the key (spec field, hex not base64).
+        assert item["image_item"]["aeskey"] == fake_hex_key
+        # hd_size lets the client resolve the HD image variant.
+        assert item["image_item"]["hd_size"] == 1024
+
+    def test_file_builder_includes_md5(self):
+        adapter = _make_adapter()
+        # .bin falls through to the generic file branch.
+        _, builder = adapter._outbound_media_builder("report.bin")
+        item = builder(
+            encrypt_query_param="eq",
+            aes_key_for_api="fakekey",
+            aes_key_hex="00",
+            ciphertext_size=512,
+            plaintext_size=500,
+            filename="report.bin",
+            rawfilemd5="9d2a7b9c",
+        )
+        assert item["type"] == weixin.ITEM_FILE
+        assert item["file_item"]["md5"] == "9d2a7b9c"
+
+    def test_audio_file_builder_includes_md5(self):
+        adapter = _make_adapter()
+        _, builder = adapter._outbound_media_builder("note.mp3")
+        item = builder(
+            encrypt_query_param="eq",
+            aes_key_for_api="fakekey",
+            aes_key_hex="00",
+            ciphertext_size=512,
+            plaintext_size=500,
+            filename="note.mp3",
+            rawfilemd5="abc",
+        )
+        assert item["file_item"]["md5"] == "abc"
+
+    def test_video_builder_uses_real_play_length_when_probed(self):
+        adapter = _make_adapter()
+        _, builder = adapter._outbound_media_builder("clip.mp4")
+        item = builder(
+            encrypt_query_param="eq",
+            aes_key_for_api="fakekey",
+            aes_key_hex="00",
+            ciphertext_size=2048,
+            plaintext_size=2000,
+            filename="clip.mp4",
+            rawfilemd5="deadbeef",
+            play_length=18320,
+        )
+        assert item["video_item"]["play_length"] == 18320
+
+    def test_video_builder_defaults_play_length_to_zero(self):
+        adapter = _make_adapter()
+        _, builder = adapter._outbound_media_builder("clip.mp4")
+        item = builder(
+            encrypt_query_param="eq",
+            aes_key_for_api="fakekey",
+            aes_key_hex="00",
+            ciphertext_size=2048,
+            plaintext_size=2000,
+            filename="clip.mp4",
+            rawfilemd5="deadbeef",
+        )
+        # ffprobe unavailable -> field omitted upstream -> builder falls back to 0.
+        assert item["video_item"]["play_length"] == 0
 
     def test_video_builder_includes_md5(self):
         adapter = _make_adapter()
@@ -770,6 +850,36 @@ class TestWeixinMediaBuilder:
         adapter = _make_adapter()
         media_type, builder = adapter._outbound_media_builder("recording.silk")
         assert media_type == weixin.MEDIA_VOICE
+
+
+class TestWeixinFfprobeDuration:
+    """``_ffprobe_duration_ms`` is best-effort: failures degrade to None."""
+
+    def test_missing_ffprobe_returns_none(self):
+        with patch.object(weixin.subprocess, "run", side_effect=FileNotFoundError):
+            assert weixin._ffprobe_duration_ms("clip.mp4") is None
+
+    def test_nonzero_exit_returns_none(self):
+        fake = SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        with patch.object(weixin.subprocess, "run", return_value=fake):
+            assert weixin._ffprobe_duration_ms("clip.mp4") is None
+
+    def test_na_duration_returns_none(self):
+        fake = SimpleNamespace(returncode=0, stdout="N/A\n", stderr="")
+        with patch.object(weixin.subprocess, "run", return_value=fake):
+            assert weixin._ffprobe_duration_ms("clip.mp4") is None
+
+    def test_seconds_converted_to_milliseconds(self):
+        fake = SimpleNamespace(returncode=0, stdout="18.32\n", stderr="")
+        with patch.object(weixin.subprocess, "run", return_value=fake):
+            assert weixin._ffprobe_duration_ms("clip.mp4") == 18320
+
+    def test_timeout_returns_none(self):
+        with patch.object(
+            weixin.subprocess, "run",
+            side_effect=weixin.subprocess.TimeoutExpired(cmd="ffprobe", timeout=10),
+        ):
+            assert weixin._ffprobe_duration_ms("clip.mp4") is None
 
 
 class TestWeixinSendImageFileParameterName:

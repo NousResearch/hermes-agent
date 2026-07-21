@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import struct
+import subprocess
 import tempfile
 import textwrap
 import time
@@ -157,6 +158,39 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 def check_weixin_requirements() -> bool:
     """Return True when runtime dependencies for Weixin are available."""
     return AIOHTTP_AVAILABLE and CRYPTO_AVAILABLE
+
+
+def _ffprobe_duration_ms(path: str) -> Optional[int]:
+    """Return media duration in milliseconds via ``ffprobe``.
+
+    Returns None when ffprobe is missing, the call fails, or the duration is
+    unavailable. The iLink spec marks ``video_item.play_length`` (and
+    ``voice_item.playtime``) as optional and expressed in milliseconds, so a
+    missing value is non-fatal — callers simply omit the field and let the
+    client default it. This keeps ffprobe an optional, best-effort dependency
+    rather than a hard requirement for sending media.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = (result.stdout or "").strip()
+    if not raw or raw == "N/A":
+        return None
+    try:
+        return int(float(raw) * 1000)
+    except ValueError:
+        return None
 
 
 def _safe_id(value: Optional[str], keep: int = 8) -> str:
@@ -2156,6 +2190,9 @@ class WeixinAdapter(BasePlatformAdapter):
         item_kwargs = {
             "encrypt_query_param": encrypted_query_param,
             "aes_key_for_api": aes_key_for_api,
+            # aes_key as hex (spec field ``aeskey``); some clients read this
+            # instead of the base64 ``aes_key``. Cheap to send both.
+            "aes_key_hex": aes_key.hex(),
             "ciphertext_size": len(ciphertext),
             "plaintext_size": rawsize,
             "filename": Path(path).name,
@@ -2165,6 +2202,12 @@ class WeixinAdapter(BasePlatformAdapter):
             item_kwargs["encode_type"] = 6
             item_kwargs["sample_rate"] = 24000
             item_kwargs["bits_per_sample"] = 16
+        elif media_type == MEDIA_VIDEO:
+            # Real duration (ms) so the client shows the video length badge
+            # instead of "0s". Omitted when ffprobe is unavailable.
+            duration_ms = _ffprobe_duration_ms(path)
+            if duration_ms is not None:
+                item_kwargs["play_length"] = duration_ms
         media_item = item_builder(**item_kwargs)
 
         last_message_id = None
@@ -2212,7 +2255,9 @@ class WeixinAdapter(BasePlatformAdapter):
                         "aes_key": kw["aes_key_for_api"],
                         "encrypt_type": 1,
                     },
+                    "aeskey": kw["aes_key_hex"],
                     "mid_size": kw["ciphertext_size"],
+                    "hd_size": kw["ciphertext_size"],
                 },
             }
         if mime.startswith("video/"):
@@ -2254,6 +2299,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         "encrypt_type": 1,
                     },
                     "file_name": kw["filename"],
+                    "md5": kw["rawfilemd5"],
                     "len": str(kw["plaintext_size"]),
                 },
             }
@@ -2266,6 +2312,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     "encrypt_type": 1,
                 },
                 "file_name": kw["filename"],
+                "md5": kw["rawfilemd5"],
                 "len": str(kw["plaintext_size"]),
             },
         }

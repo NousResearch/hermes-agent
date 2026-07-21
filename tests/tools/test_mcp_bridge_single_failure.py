@@ -130,3 +130,43 @@ class TestRegisterMcpServersIsolation:
             attempts.clear()
             mcp_mod.register_mcp_servers(cfg)
             assert "bad" in attempts, "elapsed cooldown should permit a retry"
+
+
+class TestShutdownClearsCooldownState:
+    """shutdown_mcp_servers must drop cooldown state on EVERY path.
+
+    A server that failed to connect is never recorded in ``_servers``, so
+    the empty-``_servers`` fast path is the most common state in which
+    stale cooldown entries exist. The original #50394 fix only cleared the
+    maps inside the async ``_shutdown`` coroutine, which the fast path
+    (and the loop-not-running path) never executes.
+    """
+
+    def test_fast_path_clears_cooldown_state(self):
+        mcp_mod._record_connect_failure("bad")
+        assert mcp_mod._server_connect_retry_after
+        assert not mcp_mod._servers  # precondition: fast path taken
+
+        with patch("tools.mcp_tool._stop_mcp_loop"):
+            mcp_mod.shutdown_mcp_servers()
+
+        assert mcp_mod._server_connect_retry_after == {}
+        assert mcp_mod._server_connect_failures == {}
+
+    def test_loop_not_running_path_clears_cooldown_state(self):
+        mcp_mod._record_connect_failure("bad")
+
+        class _DeadServer:
+            name = "dead"
+
+            async def shutdown(self):  # pragma: no cover - never awaited
+                pass
+
+        mcp_mod._servers["dead"] = _DeadServer()  # type: ignore[assignment]
+        # _mcp_loop is None in this test process, so the async _shutdown
+        # coroutine is never scheduled; only the final sweep can clear.
+        with patch("tools.mcp_tool._stop_mcp_loop"):
+            mcp_mod.shutdown_mcp_servers()
+
+        assert mcp_mod._server_connect_retry_after == {}
+        assert mcp_mod._server_connect_failures == {}

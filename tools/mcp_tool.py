@@ -6102,8 +6102,16 @@ def shutdown_mcp_servers():
     with _lock:
         servers_snapshot = list(_servers.values())
 
-    # Fast path: nothing to shut down.
+    # Fast path: nothing to shut down. The connect-cooldown maps can still
+    # be populated here — a server that failed to connect is never recorded
+    # in ``_servers`` (that is the very premise of the #50394 cooldown), so
+    # "no live servers" is the MOST likely state in which stale backoff
+    # entries exist. Clear them so a post-shutdown restart re-attempts every
+    # configured server immediately.
     if not servers_snapshot:
+        with _lock:
+            _server_connect_retry_after.clear()
+            _server_connect_failures.clear()
         _stop_mcp_loop()
         return
 
@@ -6139,6 +6147,14 @@ def shutdown_mcp_servers():
                 future.result(timeout=15)
             except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
+
+    # Unconditional final sweep: whether the async ``_shutdown`` ran,
+    # timed out, or was never scheduled (loop already stopped), a full
+    # shutdown must leave no stale connect-cooldown state behind — the
+    # next start should re-attempt every server immediately (#50394).
+    with _lock:
+        _server_connect_retry_after.clear()
+        _server_connect_failures.clear()
 
     _stop_mcp_loop()
 

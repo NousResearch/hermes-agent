@@ -64,6 +64,50 @@ def test_classifies_python_module_pytest_as_detected_pytest(tmp_path, monkeypatc
     assert evidence.status == "failed"
 
 
+def test_classifies_venv_pytest_spellings_as_detected_pytest(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    commands = [
+        ".venv/bin/pytest -q",
+        str(tmp_path / ".venv" / "bin" / "pytest") + " -q",
+        ".venv/bin/python -m pytest -q",
+        str(tmp_path / ".venv" / "bin" / "python") + " -m pytest -q",
+    ]
+
+    for command in commands:
+        evidence = classify_verification_command(
+            command,
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="15 passed",
+        )
+
+        assert evidence is not None, command
+        assert evidence.canonical_command == "pytest"
+        assert evidence.kind == "test"
+        assert evidence.scope == "full"
+        assert evidence.status == "passed"
+
+
+def test_records_venv_pytest_as_fresh_suite_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "app.py")])
+
+    event = record_terminal_result(
+        command=".venv/bin/pytest -q",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="15 passed",
+    )
+
+    assert event is not None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+
+
 def test_records_passed_then_marks_stale_after_edit(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)

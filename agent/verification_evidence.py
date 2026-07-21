@@ -195,6 +195,22 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
+def _command_basename(token: str) -> str:
+    """Return an executable token's basename across POSIX/Windows spellings."""
+
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    return name[:-4] if name.lower().endswith(".exe") else name
+
+
+def _executable_basename_variant(tokens: list[str]) -> list[str]:
+    if not tokens:
+        return []
+    first = _command_basename(tokens[0])
+    if first == tokens[0]:
+        return tokens
+    return [first, *tokens[1:]]
+
+
 def _find_canonical_match(command: str, canonical_commands: list[str]) -> Optional[tuple[str, list[str]]]:
     """Return ``(canonical, trailing_args)`` for the first detected command."""
 
@@ -205,9 +221,14 @@ def _find_canonical_match(command: str, canonical_commands: list[str]) -> Option
             continue
         for tokens in segments:
             candidate_tokens = _strip_command_prefix(tokens)
-            for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate:
-                    return canonical, candidate_tokens[len(candidate):]
+            token_variants = [candidate_tokens]
+            basename_variant = _executable_basename_variant(candidate_tokens)
+            if basename_variant != candidate_tokens:
+                token_variants.append(basename_variant)
+            for candidate_tokens in token_variants:
+                for candidate in _equivalent_needles(needle):
+                    if candidate_tokens[:len(candidate)] == candidate:
+                        return canonical, candidate_tokens[len(candidate):]
     return None
 
 

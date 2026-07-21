@@ -289,6 +289,106 @@ def test_auxiliary_stream_uses_streaming_relay_primitive(monkeypatch):
     assert captured["metadata"]["call_role"] == "auxiliary:moa"
 
 
+def test_partial_auxiliary_stream_failure_closes_before_recovery(
+    relay_turn, monkeypatch
+):
+    _relay, turn = relay_turn
+    consumer = "test.partial-auxiliary-stream-failure"
+    turn.lease.host.retain_managed_execution(consumer)
+    outcomes = []
+    original_pop = turn.lease.host.relay.scope.pop
+
+    def record_pop(*args, **kwargs):
+        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        return original_pop(*args, **kwargs)
+
+    monkeypatch.setattr(turn.lease.host.relay.scope, "pop", record_pop)
+
+    class ProviderError(Exception):
+        pass
+
+    provider_error = ProviderError("stream failed")
+    partial_chunk = SimpleNamespace(
+        model="test-model",
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="partial", tool_calls=None),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+
+    def partial_stream():
+        yield partial_chunk
+        raise provider_error
+
+    stream_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: partial_stream(),
+            )
+        )
+    )
+    recovery_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(message=SimpleNamespace(content="recovered"))
+                    ]
+                ),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def start_stream(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "test-model",
+            "chat_completions",
+        )
+        return auxiliary_client._relay_sync_stream(
+            stream_client,
+            {"model": "test-model", "messages": [], "stream": True},
+        )
+
+    @auxiliary_client._relay_auxiliary_call
+    def recover(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "test-model",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                recovery_client,
+                {"model": "test-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        stream = start_stream("moa")
+        assert next(stream) is partial_chunk
+
+        with pytest.raises(ProviderError) as caught:
+            next(stream)
+
+        assert caught.value is provider_error
+        assert outcomes == ["failed"]
+        assert turn.logical_llm_calls == {}
+
+        result = recover("moa")
+
+        assert result.choices[0].message.content == "recovered"
+        assert outcomes == ["failed", "success"]
+        assert turn.logical_llm_calls == {}
+    finally:
+        turn.lease.host.release_managed_execution(consumer)
+
+
 def test_auxiliary_attempt_uses_real_relay_request_intercepts(relay_turn):
     relay, turn = relay_turn
     consumer = "test.auxiliary-request-intercept"

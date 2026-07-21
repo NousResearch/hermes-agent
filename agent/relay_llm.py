@@ -420,6 +420,9 @@ class ManagedLlmStream(Iterator[Any]):
         except BaseException as exc:
             callback_error = self._callback_error
             self.close()
+            if not self._defer_logical_completion:
+                _complete_logical(self._logical, outcome="failed")
+                self._logical = None
             if (
                 callback_error is not None
                 and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)

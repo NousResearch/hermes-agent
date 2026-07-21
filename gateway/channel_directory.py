@@ -198,7 +198,7 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "type": "channel",
             })
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
-        forums = getattr(guild, "forum_channels", None) or []
+        forums = getattr(guild, "forums", None) or []
         for ch in forums:
             channels.append({
                 "id": str(ch.id),

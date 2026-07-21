@@ -112,6 +112,9 @@ class TestInitialize:
         assert caps.session_capabilities.fork is not None
         assert caps.session_capabilities.list is not None
         assert caps.session_capabilities.resume is not None
+        assert caps.prompt_capabilities is not None
+        assert caps.prompt_capabilities.image is True
+        assert caps.prompt_capabilities.embedded_context is True
 
     @pytest.mark.asyncio
     async def test_initialize_capabilities_wire_format(self, agent):
@@ -119,6 +122,9 @@ class TestInitialize:
         resp = await agent.initialize(protocol_version=1)
         payload = resp.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
         assert payload["loadSession"] is True
+        prompt_caps = payload["promptCapabilities"]
+        assert prompt_caps["image"] is True
+        assert prompt_caps["embeddedContext"] is True
         session_caps = payload["sessionCapabilities"]
         assert "fork" in session_caps
         assert "list" in session_caps

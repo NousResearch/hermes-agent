@@ -644,6 +644,23 @@ class TestCronjobToolScriptValidation:
         ))
         assert result["success"] is False
 
+    def test_absolute_path_error_references_actual_hermes_home(self, cron_env, monkeypatch):
+        """Error message must reflect the configured HERMES_HOME, not hardcoded ~/.hermes."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="/tmp/evil.py",
+        ))
+        assert result["success"] is False
+        # cron_env sets HERMES_HOME to a tmp path — the error must reference it,
+        # not the default ~/.hermes.
+        assert "~/.hermes" not in result["error"]
+        assert str(cron_env) in result["error"]
+
 
 class TestRunJobEnvVarCleanup:
     """Test that run_job() env vars are cleaned up even on early failure."""

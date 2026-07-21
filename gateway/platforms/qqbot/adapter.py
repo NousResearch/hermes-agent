@@ -481,6 +481,7 @@ class QQAdapter(BasePlatformAdapter):
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
             proxy=ws_proxy,
+            heartbeat=50.0,  # Transport-level WebSocket PING every 50s (below QQ's ~60s server timeout)
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
@@ -825,8 +826,8 @@ class QQAdapter(BasePlatformAdapter):
         if op == 10:
             d_data = d if isinstance(d, dict) else {}
             interval_ms = d_data.get("heartbeat_interval", 30000)
-            # Send heartbeats at 80% of the server interval to stay safe
-            self._heartbeat_interval = interval_ms / 1000.0 * 0.8
+            # Send heartbeats at 60% of the server interval to stay safe
+            self._heartbeat_interval = interval_ms / 1000.0 * 0.6
             logger.debug(
                 "[%s] Hello received, heartbeat_interval=%dms (sending every %.1fs)",
                 self._log_tag,

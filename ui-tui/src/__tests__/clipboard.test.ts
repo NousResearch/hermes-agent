@@ -20,9 +20,25 @@ describe('readClipboardText', () => {
     await expect(readClipboardText('win32', run)).resolves.toBe('from windows\r\n')
     expect(run).toHaveBeenCalledWith(
       'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw'
+      ],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
+  })
+
+  it('sets UTF-8 output encoding on Windows to preserve emoji', async () => {
+    const run = vi.fn().mockResolvedValue({ stdout: '🎉 emoji test\n' })
+
+    await expect(readClipboardText('win32', run)).resolves.toBe('🎉 emoji test\n')
+    const calledArgs = (run.mock.calls[0] as string[])[1]
+    const commandIdx = calledArgs.indexOf('-Command')
+    const script = calledArgs[commandIdx + 1] as string
+    expect(script).toContain('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8')
+    expect(script).toContain('Get-Clipboard -Raw')
   })
 
   it('tries powershell.exe first on WSL', async () => {
@@ -33,7 +49,12 @@ describe('readClipboardText', () => {
     )
     expect(run).toHaveBeenCalledWith(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw'
+      ],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
   })

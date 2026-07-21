@@ -388,3 +388,170 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+class TestAutoSkinSelector:
+    """Regression tests for the 'auto' virtual skin selector (issue #16330).
+
+    'auto' must bypass the installed-skin validation in /skin and resolve
+    to a concrete skin via the existing terminal detection chain rather than
+    an OS-specific probe. The persisted config value stays 'auto' so the
+    preference is re-evaluated on every session start. A genuine
+    user-installed auto.yaml skin takes precedence over the virtual
+    resolution (#49783).
+    """
+
+    def test_set_active_skin_auto_resolves_to_concrete_skin(self, monkeypatch, tmp_path):
+        """set_active_skin('auto') must store a concrete name, not 'auto'."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import set_active_skin, get_active_skin_name
+
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: tmp_path)
+        with patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            set_active_skin("auto")
+
+        assert get_active_skin_name() != "auto", (
+            "set_active_skin('auto') must resolve to a concrete skin name"
+        )
+        assert get_active_skin_name() == "default"
+
+    def test_resolve_auto_skin_light_mode(self):
+        """resolve_auto_skin() returns 'daylight' when _detect_light_mode() is True.
+
+        Regression (review of #63730): the original port imported the
+        wrong name (_is_light_mode); current main defines _detect_light_mode().
+        A wrong name here means EVERY call falls through the except clause
+        to 'default', silently disabling the whole feature -- so this test
+        must patch the exact real name, not a stand-in.
+        """
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        fake_cli = MagicMock()
+        fake_cli._detect_light_mode.return_value = True
+        with patch.dict("sys.modules", {"cli": fake_cli}):
+            result = resolve_auto_skin()
+
+        assert result == "daylight", (
+            "'light' is not a built-in skin name -- the actual light-background "
+            "skin is 'daylight'"
+        )
+
+    def test_resolve_auto_skin_dark_mode(self):
+        """resolve_auto_skin() returns 'default' when _detect_light_mode() is False."""
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        fake_cli = MagicMock()
+        fake_cli._detect_light_mode.return_value = False
+        with patch.dict("sys.modules", {"cli": fake_cli}):
+            result = resolve_auto_skin()
+
+        assert result == "default"
+
+    def test_resolve_auto_skin_real_cli_module_has_detect_light_mode(self, monkeypatch):
+        """Import-safety net: assert the real cli module actually exposes
+        _detect_light_mode, so this regression (wrong function name) can't
+        silently reappear even if the mocked tests above don't catch a
+        future rename."""
+        import sys as _sys
+        import types as _types
+
+        try:
+            import cli as _cli_mod
+        except Exception:
+            # Only stub optional heavy deps as a last resort, and only for
+            # the duration of this test (monkeypatch auto-reverts), so a
+            # real prompt_toolkit install elsewhere isn't shadowed for
+            # other tests in this file.
+            for _mod in ("prompt_toolkit", "dotenv"):
+                if _mod not in _sys.modules:
+                    stub = _types.ModuleType(_mod)
+                    if _mod == "dotenv":
+                        stub.load_dotenv = lambda *a, **k: None
+                    monkeypatch.setitem(_sys.modules, _mod, stub)
+            try:
+                import cli as _cli_mod
+            except Exception:
+                import pytest as _pytest
+                _pytest.skip("cli module could not be imported in this sandbox")
+        assert hasattr(_cli_mod, "_detect_light_mode"), (
+            "resolve_auto_skin() depends on cli._detect_light_mode existing "
+            "-- if this is renamed again, resolve_auto_skin() must be updated too"
+        )
+
+    def test_resolve_auto_skin_falls_back_on_error(self):
+        """resolve_auto_skin() returns 'default' when detection raises."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        # When cli import itself fails, must still return a safe default.
+        with patch.dict("sys.modules", {"cli": None}):
+            result = resolve_auto_skin()
+
+        assert result == "default"
+
+    def test_init_skin_from_config_persists_auto(self, monkeypatch, tmp_path):
+        """display.skin: auto in config must resolve at startup without crashing."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: tmp_path)
+        with patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            init_skin_from_config({"display": {"skin": "auto"}})
+
+        assert get_active_skin_name() == "default"
+
+    def test_user_auto_yaml_skin_takes_precedence_over_virtual_resolution(self, monkeypatch, tmp_path):
+        """Regression (review of #63730, issue #49783): a genuine
+        user-installed skin literally named auto.yaml must NOT be shadowed
+        by the virtual 'auto' selector. resolve_auto_skin() must not even
+        be consulted when the file exists."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import set_active_skin, get_active_skin_name
+
+        skins_dir = tmp_path
+        (skins_dir / "auto.yaml").write_text(
+            "name: auto\ndescription: My custom auto theme\ncolors: {}\n"
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        with patch("hermes_cli.skin_engine.resolve_auto_skin") as mock_resolve:
+            set_active_skin("auto")
+            mock_resolve.assert_not_called()
+
+        assert get_active_skin_name() == "auto", (
+            "A real user auto.yaml skin must be loaded as-is, not "
+            "virtual-resolved to daylight/default"
+        )
+
+    def test_skin_command_bypasses_validation_for_auto(self, monkeypatch, tmp_path):
+        """/skin auto must reach set_active_skin() instead of being rejected
+        by the 'Unknown skin' check (list_skins() never lists 'auto')."""
+        from unittest.mock import MagicMock, patch
+
+        try:
+            from hermes_cli.cli_commands_mixin import CLICommandsMixin
+            import cli as _cli_mod  # noqa: F401 -- exercise the full import chain
+        except Exception:
+            import pytest as _pytest
+            _pytest.skip("cli module could not be imported in this sandbox")
+
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: tmp_path)
+
+        class _Host(CLICommandsMixin):
+            def _apply_tui_skin_style(self):
+                return False
+
+        host = _Host()
+        with patch("cli._ACCENT", MagicMock()), \
+             patch("cli.save_config_value", return_value=True), \
+             patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            host._handle_skin_command("/skin auto")
+
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "default", (
+            "/skin auto must reach set_active_skin(), not be rejected as an "
+            "unknown skin name"
+        )

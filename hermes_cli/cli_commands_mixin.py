@@ -2317,9 +2317,12 @@ class CLICommandsMixin:
 
         new_skin = parts[1].strip().lower()
         available = {s["name"] for s in list_skins()}
-        if new_skin not in available:
+        # 'auto' is a virtual selector resolved at set_active_skin() time
+        # (or a real user auto.yaml skin, which set_active_skin() defers to)
+        # -- it intentionally isn't listed by list_skins().
+        if new_skin != "auto" and new_skin not in available:
             print(f"  Unknown skin: {new_skin}")
-            print(f"  Available: {', '.join(sorted(available))}")
+            print(f"  Available: {', '.join(sorted(available))}, auto")
             return
 
         set_active_skin(new_skin)

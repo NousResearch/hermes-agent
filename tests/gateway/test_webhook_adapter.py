@@ -611,6 +611,9 @@ class TestEventFilter:
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "ignored"
+            assert data["event"] == "push"
+            assert data["allowed_events"] == ["pull_request"]
+            assert "Add this event" in data["hint"]
 
     @pytest.mark.asyncio
     async def test_event_filter_empty_allows_all(self):

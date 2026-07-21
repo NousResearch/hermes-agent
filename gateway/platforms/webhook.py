@@ -642,7 +642,12 @@ class WebhookAdapter(BasePlatformAdapter):
                 allowed_events,
             )
             return web.json_response(
-                {"status": "ignored", "event": event_type}
+                {
+                    "status": "ignored",
+                    "event": event_type,
+                    "allowed_events": allowed_events,
+                    "hint": "Add this event to the subscription's events list if this should be accepted.",
+                }
             )
 
         if not self._route_processor.route_filters_match(

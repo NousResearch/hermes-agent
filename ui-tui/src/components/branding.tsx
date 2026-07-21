@@ -2,7 +2,7 @@ import { Box, Text, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
-import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH, type Line } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -27,12 +27,16 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
   )
 }
 
-export function ArtLines({ lines }: { lines: [string, string][] }) {
+export function ArtLines({ lines }: { lines: Line[] }) {
   return (
     <Box flexDirection="column" height={lines.length} opaque width={artWidth(lines)}>
-      {lines.map(([c, text], i) => (
-        <Text color={c} key={i} wrap="truncate-end">
-          {text}
+      {lines.map((segments, i) => (
+        <Text key={i} wrap="truncate-end">
+          {segments.map(([c, text], j) => (
+            <Text color={c} key={j}>
+              {text}
+            </Text>
+          ))}
         </Text>
       ))}
     </Box>

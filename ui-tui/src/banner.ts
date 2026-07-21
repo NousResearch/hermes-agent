@@ -7,18 +7,21 @@ export function parseRichMarkup(markup: string): Line[] {
 
   for (const raw of markup.split('\n')) {
     const trimmed = raw.trimEnd()
+    const segments: Line = []
 
     if (!trimmed) {
-      lines.push(['', ' '])
-
+      // Preserve visual row count: emit a single no-color space segment so
+      // blank rows still occupy one line in <ArtLines height={lines.length}>.
+      segments.push(['', ' '])
+      lines.push(segments)
       continue
     }
 
     const matches = [...trimmed.matchAll(RICH_RE)]
 
     if (!matches.length) {
-      lines.push(['', trimmed])
-
+      segments.push(['', trimmed])
+      lines.push(segments)
       continue
     }
 
@@ -28,16 +31,18 @@ export function parseRichMarkup(markup: string): Line[] {
       const before = trimmed.slice(cursor, m.index)
 
       if (before) {
-        lines.push(['', before])
+        segments.push(['', before])
       }
 
-      lines.push([m[1]!, m[2]!])
+      segments.push([m[1]!, m[2]!])
       cursor = m.index! + m[0].length
     }
 
     if (cursor < trimmed.length) {
-      lines.push(['', trimmed.slice(cursor)])
+      segments.push(['', trimmed.slice(cursor)])
     }
+
+    lines.push(segments)
   }
 
   return lines
@@ -76,7 +81,7 @@ const CADUC_GRADIENT = [2, 2, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 3] as const
 const colorize = (art: string[], gradient: readonly number[], c: ThemeColors): Line[] => {
   const p = [c.primary, c.accent, c.border, c.muted]
 
-  return art.map((text, i) => [p[gradient[i]!] ?? c.muted, text])
+  return art.map((text, i) => [[p[gradient[i]!] ?? c.muted, text]])
 }
 
 export const LOGO_WIDTH = Math.max(...LOGO_ART.map(line => line.length))
@@ -88,6 +93,14 @@ export const logo = (c: ThemeColors, customLogo?: string): Line[] =>
 export const caduceus = (c: ThemeColors, customHero?: string): Line[] =>
   customHero ? parseRichMarkup(customHero) : colorize(CADUCEUS_ART, CADUC_GRADIENT, c)
 
-export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, t.length), 0)
+export const artWidth = (lines: Line[]) =>
+  lines.reduce(
+    (m, segments) => Math.max(m, segments.reduce((w, [, t]) => w + t.length, 0)),
+    0
+  )
 
-type Line = [string, string]
+// A `Line` is one visual row of the banner art, made of one or more
+// [color, text] segments. Multi-color markup (e.g. a single banner_hero row
+// with several `[#hex]…[/]` tags) collapses into a single Line with
+// multiple segments instead of one Line per color tag. See parseRichMarkup.
+export type Line = Array<[string, string]>

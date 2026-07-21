@@ -1464,7 +1464,19 @@ class CredentialPool:
                         self._current_id = None
                     self._persist(removed_ids=removed_ids)
                     return None
-            self._mark_exhausted(entry, None)
+            # Transient error during refresh (network blip, DNS timeout,
+            # temporary server error).  Do NOT mark the entry exhausted
+            # with the default 3600s TTL — the existing access token may
+            # still be valid (refresh is pre-emptive).  Let the caller
+            # decide; the entry will be tried and, if it fails on the
+            # actual API call, mark_exhausted_and_rotate will record the
+            # real HTTP status with an appropriate cooldown.
+            logger.debug(
+                "Credential refresh failed for %s/%s (transient): %s. "
+                "Entry keeps its current status; the existing token will "
+                "be tried on the next API call.",
+                self.provider, entry.id, exc,
+            )
             return None
 
         updated = replace(
@@ -1622,8 +1634,16 @@ class CredentialPool:
             if refresh and self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:
-                    continue
-                entry = refreshed
+                    # Refresh failed, but the existing access token may
+                    # still be valid (refresh is pre-emptive, not reactive
+                    # to an actual 401).  Proceed with the unrefreshed
+                    # entry instead of skipping it — marking it exhausted
+                    # here with the default 3600s TTL on a transient
+                    # network error would lock out a working credential
+                    # for 1 hour (issue #TBD).
+                    pass
+                else:
+                    entry = refreshed
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)

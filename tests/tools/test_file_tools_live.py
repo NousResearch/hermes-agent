@@ -227,6 +227,34 @@ class TestReadFile:
         assert result.error is None
         _assert_clean(result.content)
 
+    def test_total_lines_counts_file_without_trailing_newline(self, ops, tmp_path):
+        f = tmp_path / "no_trailing_newline.txt"
+        f.write_text("line1\nline2\nline3", encoding="utf-8")
+        result = ops.read_file(str(f))
+        assert result.error is None
+        assert result.total_lines == 3
+        assert "     3|line3" in result.content
+        _assert_clean(result.content)
+
+    def test_total_lines_counts_single_line_without_trailing_newline(self, ops, tmp_path):
+        f = tmp_path / "single_line.txt"
+        f.write_text("solo", encoding="utf-8")
+        result = ops.read_file(str(f))
+        assert result.error is None
+        assert result.total_lines == 1
+        assert result.content == "     1|solo"
+        _assert_clean(result.content)
+
+    def test_pagination_hint_uses_correct_total_lines_without_trailing_newline(self, ops, tmp_path):
+        f = tmp_path / "paginated_no_newline.txt"
+        f.write_text("line1\nline2\nline3", encoding="utf-8")
+        result = ops.read_file(str(f), offset=1, limit=2)
+        assert result.error is None
+        assert result.total_lines == 3
+        assert result.truncated is True
+        assert result.hint == "Use offset=3 to continue reading (showing 1-2 of 3 lines)"
+        _assert_clean(result.content)
+
 
 # ── write_file ───────────────────────────────────────────────────────────
 

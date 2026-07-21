@@ -159,6 +159,48 @@ def test_cleanup_best_effort(monkeypatch):
     env.cleanup()  # should not raise
 
 
+def test_cleanup_uses_selected_distro(monkeypatch):
+    env = _make_wsl_env_without_init()
+    env._distro = "Ubuntu-24.04"
+    env._snapshot_path = "/tmp/snap.sh"
+    env._cwd_file = "/tmp/cwd.txt"
+    mock_run = MagicMock()
+    monkeypatch.setattr(wsl_env.subprocess, "run", mock_run)
+
+    env.cleanup()
+
+    assert mock_run.call_args[0][0] == [
+        "/fake/wsl.exe",
+        "-d",
+        "Ubuntu-24.04",
+        "-e",
+        "rm",
+        "-f",
+        "/tmp/snap.sh",
+        "/tmp/cwd.txt",
+    ]
+
+
+def test_cleanup_uses_default_distro_when_unspecified(monkeypatch):
+    env = _make_wsl_env_without_init()
+    env._distro = ""
+    env._snapshot_path = "/tmp/snap.sh"
+    env._cwd_file = "/tmp/cwd.txt"
+    mock_run = MagicMock()
+    monkeypatch.setattr(wsl_env.subprocess, "run", mock_run)
+
+    env.cleanup()
+
+    assert mock_run.call_args[0][0] == [
+        "/fake/wsl.exe",
+        "-e",
+        "rm",
+        "-f",
+        "/tmp/snap.sh",
+        "/tmp/cwd.txt",
+    ]
+
+
 def test_kill_process_terminate_then_kill():
     env = _make_wsl_env_without_init()
     proc = MagicMock()

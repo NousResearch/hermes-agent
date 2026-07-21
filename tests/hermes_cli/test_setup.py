@@ -2,6 +2,8 @@
 import sys
 import types
 
+import pytest
+
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
@@ -415,7 +417,9 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return 2
+            return next(
+                i for i, choice in enumerate(choices) if choice.startswith("Modal")
+            )
         if question == "Select how Modal execution should be billed:":
             return 0
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
@@ -459,7 +463,9 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return 2
+            return next(
+                i for i, choice in enumerate(choices) if choice.startswith("Modal")
+            )
         if question == "Select how Modal execution should be billed:":
             return 1
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
@@ -489,6 +495,34 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+@pytest.mark.parametrize(
+    ("system", "has_wsl", "has_singularity"),
+    [
+        ("Windows", True, False),
+        ("Linux", False, True),
+        ("Darwin", False, False),
+    ],
+)
+def test_terminal_backend_choices_are_platform_appropriate(
+    monkeypatch, system, has_wsl, has_singularity
+):
+    captured = {}
+
+    def fake_prompt_choice(question, choices, default=0):
+        assert question == "Select terminal backend:"
+        captured["choices"] = choices
+        return default
+
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr(setup_mod, "prompt_choice", fake_prompt_choice)
+
+    setup_mod.setup_terminal_backend({"terminal": {"backend": "local"}})
+
+    choices = captured["choices"]
+    assert any(choice.startswith("WSL2") for choice in choices) is has_wsl
+    assert any(choice.startswith("Singularity") for choice in choices) is has_singularity
 
 
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
@@ -539,4 +573,3 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
 
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
-

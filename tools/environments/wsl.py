@@ -169,8 +169,12 @@ class WslEnvironment(BaseEnvironment):
         # Remove them via wsl -e rm instead of os.unlink.  Best-effort: if
         # the distro has already stopped, the files die with its /tmp anyway.
         try:
+            args = [self._wsl]
+            if self._distro:
+                args.extend(["-d", self._distro])
+            args.extend(["-e", "rm", "-f", self._snapshot_path, self._cwd_file])
             subprocess.run(
-                [self._wsl, "-e", "rm", "-f", self._snapshot_path, self._cwd_file],
+                args,
                 timeout=5, capture_output=True,
                 creationflags=windows_hide_flags(),
             )

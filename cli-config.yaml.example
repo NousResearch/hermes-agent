@@ -239,14 +239,14 @@ terminal:
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
 
 # -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
 # OPTION 2b: WSL2 (Windows Subsystem for Linux)
-# Commands run inside your WSL2 distribution.  File tools stay on Windows.
+# Commands and file tools run inside your WSL2 distribution using Linux paths.
 # Great for: Windows users who want a native Linux environment without Docker
 # -----------------------------------------------------------------------------
 # terminal:
 #   backend: "wsl"
-#   cwd: "~"                         # WSL Linux home (probed at startup via wsl -e echo $HOME)
+#   # Omit cwd to probe WSL $HOME, or set an absolute Linux path:
+#   # cwd: "/home/agents/project"
 #   timeout: 180
 #   # Optional: specify a WSL distribution (default: system default)
 #   wsl_distro: "Debian"

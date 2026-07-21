@@ -1138,6 +1138,17 @@ class TestEnvironmentHints:
         assert "/mnt/c/" in WSL_ENVIRONMENT_HINT
         assert "WSL" in WSL_ENVIRONMENT_HINT
 
+    def test_wsl_backend_hint_is_distribution_agnostic(self):
+        import agent.prompt_builder as _pb
+
+        hint = _pb._WSL_BACKEND_HINT
+
+        assert "Linux" in hint
+        assert "/mnt/c/" in hint
+        assert "PowerShell" in hint
+        assert "Debian" not in hint
+        assert "apt-get" not in hint
+
     def test_build_environment_hints_on_wsl(self, monkeypatch):
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
@@ -1644,5 +1655,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

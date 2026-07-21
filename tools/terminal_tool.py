@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -1416,9 +1417,15 @@ def _get_env_config() -> Dict[str, Any]:
                         "Falling back to $HOME probe.",
                         cwd)
             cwd = ""  # empty → WslEnvironment probes $HOME
-    elif env_type in {"local", "ssh"} and cwd and cwd.startswith("/mnt/"):
-        # Convert WSL /mnt/drive/... paths back to Windows when switching
-        # from WSL to a Windows-hosted backend (local or SSH).
+    elif (
+        env_type == "local"
+        and platform.system() == "Windows"
+        and cwd
+        and cwd.startswith("/mnt/")
+    ):
+        # Convert WSL /mnt/drive/... paths back to Windows only when switching
+        # to the Windows-hosted local backend. SSH paths belong to the remote
+        # host and must keep their Linux semantics.
         _m = _MNT_RE.match(cwd)
         if _m:
             drive = _m.group(1).upper() + ":"

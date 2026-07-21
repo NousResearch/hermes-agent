@@ -78,8 +78,8 @@ def _get_max_read_chars() -> int:
         if isinstance(val, (int, float)) and val > 0:
             _max_read_chars_cached = int(val)
             return _max_read_chars_cached
-    except Exception:
-        pass
+    except Exception as _cfg_err:
+        logger.debug("Failed to load file_read_max_chars config: %s", _cfg_err)
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
 

@@ -307,6 +307,8 @@ function appendProfileParam(url: string, profile?: string): string {
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getMissionControlBlueprint: () =>
+    fetchJSON<MissionControlSnapshot>("/api/mission-control/blueprint"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1269,6 +1271,193 @@ export const api = {
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
 };
+
+export type MissionControlStatus = "active" | "partial" | "watch" | "planned" | string;
+
+export interface MissionControlCoverageItem {
+  id: string;
+  number?: string;
+  title: string;
+  domain: string;
+  part?: string;
+  summary: string;
+  where?: string;
+  route?: string;
+  sourceUrl?: string;
+  status: MissionControlStatus;
+  readiness: number;
+  evidence: string[];
+  next: string;
+  missionControl?: boolean;
+}
+
+
+export interface MissionControlInfoItem {
+  id: string;
+  title?: string;
+  label?: string;
+  term?: string;
+  symptom?: string;
+  summary?: string;
+  detail?: string;
+  definition?: string;
+  cause?: string;
+  fix?: string;
+  route?: string;
+  url?: string;
+  status?: string;
+  evidence?: string[];
+  [key: string]: unknown;
+}
+
+export interface MissionControlDomainScore {
+  name: string;
+  score: number;
+  items: number;
+}
+
+export interface MissionControlModelRuntime extends Record<string, unknown> {
+  provider: string;
+  model: string;
+  reasoning: string;
+  delegationProvider?: string | null;
+  maxTurns?: number;
+}
+
+export interface MissionControlCronRuntime extends Record<string, unknown> {
+  total: number;
+  enabled: number;
+  paused: number;
+  cadences: Record<string, number>;
+  deliveries: Record<string, number>;
+  lastStatusCounts: Record<string, number>;
+  failedJobs: number;
+  overdueCount: number;
+  nextRunKnown: boolean;
+  nextRunDueInSeconds: number | null;
+  lastRunAgeSeconds: number | null;
+  lastRunAgeBuckets: Record<string, number>;
+  reflectionFreshness: string;
+  reflectionLastRunAgeSeconds: number | null;
+}
+
+export interface MissionControlMcpRuntime extends Record<string, unknown> {
+  configured: number;
+  servers: string[];
+  serverDetails: MissionControlInfoItem[];
+  serverNamesRedacted: boolean;
+  enabled: number;
+  disabled: number;
+  statusCounts: Record<string, number>;
+  transportCounts: Record<string, number>;
+}
+
+export interface MissionControlToolsRuntime extends Record<string, unknown> {
+  configuredToolsets: string[];
+  configuredToolsetCount: number;
+  configuredToolsetBuckets: Record<string, number>;
+  configuredToolsetNamesRedacted: boolean;
+  disabledToolsets: string[];
+  disabledToolsetCount: number;
+  disabledToolsetBuckets: Record<string, number>;
+  registeredToolCount: number;
+  enabledToolCount: number;
+}
+
+export interface MissionControlSafetyRuntime extends Record<string, unknown> {
+  approvalsMode: string;
+  cronApprovalsMode: string;
+  approvalFlowConfigured: boolean;
+  autoApproveEnabled: boolean;
+  redactSecrets: boolean;
+  terminalBackend: string;
+  terminalIsolated: boolean;
+  privateUrlsAllowed: boolean;
+  toolOutputLimits: Record<string, unknown>;
+  promptInjection: Record<string, unknown>;
+}
+
+export interface MissionControlRuntime {
+  generatedAt: string;
+  home: string;
+  model: MissionControlModelRuntime;
+  env: Record<string, unknown>;
+  identity: Record<string, unknown>;
+  sessions: Record<string, unknown>;
+  skills: Record<string, unknown>;
+  cron: MissionControlCronRuntime;
+  mcp: MissionControlMcpRuntime;
+  gateway: Record<string, unknown>;
+  tools: MissionControlToolsRuntime;
+  safety: MissionControlSafetyRuntime;
+  voice: Record<string, unknown>;
+  dashboard: Record<string, unknown>;
+  memory: Record<string, unknown>;
+  semantic: Record<string, unknown>;
+  analytics: Record<string, unknown>;
+  quality: Record<string, unknown>;
+  multiUser: Record<string, unknown>;
+  reflection: Record<string, unknown>;
+  hosting: Record<string, unknown>;
+  dataFlow: MissionControlInfoItem[];
+  preflight: MissionControlInfoItem[];
+  customization: MissionControlInfoItem[];
+  production: Record<string, unknown>;
+}
+
+export interface MissionControlSnapshot {
+  ok: boolean;
+  source: {
+    url: string;
+    title: string;
+    lastChecked: string;
+    extractedWith: string;
+    note: string;
+  };
+  blueprint: {
+    stepCount: number;
+    numberedStepCount: number;
+    hermesFeatureCount: number;
+    openclawFeatureCount: number;
+    parts: string[];
+    architecturePieces?: MissionControlInfoItem[];
+    prerequisites?: MissionControlInfoItem[];
+    preflightChecks?: MissionControlInfoItem[];
+    customizationChecklist?: MissionControlInfoItem[];
+    nextTools?: MissionControlInfoItem[];
+    glossary?: MissionControlInfoItem[];
+    troubleshooting?: MissionControlInfoItem[];
+    resources?: MissionControlInfoItem[];
+    dataFlowSurfaces?: MissionControlInfoItem[];
+  };
+  runtime: MissionControlRuntime;
+  coverage: {
+    summary: {
+      total: number;
+      readiness: number;
+      counts: Record<string, number>;
+    };
+    steps: MissionControlCoverageItem[];
+    features: MissionControlCoverageItem[];
+    domains: MissionControlDomainScore[];
+    weakestDomains: MissionControlDomainScore[];
+  };
+  actionQueue: Array<{
+    rank: number;
+    tone: "now" | "next" | "watch" | string;
+    title: string;
+    reason: string;
+    route: string;
+    category?: string;
+    effort?: string;
+  }>;
+  privacy: Array<{ label: string; policy: string; detail: string }>;
+  deviceProof: {
+    principles: string[];
+    breakpoints: string[];
+    smokeTargets?: MissionControlInfoItem[];
+  };
+}
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *

@@ -280,6 +280,11 @@ app.include_router(_memory_oauth_router)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+# Keep the token on the FastAPI app as well as the module global. Pytest and
+# desktop reload paths can keep an older app object alive after
+# ``importlib.reload(web_server)`` mutates module globals; request-time auth must
+# validate against the app that is actually handling the request.
+app.state.dashboard_session_token = _SESSION_TOKEN
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -331,15 +336,16 @@ def _has_valid_session_token(request: Request) -> bool:
     accept the legacy Bearer path for backward compatibility with older
     dashboard bundles.
     """
+    expected_token = str(getattr(request.app.state, "dashboard_session_token", _SESSION_TOKEN) or _SESSION_TOKEN)
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
-        _SESSION_TOKEN.encode(),
+        expected_token.encode(),
     ):
         return True
 
     auth = request.headers.get("authorization", "")
-    expected = f"Bearer {_SESSION_TOKEN}"
+    expected = f"Bearer {expected_token}"
     return hmac.compare_digest(auth.encode(), expected.encode())
 
 
@@ -3038,6 +3044,29 @@ def _display_system_platform(
         "os_version": version,
         "platform": platform_label,
     }
+
+
+@app.get("/api/mission-control/blueprint")
+async def get_mission_control_blueprint():
+    """Blueprint + live-runtime Mission Control snapshot (session protected).
+
+    Auth is enforced by the dashboard middleware: loopback deployments require
+    the injected session token, while public/OAuth-gated deployments rely on
+    cookie auth. Keep this route thin so gated dashboards do not need the
+    loopback-only token header.
+    """
+    try:
+        from hermes_cli.mission_control import build_mission_control_snapshot
+
+        return build_mission_control_snapshot(
+            {
+                "auth_required": bool(getattr(app.state, "auth_required", False)),
+                "bound_host": str(getattr(app.state, "bound_host", "") or ""),
+            }
+        )
+    except Exception as exc:
+        _log.warning("mission-control blueprint failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build Mission Control snapshot.") from exc
 
 
 @app.get("/api/system/stats")

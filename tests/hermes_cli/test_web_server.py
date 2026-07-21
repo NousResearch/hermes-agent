@@ -232,6 +232,26 @@ class TestSessionTokenInjection:
 
         assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
 
+    def test_existing_app_keeps_own_token_after_module_reload(self, monkeypatch):
+        """An already-created FastAPI app must not start checking a later reload's token."""
+        import importlib
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        importlib.reload(ws)
+        old_app = ws.app
+        old_token = ws._SESSION_TOKEN
+        old_header = ws._SESSION_HEADER_NAME
+
+        importlib.reload(ws)
+        try:
+            old_app.state.auth_required = False
+            resp = TestClient(old_app).get("/api/providers/oauth", headers={old_header: old_token})
+            assert resp.status_code == 200, resp.text
+        finally:
+            importlib.reload(ws)
+
 
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)

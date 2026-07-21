@@ -926,13 +926,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        self._suppress_embeds: bool = self.config.extra.get("suppress_embeds", False)
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
-        self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+        self._nonconversational_ids = _DiscordNonConversationalMessageTracker()
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 2000-char preview
         # cap, every subsequent progressive edit truncates to the SAME text;
@@ -2892,6 +2893,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        suppress_embeds=self._suppress_embeds,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -2914,6 +2916,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            suppress_embeds=self._suppress_embeds,
                         )
                     else:
                         raise
@@ -2993,7 +2996,7 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(content=chunk, suppress_embeds=self._suppress_embeds)
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -3239,7 +3242,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     reference = None
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(content=chunk, reference=reference, suppress_embeds=self._suppress_embeds)
             except Exception as send_err:
                 # Drop the reply anchor and retry once — a deleted/expired
                 # anchor (10008) or system-message reply (50035) shouldn't lose
@@ -3249,7 +3252,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(content=chunk, reference=None, suppress_embeds=self._suppress_embeds)
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
@@ -3318,7 +3321,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     content=(caption or "").strip(),
                     file=file,
                 )
-            msg = await channel.send(content=caption if caption else None, file=file)
+            msg = await channel.send(
+                content=caption if caption else None,
+                file=file,
+                suppress_embeds=self._suppress_embeds,
+            )
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(
@@ -3434,7 +3441,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         files=files,
                     )
                 else:
-                    await channel.send(content=content, files=files)
+                    await channel.send(content=content, files=files, suppress_embeds=self._suppress_embeds)
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
@@ -3548,7 +3555,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
+                msg = await channel.send(file=file, suppress_embeds=self._suppress_embeds)
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
@@ -4556,8 +4563,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
 
                     msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                        content=chunk,
+                        reference=chunk_reference,
+                        suppress_embeds=self._suppress_embeds,
                     )
                     return SendResult(success=True, message_id=str(msg.id))
 
@@ -4625,8 +4633,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
 
                     msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                        content=chunk,
+                        reference=chunk_reference,
+                        suppress_embeds=self._suppress_embeds,
                     )
                     return SendResult(success=True, message_id=str(msg.id))
 
@@ -6589,7 +6598,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(content=content, embed=embed, view=view)
+            msg = await channel.send(content=content, embed=embed, view=view, suppress_embeds=self._suppress_embeds)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
@@ -6714,7 +6723,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 "❓ **Hermes needs your input**", str(question or "").strip(),
                 tail=clarify_tail,
             )
-            msg = await channel.send(content=content, embed=embed, view=view) if view else await channel.send(content=content, embed=embed)
+            msg = await channel.send(content=content, embed=embed, view=view, suppress_embeds=self._suppress_embeds) if view else await channel.send(content=content, embed=embed, suppress_embeds=self._suppress_embeds)
             if view:
                 view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
@@ -6756,10 +6765,10 @@ class DiscordAdapter(BasePlatformAdapter):
             content = self._self_contained_prompt_content(
                 "⚕ **Update Needs Your Input**", f"{prompt}{default_hint}"
             )
-            msg = await channel.send(content=content, embed=embed, view=view)
+            msg = await channel.send(content=content, embed=embed, view=view, suppress_embeds=self._suppress_embeds)
             view._message = msg  # store for on_timeout expiration editing
             if _metadata_marks_nonconversational(metadata):
-                self._nonconversational_messages.mark_many([str(msg.id)])
+                self._nonconversational_ids.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -6818,7 +6827,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            msg = await channel.send(embed=embed, view=view, suppress_embeds=self._suppress_embeds)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 

@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -32,6 +33,8 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('./api', () => ({
+  // Pass-through provider — the mocked useBillingApi ignores any override anyway.
+  BillingApiProvider: ({ children }: { children: ReactNode }) => children,
   useBillingApi: () => ({
     charge: apiMocks.charge,
     chargeStatus: apiMocks.chargeStatus,

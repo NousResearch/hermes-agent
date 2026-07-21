@@ -5,23 +5,6 @@ import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import type { SubscriptionPreviewResponse } from './types'
 
-// DEV fixtures have no live gateway, so preview / change / resume are simulated
-// with canned success after a short delay — the visual loop can click through the
-// confirm → schedule → undo path. A non-null value switches the flow to simulation.
-export interface SubscriptionSimulation {
-  effectiveAt: null | string
-}
-
-const SIMULATED_DELAY_MS = 350
-
-const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
-
-// The canned-success seam is a DEV-fixtures-only affordance; never let a production
-// build take the simulated branch even if a `simulate` prop leaks through. Accepts
-// the downgrade shape (object | null) and the resume flag (boolean).
-const simulationEnabled = (simulate?: boolean | null | SubscriptionSimulation): boolean =>
-  import.meta.env.DEV && Boolean(simulate)
-
 export interface DowngradeTarget {
   tierId: string
   tierName: string
@@ -50,14 +33,11 @@ function invalidateBilling(queryClient: ReturnType<typeof useQueryClient>) {
  * drives the step-up for insufficient_scope, exactly like the auto-reload save);
  * the caller retries by clicking the same button after verifying. On a scheduled
  * success it refetches billing + subscription and calls `onScheduled`.
+ *
+ * The api comes from `useBillingApi`, which DEV fixtures override with a simulated
+ * implementation — so this flow has no fixture/simulation awareness of its own.
  */
-export function useDowngradeFlow({
-  onScheduled,
-  simulate
-}: {
-  onScheduled: () => void
-  simulate?: null | SubscriptionSimulation
-}) {
+export function useDowngradeFlow({ onScheduled }: { onScheduled: () => void }) {
   const api = useBillingApi()
   const queryClient = useQueryClient()
   const [active, setActive] = useState<ActiveDowngrade | null>(null)
@@ -67,32 +47,8 @@ export function useDowngradeFlow({
   // (React hasn't committed the 'schedule' state yet), so guard on a ref too — no
   // double schedule RPC. Cleared on every confirm() exit (below).
   const schedulingRef = useRef(false)
-  const simulated = simulationEnabled(simulate)
 
   const runPreview = async (target: DowngradeTarget, runId: number) => {
-    if (simulated && simulate) {
-      await delay(SIMULATED_DELAY_MS)
-
-      if (runIdRef.current !== runId) {
-        return
-      }
-
-      setActive({
-        busy: null,
-        failedOp: null,
-        preview: {
-          effect: 'scheduled',
-          effective_at: simulate.effectiveAt,
-          ok: true,
-          target_tier_name: target.tierName
-        },
-        refusal: null,
-        target
-      })
-
-      return
-    }
-
     const result = await api.previewSubscriptionChange(target.tierId)
 
     if (runIdRef.current !== runId) {
@@ -131,20 +87,6 @@ export function useDowngradeFlow({
 
     runIdRef.current = runId
     setActive({ ...active, busy: 'schedule', failedOp: null, refusal: null })
-
-    if (simulated) {
-      await delay(SIMULATED_DELAY_MS)
-      schedulingRef.current = false
-
-      if (runIdRef.current !== runId) {
-        return
-      }
-
-      setActive(null)
-      onScheduled()
-
-      return
-    }
 
     const result = await api.scheduleSubscriptionChange(target.tierId)
     schedulingRef.current = false
@@ -185,15 +127,15 @@ export function useDowngradeFlow({
 /**
  * The undo for a scheduled downgrade / cancellation: a chargeless
  * `subscription.resume` (no confirm step) that refetches on success. A refusal
- * (e.g. insufficient_scope → step-up) surfaces via `refusal`.
+ * (e.g. insufficient_scope → step-up) surfaces via `refusal`. The api (real or the
+ * DEV-fixture simulation) comes from `useBillingApi`.
  */
-export function useResumeFlow(simulate = false) {
+export function useResumeFlow() {
   const api = useBillingApi()
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState(false)
   const [refusal, setRefusal] = useState<BillingRefusal | null>(null)
   const runningRef = useRef(false)
-  const simulated = simulationEnabled(simulate)
 
   const resume = async () => {
     if (runningRef.current) {
@@ -203,14 +145,6 @@ export function useResumeFlow(simulate = false) {
     runningRef.current = true
     setBusy(true)
     setRefusal(null)
-
-    if (simulated) {
-      await delay(SIMULATED_DELAY_MS)
-      runningRef.current = false
-      setBusy(false)
-
-      return
-    }
 
     const result = await api.resumeSubscription()
 

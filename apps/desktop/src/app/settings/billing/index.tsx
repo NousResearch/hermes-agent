@@ -12,10 +12,11 @@ import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
 import { ListRow, Pill, SectionHeading, SettingsContent } from '../primitives'
 
 import type { BillingRefusal } from './api'
-import { useBillingApi } from './api'
+import { BillingApiProvider, useBillingApi } from './api'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
 import { BillingRefusalInline, InlineMessage, openExternal, StepUpInlineAction } from './inline-feedback'
 import { BillingPlansView } from './plans-view'
+import { createSimulatedBillingApi } from './simulated-api'
 import { TierArt } from './tier-art'
 import type { BillingAutoReload, BillingStateResponse } from './types'
 import {
@@ -31,7 +32,7 @@ import {
 } from './use-billing-state'
 import { useChargeFlow } from './use-charge-poller'
 import { useStepUpFlow } from './use-step-up'
-import { type SubscriptionSimulation, useResumeFlow } from './use-subscription-change'
+import { useResumeFlow } from './use-subscription-change'
 
 // `bview` mirrors the settings pview/kview sub-view pattern (deep-linkable, replace
 // navigation). `overview` is the default landing; `plans` is the in-app catalog.
@@ -152,16 +153,8 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
   )
 }
 
-function CurrentPlanCard({
-  onViewPlans,
-  plan,
-  simulateResume
-}: {
-  onViewPlans: () => void
-  plan: BillingPlanCardView
-  simulateResume?: boolean
-}) {
-  const resumeFlow = useResumeFlow(simulateResume)
+function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
+  const resumeFlow = useResumeFlow()
 
   return (
     <div className="@container">
@@ -810,28 +803,19 @@ function BillingSettingsContent({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
-  const fixture =
-    import.meta.env.DEV && fixtureName && fixtureName !== 'live' ? billingDevFixtures[fixtureName] : undefined
-
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
 
-  const billingState = useBillingState(!fixture)
-  const subscriptionState = useSubscriptionState(!fixture)
-  const billingResult = fixture?.billing ?? billingState.data
-  const subscriptionResult = fixture?.subscription ?? subscriptionState.data
+  // Fixture mode flows through the SAME query path — the simulated api (supplied by
+  // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
+  // fixture short-circuit here.
+  const billingState = useBillingState()
+  const subscriptionState = useSubscriptionState()
+  const billingResult = billingState.data
+  const subscriptionResult = subscriptionState.data
   const view = deriveBillingView(billingResult, subscriptionResult)
   const billing = billingResult?.ok ? billingResult.data : undefined
   const usageUpdatedAt = oldestUpdatedAt(billingState.dataUpdatedAt, subscriptionState.dataUpdatedAt)
   const usageIsFetching = billingState.isFetching || subscriptionState.isFetching
-
-  // In fixture mode there is no live gateway, so the subscription-change RPCs run
-  // against canned success. Downgrades preview an effective date from the fixture's
-  // current cycle end.
-  const subscription = subscriptionResult?.ok ? subscriptionResult.data : null
-
-  const simulate: null | SubscriptionSimulation = fixture
-    ? { effectiveAt: subscription?.current?.cycle_ends_at ?? null }
-    : null
 
   const refreshUsage = () => {
     void Promise.all([billingState.refetch(), subscriptionState.refetch()])
@@ -848,7 +832,7 @@ function BillingSettingsContent({
     return (
       <SettingsContent>
         <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
-        <BillingPlansView onBack={() => setSubView('overview')} simulate={simulate} tiers={view.tiers} />
+        <BillingPlansView onBack={() => setSubView('overview')} tiers={view.tiers} />
       </SettingsContent>
     )
   }
@@ -870,11 +854,7 @@ function BillingSettingsContent({
       {view.plan && (
         <div className="mb-5">
           <SectionHeading icon={Package} title="Plan" />
-          <CurrentPlanCard
-            onViewPlans={() => setSubView('plans')}
-            plan={view.plan}
-            simulateResume={Boolean(fixture)}
-          />
+          <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
         </div>
       )}
 
@@ -926,8 +906,27 @@ function BillingSettingsContent({
 
 function BillingSettingsWithDevFixtures() {
   const [fixtureName, setFixtureName] = useState<BillingFixtureSelection>('live')
+  const queryClient = useQueryClient()
 
-  return <BillingSettingsContent fixtureName={fixtureName} onFixtureChange={setFixtureName} />
+  // DEV-only: a picked fixture is served by a simulated api (in-memory, mutable) that
+  // the whole subtree resolves via BillingApiProvider → useBillingApi. `live` → null →
+  // the real gateway api. Rebuilt per fixture so switching starts from a fresh copy.
+  const simulatedApi = useMemo(
+    () => (fixtureName !== 'live' ? createSimulatedBillingApi(billingDevFixtures[fixtureName]) : null),
+    [fixtureName]
+  )
+
+  // Switching fixtures (or its simulated api) must refetch, since the billing queries
+  // are keyed the same across fixtures.
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ['billing'] })
+  }, [queryClient, simulatedApi])
+
+  return (
+    <BillingApiProvider value={simulatedApi}>
+      <BillingSettingsContent fixtureName={fixtureName} onFixtureChange={setFixtureName} />
+    </BillingApiProvider>
+  )
 }
 
 export function BillingSettings() {

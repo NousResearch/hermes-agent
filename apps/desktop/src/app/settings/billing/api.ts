@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { createContext, useContext, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 
@@ -177,8 +177,17 @@ export const createBillingApi = (requestGateway: BillingRequestGateway): Billing
     })
 })
 
-export function useBillingApi(): BillingApi {
-  const { requestGateway } = useGatewayRequest()
+// An override for the gateway-backed api — DEV fixtures provide a simulated
+// implementation here so every consumer (hooks, rows) transparently runs against it
+// with no fixture awareness of their own. `null` (the default) = the real gateway api.
+const BillingApiContext = createContext<BillingApi | null>(null)
 
-  return useMemo(() => createBillingApi(requestGateway), [requestGateway])
+export const BillingApiProvider = BillingApiContext.Provider
+
+export function useBillingApi(): BillingApi {
+  const override = useContext(BillingApiContext)
+  const { requestGateway } = useGatewayRequest()
+  const real = useMemo(() => createBillingApi(requestGateway), [requestGateway])
+
+  return override ?? real
 }

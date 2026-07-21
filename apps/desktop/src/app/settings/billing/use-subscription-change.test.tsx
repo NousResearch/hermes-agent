@@ -84,38 +84,6 @@ describe('useDowngradeFlow', () => {
     expect(apiMocks.scheduleSubscriptionChange).not.toHaveBeenCalled()
   })
 
-  it('simulates a canned scheduled preview without touching the gateway', async () => {
-    const { result } = renderHook(
-      () => useDowngradeFlow({ onScheduled: vi.fn(), simulate: { effectiveAt: '2026-08-15T00:00:00Z' } }),
-      { wrapper }
-    )
-
-    act(() => result.current.begin({ tierId: 't_free', tierName: 'Plus' }))
-
-    await waitFor(() => expect(result.current.active?.preview?.effect).toBe('scheduled'))
-    expect(result.current.active?.preview?.target_tier_name).toBe('Plus')
-    expect(result.current.active?.preview?.effective_at).toBe('2026-08-15T00:00:00Z')
-    expect(apiMocks.previewSubscriptionChange).not.toHaveBeenCalled()
-  })
-
-  it('ignores the simulate seam outside DEV — production never takes the canned branch', async () => {
-    vi.stubEnv('DEV', false)
-    apiMocks.previewSubscriptionChange.mockResolvedValue({
-      data: { effect: 'scheduled', ok: true, target_tier_name: 'Plus' },
-      ok: true
-    })
-
-    const { result } = renderHook(
-      () => useDowngradeFlow({ onScheduled: vi.fn(), simulate: { effectiveAt: '2026-08-15T00:00:00Z' } }),
-      { wrapper }
-    )
-
-    act(() => result.current.begin({ tierId: 't_free', tierName: 'Plus' }))
-
-    // Real RPC is called despite the simulate prop being set.
-    await waitFor(() => expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('t_free'))
-  })
-
   it('exposes mutating only while the schedule RPC is in flight', async () => {
     apiMocks.previewSubscriptionChange.mockResolvedValue({
       data: { effect: 'scheduled', ok: true, target_tier_name: 'Free' },
@@ -193,15 +161,5 @@ describe('useResumeFlow', () => {
     })
 
     expect(result.current.refusal?.kind).toBe('insufficient_scope')
-  })
-
-  it('does not touch the gateway in simulate mode', async () => {
-    const { result } = renderHook(() => useResumeFlow(true), { wrapper })
-
-    await act(async () => {
-      await result.current.resume()
-    })
-
-    expect(apiMocks.resumeSubscription).not.toHaveBeenCalled()
   })
 })

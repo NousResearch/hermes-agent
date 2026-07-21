@@ -10,7 +10,7 @@ import { Pill } from '../primitives'
 import { BillingRefusalInline } from './inline-feedback'
 import { TierArt } from './tier-art'
 import { type BillingPlanTierView, formatBillingDate, formatMonthlyCreditsDelta } from './use-billing-state'
-import { type SubscriptionSimulation, useDowngradeFlow } from './use-subscription-change'
+import { useDowngradeFlow } from './use-subscription-change'
 
 type DowngradeFlow = ReturnType<typeof useDowngradeFlow>
 
@@ -157,18 +157,10 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
   )
 }
 
-export function BillingPlansView({
-  onBack,
-  simulate,
-  tiers
-}: {
-  onBack: () => void
-  simulate?: null | SubscriptionSimulation
-  tiers: BillingPlanTierView[]
-}) {
+export function BillingPlansView({ onBack, tiers }: { onBack: () => void; tiers: BillingPlanTierView[] }) {
   // A scheduled downgrade lands the user back on the overview, where the plan card
   // now shows the pending state with its undo.
-  const flow = useDowngradeFlow({ onScheduled: onBack, simulate })
+  const flow = useDowngradeFlow({ onScheduled: onBack })
 
   return (
     <div className="@container">

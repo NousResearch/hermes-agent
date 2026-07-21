@@ -269,7 +269,9 @@ def test_auxiliary_sync_stream_holds_permit_until_exhaustion(monkeypatch):
 def test_auxiliary_opaque_stream_sentinel_is_returned_raw(monkeypatch):
     permit = _RecordingPermit()
     monkeypatch.setattr(aux, "acquire_model_admission", lambda *_args: permit)
-    sentinel = "RAW_STREAM"
+    # Ordinary iterables do not expose a stream lifecycle boundary. Wrapping
+    # them would still alter the adapter's raw-return contract.
+    sentinel = ["RAW_STREAM"]
     client = SimpleNamespace(
         base_url="https://api.example.test/v1",
         chat=SimpleNamespace(

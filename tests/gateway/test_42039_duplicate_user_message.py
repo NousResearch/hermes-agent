@@ -123,6 +123,31 @@ def _assert_user_call_has_skip_db(calls, expected_skip_db: bool):
         )
 
 
+@pytest.mark.asyncio
+async def test_gateway_passes_raw_platform_id_to_turn_start_persistence(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Hello!",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert runner._run_agent.await_args.kwargs["event_message_id"] is None
+    assert (
+        runner._run_agent.await_args.kwargs["persist_user_message_id"]
+        == "msg-42"
+    )
+
+
 # ── Test 1: agent_failed_early path uses skip_db=True ─────────────────
 
 

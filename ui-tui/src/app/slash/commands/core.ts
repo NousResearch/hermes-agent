@@ -11,7 +11,8 @@ import type {
   SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
-  SessionUndoResponse
+  SessionUndoResponse,
+  SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -580,13 +581,35 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle a color-coded battery indicator in the status bar [on|off]',
+    help: 'toggle a color-coded battery indicator in the status bar [on|off|status]',
     name: 'battery',
     run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      // `/battery status` reports the current setting plus a live reading,
+      // matching the CLI surface. Fetch on demand so it works even while the
+      // indicator (and its poller) is off.
+      if (mode === 'status' || mode === 'show') {
+        const state = ctx.ui.battery ? 'on' : 'off'
+
+        ctx.gateway
+          .rpc<SystemBatteryResponse>('system.battery', {})
+          .then(r => {
+            if (r?.available && typeof r.percent === 'number') {
+              ctx.transcript.sys(`battery indicator ${state} — currently ${r.plugged ? '⚡' : '🔋'} ${r.percent}%`)
+            } else {
+              ctx.transcript.sys(`battery indicator ${state} — no battery detected on this machine`)
+            }
+          })
+          .catch(() => ctx.transcript.sys(`battery indicator ${state}`))
+
+        return
+      }
+
       const next = flagFromArg(arg, ctx.ui.battery)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /battery [on|off|toggle]')
+        return ctx.transcript.sys('usage: /battery [on|off|status]')
       }
 
       patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })

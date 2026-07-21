@@ -1,0 +1,19 @@
+Scenario: resolve the in-progress merge conflict in tools/environments/local.py.
+
+Retained upstream behavior:
+- _resolve_local_initial_cwd anchors relative TERMINAL_CWD values and translates MSYS paths before host cwd validation.
+
+Retained fork behavior:
+- _windows_to_bash_path remains available as the Windows shell-path compatibility entry point, delegating to the canonical _bash_safe_path/_windows_to_msys_path implementation. The legacy path_style parameter is accepted for compatibility; Git Bash remains the supported shell form.
+
+Validation:
+- py -3 -m py_compile tools/environments/local.py: passed.
+- py -3 -m pytest tests/tools/test_local_env_windows_msys.py -q -k "MsysToWindowsPath or QuoteCwdForWindowsBash or WindowsToMsysPath or BashSafePath": 24 passed, 26 deselected.
+- py -3 -m pytest tests/tools/test_local_env_relative_cwd.py -q -k "initial_cwd": 2 passed, 2 deselected.
+- py -3 -c "import tools.environments.local as m; ...": passed during validation command.
+- git diff --check -- tools/environments/local.py: passed (no output).
+- git diff --cached --check -- tools/environments/local.py: passed (no output).
+- git status --short tools/environments/local.py: M  tools/environments/local.py (staged).
+- rg -n '<<<<<<<|=======|>>>>>>>' tools/environments/local.py: no matches.
+
+Note: the complete two-file focused run reports three unrelated Windows-runtime assertions (snapshot cwd-file emission and native-vs-MSYS pwd output); the pure path and initial-cwd scenarios above pass. No test files were changed.

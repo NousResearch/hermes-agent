@@ -30,8 +30,20 @@ import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
-import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  normalizeProfileKey,
+  refreshActiveProfile
+} from '@/store/profile'
+import {
+  $activeProjectId,
+  $projects,
+  $startWorkSessionRequest,
+  followActiveSessionCwd,
+  resolveNewSessionCwd
+} from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -68,11 +80,16 @@ import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useKeybinds } from '../hooks/use-keybinds'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
+import {
+  launchNattpassMission,
+  nattpassLaunchContextMatches,
+  nattpassProjectWorkspace
+} from '../nattpasset'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
-import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
+import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -108,6 +125,7 @@ import type { WiringActions, WiringApi } from './types'
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
+const NattpassetView = lazy(async () => ({ default: (await import('../nattpasset')).NattpassetView }))
 const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
 const StarmapView = lazy(async () => ({ default: (await import('../starmap')).StarmapView }))
@@ -138,6 +156,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const profileScope = useStore($profileScope)
+  const projects = useStore($projects)
+  const activeProjectId = useStore($activeProjectId)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routedSessionIdRef = useRef(routedSessionId)
@@ -147,6 +167,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+  const freshDraftRouteWaitersRef = useRef<Array<() => void>>([])
+
+  useEffect(() => {
+    if (location.pathname !== NEW_CHAT_ROUTE || freshDraftRouteWaitersRef.current.length === 0) {
+      return
+    }
+
+    const waiters = freshDraftRouteWaitersRef.current.splice(0)
+    waiters.forEach(resolve => resolve())
+  }, [location.pathname])
+
+  const waitForFreshDraftRoute = useCallback(
+    () => new Promise<void>(resolve => freshDraftRouteWaitersRef.current.push(resolve)),
+    []
+  )
 
   const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
 
@@ -168,6 +203,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     commandCenterInitialSection,
     commandCenterOpen,
     cronOpen,
+    nattpassetOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
@@ -950,6 +986,52 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           <CronView
             onClose={closeOverlayToPreviousRoute}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+          />
+        </Suspense>
+      )}
+
+      {nattpassetOpen && (
+        <Suspense fallback={null}>
+          <NattpassetView
+            activeProjectId={activeProjectId}
+            onClose={closeOverlayToPreviousRoute}
+            onLaunch={(mission, isCurrent) => {
+              const expectedActiveProjectId = $activeProjectId.get()
+              const expectedProfile = normalizeProfileKey($activeGatewayProfile.get())
+              const expectedWorkspace = nattpassProjectWorkspace(mission.project)
+
+              const expectedContext = {
+                activeProjectId: expectedActiveProjectId,
+                profile: expectedProfile,
+                projectId: mission.project.id,
+                workspace: expectedWorkspace
+              }
+
+              return launchNattpassMission(
+                mission,
+                workspace => startFreshSessionDraft({ workspaceTarget: workspace }),
+                waitForFreshDraftRoute,
+                submitText,
+                () => {
+                  const currentProject = $projects.get().find(project => project.id === mission.project.id)
+
+                  return (
+                    isCurrent() &&
+                    nattpassLaunchContextMatches(expectedContext, {
+                      activeProjectId: $activeProjectId.get(),
+                      cwd: $currentCwd.get(),
+                      freshDraftReady: $freshDraftReady.get(),
+                      onFreshDraftRoute: routeTokenRef.current.startsWith(`${NEW_CHAT_ROUTE}:`),
+                      profile: normalizeProfileKey($activeGatewayProfile.get()),
+                      project: currentProject ?? null,
+                      runtimeSessionId: $activeSessionId.get(),
+                      storedSessionId: $selectedStoredSessionId.get()
+                    })
+                  )
+                }
+              )
+            }}
+            projects={projects}
           />
         </Suspense>
       )}

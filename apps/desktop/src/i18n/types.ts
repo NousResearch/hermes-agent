@@ -1210,6 +1210,27 @@ export interface Translations {
     failedRename: string
   }
 
+  nattpasset: {
+    close: string
+    title: string
+    subtitle: string
+    intro: string
+    goalLabel: string
+    goalQuestion: string
+    goalPlaceholder: string
+    criteriaLabel: string
+    criteriaQuestion: string
+    criteriaPlaceholder: string
+    criteriaHint: string
+    scopeLabel: string
+    noProject: string
+    confirmScope: (name: string, path: string) => string
+    liveNotice: string
+    cancel: string
+    launch: string
+    launching: string
+  }
+
   cron: {
     close: string
     title: string

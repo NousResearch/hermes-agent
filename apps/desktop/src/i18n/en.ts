@@ -1440,6 +1440,28 @@ export const en: Translations = {
     failedRename: 'Failed to rename profile'
   },
 
+  nattpasset: {
+    close: 'Close Nattpasset',
+    title: 'Nattpasset',
+    subtitle: 'Define the outcome. Hermes handles the implementation.',
+    intro: 'Answer two questions, confirm the project, and start a real operator mission.',
+    goalLabel: '1. Outcome',
+    goalQuestion: 'What should be different by morning?',
+    goalPlaceholder: 'Describe the result in your own words…',
+    criteriaLabel: '2. Done means',
+    criteriaQuestion: 'How will we know it is done?',
+    criteriaPlaceholder: 'One observable result per line…',
+    criteriaHint: 'Use things you can see or verify. You do not need to describe the implementation.',
+    scopeLabel: '3. Project and scope',
+    noProject: 'Create or select a project with a workspace before starting Nattpasset.',
+    confirmScope: (name, path) => `I confirm that ${name} at ${path} is the intended project.`,
+    liveNotice:
+      'This first slice starts now in a live Hermes session. It is not yet durable across app or runtime restarts; Hermes will report that honestly under KVAR.',
+    cancel: 'Cancel',
+    launch: 'Start Nattpasset',
+    launching: 'Starting…'
+  },
+
   cron: {
     close: 'Close cron',
     title: 'Scheduled jobs',
@@ -1597,7 +1619,8 @@ export const en: Translations = {
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
-      artifacts: 'Artifacts'
+      artifacts: 'Artifacts',
+      nattpasset: 'Nattpasset'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

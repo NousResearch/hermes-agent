@@ -102,6 +102,7 @@ import {
   type AppView,
   ARTIFACTS_ROUTE,
   MESSAGING_ROUTE,
+  NATTPASSET_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
   SKILLS_ROUTE
@@ -167,6 +168,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="files" {...props} />,
     route: ARTIFACTS_ROUTE,
     keybindActionId: 'nav.artifacts'
+  },
+  {
+    id: 'nattpasset',
+    label: '',
+    icon: props => <Codicon name="run-all" {...props} />,
+    route: NATTPASSET_ROUTE
   }
 ]
 

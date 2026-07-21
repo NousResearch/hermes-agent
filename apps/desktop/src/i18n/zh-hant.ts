@@ -1321,6 +1321,28 @@ export const zhHant = defineLocale({
     failedRename: '重新命名設定檔失敗'
   },
 
+  nattpasset: {
+    close: '關閉 Nattpasset',
+    title: 'Nattpasset',
+    subtitle: '定義成果，Hermes 負責實作。',
+    intro: '回答兩個問題、確認專案，然後啟動真實的操作任務。',
+    goalLabel: '1. 成果',
+    goalQuestion: '到了早上，什麼應該有所不同？',
+    goalPlaceholder: '用你自己的話描述想要的結果…',
+    criteriaLabel: '2. 完成代表',
+    criteriaQuestion: '我們如何知道它已完成？',
+    criteriaPlaceholder: '每行寫一個可觀察的結果…',
+    criteriaHint: '請使用你能看到或驗證的條件，不需要描述實作方式。',
+    scopeLabel: '3. 專案與範圍',
+    noProject: '啟動 Nattpasset 前，請建立或選擇一個有工作區的專案。',
+    confirmScope: (name, path) => `我確認位於 ${path} 的 ${name} 是目標專案。`,
+    liveNotice:
+      '此第一個切片會立即在真實 Hermes 工作階段中啟動。目前尚無法跨應用程式或執行階段重新啟動持久執行；Hermes 會在 KVAR 中如實回報。',
+    cancel: '取消',
+    launch: '啟動 Nattpasset',
+    launching: '正在啟動…'
+  },
+
   cron: {
     close: '關閉排程',
     title: '排程工作',
@@ -1477,7 +1499,8 @@ export const zhHant = defineLocale({
       'new-session': '新工作階段',
       skills: '技能與工具',
       messaging: '訊息平台',
-      artifacts: '成品'
+      artifacts: '成品',
+      nattpasset: 'Nattpasset'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',

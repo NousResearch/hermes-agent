@@ -70,14 +70,75 @@ def test_open_external_editor_uses_explicit_buffer_when_provided():
 
 
 def test_expand_paste_references_replaces_placeholder_with_file_contents(tmp_path):
+    """Single-level paste reference expansion (original behavior)."""
     cli_obj = _make_cli()
     paste_file = tmp_path / "paste.txt"
     paste_file.write_text("line one\nline two", encoding="utf-8")
 
-    text = f"before [Pasted text #1: 2 lines → {paste_file}] after"
+    text = f"before [Pasted text #1: 2 lines \u2192 {paste_file}] after"
     expanded = cli_obj._expand_paste_references(text)
 
     assert expanded == "before line one\nline two after"
+
+
+def test_expand_paste_references_expands_nested_references_recursively(tmp_path):
+    """Nested paste files (chained pastes) should all expand into full content."""
+    cli_obj = _make_cli()
+
+    # Simulate chained pastes: paste_2.txt contains a reference to paste_1.txt
+    paste_1 = tmp_path / "paste_1.txt"
+    paste_1.write_text("Hello from paste_1\nLine 2 of paste_1", encoding="utf-8")
+
+    paste_2 = tmp_path / "paste_2.txt"
+    paste_2.write_text(
+        f"[Pasted text #1: 2 lines \u2192 {paste_1}]\nLine from paste_2",
+        encoding="utf-8",
+    )
+
+    # paste_3 contains a reference to paste_2, which contains a reference to paste_1
+    paste_3 = tmp_path / "paste_3.txt"
+    paste_3.write_text(
+        f"[Pasted text #2: 2 lines \u2192 {paste_2}]\nLine from paste_3",
+        encoding="utf-8",
+    )
+
+    # The top-level input references paste_3
+    text = f"before [Pasted text #3: 2 lines \u2192 {paste_3}] after"
+    expanded = cli_obj._expand_paste_references(text)
+
+    expected = (
+        "before Hello from paste_1\n"
+        "Line 2 of paste_1\n"
+        "Line from paste_2\n"
+        "Line from paste_3 after"
+    )
+    assert expanded == expected, f"Got: {expanded!r}"
+
+
+def test_expand_paste_references_guards_against_circular_references(tmp_path):
+    """Circular references should not cause infinite loops."""
+    cli_obj = _make_cli()
+
+    paste_a = tmp_path / "paste_a.txt"
+    paste_b = tmp_path / "paste_b.txt"
+
+    # A references B, B references A (circular)
+    paste_a.write_text(
+        f"[Pasted text #1: 1 lines \u2192 {paste_b}]\nExtra from A",
+        encoding="utf-8",
+    )
+    paste_b.write_text(
+        f"[Pasted text #2: 1 lines \u2192 {paste_a}]\nExtra from B",
+        encoding="utf-8",
+    )
+
+    text = f"start [Pasted text #1: 2 lines \u2192 {paste_a}] end"
+    expanded = cli_obj._expand_paste_references(text)
+
+    # Should not hang; should return something containing the expanded content
+    assert "Extra from A" in expanded or "Extra from B" in expanded
+    assert "start" in expanded
+    assert "end" in expanded
 
 
 def test_open_external_editor_expands_paste_placeholders_before_open(tmp_path):

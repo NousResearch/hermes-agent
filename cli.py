@@ -5728,7 +5728,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return "\n".join(preview_lines)
 
     def _expand_paste_references(self, text: str | None) -> str:
-        """Expand [Pasted text #N -> file] placeholders into file contents."""
+        """Expand [Pasted text #N -> file] placeholders into file contents.
+
+        Loops until all nested paste references are resolved (e.g. when a paste
+        file contains a reference to another paste file via chained pastes).
+        A recursion guard prevents infinite loops from circular references.
+        """
         if not isinstance(text, str) or "[Pasted text #" not in text:
             return text or ""
         paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
@@ -5744,7 +5749,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
 
-        return paste_ref_re.sub(_expand_ref, text)
+        # Loop until no more paste references remain (handles nested pastes)
+        expanded = text
+        seen = set()  # guard against circular references
+        max_iterations = 10
+        for _ in range(max_iterations):
+            if "[Pasted text #" not in expanded:
+                break
+            new_text = paste_ref_re.sub(_expand_ref, expanded)
+            if new_text == expanded:
+                break  # no more files to expand
+            expanded = new_text
+            # Guard: track file paths to detect circular references
+            refs = set(paste_ref_re.findall(expanded))
+            if refs == seen:
+                break
+            seen = refs
+
+        return expanded
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""

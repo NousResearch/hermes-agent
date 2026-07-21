@@ -5435,7 +5435,8 @@ def get_custom_provider_context_length(
 
     Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
     insensitive) and returns ``custom_providers[i].models.<model>.context_length``
-    if present and valid.  Returns ``None`` when no override applies.
+    if present and valid.  Falls back to the provider-level ``context_length``
+    if no per-model override is set.  Returns ``None`` when no override applies.
 
     This is the single source of truth for custom-provider context overrides,
     used by:
@@ -5472,21 +5473,30 @@ def get_custom_provider_context_length(
         entry_url = (entry.get("base_url") or "").rstrip("/")
         if not entry_url or entry_url != target_url:
             continue
+        # First check per-model context_length
         models = entry.get("models")
-        if not isinstance(models, dict):
-            continue
-        model_cfg = models.get(model)
-        if not isinstance(model_cfg, dict):
-            continue
-        raw_ctx = model_cfg.get("context_length")
-        if raw_ctx is None:
-            continue
-        try:
-            ctx = int(raw_ctx)
-        except (TypeError, ValueError):
-            continue
-        if ctx > 0:
-            return ctx
+        if isinstance(models, dict):
+            model_cfg = models.get(model)
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None:
+                    try:
+                        ctx = int(raw_ctx)
+                    except (TypeError, ValueError):
+                        pass
+                    else:
+                        if ctx > 0:
+                            return ctx
+        # Fallback to provider-level context_length
+        raw_ctx = entry.get("context_length")
+        if raw_ctx is not None:
+            try:
+                ctx = int(raw_ctx)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if ctx > 0:
+                    return ctx
     return None
 
 

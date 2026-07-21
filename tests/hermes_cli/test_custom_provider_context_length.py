@@ -142,6 +142,70 @@ class TestGetCustomProviderContextLength:
             == 400_000
         )
 
+    def test_falls_back_to_provider_level_context_length(self):
+        """When per-model context_length is absent, provider-level context_length is used."""
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "context_length": 131_072,
+                "models": {"some-model": {}},  # model present but no context_length
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "some-model", "https://example.invalid/v1", custom
+            )
+            == 131_072
+        )
+
+    def test_provider_level_context_length_used_when_no_models_dict(self):
+        """When models dict is absent entirely, provider-level context_length is used."""
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "context_length": 131_072,
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "any-model", "https://example.invalid/v1", custom
+            )
+            == 131_072
+        )
+
+    def test_per_model_overrides_provider_level(self):
+        """Per-model context_length takes precedence over provider-level."""
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "context_length": 131_072,
+                "models": {"m": {"context_length": 500_000}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "m", "https://example.invalid/v1", custom
+            )
+            == 500_000
+        )
+
+    def test_provider_level_invalid_value_is_skipped(self):
+        """Invalid provider-level context_length (string, zero, negative) is skipped."""
+        for bad in ("130K", 0, -100):
+            custom = [
+                {
+                    "base_url": "https://example.invalid/v1",
+                    "context_length": bad,
+                    "models": {"m": {}},
+                }
+            ]
+            assert (
+                get_custom_provider_context_length(
+                    "m", "https://example.invalid/v1", custom
+                )
+                is None
+            ), f"provider-level value {bad!r} should be rejected"
+
 
 class TestGetModelContextLengthHonorsOverride:
     """agent.model_metadata.get_model_context_length must honor the

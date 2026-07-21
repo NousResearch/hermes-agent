@@ -28,6 +28,7 @@ model:
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
+  #   "deepinfra"    - DeepInfra (requires: DEEPINFRA_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
@@ -85,6 +86,25 @@ model:
   #
   # default_headers:
   #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
@@ -390,8 +410,14 @@ compression:
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
+  # Models with context windows below 512K are floored at 0.75 (raise-only) so
+  # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
-  
+
+  # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
+  # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
+  codex_gpt55_autoraise: true
+
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
   # Summary output is separately capped at 12K tokens (Gemini output limit).
@@ -402,6 +428,14 @@ compression:
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.
   protect_last_n: 20
+
+  # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
+  # agent owns the real thread context on this runtime, so Hermes' summarizer
+  # cannot shrink it — compaction goes through the app server instead.
+  #   native = let Codex decide when to compact its own thread (default)
+  #   hermes = let Hermes threshold trigger Codex thread/compact/start
+  #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
+  codex_app_server_auto: native
 
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
@@ -472,17 +506,33 @@ prompt_caching:
 #     timeout: 30            # LLM API call timeout (seconds)
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
+#     reasoning_effort: ""   # Per-task thinking level: none, minimal, low, medium,
+#                            # high, xhigh, max, ultra. Empty = provider default.
+#                            # Works on every auxiliary task block (vision,
+#                            # web_extract, compression, title_generation, curator,
+#                            # background_review, moa_reference, ...). Example: run
+#                            # compression at "low" and vision at "none" to cut
+#                            # side-task latency/cost on reasoning models.
 #
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#     reasoning_effort: "low"
 #
 #   # Gemini 3.1 TTS hidden audio-tag insertion
 #   tts_audio_tags:
 #     provider: "auto"       # empty model = your main chat model
 #     model: ""
 #     timeout: 30
+#
+#   # Automatic session title generation after the first exchange
+#   title_generation:
+#     enabled: true          # set false to disable auto-title generation
+#     provider: "auto"
+#     model: ""
+#     timeout: 30
+#     language: ""           # empty = match the user's language; or e.g. "English"
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:
@@ -533,28 +583,27 @@ memory:
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
-# automatically cleared. Without resets, conversation context grows indefinitely
-# which increases API costs with every message.
+# automatically cleared. Default is "none": sessions never auto-reset —
+# conversation context lives until you /reset or /new manually, or context
+# compression kicks in. Opt in to automatic resets if you prefer sessions to
+# clear on a schedule (long-lived context increases API cost per message,
+# though prompt caching and compression keep this manageable).
 #
-# When a reset triggers, the agent first saves important information to its
-# persistent memory — but the conversation context is wiped. The agent starts
-# fresh but retains learned facts via its memory system.
-#
-# Users can always manually reset with /reset or /new in chat.
+# When an automatic reset triggers, the agent first saves important
+# information to its persistent memory — but the conversation context is
+# wiped. The agent starts fresh but retains learned facts via its memory
+# system.
 #
 # Modes:
-#   "both"  - Reset on EITHER inactivity timeout or daily boundary (recommended)
-#   "idle"  - Reset only after N minutes of inactivity
-#   "daily" - Reset only at a fixed hour each day
-#   "none"  - Never auto-reset; context lives until /reset or compression kicks in
-#
-# When a reset triggers, the agent gets one turn to save important memories and
-# skills before the context is wiped. Persistent memory carries across sessions.
+#   "none"  - Never auto-reset (default); context lives until /reset or compression
+#   "idle"  - Reset after N minutes of inactivity
+#   "daily" - Reset at a fixed hour each day
+#   "both"  - Reset on EITHER inactivity timeout or daily boundary
 #
 session_reset:
-  mode: both           # "both", "idle", "daily", or "none"
-  idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
-  at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
+  mode: none           # "none", "idle", "daily", or "both"
+  idle_minutes: 1440   # Inactivity timeout in minutes (used by "idle"/"both")
+  at_hour: 4           # Daily reset hour, 0-23 local time (used by "daily"/"both")
 
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
@@ -570,6 +619,41 @@ max_concurrent_sessions: null
 # room from sharing context, interrupts, and token costs. Set false only if you
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API Server — per-client model routing
+# ─────────────────────────────────────────────────────────────────────────────
+# Route different API clients to different models/providers on a single
+# Hermes deployment.  Clients choose a backend by sending a specific string
+# as the OpenAI ``model`` field.  Unmapped model values fall back to the
+# global model configured in the ``model:`` section above, and an explicit
+# session /model override always wins over a route.
+#
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         model_routes:
+#           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             provider: "openrouter"          # optional — overrides global provider
+#             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
+#             #                                 key (NOT caller auth; never logged)
+#             # base_url: "https://..."       # optional — per-route base URL
+#           # GPT clients keep their own alias
+#           gpt-5:
+#             model: "openai/gpt-5"
+#             provider: "openrouter"
+#
+# Configured aliases are automatically listed by GET /v1/models so clients
+# can discover them without manual coordination.  Caller authentication is
+# unchanged: every request still authenticates with the global API server
+# key (``extra.key`` / API_SERVER_KEY).
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
@@ -672,6 +756,19 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+  
+  # Per-model reasoning effort overrides (optional dict)
+  # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,
+  #      provider prefix optional). First match wins.
+  # Value: reasoning effort level (same options as reasoning_effort)
+  # Override the global reasoning_effort for that specific model.
+  # NOTE: no `hermes config set` support for this key -- edit YAML directly.
+  # reasoning_overrides:
+  #   "openrouter/anthropic/claude-opus-4.5": "xhigh"
+  #   "openai/gpt-5": "low"
+  #   "claude-opus-4.6": "high"           # bare model name also works
+  #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
+  reasoning_overrides: {}
   
   # Predefined personalities (use with /personality command)
   personalities:
@@ -780,6 +877,11 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   webhook:
+#     extra:
+#       # Route scripts default to a 30 second timeout. Scripts must live under
+#       # the active profile's scripts directory and receive webhook JSON on stdin.
+#       script_timeout_seconds: 30
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -937,6 +1039,34 @@ stt:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  # deepinfra:
+  #   # Model id is discovered live from the DeepInfra catalog filtered
+  #   # by the `stt` surface tag — leave `model` blank to take the first
+  #   # live result. Pin only when you need a specific Whisper variant.
+  #   model: ""
+
+# Text-to-speech. Only the deepinfra block is documented here — the
+# remaining providers (edge, openai, xai, minimax, mistral, gemini,
+# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
+# DEFAULT_CONFIG in hermes_cli/config.py.
+# tts:
+#   provider: "deepinfra"
+#   deepinfra:
+#     # Model id is discovered live from the DeepInfra catalog filtered
+#     # by the `tts` surface tag — leave `model` blank to take the first
+#     # live result.
+#     model: ""
+#     voice: "default"
+
+# Image generation. Each provider plugin reads its own ``image_gen.<name>``
+# block; deepinfra discovers models live from
+# api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —
+# no model id is hardcoded, so retired models disappear automatically.
+# image_gen:
+#   provider: "deepinfra"
+#   deepinfra:
+#     # Leave `model` blank for the first live `image-gen`-tagged result.
+#     model: ""
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)
@@ -1022,6 +1152,7 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
@@ -1050,11 +1181,14 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
-  # Gateway-only natural mid-turn assistant updates.
-  # When true, completed assistant status messages are sent as separate chat
-  # messages. This is independent of tool_progress and gateway streaming.
-  #   true:  Send mid-turn assistant updates as separate messages (default)
-  #   false: Only send the final response
+  # Natural mid-turn assistant updates.
+  # On gateway platforms, when true, completed assistant status messages are
+  # sent as separate chat messages. On the Desktop app, when true, mid-turn
+  # assistant narration streamed between tool calls is kept in the transcript
+  # instead of the bubble collapsing to only the final message on completion.
+  # Independent of tool_progress and gateway streaming.
+  #   true:  Keep/send mid-turn assistant updates (default)
+  #   false: Only keep/send the final response
   interim_assistant_messages: true
 
   # Gateway-only long-running status heartbeats.
@@ -1325,3 +1459,50 @@ updates:
 #       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
 #       # in ~/.hermes/.env over putting it here in config.yaml.
 #       #   client_secret: ""
+
+# =============================================================================
+# External secret sources
+# =============================================================================
+# Pull provider credentials from external secret managers at process startup
+# instead of storing them in ~/.hermes/.env. Only the manager's bootstrap
+# credential (e.g. BWS_ACCESS_TOKEN / OP_SERVICE_ACCOUNT_TOKEN) lives in .env
+# (or your shell / desktop session); everything else rotates centrally.
+# Failures never block startup — Hermes warns once and continues with
+# whatever .env already had.
+#
+# Multiple sources can be enabled at once:
+#   - "mapped" sources (explicit VAR -> ref bindings, e.g. 1Password's env:
+#     map) beat "bulk" sources (whole-project dumps like Bitwarden BSM)
+#   - within a shape, the first source to claim a var wins; later claims
+#     are skipped with a startup warning (never a silent clobber)
+#   - a source's override_existing lets it beat .env/shell values, but
+#     never another secret source's claim
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/secrets/
+#
+# secrets:
+#   # Optional explicit ordering of enabled sources.
+#   # sources: [onepassword, bitwarden]
+#
+#   # ---- Bitwarden Secrets Manager (bws CLI) --------------------------------
+#   bitwarden:
+#     enabled: false
+#     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
+#     project_id: ""                       # UUID of the BSM project to sync
+#     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
+#     cache_ttl_seconds: 300               # 0 disables caching
+#     override_existing: true              # BSM values win over existing env
+#     auto_install: true                   # lazy-download bws into ~/.hermes/bin
+#
+#   # ---- 1Password (op CLI) -------------------------------------------------
+#   onepassword:
+#     enabled: false
+#     # Map env-var names to op:// secret references. Each is resolved with a
+#     # single `op read` at startup.
+#     env:
+#       OPENAI_API_KEY: "op://Private/OpenAI/api key"
+#       ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"
+#     account: ""                                   # op --account shorthand; "" = default
+#     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN  # headless auth; unset = desktop session
+#     binary_path: ""                               # "" = resolve op via PATH; else absolute path
+#     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
+#     override_existing: true                       # resolved values win over existing env

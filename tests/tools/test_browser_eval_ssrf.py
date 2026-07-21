@@ -141,6 +141,85 @@ class TestExpressionPreScan:
 # ---------------------------------------------------------------------------
 
 
+class TestCamofoxEvalGuard:
+    def _guard_on(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+
+    def test_camofox_blocks_private_fetch_literal_before_request(self, monkeypatch):
+        self._guard_on(monkeypatch)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+
+        import tools.browser_camofox as camofox
+
+        def fail_session(*_args, **_kwargs):
+            raise AssertionError("Camofox request should not run for a private URL literal")
+
+        monkeypatch.setattr(camofox, "_ensure_tab", fail_session)
+
+        result = _eval(f"fetch('{PRIVATE_URL}').then(r => r.text())")
+
+        assert result["success"] is False
+        assert "private or internal address" in result["error"]
+        assert PRIVATE_URL in result["error"]
+
+    def test_camofox_blocks_when_current_page_is_private(self, monkeypatch):
+        self._guard_on(monkeypatch)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+
+        import tools.browser_camofox as camofox
+
+        monkeypatch.setattr(camofox, "_ensure_tab", lambda task_id: {"tab_id": "tab-1", "user_id": "user-1"})
+
+        def fake_post(path, body=None, **_kwargs):
+            if body and body.get("expression") == "window.location.href":
+                return {"result": PRIVATE_URL}
+            return {"result": "secret DOM text"}
+
+        monkeypatch.setattr(camofox, "_post", fake_post)
+
+        result = _eval("document.body.innerText")
+
+        assert result["success"] is False
+        assert "private or internal address" in result["error"]
+        assert PRIVATE_URL in result["error"]
+        assert "secret DOM text" not in json.dumps(result)
+
+    def test_camofox_uses_raw_task_id_not_resolved_session_key(self, monkeypatch):
+        # Camofox keeps its own raw-task_id-keyed session map; eval must pass the
+        # raw task_id (like every sibling Camofox tool), NOT the agent-browser
+        # _last_session_key-resolved key, or it can hit a different/new tab and
+        # skip the pre-scan via a mismatched _is_local_sidecar_key check.
+        self._guard_on(monkeypatch)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(
+            browser_tool, "_last_session_key", lambda task_id: "resolved-agent-browser-key"
+        )
+
+        import tools.browser_camofox as camofox
+
+        seen = {}
+
+        def record_tab(task_id):
+            seen["task_id"] = task_id
+            return {"tab_id": "tab-1", "user_id": "user-1"}
+
+        monkeypatch.setattr(camofox, "_ensure_tab", record_tab)
+        monkeypatch.setattr(
+            camofox, "_post", lambda path, body=None, **_kw: {"result": "https://example.com"}
+        )
+
+        result = _eval("document.title", task_id="test")
+
+        assert result["success"] is True
+        assert seen["task_id"] == "test"
+
+
 class TestPostEvalPageRecheck:
     def _guard_on(self, monkeypatch):
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)

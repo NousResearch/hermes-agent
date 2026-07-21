@@ -16,7 +16,7 @@ Core invariant these tests pin:
 """
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -36,8 +36,8 @@ def _isolated_cwd(tmp_path, monkeypatch):
     # Process cwd = decoy, analogous to "main repo" while the terminal is in
     # the worktree.
     monkeypatch.chdir(decoy)
-    # No live-terminal-cwd tracking recorded yet (fresh-session condition).
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    # No session cwd recorded yet (fresh-session condition).
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     return workspace, decoy
 
 
@@ -72,7 +72,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
     """
     workspace, decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", ".")
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    terminal_tool.record_session_cwd("default", str(workspace))
 
     resolved = ft._resolve_path_for_task("target.py", task_id="default")
 
@@ -100,6 +100,73 @@ def test_absolute_input_path_ignores_base(_isolated_cwd, monkeypatch):
     assert resolved == Path(abs_target).resolve()
 
 
+def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
+    """Docker paths are sandbox-local and must not be host-dereferenced.
+
+    A user may have a host symlink at a container-looking path such as
+    ``/workspace/projects``. For Docker file ops, resolving that symlink on the
+    host rewrites the path before Docker sees it, making file tools and terminal
+    disagree about where the file lives.
+    """
+    host_project = tmp_path / "host-project"
+    host_project.mkdir()
+    container_mount = tmp_path / "workspace-projects"
+    container_mount.symlink_to(host_project, target_is_directory=True)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+
+    container_path = container_mount / "oilsands-sim" / "README.md"
+    resolved = ft._resolve_path_for_task(str(container_path), task_id="default")
+
+    assert resolved == container_path
+    assert resolved != (host_project / "oilsands-sim" / "README.md")
+
+
+def test_container_path_normalization_uses_posix_path_syntax():
+    resolved = ft._normalize_without_host_deref("/workspace/projects/foo/../bar")
+
+    assert resolved == PurePosixPath("/workspace/projects/bar")
+    assert str(resolved) == "/workspace/projects/bar"
+
+
+def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypatch):
+    """Relative Docker paths should stay under the container cwd textually."""
+    host_project = tmp_path / "host-project"
+    host_project.mkdir()
+    container_mount = tmp_path / "workspace-projects"
+    container_mount.symlink_to(host_project, target_is_directory=True)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    terminal_tool.record_session_cwd("default", str(container_mount))
+
+    resolved = ft._resolve_path_for_task("oilsands-sim/README.md", task_id="default")
+
+    assert resolved == container_mount / "oilsands-sim" / "README.md"
+    assert resolved != host_project / "oilsands-sim" / "README.md"
+
+
+class _DummyDockerEnvironment:
+    cwd = "/workspace"
+    cwd_owner = "default"
+
+
+def test_container_path_detection_uses_live_docker_environment(monkeypatch):
+    """A live DockerEnvironment-shaped env should beat config fallback."""
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": _DummyDockerEnvironment()},
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: (_ for _ in ()).throw(AssertionError("should not read config")),
+    )
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    assert ft._uses_container_paths("default") is True
+
+
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
     workspace, decoy = _isolated_cwd
@@ -118,9 +185,9 @@ def test_warning_fires_when_relative_path_escapes_workspace(_isolated_cwd, monke
     """Relative path resolving outside the live workspace must warn."""
     workspace, decoy = _isolated_cwd
     # Live cwd = workspace, but the relative path resolves to decoy (process cwd)
-    # because TERMINAL_CWD is the poison '.'.  Simulate by pointing live tracking
-    # at workspace while the resolved path is under decoy.
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    # because TERMINAL_CWD is the poison '.'.  Simulate by recording workspace
+    # as the session cwd while the resolved path is under decoy.
+    terminal_tool.record_session_cwd("default", str(workspace))
     resolved_in_decoy = decoy / "target.py"
 
     warn = ft._path_resolution_warning("target.py", resolved_in_decoy, task_id="default")
@@ -133,7 +200,7 @@ def test_warning_fires_when_relative_path_escapes_workspace(_isolated_cwd, monke
 
 def test_no_warning_when_relative_path_inside_workspace(_isolated_cwd, monkeypatch):
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    terminal_tool.record_session_cwd("default", str(workspace))
     resolved_in_workspace = workspace / "target.py"
 
     warn = ft._path_resolution_warning("target.py", resolved_in_workspace, task_id="default")
@@ -143,7 +210,7 @@ def test_no_warning_when_relative_path_inside_workspace(_isolated_cwd, monkeypat
 
 def test_no_warning_for_absolute_input(_isolated_cwd, monkeypatch):
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    terminal_tool.record_session_cwd("default", str(workspace))
 
     warn = ft._path_resolution_warning(str(decoy / "target.py"), decoy / "target.py", task_id="default")
 
@@ -152,7 +219,7 @@ def test_no_warning_for_absolute_input(_isolated_cwd, monkeypatch):
 
 def test_no_warning_when_no_live_cwd(_isolated_cwd, monkeypatch):
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
     warn = ft._path_resolution_warning("target.py", decoy / "target.py", task_id="default")
@@ -177,7 +244,7 @@ def test_sentinel_terminal_cwd_is_treated_as_unset(_isolated_cwd, monkeypatch, s
     never resolved as a literal relative directory.
     """
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setenv("TERMINAL_CWD", sentinel)
 
     assert ft._configured_terminal_cwd() is None
@@ -194,7 +261,7 @@ def test_relative_nonsentinel_terminal_cwd_rejected(_isolated_cwd, monkeypatch):
     be joined onto it as a literal subdir.
     """
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setenv("TERMINAL_CWD", "some/rel/path")
 
     assert ft._configured_terminal_cwd() is None
@@ -210,7 +277,7 @@ def test_absolute_terminal_cwd_anchors_with_empty_registry(_isolated_cwd, monkey
     worktree — not the process cwd (main repo).
     """
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setenv("TERMINAL_CWD", str(workspace))
 
     resolved = ft._resolve_path_for_task("target.py", task_id="default")
@@ -228,7 +295,7 @@ def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolat
     """
     workspace, decoy = _isolated_cwd
     task_id = "desktop-session-cwd"
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
 
@@ -250,7 +317,7 @@ def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monk
     worktree is flagged on the very first write.
     """
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setenv("TERMINAL_CWD", str(workspace))
 
     # Relative path that escapes the worktree into the decoy/main checkout.
@@ -269,8 +336,8 @@ def test_live_cwd_still_wins_over_absolute_terminal_cwd(_isolated_cwd, monkeypat
     workspace, decoy = _isolated_cwd
     other = decoy.parent / "other"
     other.mkdir()
-    # Live cwd = workspace; TERMINAL_CWD points elsewhere — live must win.
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    # Recorded session cwd = workspace; TERMINAL_CWD points elsewhere — record wins.
+    terminal_tool.record_session_cwd("default", str(workspace))
     monkeypatch.setenv("TERMINAL_CWD", str(other))
 
     resolved = ft._resolve_path_for_task("target.py", task_id="default")
@@ -284,7 +351,7 @@ def test_live_cwd_still_wins_over_absolute_terminal_cwd(_isolated_cwd, monkeypat
 def test_write_file_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """write_file_tool must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    terminal_tool.record_session_cwd("t1", str(workspace))
 
     import json
     out = json.loads(ft.write_file_tool("newfile.txt", "hello\n", task_id="t1"))
@@ -298,7 +365,7 @@ def test_write_file_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
 def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    terminal_tool.record_session_cwd("t1", str(workspace))
 
     import json
     out = json.loads(ft.patch_tool(
@@ -316,24 +383,16 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
 
 
-# ── Fix D: shared terminal env must not leak its cwd across worktree sessions ─
-# (June 2026: two desktop sessions, each on its own worktree, share the single
-# "default" terminal environment. Its `cwd` tracks whichever session ran the
-# last command, so a file edit from the OTHER session resolved against that
-# foreign cwd and silently landed in the wrong worktree. terminal_tool now
-# stamps env.cwd_owner with the driving session; file tools trust the shared
-# env's live cwd only when the resolving session owns it.)
-
-
-class _FakeOwnedEnv:
-    def __init__(self, cwd: str, cwd_owner: str):
-        self.cwd = cwd
-        self.cwd_owner = cwd_owner
+# ── Cross-session isolation: one session's cwd never leaks into another ──────
+# (June 2026 bug class: two desktop sessions, each on its own worktree, shared
+# the single "default" terminal environment and could inherit each other's cwd.
+# The per-session record store solves this structurally: each session's cd
+# state lives in its own record, keyed by the raw session id.)
 
 
 @pytest.fixture
 def _two_worktree_sessions(tmp_path, monkeypatch):
-    """Two worktree sessions sharing one terminal env owned by session B."""
+    """Two worktree sessions: B has cd'd (record), both registered overrides."""
     wt_a = tmp_path / "wt_a"
     wt_b = tmp_path / "wt_b"
     main = tmp_path / "main"
@@ -343,78 +402,60 @@ def _two_worktree_sessions(tmp_path, monkeypatch):
     monkeypatch.chdir(main)
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(ft, "_file_ops_cache", {})
-    # Both sessions register their worktree cwd (TUI/desktop registration path).
+    # Both sessions register their worktree cwd (TUI/desktop registration path;
+    # registration seeds each session's record).
     terminal_tool.register_task_env_overrides("sess-a", {"cwd": str(wt_a)})
     terminal_tool.register_task_env_overrides("sess-b", {"cwd": str(wt_b)})
-    # The shared "default" env: session B ran the last command, so its live cwd
-    # is wt_b and B owns it.
+    # Session B ran the last command; the shared env's live cwd is wt_b but
+    # only B's RECORD carries it.
     monkeypatch.setattr(
         terminal_tool,
         "_active_environments",
-        {"default": _FakeOwnedEnv(str(wt_b), "sess-b")},
+        {"default": _FakeEnv(str(wt_b))},
     )
     return wt_a, wt_b, main
 
 
-def test_live_cwd_ignored_for_non_owning_session(_two_worktree_sessions):
-    wt_a, wt_b, _main = _two_worktree_sessions
-    # Owner sees the live cwd; the other session must NOT inherit it.
-    assert ft._get_live_tracking_cwd("sess-b") == str(wt_b)
-    assert ft._get_live_tracking_cwd("sess-a") is None
+class _FakeEnv:
+    def __init__(self, cwd: str):
+        self.cwd = cwd
 
 
 def test_resolution_routes_to_resolving_sessions_worktree(_two_worktree_sessions):
     """The wrong-worktree fix: A resolves into wt_a, not the shared env's wt_b."""
     wt_a, wt_b, _main = _two_worktree_sessions
-    # Session A does not own the shared env → falls back to its own registered
-    # worktree cwd instead of B's live cwd.
     resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
     assert resolved_a == (wt_a / "target.py")
     assert not str(resolved_a).startswith(str(wt_b))
 
 
-def test_owning_session_still_resolves_against_live_cwd(_two_worktree_sessions):
-    """No regression: the owner keeps resolving against the live cwd."""
+def test_session_with_cd_record_resolves_against_it(_two_worktree_sessions):
+    """B's record (its own cd state) is authoritative for B."""
     wt_a, wt_b, _main = _two_worktree_sessions
     resolved_b = ft._resolve_path_for_task("target.py", task_id="sess-b")
     assert resolved_b == (wt_b / "target.py")
     assert not str(resolved_b).startswith(str(wt_a))
 
 
-def test_unknown_owner_keeps_prior_single_session_behavior(tmp_path, monkeypatch):
-    """An env with no owner (CLI / legacy) still yields its live cwd."""
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    monkeypatch.setattr(ft, "_file_ops_cache", {})
-    monkeypatch.setattr(
-        terminal_tool,
-        "_active_environments",
-        {"default": _FakeOwnedEnv(str(ws), "")},
-    )
-    assert ft._get_live_tracking_cwd("default") == str(ws)
-    assert ft._get_live_tracking_cwd("any-session") == str(ws)
+def test_sessions_cd_updates_only_its_own_resolution(_two_worktree_sessions, tmp_path):
+    """B cd's elsewhere → B's resolution follows, A's is untouched."""
+    wt_a, wt_b, _main = _two_worktree_sessions
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    terminal_tool.record_session_cwd("sess-b", str(elsewhere))
+
+    assert ft._resolve_path_for_task("f.py", task_id="sess-b") == (elsewhere / "f.py")
+    assert ft._resolve_path_for_task("f.py", task_id="sess-a") == (wt_a / "f.py")
 
 
-def test_preserved_cwd_does_not_override_non_owning_sessions_worktree(
+def test_unregistered_session_never_inherits_another_sessions_record(
     _two_worktree_sessions, monkeypatch
 ):
-    """#26211 belt-and-suspenders must not break worktree isolation.
-
-    The owner (session B) doing an owned live read mirrors wt_b into the shared
-    _last_known_cwd['default'] registry. Session A — which does NOT own the env
-    but HAS its own registered worktree (wt_a) — must still resolve into wt_a,
-    not inherit B's preserved cwd through the shared-container key. The
-    session-specific registered override must beat the durable shared anchor.
-    """
-    wt_a, wt_b, _main = _two_worktree_sessions
-    monkeypatch.setattr(ft, "_last_known_cwd", {})
-
-    # Owner B resolves first — this mirrors wt_b into _last_known_cwd['default'].
-    assert ft._resolve_path_for_task("target.py", task_id="sess-b") == (wt_b / "target.py")
-    assert ft._last_known_cwd.get("default") == str(wt_b)
-
-    # A still routes to its own registered worktree despite the shared anchor.
-    resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
-    assert resolved_a == (wt_a / "target.py")
-    assert not str(resolved_a).startswith(str(wt_b))
+    """Session C: no record, no override. Must NOT inherit A's or B's cwd."""
+    wt_a, wt_b, main = _two_worktree_sessions
+    resolved = ft._resolve_path_for_task("target.py", task_id="sess-c")
+    assert not str(resolved).startswith(str(wt_a))
+    assert not str(resolved).startswith(str(wt_b))
+    assert resolved == (main / "target.py").resolve()

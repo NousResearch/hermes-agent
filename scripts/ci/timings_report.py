@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,70 @@ from datetime import datetime
 from html import escape
 
 API_BASE = "https://api.github.com"
+
+# Retry policy for GitHub API calls. The repo-scoped GITHUB_TOKEN shares a
+# rate-limit budget across every concurrent workflow run; when several PRs
+# run CI at once, this report job (which makes dozens of paginated calls)
+# regularly hits 403 rate-limit responses. Those are transient — retry with
+# backoff, honoring Retry-After / X-RateLimit-Reset when present.
+_RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 5
+_MAX_RETRY_WAIT_S = 120.0
+
+
+class TimingsUnavailable(Exception):
+    """GitHub API data could not be collected (rate limit, outage, ...).
+
+    This is a REPORT job — never a reason to fail the PR's checks. main()
+    catches this and exits 0 with a degraded summary.
+    """
+
+
+def _retry_wait_s(headers, attempt: int) -> float:
+    """Seconds to wait before the next attempt, honoring server hints."""
+    retry_after = (headers.get("Retry-After") or "").strip() if headers else ""
+    if retry_after.isdigit():
+        return min(float(retry_after), _MAX_RETRY_WAIT_S)
+    reset = (headers.get("X-RateLimit-Reset") or "").strip() if headers else ""
+    remaining = (headers.get("X-RateLimit-Remaining") or "").strip() if headers else ""
+    if remaining == "0" and reset.isdigit():
+        return min(max(float(reset) - time.time(), 1.0), _MAX_RETRY_WAIT_S)
+    return min(2.0 ** attempt * 2.0, _MAX_RETRY_WAIT_S)  # 4s, 8s, 16s, 32s
+
+
+def _urlopen_with_retry(req: urllib.request.Request):
+    """urlopen with backoff on rate-limit/transient statuses.
+
+    Returns (parsed_json, link_header). Raises TimingsUnavailable when
+    attempts are exhausted — callers treat that as "no report this run",
+    not a job failure.
+    """
+    last_err: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return json.loads(resp.read()), resp.headers.get("Link", "")
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS:
+                break
+            wait = _retry_wait_s(e.headers, attempt)
+            print(f"GitHub API {e.code} on {req.full_url} — "
+                  f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
+        except urllib.error.URLError as e:
+            last_err = e
+            if attempt == _MAX_ATTEMPTS:
+                break
+            wait = _retry_wait_s(None, attempt)
+            print(f"GitHub API connection error on {req.full_url} ({e.reason}) — "
+                  f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
+    raise TimingsUnavailable(
+        f"GitHub API unavailable after {_MAX_ATTEMPTS} attempts: {last_err}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +107,9 @@ def api_get(path: str, token: str, params: dict | None = None,
     For list endpoints, pass list_key to extract items from the paginated
     wrapper response (e.g. list_key='jobs' for {'total_count': N, 'jobs': [...]}).
     When list_key is omitted, a non-list response is returned as-is (single object).
+
+    Transient failures (403 rate limit, 429, 5xx, connection errors) are
+    retried with backoff; exhausted retries raise TimingsUnavailable.
     """
     url = f"{API_BASE}{path}"
     if params:
@@ -55,9 +123,7 @@ def api_get(path: str, token: str, params: dict | None = None,
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "ci-timings-report",
         })
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read())
-            link_header = resp.headers.get("Link", "")
+        data, link_header = _urlopen_with_retry(req)
 
         if list_key:
             results.extend(data.get(list_key, []))
@@ -91,6 +157,17 @@ def dur_s(started: str | None, completed: str | None) -> float | None:
     return (e - s).total_seconds()
 
 
+def is_skipped(job: dict) -> bool:
+    """A job is 'skipped' when GitHub didn't actually run it.
+
+    Skipped jobs have conclusion == 'skipped' and typically have null or
+    equal started_at/completed_at timestamps, yielding duration_s of None
+    or 0. They should be excluded from delta comparisons, gantt bars,
+    regression tables, and aggregate stats (wall/compute).
+    """
+    return job.get("conclusion") == "skipped"
+
+
 # ---------------------------------------------------------------------------
 # Timings collection
 # ---------------------------------------------------------------------------
@@ -119,6 +196,38 @@ def _normalize_job(raw: dict) -> dict:
         "html_url": raw.get("html_url", ""),
         "steps": steps,
     }
+
+
+def _annotate_wait_times(jobs: list[dict]) -> None:
+    """Annotate each job with ``wait_s`` — how long it sat idle before starting.
+
+    Wait time = ``started_at - max(completed_at of all jobs that finished
+    before this job started)``. Jobs with no predecessor (e.g. ``detect``)
+    get ``wait_s = 0``. Skipped jobs get ``wait_s = None``.
+
+    This is a timestamp heuristic, not a workflow-YAML dependency parse: it
+    infers dependencies from temporal ordering rather than ``needs:``
+    declarations. It's accurate for pipeline-shaped CI where the critical
+    path is linear at each stage (detect → parallel lanes → gate → report).
+    """
+    for j in jobs:
+        if is_skipped(j):
+            j["wait_s"] = None
+            continue
+        started = parse_ts(j.get("started_at"))
+        if started is None:
+            j["wait_s"] = None
+            continue
+        latest_dep_end: datetime | None = None
+        for other in jobs:
+            if other is j or is_skipped(other):
+                continue
+            other_end = parse_ts(other.get("completed_at"))
+            if other_end is None or other_end > started:
+                continue
+            if latest_dep_end is None or other_end > latest_dep_end:
+                latest_dep_end = other_end
+        j["wait_s"] = (started - latest_dep_end).total_seconds() if latest_dep_end else 0.0
 
 
 def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
@@ -171,6 +280,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     all_jobs = [_normalize_job(j) for j in direct + sub_jobs_raw]
     all_jobs = [j for j in all_jobs if j["status"] not in ("in_progress", "queued")]
     all_jobs.sort(key=lambda j: j.get("started_at") or "")
+    _annotate_wait_times(all_jobs)
 
     return {
         "run_id": run_id,
@@ -243,10 +353,13 @@ def fmt_tick(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 
 def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
-    jobs = timings.get("jobs", [])
-    bl_jobs = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
+    jobs_all = timings.get("jobs", [])
+    jobs = [j for j in jobs_all if not is_skipped(j)]
+    bl_jobs_all = (baseline or {}).get("jobs", [])
+    bl_jobs = [j for j in bl_jobs_all if not is_skipped(j)]
+    bl_map = {j["name"]: j for j in bl_jobs}
 
-    # Wall time
+    # Wall time (skipped jobs have no real timestamps)
     starts = [s for s in (parse_ts(j.get("started_at")) for j in jobs) if s is not None]
     ends = [e for e in (parse_ts(j.get("completed_at")) for j in jobs) if e is not None]
     wall = (max(ends) - min(starts)).total_seconds() if starts and ends else 0
@@ -256,19 +369,19 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
     bl_wall = None
     bl_compute = None
     if baseline:
-        bl_starts = [s for s in (parse_ts(j.get("started_at")) for j in baseline.get("jobs", [])) if s is not None]
-        bl_ends = [e for e in (parse_ts(j.get("completed_at")) for j in baseline.get("jobs", [])) if e is not None]
+        bl_starts = [s for s in (parse_ts(j.get("started_at")) for j in bl_jobs) if s is not None]
+        bl_ends = [e for e in (parse_ts(j.get("completed_at")) for j in bl_jobs) if e is not None]
         if bl_starts and bl_ends:
             bl_wall = (max(bl_ends) - min(bl_starts)).total_seconds()
-        bl_compute = sum(j.get("duration_s") or 0 for j in baseline.get("jobs", []))
+        bl_compute = sum(j.get("duration_s") or 0 for j in bl_jobs)
 
-    # Per-job deltas
+    # Per-job deltas (skipped excluded)
     faster = 0
     slower = 0
     unchanged = 0
     no_baseline = 0
     for j in jobs:
-        bl = bl_jobs.get(j["name"])
+        bl = bl_map.get(j["name"])
         if not bl:
             no_baseline += 1
             continue
@@ -281,6 +394,11 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
         else:
             faster += 1
 
+    skipped = sum(1 for j in jobs_all if is_skipped(j))
+    bl_skipped = sum(1 for j in bl_jobs_all if is_skipped(j))
+    total_wait = sum(j.get("wait_s") or 0 for j in jobs)
+    bl_total_wait = sum(j.get("wait_s") or 0 for j in bl_jobs)
+
     return {
         "wall": wall,
         "compute": compute,
@@ -290,7 +408,11 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
         "slower": slower,
         "unchanged": unchanged,
         "no_baseline": no_baseline,
-        "total_jobs": len(jobs),
+        "skipped": skipped,
+        "bl_skipped": bl_skipped,
+        "total_wait": total_wait,
+        "bl_total_wait": bl_total_wait,
+        "total_jobs": len(jobs_all),
     }
 
 
@@ -338,6 +460,12 @@ h2 { font-size: 18px; margin: 32px 0 12px; }
 }
 .gantt-bar:hover { color: #fff; z-index: 10; }
 .gantt-bar.current { background: #1f6feb; top: 5px; z-index: 2; }
+.gantt-bar.wait {
+  background: repeating-linear-gradient(
+    45deg, #30363d, #30363d 3px, transparent 3px, transparent 6px
+  );
+  top: 5px; z-index: 1; opacity: 0.6;
+}
 .gantt-bar.baseline {
   background: transparent; border: 1px dashed #8b949e; top: 2px; height: 24px; z-index: 1;
 }
@@ -381,7 +509,8 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     (relative to each run's earliest job start). The axis scale spans
     0..max_end across both runs so bars are directly comparable.
     """
-    jobs = [j for j in timings.get("jobs", []) if j.get("started_at") and j.get("completed_at")]
+    jobs = [j for j in timings.get("jobs", [])
+            if j.get("started_at") and j.get("completed_at") and not is_skipped(j)]
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
 
     # Current run: relative offsets from earliest start
@@ -392,22 +521,18 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     cur_t0 = min(cur_starts)
     cur_max = (max(cur_ends) - cur_t0).total_seconds()
 
-    # Baseline run: relative offsets from its earliest start
-    bl_t0 = None
-    bl_max = 0.0
-    bl_jobs_timed = []
+    # Baseline run: max duration (for axis scale only — bars are aligned
+    # to the current job's start, not to the baseline timeline)
+    bl_max_dur = 0.0
     for bl_j in bl_map.values():
+        if is_skipped(bl_j):
+            continue
         s = parse_ts(bl_j.get("started_at"))
         e = parse_ts(bl_j.get("completed_at"))
         if s is not None and e is not None:
-            bl_jobs_timed.append((bl_j, s, e))
-            if bl_t0 is None or s < bl_t0:
-                bl_t0 = s
-            rel_end = (e - s).total_seconds() + (s - (bl_t0 or s)).total_seconds()
-    if bl_t0 is not None:
-        bl_max = max((e - bl_t0).total_seconds() for _, _, e in bl_jobs_timed) if bl_jobs_timed else 0
+            bl_max_dur = max(bl_max_dur, (e - s).total_seconds())
 
-    total_s = max(cur_max, bl_max)
+    total_s = max(cur_max, bl_max_dur)
     if total_s <= 0:
         total_s = 1
 
@@ -423,11 +548,14 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
 
         bl = bl_map.get(j["name"])
         bl_bar = ""
-        if bl and bl_t0 is not None:
+        if bl and not is_skipped(bl):
             bl_s = parse_ts(bl.get("started_at"))
             bl_e = parse_ts(bl.get("completed_at"))
             if bl_s is not None and bl_e is not None:
-                bl_left = (bl_s - bl_t0).total_seconds() / total_s * 100
+                # Align baseline bar to the current job's start so the
+                # two durations are directly comparable — the baseline's
+                # own wait/position is irrelevant for a duration diff.
+                bl_left = left
                 bl_width = max((bl_e - bl_s).total_seconds() / total_s * 100, 0.5)
                 bl_dur = bl.get("duration_s") or 0
                 bl_bar = (
@@ -441,15 +569,29 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
             name_display = f'{escape(j["workflow_name"])} / {escape(j["name"])}'
 
         delta_info = ""
-        if bl and bl.get("duration_s") is not None:
+        if bl and not is_skipped(bl) and bl.get("duration_s") is not None:
             d_text, d_cls = fmt_delta(dur, bl.get("duration_s"))
             delta_info = f' — {d_text}'
+
+        # Wait bar: shows idle time before the job started running
+        wait_bar = ""
+        wait_s = j.get("wait_s")
+        if wait_s and wait_s >= 1.0:
+            wait_left = (s - cur_t0).total_seconds() - wait_s
+            wait_left_pct = max(wait_left / total_s * 100, 0)
+            wait_width_pct = max(wait_s / total_s * 100, 0.3)
+            wait_bar = (
+                f'<div class="gantt-bar wait" '
+                f'style="left:{wait_left_pct:.2f}%;width:{wait_width_pct:.2f}%" '
+                f'title="{escape(j["name"])} — waited: {fmt_dur(wait_s)}"></div>'
+            )
 
         rows.append(
             f'<div class="gantt-row">'
             f'<div class="gantt-label" title="{escape(j["name"])}">{name_display}</div>'
             f'<div class="gantt-track">'
             f'{bl_bar}'
+            f'{wait_bar}'
             f'<div class="gantt-bar current" '
             f'style="left:{left:.2f}%;width:{width:.2f}%" '
             f'title="{escape(j["name"])}: {fmt_dur(dur)}{delta_info}"></div>'
@@ -467,6 +609,7 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     legend = (
         '<div class="legend">'
         '<span><span class="legend-swatch" style="background:#1f6feb"></span>Current</span>'
+        '<span><span class="legend-swatch" style="background:repeating-linear-gradient(45deg,#30363d,#30363d 3px,transparent 3px,transparent 6px);opacity:0.6"></span>Wait</span>'
     )
     if baseline:
         legend += '<span><span class="legend-swatch" style="border:1px dashed #8b949e"></span>Baseline (main)</span>'
@@ -499,6 +642,8 @@ def _stats_cards(stats: dict) -> str:
         f'<div class="stat-value slower">{stats["slower"]}</div></div>',
         f'<div class="stat-card"><span class="stat-label">Unchanged</span>'
         f'<div class="stat-value neutral">{stats["unchanged"]}</div></div>',
+        f'<div class="stat-card"><span class="stat-label">Skipped</span>'
+        f'<div class="stat-value neutral">{stats["skipped"]}</div></div>',
         f'<div class="stat-card"><span class="stat-label">No Baseline</span>'
         f'<div class="stat-value neutral">{stats["no_baseline"]}</div></div>',
     ]
@@ -509,11 +654,6 @@ def _job_table(timings: dict, baseline: dict | None) -> str:
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
     rows = []
     for j in timings.get("jobs", []):
-        dur = j.get("duration_s")
-        bl = bl_map.get(j["name"])
-        bl_dur = bl.get("duration_s") if bl else None
-        delta_text, delta_cls = fmt_delta(dur, bl_dur)
-
         name = escape(j["name"])
         if j.get("workflow_name"):
             name = f'{escape(j["workflow_name"])} / {escape(j["name"])}'
@@ -522,20 +662,45 @@ def _job_table(timings: dict, baseline: dict | None) -> str:
         concl_icon = {"success": "✓", "failure": "✗", "skipped": "⊘"}.get(concl, "?")
         concl_cls = {"success": "faster", "failure": "slower", "skipped": "neutral"}.get(concl, "neutral")
 
+        if is_skipped(j):
+            rows.append(
+                f'<tr>'
+                f'<td class="job-name">{name}</td>'
+                f'<td class="num neutral">skipped</td>'
+                f'<td class="num neutral">—</td>'
+                f'<td class="num neutral">—</td>'
+                f'<td class="num neutral">—</td>'
+                f'<td class="num neutral">—</td>'
+                f'<td class="{concl_cls}" style="text-align:center">{concl_icon}</td>'
+                f'</tr>'
+            )
+            continue
+
+        dur = j.get("duration_s")
+        wait = j.get("wait_s")
+        bl = bl_map.get(j["name"])
+        bl_dur = bl.get("duration_s") if bl and not is_skipped(bl) else None
+        bl_wait = bl.get("wait_s") if bl and not is_skipped(bl) else None
+        delta_text, delta_cls = fmt_delta(dur, bl_dur)
+        wait_delta_text, wait_delta_cls = fmt_delta(wait, bl_wait)
+
         rows.append(
             f'<tr>'
             f'<td class="job-name">{name}</td>'
             f'<td class="num">{fmt_dur(dur)}</td>'
+            f'<td class="num">{fmt_dur(wait)}</td>'
             f'<td class="num">{fmt_dur(bl_dur)}</td>'
             f'<td class="num {delta_cls}">{delta_text}</td>'
+            f'<td class="num {wait_delta_cls}">{wait_delta_text}</td>'
             f'<td class="{concl_cls}" style="text-align:center">{concl_icon}</td>'
             f'</tr>'
         )
 
     return (
         '<table><thead><tr>'
-        '<th>Job</th><th class="num">Current</th><th class="num">Baseline</th>'
-        '<th class="num">Delta</th><th>Status</th>'
+        '<th>Job</th><th class="num">Run</th><th class="num">Wait</th>'
+        '<th class="num">Baseline</th><th class="num">Δ Run</th>'
+        '<th class="num">Δ Wait</th><th>Status</th>'
         '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
     )
 
@@ -546,14 +711,19 @@ def _step_details(timings: dict, baseline: dict | None) -> str:
     for j in timings.get("jobs", []):
         if not j.get("steps"):
             continue
+        if is_skipped(j):
+            continue
         bl = bl_map.get(j["name"], {})
         bl_steps = {s["name"]: s for s in bl.get("steps", [])}
 
         dur = j.get("duration_s") or 0
-        bl_dur = bl.get("duration_s") if bl else None
+        wait = j.get("wait_s")
+        bl_dur = bl.get("duration_s") if bl and not is_skipped(bl) else None
         delta_text, delta_cls = fmt_delta(dur, bl_dur)
 
         summary_text = f'{escape(j["name"])} — {fmt_dur(dur)}'
+        if wait is not None and wait >= 1.0:
+            summary_text += f' <span class="neutral">(wait {fmt_dur(wait)})</span>'
         if bl_dur is not None:
             summary_text += f' <span class="{delta_cls}">({delta_text})</span>'
 
@@ -593,8 +763,10 @@ def _regressions(timings: dict, baseline: dict | None) -> str:
 
     deltas = []  # (abs_delta, job_name, step_name, current, baseline, is_slower)
     for j in timings.get("jobs", []):
+        if is_skipped(j):
+            continue
         bl = bl_map.get(j["name"])
-        if not bl:
+        if not bl or is_skipped(bl):
             continue
         bl_steps = {s["name"]: s for s in bl.get("steps", [])}
         for s in j.get("steps", []):
@@ -707,13 +879,100 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
         compute_d = d
     lines.append(f"| Total compute | {fmt_dur(stats['compute'])} | {fmt_dur(stats['bl_compute'])} | {compute_d} |")
 
+    wait_d = ""
+    if stats["bl_total_wait"] is not None:
+        d, _ = fmt_delta(stats["total_wait"], stats["bl_total_wait"])
+        wait_d = d
+    lines.append(f"| Total wait | {fmt_dur(stats['total_wait'])} | {fmt_dur(stats['bl_total_wait'])} | {wait_d} |")
+
     lines.append(f"| Jobs faster | {stats['faster']} | — | — |")
     lines.append(f"| Jobs slower | {stats['slower']} | — | — |")
     lines.append(f"| Jobs unchanged | {stats['unchanged']} | — | — |")
+    lines.append(f"| Jobs skipped | {stats['skipped']} | {stats['bl_skipped']} | — |")
     lines.append(f"| Jobs without baseline | {stats['no_baseline']} | — | — |")
     lines.append("")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Review status JSON for the unified PR comment
+# ---------------------------------------------------------------------------
+
+# Wall-time regressions above this fraction of baseline are "warning" severity.
+_TIMINGS_WARN_PCT = 0.25
+
+
+def generate_review_status(
+    timings: dict, baseline: dict | None, report_url: str | None = None
+) -> list[dict]:
+    """Produce a review_status JSON array for the CI timings review section.
+
+    Returns a list with one ``{source, results: [...]}`` entry. The
+    result kind is ``"info"`` or ``"warning"`` (timings is never error —
+    it's an observability job). *summary* is a single short line suitable
+    for the PR comment. *detail* has the per-job deltas as a markdown
+    fragment.
+    """
+    stats = compute_stats(timings, baseline)
+
+    if baseline is None:
+        severity = "info"
+        summary = f"Wall time {fmt_dur(stats['wall'])} (no baseline yet)."
+    else:
+        wall = stats["wall"]
+        bl_wall = stats["bl_wall"] or 0
+        if bl_wall > 0:
+            pct = (wall - bl_wall) / bl_wall * 100
+            wall_str = f"Wall time {fmt_dur(wall)} vs {fmt_dur(bl_wall)} ({pct:+.1f}%)."
+            if pct > _TIMINGS_WARN_PCT * 100:
+                severity = "warning"
+            else:
+                severity = "info"
+        else:
+            wall_str = f"Wall time {fmt_dur(wall)}."
+            severity = "info"
+
+        if stats["slower"]:
+            wall_str += f" {stats['slower']} job(s) slower,"
+        if stats["faster"]:
+            wall_str += f" {stats['faster']} faster,"
+        if stats["unchanged"]:
+            wall_str += f" {stats['unchanged']} unchanged."
+        summary = wall_str
+
+    # Per-job delta detail (top 5 by absolute change)
+    detail_lines: list[str] = []
+    if baseline:
+        bl_map = {j["name"]: j for j in baseline.get("jobs", [])}
+        deltas: list[tuple[float, str, str]] = []
+        for j in timings.get("jobs", []):
+            if is_skipped(j):
+                continue
+            bl = bl_map.get(j["name"])
+            if not bl or is_skipped(bl):
+                continue
+            cur = j.get("duration_s") or 0
+            bl_d = bl.get("duration_s") or 0
+            diff = cur - bl_d
+            if abs(diff) < 1.0:
+                continue
+            deltas.append((abs(diff), j["name"], f"{diff:+.1f}s"))
+        deltas.sort(reverse=True)
+        for _, name, delta_str in deltas[:5]:
+            detail_lines.append(f"- {name}: {delta_str}")
+
+    result: dict = {
+        "kind": severity,
+        "title": "CI timings",
+        "summary": summary,
+        "detail": "\n".join(detail_lines),
+    }
+    if report_url:
+        result["link"] = report_url
+        result["link_label"] = "View report"
+
+    return [{"source": "ci timing", "results": [result]}]
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +996,8 @@ def main():
                         help="JSON output path (default: ci-timings.json)")
     parser.add_argument("--summary-out", default="ci-timings-summary.md",
                         help="Markdown summary output path (default: ci-timings-summary.md)")
+    parser.add_argument("--review-status-out", default="",
+                        help="If set, write a review-status JSON for the unified PR comment.")
     args = parser.parse_args()
 
     # Collect or load timings
@@ -744,12 +1005,30 @@ def main():
         with open(args.from_json, encoding="utf-8") as f:
             timings = json.load(f)
     else:
-        token = expect_env("GITHUB_TOKEN")
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
-
-    timings = collect_timings(token, repo, run_id, head_sha)
+        try:
+            # A missing token (e.g. an empty PAT on a fork PR, where repo
+            # secrets are unavailable) is a degraded run, not a hard error:
+            # route it through the same soft-fail path so this advisory job
+            # never reddens the PR.
+            token = os.environ.get("GITHUB_TOKEN")
+            if not token:
+                raise TimingsUnavailable("GITHUB_TOKEN is empty")
+            timings = collect_timings(token, repo, run_id, head_sha)
+        except TimingsUnavailable as e:
+            # Observability job: a missing report must never redden the PR.
+            # Emit a degraded summary + placeholder artifact and exit 0.
+            msg = f"CI timing data unavailable this run: {e}"
+            print(msg, file=sys.stderr)
+            with open(args.summary_out, "a", encoding="utf-8") as f:
+                f.write(f"\n> ⚠️ {msg}\n")
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(f"<html><body><p>{escape(msg)}</p></body></html>\n")
+            # No JSON on purpose: an empty timings file must never be cached
+            # as the main baseline.
+            sys.exit(0)
 
     # Save JSON
     with open(args.json_out, "w", encoding="utf-8") as f:
@@ -776,6 +1055,17 @@ def main():
     with open(args.summary_out, "a", encoding="utf-8") as f:
         f.write(summary)
         print(f"Wrote summary to {args.summary_out}")
+
+    # Write review status for the unified PR comment.
+    # The output goes to GITHUB_OUTPUT (or a file with the same key=value
+    # format) so the ci-timings job can expose it as a workflow_call output.
+    if args.review_status_out:
+        report_url = os.environ.get("CI_TIMINGS_REPORT_URL", "")
+        statuses = generate_review_status(timings, baseline, report_url)
+        json_str = json.dumps(statuses)
+        with open(args.review_status_out, "a", encoding="utf-8") as f:
+            f.write(f"review_status={json_str}\n")
+        print(f"Wrote review status to {args.review_status_out}")
 
 
 if __name__ == "__main__":

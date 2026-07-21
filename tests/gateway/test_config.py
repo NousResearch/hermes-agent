@@ -2,9 +2,15 @@
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from agent.secret_scope import reset_secret_scope, set_secret_scope
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
+    ChannelOverride,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -90,6 +96,91 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
         assert restored.typing_indicator is False
 
+    def test_typing_status_text_defaults_none(self):
+        assert PlatformConfig().typing_status_text is None
+        assert PlatformConfig.from_dict({}).typing_status_text is None
+
+    def test_typing_status_text_roundtrip(self):
+        pc = PlatformConfig(enabled=True, typing_status_text="is pouncing… 🐾")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_status_text == "is pouncing… 🐾"
+
+    def test_typing_status_text_resolved_from_extra(self):
+        # Same bridge route as typing_indicator: the shared-key loop copies a
+        # nested platforms.<plat> value into extra.
+        restored = PlatformConfig.from_dict(
+            {"extra": {"typing_status_text": "chasing yarn…"}}
+        )
+        assert restored.typing_status_text == "chasing yarn…"
+
+    def test_typing_status_text_omitted_from_to_dict_when_unset(self):
+        # None must not serialize — keeps existing config files byte-stable.
+        assert "typing_status_text" not in PlatformConfig().to_dict()
+
+    def test_channel_overrides_roundtrip(self):
+        pc = PlatformConfig(
+            enabled=True,
+            channel_overrides={
+                "1234567890": ChannelOverride(
+                    model="openrouter/healer-alpha",
+                    provider="openrouter",
+                    system_prompt="You are a daily news summarizer.",
+                ),
+                "9876543210": ChannelOverride(
+                    model="anthropic/claude-opus-4.6",
+                    provider="anthropic",
+                    system_prompt="You are a coding assistant.",
+                ),
+            },
+        )
+        d = pc.to_dict()
+        assert "channel_overrides" in d
+        assert d["channel_overrides"]["1234567890"]["model"] == "openrouter/healer-alpha"
+        assert d["channel_overrides"]["9876543210"]["system_prompt"] == "You are a coding assistant."
+        restored = PlatformConfig.from_dict(d)
+        assert restored.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+        assert restored.channel_overrides["9876543210"].provider == "anthropic"
+
+    def test_channel_overrides_from_dict_normalizes_channel_id_to_str(self):
+        """YAML may have numeric channel IDs; we store as str."""
+        data = {
+            "enabled": True,
+            "channel_overrides": {
+                1234567890: {"model": "openrouter/healer-alpha"},
+            },
+        }
+        pc = PlatformConfig.from_dict(data)
+        assert "1234567890" in pc.channel_overrides
+        assert pc.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+
+
+class TestChannelOverride:
+    def test_from_dict_empty(self):
+        assert ChannelOverride.from_dict({}).model is None
+        assert ChannelOverride.from_dict(None).model is None
+
+    def test_to_dict_omits_none(self):
+        ov = ChannelOverride(model="gpt-4", provider=None, system_prompt="Hi")
+        d = ov.to_dict()
+        assert d["model"] == "gpt-4"
+        assert "provider" not in d
+        assert d["system_prompt"] == "Hi"
+
+
+class TestPlatformConfigMalformedSections:
+    def test_from_dict_ignores_malformed_nested_sections(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "home_channel": "telegram:123",
+                "extra": "oops",
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.home_channel is None
+        assert restored.extra == {}
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -168,7 +259,7 @@ class TestSessionResetPolicy:
 
     def test_defaults(self):
         policy = SessionResetPolicy()
-        assert policy.mode == "both"
+        assert policy.mode == "none"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
         assert policy.bg_process_max_age_hours == 24
@@ -178,7 +269,7 @@ class TestSessionResetPolicy:
             {"mode": None, "at_hour": None, "idle_minutes": None,
              "bg_process_max_age_hours": None}
         )
-        assert restored.mode == "both"
+        assert restored.mode == "none"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
         assert restored.bg_process_max_age_hours == 24
@@ -186,6 +277,12 @@ class TestSessionResetPolicy:
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
+
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = SessionResetPolicy.from_dict("oops")
+        assert restored.mode == SessionResetPolicy().mode
+        assert restored.at_hour == 4
+        assert restored.idle_minutes == 1440
 
 
 class TestStreamingConfig:
@@ -212,6 +309,11 @@ class TestStreamingConfig:
         assert restored.buffer_threshold == 24
         assert restored.fresh_final_after_seconds == 0.0
 
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = StreamingConfig.from_dict("enabled")
+        assert restored.enabled is False
+        assert restored.transport == "auto"
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
@@ -227,6 +329,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            systemd_watchdog_seconds=120,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -237,6 +340,33 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.systemd_watchdog_seconds == 120
+
+    def test_systemd_watchdog_from_dict_disables_invalid_values(self):
+        invalid_values = [
+            None,
+            0,
+            -1,
+            True,
+            1.5,
+            float("nan"),
+            float("inf"),
+            "120.0",
+            "1e3",
+            "bad",
+            2_147_483_648,
+        ]
+
+        for raw in invalid_values:
+            config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
+            assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"systemd_watchdog_seconds": "45"}}
+        )
+
+        assert config.systemd_watchdog_seconds == 45
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
@@ -314,6 +444,27 @@ class TestGatewayConfigRoundtrip:
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
 
+    def test_from_dict_ignores_malformed_nested_sections(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram": "enabled",
+                    "discord": {"enabled": True, "token": "tok"},
+                },
+                "default_reset_policy": "daily",
+                "reset_by_type": ["oops"],
+                "reset_by_platform": "oops",
+                "streaming": "enabled",
+            }
+        )
+
+        assert Platform.TELEGRAM not in restored.platforms
+        assert restored.platforms[Platform.DISCORD].enabled is True
+        assert restored.default_reset_policy.mode == SessionResetPolicy().mode
+        assert restored.reset_by_type == {}
+        assert restored.reset_by_platform == {}
+        assert restored.streaming.transport == "auto"
+
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
             platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}
@@ -336,6 +487,72 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_shipped_template_does_not_enable_auto_reset(self, tmp_path, monkeypatch):
+        """A fresh install seeded from cli-config.yaml.example must not
+        auto-reset sessions.
+
+        Installers (scripts/install.sh, scripts/install.ps1,
+        docker/stage2-hook.sh, hermes doctor) copy the template verbatim to
+        ~/.hermes/config.yaml, so whatever ``session_reset.mode`` the template
+        ships becomes an EXPLICIT user setting that overrides the code
+        default. After #60194 flipped the default to "none", the template
+        still said "both" — every new install kept 24h-idle resets on
+        (Luciano's report, July 2026). This pins the invariant: template
+        seed == no auto-reset.
+        """
+        template = (
+            Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        )
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            template.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+
+    def test_no_config_yaml_means_no_auto_reset(self, tmp_path, monkeypatch):
+        """With no config.yaml at all, sessions must never auto-reset."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+
+    def test_session_reset_without_mode_means_no_auto_reset(self, tmp_path, monkeypatch):
+        """A session_reset block that tunes knobs but omits mode stays off."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session_reset:\n  idle_minutes: 60\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "none"
+        assert config.default_reset_policy.idle_minutes == 60
+
+    def test_explicit_session_reset_opt_in_is_honored(self, tmp_path, monkeypatch):
+        """Users who explicitly opt in to auto-reset keep their policy."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "session_reset:\n  mode: idle\n  idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "idle"
+        assert config.default_reset_policy.idle_minutes == 30
+
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -353,6 +570,304 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_typing_status_text_from_toplevel_platform_block(self, tmp_path, monkeypatch):
+        """A top-level ``slack:`` block reaches PlatformConfig via the
+        shared-key bridge (bridged into extra, then the from_dict extra
+        fallback) — the route a bare ``hermes config set``-style YAML uses."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            'slack:\n  typing_status_text: "is pouncing… 🐾"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text
+            == "is pouncing… 🐾"
+        )
+
+    def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
+        """``platforms.slack.typing_status_text`` reaches PlatformConfig via
+        _merge_platform_map + the from_dict top-level read."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            '    typing_status_text: "chasing yarn…"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
+        )
+
+    def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.multiplex_profiles: true`` (the nested form written by
+        ``hermes config set gateway.multiplex_profiles true``) must enable
+        multiplexing when loaded via load_gateway_config().
+
+        Regression: load_gateway_config() only surfaced the *top-level*
+        ``multiplex_profiles`` key into gw_data, so a config.yaml that pinned
+        the flag under the nested ``gateway:`` section silently loaded with
+        multiplex_profiles=False. (from_dict honors the nested fallback, but
+        load_gateway_config builds gw_data from the top-level keys before
+        calling from_dict, so the nested value never reached it.)
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
+    def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  websocket_liveness_interval_seconds: 17\n"
+            "  websocket_liveness_failure_threshold: 4\n"
+            "  websocket_heartbeat_ack_max_age_seconds: 75\n"
+            "  websocket_max_latency_seconds: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for key in (
+            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DISCORD].extra
+        assert extra["websocket_liveness_interval_seconds"] == 17
+        assert extra["websocket_liveness_failure_threshold"] == 4
+        assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
+        assert extra["websocket_max_latency_seconds"] == 30
+
+    def test_session_reset_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.session_reset`` (nested form) must reach default_reset_policy,
+        mirroring the gateway.multiplex_profiles precedent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  session_reset:\n    mode: idle\n    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.mode == "idle"
+        assert config.default_reset_policy.idle_minutes == 30
+
+    def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  quick_commands:\n    limits:\n      type: exec\n      command: echo ok\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_stt_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """Asserts False (not the True default) so the test fails if the
+        nested gateway.stt value never reaches from_dict() and silently
+        falls back to the class default instead."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  stt:\n    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.stt_enabled is False
+
+    def test_stt_echo_transcripts_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  stt_echo_transcripts: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.stt_echo_transcripts is False
+
+    def test_group_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  group_sessions_per_user: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.group_sessions_per_user is False
+
+    def test_thread_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  thread_sessions_per_user: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.thread_sessions_per_user is True
+
+    def test_reset_triggers_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  reset_triggers:\n    - /new\n    - /clear\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.reset_triggers == ["/new", "/clear"]
+
+    def test_always_log_local_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  always_log_local: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is False
+
+    def test_filter_silence_narration_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  filter_silence_narration: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.filter_silence_narration is False
+
+    def test_unauthorized_dm_behavior_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  unauthorized_dm_behavior: ignore\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.unauthorized_dm_behavior == "ignore"
+
+    def test_top_level_still_wins_over_nested_gateway_section(self, tmp_path, monkeypatch):
+        """Top-level keys keep precedence over the nested gateway.* fallback
+        for every key this fix touches (matches the existing
+        gateway.streaming/write_sessions_json precedence contract)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "always_log_local: true\n"
+            "gateway:\n"
+            "  always_log_local: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is True
+
+    def test_present_empty_top_level_session_reset_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence: a present (even empty) top-level
+        session_reset must NOT be replaced by gateway.session_reset —
+        the fallback fires only when the top-level key is absent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset: {}\n"
+            "gateway:\n"
+            "  session_reset:\n"
+            "    mode: idle\n"
+            "    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested value must not leak through the present top-level key.
+        assert config.default_reset_policy.mode != "idle"
+
+    def test_present_top_level_stt_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for stt: a present top-level stt (even
+        mistyped/non-dict) must not be replaced by gateway.stt."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "stt: {}\n"
+            "gateway:\n"
+            "  stt:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # gateway.stt.enabled=false must NOT win over the present top-level stt.
+        assert config.stt_enabled is True
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
@@ -484,6 +999,18 @@ class TestLoadGatewayConfig:
 
         assert config.max_concurrent_sessions == 2
 
+    def test_scalar_gateway_section_does_not_crash_streaming_fallback(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("gateway: disabled\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.streaming.transport == "auto"
+
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""
         hermes_home = tmp_path / ".hermes"
@@ -520,6 +1047,42 @@ class TestLoadGatewayConfig:
 
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+
+    def test_bridges_discord_bots_require_inline_mention_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.bots_require_inline_mention should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  bots_require_inline_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
+
+    def test_bots_require_inline_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """Explicit env var should win over config.yaml for inline bot mention gating."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  bots_require_inline_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
 
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""
@@ -570,6 +1133,164 @@ class TestLoadGatewayConfig:
             "123456789012345678",
         ]
         assert os.environ.get("DISCORD_ALLOWED_USERS") == "123456789012345678"
+
+    def test_bridges_nested_gateway_platforms_dingtalk_allowed_users_to_env(self, tmp_path, monkeypatch):
+        """gateway.platforms.dingtalk.extra.allowed_users must reach
+        DINGTALK_ALLOWED_USERS — it's the documented config.yaml alternative
+        to the env var (website/docs/user-guide/messaging/dingtalk.md), the
+        adapter reads it from PlatformConfig.extra, but gateway auth
+        (_is_user_authorized) only consults the env var.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      enabled: true\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - user-id-1\n"
+            "          - user-id-2\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DINGTALK].extra["allowed_users"] == [
+            "user-id-1",
+            "user-id-2",
+        ]
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "user-id-1,user-id-2"
+
+    def test_bridges_platforms_dingtalk_extra_allowed_users_to_env(self, tmp_path, monkeypatch):
+        """platforms.dingtalk.extra.allowed_users should reach DINGTALK_ALLOWED_USERS too."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  dingtalk:\n"
+            "    extra:\n"
+            "      allowed_users:\n"
+            "        - manager1234\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DINGTALK].extra["allowed_users"] == [
+            "manager1234",
+        ]
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "manager1234"
+
+    def test_dingtalk_allowed_users_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - config-user\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_ALLOWED_USERS", "env-user")
+
+        load_gateway_config()
+
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "env-user"
+
+    def test_top_level_dingtalk_allowed_users_wins_over_nested_extra(self, tmp_path, monkeypatch):
+        """The legacy top-level dingtalk: block keeps precedence over the
+        nested platform extra when both define an allowlist."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "dingtalk:\n"
+            "  allowed_users:\n"
+            "    - top-level-user\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - nested-user\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DINGTALK_ALLOWED_USERS") == "top-level-user"
+
+    def test_nested_dingtalk_allowlist_authorizes_listed_user_only(self, tmp_path, monkeypatch):
+        """E2E for the documented setup: a nested-only allowlist must
+        authorize the listed user at the gateway and still deny others.
+
+        Before the bridge existed, the listed user passed the adapter's
+        _is_user_allowed() but _is_user_authorized() fell through to
+        default-deny because DINGTALK_ALLOWED_USERS was never populated.
+        """
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    dingtalk:\n"
+            "      enabled: true\n"
+            "      extra:\n"
+            "        allowed_users:\n"
+            "          - user-id-1\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for var in (
+            "DINGTALK_ALLOWED_USERS",
+            "DINGTALK_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        config = load_gateway_config()
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        runner.config = config
+
+        def _dm_source(user_id):
+            return SessionSource(
+                platform=Platform.DINGTALK,
+                chat_id="dm-1",
+                chat_type="dm",
+                user_id=user_id,
+                user_name="someone",
+            )
+
+        assert runner._is_user_authorized(_dm_source("user-id-1")) is True
+        assert runner._is_user_authorized(_dm_source("intruder")) is False
 
     def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -745,6 +1466,31 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.always_log_local is False
+
+    def test_bridges_discord_channel_overrides_from_top_level_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_overrides:\n"
+            '    "1234567890":\n'
+            "      model: openrouter/healer-alpha\n"
+            "      provider: openrouter\n"
+            "      system_prompt: Daily news summarizer\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        discord = config.platforms[Platform.DISCORD]
+        assert "1234567890" in discord.channel_overrides
+        ov = discord.channel_overrides["1234567890"]
+        assert ov.model == "openrouter/healer-alpha"
+        assert ov.provider == "openrouter"
+        assert ov.system_prompt == "Daily news summarizer"
 
     def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -1060,6 +1806,43 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_profile_scoped_env_overrides_do_not_fall_back_to_default_profile_env(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        default_home = tmp_path / "default-home"
+        default_home.mkdir()
+        default_config = default_home / "config.yaml"
+        default_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        secondary_home = tmp_path / "secondary-home"
+        secondary_home.mkdir()
+        secondary_config = secondary_home / "config.yaml"
+        secondary_config.write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "default-token")
+
+        home_token = set_hermes_home_override(str(secondary_home))
+        secret_token = set_secret_scope({"DISCORD_BOT_TOKEN": "worker-token"})
+        try:
+            config = load_gateway_config()
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
+        assert config.multiplex_profiles is True
+        assert config.platforms[Platform.DISCORD].token == "worker-token"
+        assert Platform.API_SERVER not in config.platforms
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already
@@ -1140,3 +1923,186 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestMultiplexProfilesEnvOverride:
+    """GATEWAY_MULTIPLEX_PROFILES env override — the 3-tier precedence chain.
+
+    env (recognized token) > config.yaml (top-level or nested gateway.*) >
+    default False. A blank / unrecognized env value is treated as UNSET and
+    falls through to config (the empty-secret trap: a provisioned-but-empty Fly
+    secret arrives as "" and must not shadow a config.yaml opt-in).
+    """
+
+    def _load(self, tmp_path, monkeypatch, config_text=None):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        if config_text is not None:
+            (hermes_home / "config.yaml").write_text(config_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return load_gateway_config()
+
+    # ── Tier 1: env wins ──────────────────────────────────────────────────
+    def test_env_true_forces_on_with_no_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "true")
+        config = self._load(tmp_path, monkeypatch, config_text=None)
+        assert config.multiplex_profiles is True
+
+    def test_env_true_overrides_config_false(self, tmp_path, monkeypatch):
+        # THE discriminating test: env-set wins over an explicit config value.
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "1")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: false\n"
+        )
+        assert config.multiplex_profiles is True
+
+    def test_env_false_overrides_config_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "off")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is False
+
+    # ── Tier 2: config.yaml when env unset ────────────────────────────────
+    def test_config_true_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    # ── The empty / unrecognized env trap: fall through, don't force off ──
+    def test_empty_env_does_not_shadow_config_true(self, tmp_path, monkeypatch):
+        # Provisioned-but-unpopulated Fly secret arrives as "". It must NOT
+        # turn OFF a config.yaml opt-in.
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    def test_whitespace_env_does_not_shadow_config_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "   ")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    def test_unrecognized_env_falls_through_to_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "maybe")
+        config = self._load(
+            tmp_path, monkeypatch, config_text="multiplex_profiles: true\n"
+        )
+        assert config.multiplex_profiles is True
+
+    # ── Tier 3: default False ─────────────────────────────────────────────
+    def test_default_false_when_neither_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        config = self._load(tmp_path, monkeypatch, config_text=None)
+        assert config.multiplex_profiles is False
+
+    # ── The resolver in isolation ─────────────────────────────────────────
+    def test_resolver_tristate(self, monkeypatch):
+        from gateway.config import _env_multiplex_profiles_override
+
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        assert _env_multiplex_profiles_override() is None
+        for truthy in ("1", "true", "TRUE", "yes", "on"):
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", truthy)
+            assert _env_multiplex_profiles_override() is True, truthy
+        for falsy in ("0", "false", "FALSE", "no", "off"):
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", falsy)
+            assert _env_multiplex_profiles_override() is False, falsy
+        for noise in ("", "   ", "maybe", "2"):
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", noise)
+            assert _env_multiplex_profiles_override() is None, repr(noise)
+
+
+class TestMultiplexProfilesConfig:
+    """Tests for parsing multiplex_profiles (top-level and nested forms)."""
+
+    def test_multiplex_profiles_top_level(self, tmp_path, monkeypatch):
+        """Top-level multiplex_profiles is honored."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
+    def test_multiplex_profiles_nested_under_gateway(self, tmp_path, monkeypatch):
+        """gateway.multiplex_profiles (the form written by `hermes config set
+        gateway.multiplex_profiles true`) must be honored. Regression test for
+        the silent-fallback bug where the loader only forwarded the top-level
+        key, so users who wrote it under gateway: got multiplex_profiles=False
+        with no warning."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True, (
+            "gateway.multiplex_profiles: true was silently ignored — "
+            "loader only forwarded the top-level form"
+        )
+
+    def test_multiplex_profiles_default_false(self, tmp_path, monkeypatch):
+        """Default is False when neither form is present."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is False
+
+    def test_multiplex_profiles_top_level_overrides_nested(self, tmp_path, monkeypatch):
+        """When both forms are present, top-level wins (matches profile_routes
+        and other parity bridges in load_gateway_config)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "multiplex_profiles: true\n"
+            "gateway:\n  multiplex_profiles: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
+    def test_multiplex_profiles_explicit_top_level_false_not_consulting_nested(
+        self, tmp_path, monkeypatch
+    ):
+        """Lock in the `is None` vs `is False` distinction: when top-level is
+        explicitly false, the loader must forward False WITHOUT consulting the
+        nested form (so a stale `gateway.multiplex_profiles: true` cannot
+        silently re-enable multiplexing). Guards against a future regression
+        that flips the check to `not _mp`."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "multiplex_profiles: false\n"
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is False, (
+            "Explicit top-level false was overridden by nested true — "
+            "loader must respect top-level precedence when key is present"
+        )

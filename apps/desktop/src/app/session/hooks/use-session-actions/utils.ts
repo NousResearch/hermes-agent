@@ -1,12 +1,14 @@
 import { getSession } from '@/hermes'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
   $sessions,
+  sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -19,8 +21,12 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
-import { reportBackendContract } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
+
+// Re-exported for the many session-actions/tile call sites that already import
+// it from here; the canonical definition lives in @/store/session.
+export { sessionMatchesStoredId }
+import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -50,7 +56,98 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
   return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
 }
 
-function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+// Compile-time exhaustiveness guards. If a new field is added to ChatMessage
+// or a new part type appears in the ChatMessagePart union (e.g. @assistant-ui
+// ships one), these fail tsc until someone explicitly classifies it.
+//
+// COMPARED: fields whose change must trigger a re-render (setMessages).
+// IGNORED:  fields that are intentionally not compared — display-only metadata
+//           or reference identity the runtime already guarantees.
+//   timestamp  — presentation-only (sort/age display), never affects transcript equality
+//   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
+//
+// If your new field affects what the user sees in the transcript, add it to
+// COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
+// IGNORED.
+const _chatMessageFieldsExhaustive: {
+  [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
+} = {}
+
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
+const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
+
+// Compile-time check: every ChatMessagePart discriminant must be handled by
+// chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
+//   text, reasoning      → compared by .text
+//   tool-call             → compared by toolCallId/toolName + result presence
+//   source, image, file, data, generative-ui, audio, data-* → shallow primitive compare
+const _chatMessagePartTypesExhaustive: {
+  [T in Exclude<ChatMessage['parts'][number]['type'], (typeof HANDLED_PART_TYPES)[number]>]: never
+} = {}
+
+const HANDLED_PART_TYPES = [
+  'text',
+  'reasoning',
+  'tool-call',
+  'source',
+  'image',
+  'file',
+  'data',
+  'generative-ui',
+  'audio'
+] as const
+
+// Structural compare WITHOUT JSON.stringify — the only consumer asks "did
+// the transcript change, should I call setMessages?", so a slightly
+// conservative compare (occasionally false-negative → one extra idempotent
+// setMessages) is safe, but a false-POSITIVE (claiming equal when different)
+// would skip a needed update.
+export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: ChatMessage['parts'][number]): boolean {
+  // Reference equality fast-path
+  if (aPart === bPart) {
+    return true
+  }
+
+  if (aPart.type !== bPart.type) {
+    return false
+  }
+
+  if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    return (aPart as { text: string }).text === (bPart as { text: string }).text
+  }
+
+  if (aPart.type === 'tool-call') {
+    const aCall = aPart as { toolCallId?: string; toolName?: string; result?: unknown }
+    const bCall = bPart as { toolCallId?: string; toolName?: string; result?: unknown }
+
+    if (aCall.toolCallId !== bCall.toolCallId || aCall.toolName !== bCall.toolName) {
+      return false
+    }
+
+    // Compare whether result is present (undefined on both or defined on both)
+    const aHasResult = aCall.result !== undefined
+    const bHasResult = bCall.result !== undefined
+
+    return aHasResult === bHasResult
+  }
+
+  // For all other handled part types (source, image, file, data, generative-ui,
+  // audio, data-*), fall back to shallow primitive-key comparison — conservative:
+  // if we're not sure, claim not-equal (one extra setMessages is harmless, but
+  // skipping an update would break the UI).
+  const aPrimitive = aPart as Record<string, unknown>
+  const bPrimitive = bPart as Record<string, unknown>
+  const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
+  const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
+
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
+}
+
+export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
     a.role !== b.role ||
@@ -66,10 +163,15 @@ function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
     return false
   }
 
-  return a.parts.every((part, index) => JSON.stringify(part) === JSON.stringify(b.parts[index]))
+  return a.parts.every((part, index) => chatPartsEquivalent(part, b.parts[index]))
 }
 
 export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
+  // Array-level identity fast-path (same reference)
+  if (a === b) {
+    return true
+  }
+
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
@@ -120,6 +222,124 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     return withAppendedText(preserved, previousImages.map(url => `\n${url}`).join(''))
   })
+}
+
+/**
+ * Keep the local tail of a turn while a reconnect hydrates an older server
+ * projection. The user's optimistic row exists before prompt.submit persists
+ * it, and the pending assistant row exists before message.complete commits it;
+ * dropping either makes an accepted turn appear to vanish during transport
+ * churn.
+ *
+ * Authoritative rows use different ids, so match by role ordinal. A matching
+ * user row is considered committed only when its visible text also matches;
+ * any authoritative assistant at the same ordinal supersedes the local stream.
+ */
+export function preserveLocalPendingTurnMessages(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[]
+): ChatMessage[] {
+  if (!previousMessages.length) {
+    return nextMessages
+  }
+
+  const nextByRoleOrdinal = new Map<string, ChatMessage>()
+  const nextRoleCounts = new Map<ChatMessage['role'], number>()
+
+  for (const message of nextMessages) {
+    const ordinal = nextRoleCounts.get(message.role) ?? 0
+    nextRoleCounts.set(message.role, ordinal + 1)
+    nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+  }
+
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const previousRoleCounts = new Map<ChatMessage['role'], number>()
+  const preserved: ChatMessage[] = []
+
+  for (const message of previousMessages) {
+    const ordinal = previousRoleCounts.get(message.role) ?? 0
+    previousRoleCounts.set(message.role, ordinal + 1)
+
+    const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
+
+    const isPendingAssistant =
+      message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+
+    if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+      continue
+    }
+
+    const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+
+    if (authoritative) {
+      if (isPendingAssistant) {
+        continue
+      }
+
+      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
+        continue
+      }
+    }
+
+    preserved.push(message)
+  }
+
+  return preserved.length ? [...nextMessages, ...preserved] : nextMessages
+}
+
+/**
+ * Append the backend-only tail of a live turn to a stored transcript.
+ *
+ * Session history is committed only when a turn finishes. During a reconnect,
+ * `inflight` is therefore the authority for the currently running user/assistant
+ * pair, while `queued` is an accepted next-turn prompt waiting in gateway
+ * memory. Stable ids let repeated activate/resume hydration reconcile instead
+ * of growing duplicate rows.
+ */
+export function appendLiveSessionProjection(
+  messages: ChatMessage[],
+  projection: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] {
+  const inflightUser = projection.inflight?.user?.trim() ?? ''
+  const inflightAssistant = projection.inflight?.assistant ?? ''
+  const inflightStreaming = Boolean(projection.inflight?.streaming)
+  const queuedUser = projection.queued?.user?.trim() ?? ''
+
+  if (!inflightUser && !inflightAssistant && !inflightStreaming && !queuedUser) {
+    return messages
+  }
+
+  const sessionId = projection.session_id || 'session'
+  const projected: ChatMessage[] = []
+
+  if (inflightUser) {
+    projected.push({
+      id: `user-inflight-${sessionId}`,
+      role: 'user',
+      parts: [textPart(inflightUser)]
+    })
+  }
+
+  // Keep a pending assistant boundary even before the first delta when a
+  // queued user turn follows it. This preserves the two distinct turns.
+  if (inflightAssistant || inflightStreaming || (inflightUser && queuedUser)) {
+    projected.push({
+      id: `assistant-stream-${sessionId}`,
+      role: 'assistant',
+      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+      pending: inflightStreaming
+    })
+  }
+
+  if (queuedUser) {
+    projected.push({
+      id: `user-queued-${sessionId}`,
+      role: 'user',
+      parts: [textPart(queuedUser)]
+    })
+  }
+
+  return projected.length ? [...messages, ...projected] : messages
 }
 
 export interface BranchMessage {
@@ -180,10 +400,6 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
   }
 
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
-}
-
-export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
 }
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
@@ -266,9 +482,15 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
 
   reportBackendContract(info.desktop_contract)
 
+  if (info.approval_mode !== undefined) {
+    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
+  }
+
   if (info.credential_warning) {
     requestDesktopOnboarding(info.credential_warning)
   }
+
+  reportInstallMethodWarning(info.install_warning)
 
   if (typeof info.model === 'string') {
     setCurrentModel(info.model)

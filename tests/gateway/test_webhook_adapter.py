@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import socket
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -69,7 +70,8 @@ def _make_adapter(routes=None, **kwargs):
 
 def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter (without starting a full server)."""
-    app = web.Application()
+    # Mirror connect(): client_max_size enforces the cap on chunked bodies.
+    app = web.Application(client_max_size=adapter._max_body_bytes)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
@@ -100,6 +102,12 @@ def _github_signature(body: bytes, secret: str) -> str:
 def _generic_signature(body: bytes, secret: str) -> str:
     """Compute X-Webhook-Signature (plain HMAC-SHA256 hex) for *body*."""
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def _generic_v2_signature(body: bytes, secret: str, timestamp: str) -> str:
+    """Compute X-Webhook-Signature-V2 (HMAC-SHA256 of "<timestamp>.<body>")."""
+    signed_content = timestamp.encode() + b"." + body
+    return hmac.new(secret.encode(), signed_content, hashlib.sha256).hexdigest()
 
 
 def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> str:
@@ -158,6 +166,52 @@ class TestValidateSignature:
         req = _mock_request(headers={})  # no sig headers at all
         assert adapter._validate_signature(req, b"{}", "my-secret") is False
 
+    def test_non_ascii_signature_headers_reject_without_raising(self):
+        """The signature headers are attacker-controlled on a public, unauth
+        endpoint. A non-ASCII byte in one must be rejected (False), not crash
+        the handler: hmac.compare_digest raises TypeError on a non-ASCII str."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        hostile = "ské-not-a-valid-signature"
+        for header in (
+            "X-Hub-Signature-256",
+            "X-Gitlab-Token",
+            "X-Webhook-Signature",
+        ):
+            req = _mock_request(headers={header: hostile})
+            # Must return False, never raise.
+            assert adapter._validate_signature(req, body, secret) is False
+
+    def test_non_ascii_generic_v2_signature_rejected(self):
+        """V2 branch (timestamp-bound) also rejects a non-ASCII signature."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "ské-bad",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_non_ascii_svix_signature_rejected(self):
+        """The Svix branch also runs its `v1,<sig>` comparison through the
+        hardened helper: a valid svix-id + fresh timestamp reaches the compare,
+        and a non-ASCII signature must reject rather than raise."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "svix-id": "msg_2xabc",
+            "svix-timestamp": str(int(time.time())),  # inside the replay window
+            "svix-signature": "v1,ské-not-a-valid-base64-sig",
+        })
+        assert adapter._validate_signature(req, b'{"x":1}', "shh-secret") is False
+
+    def test_non_ascii_secret_still_validates_a_matching_token(self):
+        """A non-ASCII configured secret must still match its exact GitLab
+        token value byte for byte (bytes comparison keeps this working)."""
+        adapter = _make_adapter()
+        secret = "gl-tökén-välue"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret) is True
+
     def test_validate_no_secret_allows_all(self):
         """When the secret is empty/falsy, the validator is never even called
         by the handler (secret check is 'if secret and secret != _INSECURE...').
@@ -183,6 +237,139 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_signature_valid(self):
+        """Valid X-Webhook-Signature-V2 (timestamp-bound) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": sig,
+            "X-Webhook-Timestamp": timestamp,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_old_timestamp_rejects(self):
+        """A V2 signature outside the replay window is rejected even though
+        the HMAC itself would otherwise be valid for that (stale) timestamp
+        — this is the actual replay-protection guarantee: an attacker who
+        captured (body, signature, timestamp) once cannot resubmit it after
+        the window closes."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()) - 301)
+        sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": sig,
+            "X-Webhook-Timestamp": timestamp,
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v2_wrong_timestamp_rejects(self):
+        """The timestamp is cryptographically bound into the V2 signature —
+        this is the actual fix for the V1 replay hole. An attacker who only
+        has a captured (body, signature) pair for V1 (no timestamp binding)
+        cannot forge a valid V2 signature for a fresh timestamp without the
+        secret, unlike V1 where the signature covers the body alone and a
+        forged/fresh timestamp would otherwise sail through unverified."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        real_timestamp = str(int(time.time()))
+        sig = _generic_v2_signature(body, secret, real_timestamp)
+        forged_timestamp = str(int(time.time()) + 1)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": sig,
+            "X-Webhook-Timestamp": forged_timestamp,
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v2_malformed_timestamp_rejects(self):
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "deadbeef",
+            "X-Webhook-Timestamp": "not-a-number",
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v1_still_works_without_timestamp(self):
+        """Legacy V1 (body-only) senders that never send X-Webhook-Timestamp
+        must keep working — this is the backward-compatibility guarantee for
+        existing integrations that predate the V2 scheme."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        sig = _generic_signature(body, secret)
+        req = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_preferred_when_both_sent(self):
+        """If a sender sends both V1 and V2 headers (mid-migration), V2 must
+        win — a stale/wrong V1 must not be able to override a valid V2."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        v2_sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": v2_sig,
+            "X-Webhook-Timestamp": timestamp,
+            # Deliberately wrong V1 — must be ignored since V2 is checked first.
+            "X-Webhook-Signature": "0" * 64,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_generic_v2_stripped_timestamp_does_not_downgrade_to_v1(self):
+        """Regression test for a downgrade attack found in review: a sender
+        migrating to V2 typically sends BOTH the V1 and V2 signatures
+        together (for compatibility while both ends update). If an
+        attacker captures one such mixed request and replays it with the
+        X-Webhook-Timestamp header stripped, the presence of
+        X-Webhook-Signature-V2 must still commit to V2 validation and
+        reject — it must NOT silently fall through to validating the
+        still-present, still-unprotected V1 signature instead. Falling
+        through would let an attacker downgrade a V2-protected request
+        back into the exact replay hole V2 exists to close, just by
+        deleting one header from a captured request."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        v2_sig = _generic_v2_signature(body, secret, timestamp)
+        v1_sig = _generic_signature(body, secret)
+        # Simulates a captured mixed V1+V2 request replayed with the
+        # timestamp header stripped — V1 signature is still valid on its
+        # own, but must not be reachable via this path.
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": v2_sig,
+            "X-Webhook-Signature": v1_sig,
+            # X-Webhook-Timestamp deliberately omitted.
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_v1_replay_attack_succeeds_demonstrating_the_hole_v2_closes(self):
+        """Regression/documentation test: a captured (body, signature) V1
+        pair replays successfully no matter how much time has passed,
+        because the V1 signature has no timestamp binding at all. This is
+        the exact vulnerability V2 fixes — it is not asserting desired
+        behavior, it is pinning the known, accepted-with-warning legacy
+        gap so a future change to V1's semantics doesn't silently alter it
+        without a deliberate decision."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        sig = _generic_signature(body, secret)
+        original_request = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(original_request, body, secret) is True
+        # "Time passes" — nothing about a V1 signature depends on time, so
+        # a captured pair replayed much later still validates.
+        replayed_request = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(replayed_request, body, secret) is True
 
     def test_validate_svix_signature_valid(self):
         """Valid Svix/AgentMail v1 signature headers are accepted."""
@@ -469,6 +656,285 @@ class TestEventFilter:
 
 
 # ===================================================================
+# Payload filters
+# ===================================================================
+
+
+class TestPayloadFilters:
+    """Tests for route-level payload filters in _handle_webhook."""
+
+    @pytest.mark.asyncio
+    async def test_filter_rejects_before_agent_dispatch(self):
+        """A non-matching filter returns ignored and never starts the agent."""
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "filters": [{"field": "payload.label", "equals": "urgent"}],
+                "prompt": "Task: {payload.content}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"payload": {"label": "later", "content": "Buy milk"}},
+                headers={"X-GitHub-Delivery": "filter-skip-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "reason": "filter",
+                "route": "todoist",
+            }
+
+        adapter.handle_message.assert_not_called()
+        assert "filter-skip-1" not in adapter._seen_deliveries
+
+    @pytest.mark.asyncio
+    async def test_filter_accepts_nested_any_and_in_file(self, tmp_path, monkeypatch):
+        """Nested any groups can match dynamic watchlists under HERMES_HOME."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        watchlist = tmp_path / "data" / "watchlist.json"
+        watchlist.parent.mkdir()
+        watchlist.write_text(json.dumps(["chat-1", "chat-2"]), encoding="utf-8")
+        routes = {
+            "waha": {
+                "secret": _INSECURE_NO_AUTH,
+                "filters": [
+                    {"field": "payload.fromMe", "equals": False},
+                    {
+                        "any": [
+                            {
+                                "field": "payload.chatId",
+                                "in_file": "~/.hermes/data/watchlist.json",
+                            },
+                            {
+                                "field": "payload.id.remote",
+                                "in_file": "~/.hermes/data/watchlist.json",
+                            },
+                        ]
+                    },
+                ],
+                "prompt": "Message from {payload.chatId}: {payload.body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/waha",
+                json={
+                    "payload": {
+                        "fromMe": False,
+                        "chatId": "chat-2",
+                        "body": "hello",
+                    }
+                },
+                headers={"X-GitHub-Delivery": "filter-match-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured) == 1
+        assert captured[0].text == "Message from chat-2: hello"
+
+    @pytest.mark.asyncio
+    async def test_filter_applies_to_deliver_only_before_delivery(self):
+        """Filtered direct-delivery routes skip target delivery too."""
+        routes = {
+            "alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "123"},
+                "filters": [{"field": "severity", "in": ["critical"]}],
+                "prompt": "Alert: {message}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform.TELEGRAM: mock_target}
+        adapter.gateway_runner = mock_runner
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/alerts",
+                json={"severity": "info", "message": "noise"},
+                headers={"X-GitHub-Delivery": "filter-direct-1"},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["reason"] == "filter"
+
+        mock_target.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_script_transforms_payload_before_prompt_rendering(self, tmp_path, monkeypatch):
+        """A script can replace the payload used by prompt templates."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        script = scripts / "todoist_filter.py"
+        script.write_text(
+            "import json, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            "payload['body'] = payload['task']['content'].upper()\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "todoist_filter.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"task": {"content": "pay bills"}},
+                headers={"X-GitHub-Delivery": "script-transform-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert captured[0].text == "Task: PAY BILLS"
+        assert captured[0].raw_message["body"] == "PAY BILLS"
+
+    @pytest.mark.asyncio
+    async def test_script_tilde_hermes_path_resolves_to_active_profile_home(self, tmp_path, monkeypatch):
+        """~/.hermes/scripts paths must resolve through HERMES_HOME for profiles."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "todoist_filter.py").write_text(
+            "import json, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            "payload['body'] = 'profile-safe'\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "~/.hermes/scripts/todoist_filter.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"task": {"content": "pay bills"}},
+                headers={"X-GitHub-Delivery": "script-profile-path-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert captured[0].text == "Task: profile-safe"
+
+    @pytest.mark.asyncio
+    async def test_script_silent_stdout_ignores_without_idempotency_hit(self, tmp_path, monkeypatch):
+        """Empty or [SILENT] script stdout filters the webhook out."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "skip.py").write_text("print('[SILENT]')\n", encoding="utf-8")
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "skip.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"body": "ignore me"},
+                headers={"X-GitHub-Delivery": "script-silent-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "reason": "script",
+                "route": "todoist",
+            }
+
+        adapter.handle_message.assert_not_called()
+        assert "script-silent-1" not in adapter._seen_deliveries
+
+    @pytest.mark.asyncio
+    async def test_script_nonzero_exit_ignores_webhook(self, tmp_path, monkeypatch):
+        """A script can fail closed by exiting nonzero."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "skip.py").write_text(
+            "import sys\nsys.exit(2)\n",
+            encoding="utf-8",
+        )
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "skip.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"body": "ignore me"},
+                headers={"X-GitHub-Delivery": "script-nonzero-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["reason"] == "script"
+
+        adapter.handle_message.assert_not_called()
+        assert "script-nonzero-1" not in adapter._seen_deliveries
+
+
+# ===================================================================
 # HTTP handling
 # ===================================================================
 
@@ -741,6 +1207,29 @@ class TestBodySize:
             )
             assert resp.status == 413
 
+    @pytest.mark.asyncio
+    async def test_chunked_oversized_payload_rejected(self):
+        """Chunked request bodies (no Content-Length) over the limit return 413."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=100)
+        adapter.handle_message = AsyncMock()
+
+        async def _chunked_body():
+            payload = json.dumps({"data": "x" * 500}).encode("utf-8")
+            for i in range(0, len(payload), 64):
+                yield payload[i : i + 64]
+                await asyncio.sleep(0)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/big",
+                data=_chunked_body(),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 413
+            adapter.handle_message.assert_not_awaited()
+
 
 # ===================================================================
 # INSECURE_NO_AUTH
@@ -829,7 +1318,6 @@ class TestDeliveryCleanup:
         adapter._delivery_info[chat_id] = {
             "deliver": "log",
             "deliver_extra": {},
-            "payload": {"x": 1},
         }
         adapter._delivery_info_created[chat_id] = time.time()
 
@@ -1085,3 +1573,117 @@ class TestInsecureNoAuthSafetyRail:
         finally:
             await adapter.disconnect()
 
+
+class TestDualStackBind:
+    """The default bind host must serve BOTH IPv4 and IPv6.
+
+    Regression guard for the hosted-agent webhook reachability bug: Fly.io 6PN
+    (the private network the edge router reverse-proxies webhook traffic over)
+    is IPv6-only — an agent's ``<app>.internal`` name resolves to an ``fdaa:…``
+    address. The adapter used to default to ``host="0.0.0.0"`` (IPv4 only), so
+    the router's dial to ``<app>.internal:8644`` hit an address nothing was
+    listening on → connection refused → public webhooks unreachable.
+
+    The fix is ``DEFAULT_HOST = None`` (dual-stack). ``"::"`` is NOT a valid
+    substitute: on hosts with the ``bindv6only`` sysctl set (verified on Fly
+    machines) it yields an IPv6-ONLY socket, which would then break the IPv4
+    loopback health check and the AF_INET port-conflict probe.
+    """
+
+    def test_default_host_is_none_for_dual_stack(self):
+        """The module default is None (bind all families), not 0.0.0.0/::."""
+        from gateway.platforms.webhook import DEFAULT_HOST
+        assert DEFAULT_HOST is None
+
+    def test_missing_host_key_resolves_to_none(self):
+        """Config with no host key → dual-stack (None), not a literal string."""
+        cfg = PlatformConfig(enabled=True, extra={"port": 0, "routes": {}})
+        adapter = WebhookAdapter(cfg)
+        assert adapter._host is None
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_empty_host_normalises_to_none(self, empty):
+        """An explicit empty-string/null host means dual-stack, not host=''.
+
+        Guards the old footgun where host='' was passed straight to TCPSite
+        AND treated as non-loopback — now it collapses to the None default.
+        """
+        adapter = _make_adapter(host=empty, port=0)
+        assert adapter._host is None
+
+    def test_pinned_host_is_preserved(self):
+        """A user can still pin a specific bind host via config.extra.host."""
+        adapter = _make_adapter(host="127.0.0.1", port=0)
+        assert adapter._host == "127.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_default_bind_serves_both_families(self):
+        """Binding the real server with the default host opens v4 AND v6 sockets.
+
+        This is the behavioural proof: with host=None, asyncio.create_server
+        opens a listening socket per resolved family, so both 127.0.0.1 (v4)
+        and ::1 (v6) are reachable — exactly what 6PN needs. Uses a real bind
+        on an OS-assigned port (no mock) and inspects the runner's addresses.
+        """
+        # Build config WITHOUT a host key so the real DEFAULT_HOST (None)
+        # applies — _make_adapter's helper injects host="0.0.0.0" by default,
+        # which would mask the dual-stack default under test here.
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": 0,
+                "routes": {"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        assert adapter._host is None
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+            # runner.addresses lists one bound address per listening socket.
+            # An IPv6 sockaddr is a 4-tuple (host, port, flowinfo, scopeid);
+            # an IPv4 sockaddr is a 2-tuple (host, port). With the dual-stack
+            # default we expect BOTH — that is precisely what makes the adapter
+            # reachable over 6PN (v6) AND on the loopback health check (v4).
+            addrs = list(adapter._runner.addresses)  # type: ignore[union-attr]
+            has_v6 = any(len(a) == 4 for a in addrs)
+            has_v4 = any(len(a) == 2 for a in addrs)
+            assert has_v4, f"IPv4 bind missing — got {addrs}"
+            assert has_v6, (
+                f"IPv6 bind missing (the 6PN reachability bug) — got {addrs}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_default_bind_rejects_existing_ipv6_listener(self):
+        """A specific IPv6 listener must block the wildcard dual-stack bind."""
+        blocker = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host="::1",
+            port=0,
+            family=socket.AF_INET6,
+            reuse_address=False,
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": port,
+                "routes": {
+                    "r1": {"secret": "real-secret-abc123", "prompt": "x"}
+                },
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()

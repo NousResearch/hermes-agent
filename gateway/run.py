@@ -19002,6 +19002,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
+        # Telegram group_topics: per-topic enabled_toolsets narrows the
+        # platform set so each forum topic gets only its declared tools.
+        if platform_key == "telegram" and source.thread_id and source.chat_id:
+            try:
+                telegram_cfg = user_config.get("telegram") or {}
+                if not isinstance(telegram_cfg, dict):
+                    telegram_cfg = {}
+                for chat_entry in (telegram_cfg.get("group_topics") or []):
+                    if str(chat_entry.get("chat_id", "")) == str(source.chat_id):
+                        for topic in (chat_entry.get("topics") or []):
+                            if str(topic.get("thread_id", "")) == str(source.thread_id):
+                                topic_ts = topic.get("enabled_toolsets")
+                                if isinstance(topic_ts, list) and topic_ts:
+                                    allowed = set(str(t) for t in topic_ts)
+                                    enabled_toolsets = sorted(
+                                        t for t in enabled_toolsets if t in allowed
+                                    )
+                                break
+                        break
+            except Exception:
+                pass
+
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

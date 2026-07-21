@@ -43,6 +43,22 @@ def test_live_catalog_drops_capability_typed_and_name_shaped_generation_models()
         ]
 
 
+def test_live_catalog_drops_shutdown_rows():
+    """The picker fetch chain shares note_catalog_item, so Shutdown never reaches the list."""
+    profile = ProviderProfile(
+        name="ark-style",
+        base_url="https://ark.example.test/v1",
+    )
+    items = [
+        {"id": "doubao-pro", "status": "Active"},
+        {"id": "old-model", "status": "Shutdown"},
+        {"id": "kept-no-status"},
+    ]
+
+    with patch("hermes_cli.urllib_security.open_credentialed_url", return_value=_models_response(items)):
+        assert profile.fetch_models(api_key="key") == ["doubao-pro", "kept-no-status"]
+
+
 def test_shared_chat_catalog_drops_cached_generation_ids():
     """A warm picker cache is the list model.options serves. Generation ids must not survive it."""
     from hermes_cli.models import cached_provider_model_ids

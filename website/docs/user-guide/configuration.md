@@ -1424,6 +1424,29 @@ tool_loop_guardrails:
 
 `hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
 
+### Subagent / Autonomous Sessions
+
+For `delegate_task` subagents or cron jobs running without user interaction, enable hard stops
+and tighten thresholds to prevent budget waste from stuck loops:
+
+```yaml
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  hard_stop_after:
+    exact_failure: 3        # block after 3 identical failures (default: 5)
+    same_tool_failure: 5    # halt after 5 failures on same tool (default: 8)
+    idempotent_no_progress: 3  # block after 3 no-progress reads (default: 5)
+```
+
+This blocks repeated failing calls faster than the default, preserving the subagent's iteration budget for productive work. Combine with `delegation.max_iterations` to give subagents more headroom on complex tasks:
+
+```yaml
+delegation:
+  max_iterations: 80  # default is 50; bump for complex tasks
+```
+
+For **cross-turn non-convergence** (different tool calls each turn, no output), see `delegation.progress_tracker` in the [Delegation](#subagent-delegation) section.
+
 ## TTS Configuration
 
 ```yaml

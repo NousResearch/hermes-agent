@@ -44,6 +44,22 @@ def hooks_command(args) -> None:
         print(f"Unknown hooks subcommand: {sub}")
 
 
+def _print_hooks_config_warnings(cfg) -> None:
+    """Print ``hooks:`` block warnings (typos, gateway-event confusion).
+
+    Shared between ``hermes hooks list`` and ``hermes hooks doctor``.
+    Silent when the block is empty or fully valid.  Issue #31480.
+    """
+    from agent import shell_hooks
+
+    warnings = shell_hooks.validate_hooks_config(cfg)
+    if not warnings:
+        return
+    for msg in warnings:
+        print(f"⚠ {msg}")
+    print()
+
+
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
@@ -52,7 +68,20 @@ def _cmd_list(_args) -> None:
     from hermes_cli.config import load_config
     from agent import shell_hooks
 
-    specs = shell_hooks.iter_configured_hooks(load_config())
+    cfg = load_config()
+    # Surface ``hooks:`` block typos / gateway-event confusion BEFORE the
+    # specs check below — otherwise a config that contains only
+    # gateway-style event names (``agent:end``, ``session:end``, …)
+    # silently produces "No shell hooks configured" with no hint that
+    # the entries were dropped during parsing.  Logger.warning fires
+    # too, but the CLI's logger isn't configured to route WARNING to
+    # stderr at every entry point, so the user routinely never sees
+    # it.  Surfacing here makes the failure mode self-evident at the
+    # ``hermes hooks list`` call site the issue reproduces against.
+    # Issue #31480.
+    _print_hooks_config_warnings(cfg)
+
+    specs = shell_hooks.iter_configured_hooks(cfg)
 
     if not specs:
         print("No shell hooks configured in ~/.hermes/config.yaml.")
@@ -303,7 +332,9 @@ def _cmd_doctor(_args) -> None:
     from hermes_cli.config import load_config
     from agent import shell_hooks
 
-    specs = shell_hooks.iter_configured_hooks(load_config())
+    cfg = load_config()
+    _print_hooks_config_warnings(cfg)
+    specs = shell_hooks.iter_configured_hooks(cfg)
 
     if not specs:
         print("No shell hooks configured — nothing to check.")

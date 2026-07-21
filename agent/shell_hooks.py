@@ -302,6 +302,113 @@ def reset_for_tests() -> None:
 # Config parsing
 # ---------------------------------------------------------------------------
 
+_GATEWAY_EVENT_HINTS: Dict[str, str] = {
+    # Gateway-only events are documented on the same page as shell hooks
+    # (website/docs/user-guide/features/hooks.md) and ship with HOOK.yaml /
+    # handler.py under ~/.hermes/hooks/, NOT inside config.yaml's ``hooks:``
+    # block.  Users routinely copy a gateway event name (the colon-suffixed
+    # ``agent:end`` etc.) into ``hooks:`` and silently get nothing.  Map
+    # each gateway event to the closest shell-hook event so the warning
+    # carries a precise "did you mean?" rather than the difflib fallback,
+    # which scores ``agent:end`` below the 0.6 fuzzy-match cutoff and so
+    # collapses to the generic "valid: ..." dump.  Issue #31480.
+    "agent:start": "pre_llm_call",
+    "agent:step": "post_llm_call",
+    "agent:end": "post_llm_call",
+    "session:start": "on_session_start",
+    "session:end": "on_session_end",
+    "session:reset": "on_session_reset",
+    # ``gateway:startup`` and ``command:*`` have no shell-hook analogue —
+    # they fire purely at the gateway runtime layer.  Mapping them to
+    # an empty string lets the warning say "no shell-hook analogue".
+    "gateway:startup": "",
+}
+
+
+def _suggest_for_unknown_event(event_name: Any) -> Optional[str]:
+    """Best matching shell-hook event for an invalid ``event_name``.
+
+    Returns ``None`` when no useful suggestion exists — either because
+    the input is unrecognisable or because the gateway event has no
+    shell-hook analogue (e.g. ``gateway:startup``).
+    """
+    from hermes_cli.plugins import VALID_HOOKS
+
+    if isinstance(event_name, str) and event_name in _GATEWAY_EVENT_HINTS:
+        mapped = _GATEWAY_EVENT_HINTS[event_name]
+        return mapped or None
+
+    matches = difflib.get_close_matches(
+        str(event_name), VALID_HOOKS, n=1, cutoff=0.6,
+    )
+    return matches[0] if matches else None
+
+
+def validate_hooks_config(cfg: Optional[Dict[str, Any]]) -> List[str]:
+    """Return user-facing warning strings for the ``hooks:`` block.
+
+    Same checks as :func:`_parse_hooks_block` (unknown event keys,
+    non-list event values, gateway-event confusion) but flattened
+    into plain strings so the CLI can surface them to the operator
+    in addition to / in place of the ``logger.warning`` channel —
+    which the user reports never reaches the terminal during
+    ``hermes hooks list``.  Issue #31480.
+
+    Returns an empty list when the block is empty or fully valid.
+    Never raises: a broken ``hooks:`` block must not crash the CLI.
+    """
+    from hermes_cli.plugins import VALID_HOOKS
+
+    warnings: List[str] = []
+    if not isinstance(cfg, dict):
+        return warnings
+    hooks_cfg = cfg.get("hooks")
+    if not isinstance(hooks_cfg, dict):
+        return warnings
+
+    for event_name, entries in hooks_cfg.items():
+        if event_name not in VALID_HOOKS:
+            suggestion = _suggest_for_unknown_event(event_name)
+            is_gateway = (
+                isinstance(event_name, str)
+                and event_name in _GATEWAY_EVENT_HINTS
+            )
+            header = (
+                f"'{event_name}' is not a valid shell hook event "
+                f"and will be ignored."
+            )
+            if is_gateway:
+                gateway_note = (
+                    "  Gateway events ('agent:start', 'agent:end', "
+                    "'agent:step', 'session:*', 'gateway:startup', "
+                    "'command:*') only fire from gateway hooks under "
+                    "~/.hermes/hooks/<name>/HOOK.yaml — they cannot "
+                    "appear in config.yaml's `hooks:` block."
+                )
+                if suggestion:
+                    body = (
+                        f"  Did you mean '{suggestion}'?\n{gateway_note}"
+                    )
+                else:
+                    body = gateway_note
+            elif suggestion:
+                body = f"  Did you mean '{suggestion}'?"
+            else:
+                body = (
+                    f"  Valid shell hook events: "
+                    f"{', '.join(sorted(VALID_HOOKS))}"
+                )
+            warnings.append(f"{header}\n{body}")
+            continue
+        if entries is not None and not isinstance(entries, list):
+            warnings.append(
+                f"hooks.{event_name} must be a list of hook definitions; "
+                f"got {type(entries).__name__}"
+            )
+
+    return warnings
+
+
 def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     """Normalise the ``hooks:`` dict into a flat list of ``ShellHookSpec``.
 
@@ -322,13 +429,29 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
         if event_name in ("output_spill",):
             continue
         if event_name not in VALID_HOOKS:
-            suggestion = difflib.get_close_matches(
-                str(event_name), VALID_HOOKS, n=1, cutoff=0.6,
+            suggestion = _suggest_for_unknown_event(event_name)
+            is_gateway = (
+                isinstance(event_name, str)
+                and event_name in _GATEWAY_EVENT_HINTS
             )
-            if suggestion:
+            if is_gateway and suggestion:
+                logger.warning(
+                    "unknown hook event %r in hooks: config — that name "
+                    "fires from gateway hooks (~/.hermes/hooks/...), not "
+                    "config.yaml; did you mean %r?",
+                    event_name, suggestion,
+                )
+            elif is_gateway:
+                logger.warning(
+                    "unknown hook event %r in hooks: config — gateway "
+                    "events can only fire from ~/.hermes/hooks/<name>/, "
+                    "not from config.yaml's `hooks:` block.",
+                    event_name,
+                )
+            elif suggestion:
                 logger.warning(
                     "unknown hook event %r in hooks: config — did you mean %r?",
-                    event_name, suggestion[0],
+                    event_name, suggestion,
                 )
             else:
                 logger.warning(

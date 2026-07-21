@@ -1322,6 +1322,10 @@ hooks_auto_accept: false         # See "Consent model" below
 
 Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning.
 
+:::warning Gateway events vs shell hook events
+The gateway-event names listed above (`gateway:startup`, `agent:start`, `agent:end`, `agent:step`, `session:*`, `command:*`) only fire from gateway hooks under `~/.hermes/hooks/<name>/HOOK.yaml` — they cannot appear inside `config.yaml`'s `hooks:` block. If you put `agent:end` (or any other colon-suffixed gateway event) in `config.yaml`, the entry is parsed but every event is dropped during registration. `hermes hooks list` and `hermes hooks doctor` print a `⚠` warning at the top of their output that flags the misuse and suggests the closest shell-hook analogue (e.g. `agent:end` → `post_llm_call`, `session:end` → `on_session_end`).
+:::
+
 ### JSON wire protocol
 
 Each time the event fires, Hermes spawns a subprocess for every matching hook (matcher permitting), pipes a JSON payload to **stdin**, and reads **stdout** back as JSON.

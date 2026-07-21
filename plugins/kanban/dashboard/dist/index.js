@@ -1079,7 +1079,13 @@
           laneByProfile, setLaneByProfile,
           search, setSearch,
           onNudgeDispatch: function () {
-            SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
+            const ids = Array.from(selectedIds);
+            const options = { method: "POST" };
+            if (ids.length > 0) {
+              options.headers = { "Content-Type": "application/json" };
+              options.body = JSON.stringify({ taskIds: ids });
+            }
+            SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), options)
               .then(loadBoard)
               .catch(function (e) { setError(String(e.message || e)); });
           },

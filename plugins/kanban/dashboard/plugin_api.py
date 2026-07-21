@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import asdict
@@ -1950,23 +1951,59 @@ def get_task_log(
 # Dispatch nudge (optional quick-path so the UI doesn't wait 60 s)
 # ---------------------------------------------------------------------------
 
+class DispatchBody(BaseModel):
+    # Accept both JS-style and Python-style keys so dashboard bundles,
+    # curl probes, and future CLI adapters can share the endpoint.
+    taskIds: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+
+def _parse_task_ids(raw: Optional[str]) -> list[str]:
+    if not raw or not isinstance(raw, str):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in re.split(r"[\s,]+", raw):
+        tid = item.strip()
+        if tid and tid not in seen:
+            seen.add(tid)
+            out.append(tid)
+    return out
+
 @router.post("/dispatch")
 def dispatch(
+    payload: Optional[DispatchBody] = None,
     dry_run: bool = Query(False),
     max_n: int = Query(8, alias="max"),
     board: Optional[str] = Query(None),
+    task_ids: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
+    query_task_ids = task_ids if isinstance(task_ids, str) else None
+    selected_was_requested = payload is not None or query_task_ids is not None
+    selected_task_ids = _parse_task_ids(query_task_ids)
+    if payload is not None:
+        for raw_id in [*payload.taskIds, *payload.task_ids]:
+            tid = str(raw_id or "").strip()
+            if tid and tid not in selected_task_ids:
+                selected_task_ids.append(tid)
     conn = _conn(board=board)
     try:
         result = kanban_db.dispatch_once(
-            conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_n,
+            board=board,
+            selected_task_ids=selected_task_ids if selected_was_requested else None,
         )
         # DispatchResult is a dataclass.
         try:
-            return asdict(result)
+            body: dict[str, Any] = asdict(result)
         except TypeError:
-            return {"result": str(result)}
+            body = {"result": str(result)}
+        body["selectedOnly"] = selected_was_requested
+        body["selectedTaskIds"] = selected_task_ids
+        return body
     finally:
         conn.close()
 

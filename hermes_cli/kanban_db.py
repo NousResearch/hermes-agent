@@ -7783,6 +7783,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    selected_task_ids: Optional[list[str]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7881,6 +7882,9 @@ def _dispatch_once_locked(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``selected_task_ids`` is a closed-world operator fence: when provided,
+    only those task ids are considered for ready/review spawning. Extra ready
+    tasks are not fallback candidates even if capacity remains.
     """
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
@@ -7926,11 +7930,25 @@ def _dispatch_once_locked(
             ).fetchone()[0]
         )
 
+    selected_order: Optional[dict[str, int]] = None
+    selected_set: Optional[set[str]] = None
+    if selected_task_ids is not None:
+        selected_order = {}
+        for raw_id in selected_task_ids:
+            tid = str(raw_id or "").strip()
+            if tid and tid not in selected_order:
+                selected_order[tid] = len(selected_order)
+        selected_set = set(selected_order.keys())
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if selected_set is not None:
+        ready_rows = [row for row in ready_rows if row["id"] in selected_set]
+        _selected_order = selected_order or {}
+        ready_rows.sort(key=lambda row: _selected_order.get(row["id"], 10**9))
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -8173,6 +8191,10 @@ def _dispatch_once_locked(
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if selected_set is not None:
+        review_rows = [row for row in review_rows if row["id"] in selected_set]
+        _selected_order = selected_order or {}
+        review_rows.sort(key=lambda row: _selected_order.get(row["id"], 10**9))
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break

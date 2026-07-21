@@ -10,7 +10,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner, _process_batch_worker
+from batch_runner import BatchRunner, _process_batch_worker, _validate_run_name
 
 
 @pytest.fixture
@@ -26,6 +26,16 @@ def runner(tmp_path):
     r.output_file = output_file
     r.prompts_file = prompts_file
     return r
+
+
+class TestRunNameValidation:
+    def test_accepts_simple_name(self):
+        assert _validate_run_name("test_run") == "test_run"
+
+    @pytest.mark.parametrize("value", ["../escape", "nested/run", "/tmp/run", ""])
+    def test_rejects_path_like_names(self, value):
+        with pytest.raises(ValueError):
+            _validate_run_name(value)
 
 
 class TestSaveCheckpoint:

@@ -46,6 +46,21 @@ from rich.console import Console
 logger = logging.getLogger(__name__)
 import fire
 
+
+def _validate_run_name(run_name: str) -> str:
+    """Reject path-like run names so batch outputs stay under ./data/."""
+    value = (run_name or "").strip()
+    if not value:
+        raise ValueError("run_name must not be empty")
+    candidate = Path(value)
+    if candidate.is_absolute():
+        raise ValueError("run_name must be a simple name, not an absolute path")
+    if any(part in {"..", "."} for part in candidate.parts):
+        raise ValueError("run_name must not contain path traversal components")
+    if len(candidate.parts) != 1:
+        raise ValueError("run_name must not contain path separators")
+    return value
+
 from run_agent import AIAgent
 from toolset_distributions import (
     list_distributions, 
@@ -583,7 +598,7 @@ class BatchRunner:
         """
         self.dataset_file = Path(dataset_file)
         self.batch_size = batch_size
-        self.run_name = run_name
+        self.run_name = _validate_run_name(run_name)
         self.distribution = distribution
         self.max_iterations = max_iterations
         self.base_url = base_url
@@ -608,7 +623,7 @@ class BatchRunner:
             raise ValueError(f"Unknown distribution: {distribution}. Available: {list(list_distributions().keys())}")
         
         # Setup output directory
-        self.output_dir = Path("data") / run_name
+        self.output_dir = Path("data") / self.run_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Checkpoint file

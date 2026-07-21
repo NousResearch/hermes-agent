@@ -342,6 +342,10 @@ class TestSendMessageTool:
         )
         platform_registry.register(entry)
         platform = Platform(platform_name)
+        # Simulate a fresh `hermes send` process: the dynamic Platform member
+        # is known from config, but plugin discovery has not registered its
+        # adapter entry yet.
+        platform_registry.unregister(platform_name)
         pconfig = SimpleNamespace(enabled=True, token=None, extra={})
         config = SimpleNamespace(
             platforms={platform: pconfig},
@@ -354,6 +358,10 @@ class TestSendMessageTool:
                      "gateway.channel_directory.resolve_channel_name",
                      return_value=None,
                  ), \
+                 patch(
+                     "hermes_cli.plugins.discover_plugins",
+                     side_effect=lambda: platform_registry.register(entry),
+                 ) as discover_mock, \
                  patch("model_tools._run_async", side_effect=_run_async_immediately), \
                  patch(
                      "tools.send_message_tool._send_to_platform",
@@ -373,6 +381,7 @@ class TestSendMessageTool:
             platform_registry.unregister(platform_name)
 
         assert result["success"] is True
+        discover_mock.assert_called_once_with()
         send_mock.assert_awaited_once_with(
             platform,
             pconfig,

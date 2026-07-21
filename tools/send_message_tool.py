@@ -390,7 +390,9 @@ def _handle_send(args):
         if not resolved:
             from gateway.config import Platform
             from gateway.platform_registry import platform_registry
+            from hermes_cli.plugins import discover_plugins
 
+            discover_plugins()
             entry = platform_registry.get(platform_name)
             is_builtin = platform_name in {member.value for member in Platform}
             if entry is not None and entry.source == "plugin" and not is_builtin:

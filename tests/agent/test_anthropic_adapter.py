@@ -2634,3 +2634,187 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+class TestBlankTextBlockFiltering:
+    """Regression tests for blank text block filtering in _convert_assistant_message.
+
+    Bedrock and strict Anthropic-compatible endpoints reject text blocks where
+    "text" is empty or whitespace-only with HTTP 400. Both the normal list-
+    content path and the ordered-replay fast path must drop such blocks while
+    preserving tool_use and other block types, and must relocate (not lose)
+    any cache_control marker attached to the dropped block.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+    def test_normal_path_filters_empty_text_block_alongside_tool_calls(self):
+        """Content list with empty text + tool_calls: empty text must be dropped."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "call_1", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Empty text block not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+    def test_normal_path_filters_whitespace_only_text_block(self):
+        """Whitespace-only text (spaces, newlines) must also be filtered."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "   \n  "},
+                {"type": "tool_use", "id": "call_2", "name": "terminal",
+                 "input": {"command": "ls"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 0, f"Whitespace text block not filtered: {text_blocks}"
+
+    def test_normal_path_filters_none_text_block_without_crashing(self):
+        """Regression (review of #63228): text=None must not raise
+        AttributeError. _convert_content_part_to_anthropic() can preserve
+        None from an invalid upstream input text block -- a bare .strip()
+        on blk.get("text", "") crashes because .get() only substitutes the
+        default when the key is ABSENT, not when it's present with value None."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": None},
+                {"type": "tool_use", "id": "call_none", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"None text block not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+    def test_normal_path_preserves_non_empty_text_block(self):
+        """Non-empty text blocks must NOT be filtered."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will search for that."},
+                {"type": "tool_use", "id": "call_3", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0]["text"] == "I will search for that."
+
+    def test_normal_path_filters_whitespace_only_scalar_content(self):
+        """Regression (review of #63228): a truthy whitespace-only scalar
+        content string must also be filtered, not just list-content blocks."""
+        msg = {
+            "role": "assistant",
+            "content": "   \n\t  ",
+            "tool_calls": [
+                {"id": "call_scalar", "function": {"name": "web_search",
+                                                     "arguments": '{"query": "test"}'}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Whitespace scalar content not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+    def test_normal_path_relocates_cache_control_from_dropped_block(self):
+        """Regression (review of #63228): prompt_caching.py's _apply_cache_marker
+        sets cache_control directly on content[-1] for list content. If that
+        last part is blank text, dropping it must relocate the marker to the
+        surviving last cacheable block (here: the tool_use), not lose it."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I'll look that up."},
+                {"type": "tool_use", "id": "call_cache", "name": "web_search",
+                 "input": {"query": "test"}},
+                {"type": "text", "text": "", "cache_control": {"type": "ephemeral"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" and not b.get("text", "").strip() for b in blocks), (
+            "Blank text block must be dropped"
+        )
+        cacheable_with_marker = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
+        assert len(cacheable_with_marker) == 1, (
+            f"cache_control marker must survive on exactly one surviving block: {blocks}"
+        )
+        assert cacheable_with_marker[0]["type"] == "tool_use", (
+            f"Marker must relocate to the new last cacheable block: {blocks}"
+        )
+
+    def test_replay_path_filters_empty_text_block(self):
+        """Ordered-replay path (anthropic_content_blocks) must also drop blank text."""
+        from agent.anthropic_adapter import _convert_assistant_message
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "call_4", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_4",
+                    "function": {"name": "web_search",
+                                 "arguments": '{"query": "test"}'},
+                }
+            ],
+        }
+        result = _convert_assistant_message(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Empty text in replay not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+    def test_replay_path_relocates_cache_control_from_dropped_block(self):
+        """Same cache_control-relocation guarantee on the ordered-replay path:
+        a blank text block carrying cache_control (e.g. a stored, previously
+        cache-marked turn where prompt_caching later becomes blank on replay)
+        must not silently lose the breakpoint when dropped."""
+        from agent.anthropic_adapter import _convert_assistant_message
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "tool_use", "id": "call_5", "name": "web_search",
+                 "input": {"query": "test"}},
+                {"type": "text", "text": "  ", "cache_control": {"type": "ephemeral"}},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_5",
+                    "function": {"name": "web_search",
+                                 "arguments": '{"query": "test"}'},
+                }
+            ],
+        }
+        result = _convert_assistant_message(msg)
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" for b in blocks), "Blank replay text must be dropped"
+        cacheable_with_marker = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
+        assert len(cacheable_with_marker) == 1
+        assert cacheable_with_marker[0]["type"] == "tool_use"

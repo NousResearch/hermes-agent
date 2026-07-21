@@ -4,6 +4,11 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import {
+  rememberComposerDraftCursor,
+  setComposerDraftCursorSuppress,
+  takeComposerCursorRestore
+} from '../lib/composerDraftCursor.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
@@ -235,6 +240,62 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   const lineEnd = nextEnd < 0 ? s.length : nextEnd
 
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
+}
+
+/**
+ * Move cursor one visual row up or down, taking into account both hard newlines
+ * and soft-wrap boundaries at the given column width. Uses cursorLayout()
+ * to find the cursor's current visual row/col, then offsetFromPosition()
+ * to land on the same column in the adjacent row.
+ *
+ * Returns null when the cursor is already on the first visual row (up) or
+ * last visual row (down). Callers use that to fall through to history navigation.
+ */
+export function visualRowNav(s: string, p: number, dir: -1 | 1, cols: number): null | number {
+  const w = Math.max(1, cols)
+  const pos = snapPos(s, p)
+  const { line: curRow, column: curCol } = cursorLayout(s, pos, w)
+  const { line: lastRow } = cursorLayout(s, s.length, w)
+  const targetRow = curRow + dir
+
+  if (targetRow < 0 || targetRow > lastRow) {
+    return null
+  }
+
+  return snapPos(s, offsetFromPosition(s, targetRow, curCol, w))
+}
+
+/**
+ * Whether a successful visual-row Up/Down move should stop the event from
+ * reaching useInputHandlers (history cycling). Plain arrows: yes.
+ * Shift+Up/Down: no — those chords scroll the transcript.
+ */
+export function shouldStopVisualRowNavPropagation(
+  key: Pick<Key, 'downArrow' | 'shift' | 'upArrow'>
+): boolean {
+  return (key.upArrow || key.downArrow) && !key.shift
+}
+
+/**
+ * Detect Shift+Arrow even when a terminal reports the CSI sequence but leaves
+ * `key.shift` false (some macOS / SSH setups). Matches `;2A/B` style modifiers
+ * and kitty CSI-u shift encodings in the raw keypress.
+ */
+export function isShiftArrowChord(
+  key: Pick<Key, 'downArrow' | 'shift' | 'upArrow'>,
+  event?: { keypress?: { raw?: string; sequence?: string } }
+): boolean {
+  if (!(key.upArrow || key.downArrow)) {
+    return false
+  }
+
+  if (key.shift) {
+    return true
+  }
+
+  const raw = `${event?.keypress?.raw ?? ''}${event?.keypress?.sequence ?? ''}`
+
+  return /;2[AB](?:$|[^0-9])/.test(raw) || /\[\d+;2u/.test(raw) || /\x1b\[(?:1;2|2)[AB]/.test(raw)
 }
 
 export { offsetFromPosition }
@@ -644,14 +705,18 @@ export function TextInput({
     if (self.current) {
       self.current = false
     } else {
-      setCur(value.length)
+      const nextCur = Math.max(0, Math.min(takeComposerCursorRestore(value.length), value.length))
+
+      setCur(nextCur)
       setSel(null)
-      curRef.current = value.length
+      curRef.current = nextCur
       selRef.current = null
       vRef.current = value
       lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
       undo.current = []
       redo.current = []
+      // Do not remember here — external value changes include history browse,
+      // which must not clobber the frozen draft edit cursor.
     }
   }, [value])
 
@@ -789,6 +854,7 @@ export function TextInput({
 
     curRef.current = c
     vRef.current = next
+    rememberComposerDraftCursor(c)
     lineWidthRef.current =
       nextLineWidth ?? stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
 
@@ -905,6 +971,7 @@ export function TextInput({
 
     setCur(c)
     curRef.current = c
+    rememberComposerDraftCursor(c)
   }
 
   const selRange = () => {
@@ -1005,7 +1072,7 @@ export function TextInput({
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
-      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey, event)) {
         flushKeyBurst()
 
         return
@@ -1049,17 +1116,29 @@ export function TextInput({
       }
 
       if (k.upArrow || k.downArrow) {
-        flushKeyBurst()
-
-        const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
-
-        if (next !== null) {
-          moveCursor(next, k.shift)
-
+        // Shift+Up/Down scrolls the transcript in useInputHandlers — leave those alone.
+        if (k.shift || isShiftArrowChord(k, event)) {
           return
         }
 
-        return
+        flushKeyBurst()
+
+        // Climbing Up toward history must not overwrite the last edit cursor with 0.
+        setComposerDraftCursorSuppress(k.upArrow)
+        try {
+          const next = visualRowNav(vRef.current, curRef.current, k.upArrow ? -1 : 1, columns)
+
+          if (next !== null && shouldStopVisualRowNavPropagation(k)) {
+            event.stopImmediatePropagation?.()
+            moveCursor(next)
+
+            return
+          }
+
+          return
+        } finally {
+          setComposerDraftCursorSuppress(false)
+        }
       }
 
       if (k.return) {
@@ -1422,7 +1501,8 @@ export function decideRightClickAction(
 export const shouldPassThroughToGlobalHandler = (
   input: string,
   key: Key,
-  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
+  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
+  event?: { keypress?: { raw?: string; sequence?: string } }
 ): boolean =>
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
@@ -1431,6 +1511,7 @@ export const shouldPassThroughToGlobalHandler = (
   key.pageUp ||
   key.pageDown ||
   key.escape ||
+  isShiftArrowChord(key, event) ||
   isVoiceToggleKey(key, input, voiceRecordKey)
 
 export interface TextInputMouseApi {

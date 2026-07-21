@@ -16,6 +16,12 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
+import {
+  getComposerDraftCursor,
+  rememberComposerDraftCursor,
+  requestComposerCursorRestore,
+  setComposerDraftCursorFrozen
+} from '../lib/composerDraftCursor.js'
 import type {
   GatewayRpc,
   InputHandlerActions,
@@ -247,6 +253,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       if (cur === null) {
         cRefs.historyDraftRef.current = cState.input
+        // Seed memory if the composer never recorded an edit cursor yet.
+        if (getComposerDraftCursor() === null) {
+          const live = getInputSelection()
+          const liveCursor =
+            live && live.start === live.end ? live.start : (live?.end ?? cState.input.length)
+
+          rememberComposerDraftCursor(liveCursor)
+        }
+        // Freeze so history-entry cursors cannot overwrite the draft position.
+        setComposerDraftCursorFrozen(true)
       }
 
       const index = cur === null ? h.length - 1 : Math.max(0, cur - 1)
@@ -266,7 +282,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (next >= h.length) {
       cActions.setHistoryIdx(null)
+      requestComposerCursorRestore(getComposerDraftCursor())
       cActions.setInput(cRefs.historyDraftRef.current)
+      setComposerDraftCursorFrozen(false)
     } else {
       cActions.setHistoryIdx(next)
       cActions.setInput(h[next] ?? '')

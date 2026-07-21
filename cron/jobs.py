@@ -1567,6 +1567,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         # Remove the job (limit reached)
                         jobs.pop(i)
                         save_jobs(jobs)
+                        # Mirror remove_job()'s cleanup — output dirs from the
+                        # completed runs would otherwise accumulate unnoticed.
+                        job_output_dir = OUTPUT_DIR / job_id
+                        if job_output_dir.exists():
+                            shutil.rmtree(job_output_dir)
                         return
                 
                 # Compute next run

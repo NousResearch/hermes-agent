@@ -713,6 +713,39 @@ class TestMarkJobRun:
         assert updated["enabled"] is False
         assert updated["state"] == "completed"
 
+    def test_repeat_limit_cleans_up_output_dir(self, tmp_cron_dir):
+        """mark_job_run() must delete OUTPUT_DIR/<job_id> when auto-removing a
+        repeat-limited job, matching what remove_job() does (PR #21882 parity).
+        Without this, completed one-shot jobs leave orphaned output directories.
+        """
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job_id = job["id"]
+
+        # Simulate save_job_output() having written at least one output file.
+        output_dir = tmp_cron_dir / "cron" / "output" / job_id
+        output_dir.mkdir(parents=True)
+        (output_dir / "2026-05-08_12-00-00.md").write_text("output")
+
+        assert output_dir.exists()
+
+        mark_job_run(job_id, success=True)
+
+        assert get_job(job_id) is None, "job was not removed after repeat limit"
+        assert not output_dir.exists(), "output dir was not cleaned up after auto-delete"
+
+    def test_repeat_limit_no_output_dir_is_safe(self, tmp_cron_dir):
+        """mark_job_run() auto-delete is safe when no output was ever saved
+        (OUTPUT_DIR/<job_id> does not exist) — the cleanup must be a no-op.
+        """
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+
+        assert not output_dir.exists()
+
+        mark_job_run(job["id"], success=True)
+
+        assert get_job(job["id"]) is None
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""

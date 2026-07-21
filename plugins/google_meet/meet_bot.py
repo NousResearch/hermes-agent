@@ -51,6 +51,10 @@ MEET_URL_RE = re.compile(
 
 # Filenames the bot reads/writes in ``HERMES_MEET_OUT_DIR``.
 SAY_QUEUE_FILENAME = "say_queue.jsonl"
+CHAT_QUEUE_FILENAME = "chat_queue.jsonl"
+REACTION_QUEUE_FILENAME = "reaction_queue.jsonl"
+CHAT_DEAD_LETTER_FILENAME = "chat_failed.jsonl"
+REACTION_DEAD_LETTER_FILENAME = "reaction_failed.jsonl"
 SAY_PCM_FILENAME = "speaker.pcm"
 
 
@@ -106,6 +110,9 @@ class _BotState:
         self.audio_bytes_out: int = 0
         self.last_audio_out_at: Optional[float] = None
         self.last_barge_in_at: Optional[float] = None
+        self.last_chat_at: Optional[float] = None
+        self.last_reaction_at: Optional[float] = None
+        self.last_action_error: Optional[str] = None
         self.leave_reason: Optional[str] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
@@ -161,6 +168,9 @@ class _BotState:
             "audioBytesOut": self.audio_bytes_out,
             "lastAudioOutAt": self.last_audio_out_at,
             "lastBargeInAt": self.last_barge_in_at,
+            "lastChatAt": self.last_chat_at,
+            "lastReactionAt": self.last_reaction_at,
+            "lastActionError": self.last_action_error,
             "leaveReason": self.leave_reason,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
@@ -260,6 +270,100 @@ def _enable_captions_js() -> str:
       return true;
     })();
     """
+
+
+def _append_jsonl(path: Path, entries: list[dict]) -> None:
+    """Append JSONL *entries* to *path*. Ignores empty payloads."""
+    if not entries:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for entry in entries:
+            fh.write(json.dumps(entry) + "\n")
+
+
+def _claim_jsonl_queue(path: Path) -> list[dict]:
+    """Atomically move the current JSONL queue aside and parse its entries."""
+    try:
+        if not path.is_file():
+            return []
+        claimed = path.with_name(f"{path.name}.{os.getpid()}.processing")
+        path.replace(claimed)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+
+    try:
+        path.touch(exist_ok=True)
+    except OSError:
+        pass
+
+    try:
+        raw = claimed.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        raw = ""
+    finally:
+        try:
+            claimed.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    out = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def _process_action_queue(
+    *,
+    page,
+    state: _BotState,
+    queue_path: Path,
+    dead_letter_path: Path,
+    payload_key: str,
+    deliver_fn,
+    success_field: str,
+    action_label: str,
+) -> None:
+    """Deliver queued chat/reaction actions with retry + dead-letter handling."""
+    for entry in _claim_jsonl_queue(queue_path):
+        payload = str(entry.get(payload_key, "")).strip()
+        if not payload:
+            continue
+
+        error: Optional[str] = None
+        delivered = False
+        try:
+            delivered = bool(deliver_fn(page, payload))
+            if not delivered:
+                error = f"{action_label} delivery failed"
+        except Exception as exc:  # noqa: BLE001 - status should surface UI failures
+            error = f"{action_label} delivery raised: {exc}"
+
+        if delivered:
+            state.set(**{success_field: time.time(), "last_action_error": None})
+            continue
+
+        attempts = int(entry.get("attempts", 0) or 0) + 1
+        retry_entry = dict(entry)
+        retry_entry["attempts"] = attempts
+        retry_entry["last_error"] = error or f"{action_label} delivery failed"
+        if attempts >= 3:
+            retry_entry["failed_at"] = time.time()
+            _append_jsonl(dead_letter_path, [retry_entry])
+            state.set(last_action_error=f"{action_label} dropped after {attempts} attempts: {retry_entry['last_error']}")
+        else:
+            _append_jsonl(queue_path, [retry_entry])
+            state.set(last_action_error=f"{action_label} queued for retry ({attempts}/3): {retry_entry['last_error']}")
 
 
 def _start_realtime_speaker(
@@ -678,6 +782,28 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                         state.set(leave_reason="page_closed")
                         break
 
+                if state.in_call:
+                    _process_action_queue(
+                        page=page,
+                        state=state,
+                        queue_path=out_dir / CHAT_QUEUE_FILENAME,
+                        dead_letter_path=out_dir / CHAT_DEAD_LETTER_FILENAME,
+                        payload_key="text",
+                        deliver_fn=_send_chat_message,
+                        success_field="last_chat_at",
+                        action_label="chat",
+                    )
+                    _process_action_queue(
+                        page=page,
+                        state=state,
+                        queue_path=out_dir / REACTION_QUEUE_FILENAME,
+                        dead_letter_path=out_dir / REACTION_DEAD_LETTER_FILENAME,
+                        payload_key="emoji",
+                        deliver_fn=_send_reaction,
+                        success_field="last_reaction_at",
+                        action_label="reaction",
+                    )
+
                 # Fold the realtime session's byte/timestamp counters into
                 # the status file so meet_status can surface them.
                 if rt["session"] is not None:
@@ -746,22 +872,14 @@ def _try_guest_name(page, guest_name: str) -> None:
 
 
 def _detect_admission(page) -> bool:
-    """True if we're clearly past the lobby and in the call itself.
-
-    Uses a JS-side probe because Meet's DOM structure varies by client
-    version. We check several high-signal indicators and declare admission
-    on the first hit:
-
-      1. Leave-call button is present (``aria-label`` contains "eave call").
-      2. Caption region has appeared (we installed the observer and it attached).
-      3. The participant list container is visible.
-
-    Conservative by default — returns False on any error.
-    """
+    """True if we're clearly past the lobby and in the call itself."""
     probe = r"""
     (() => {
-      const leave = document.querySelector('button[aria-label*="eave call" i]');
-      if (leave) return true;
+      const body = document.body ? (document.body.innerText || '') : '';
+      const hasText = rx => rx.test(body);
+      const hasButton = label => !!document.querySelector(`button[aria-label*="${label}" i], [role="button"][aria-label*="${label}" i]`);
+
+      if (document.querySelector('button[aria-label*="eave call" i]')) return true;
       if (window.__hermesMeetInstalled) {
         const caps = document.querySelector(
           '[role="region"][aria-label*="aption" i], ' +
@@ -769,8 +887,10 @@ def _detect_admission(page) -> bool:
         );
         if (caps) return true;
       }
-      const parts = document.querySelector('[aria-label*="articipants" i]');
-      if (parts) return true;
+      if (document.querySelector('[aria-label*="articipants" i]')) return true;
+      if (hasButton('Turn off captions') || hasButton('Chat with everyone') || hasButton('Send a reaction')) return true;
+      if (hasText(/You(?:'|’)re in Companion Mode/i)) return true;
+      if (hasText(/You have joined the call/i)) return true;
       return false;
     })();
     """
@@ -800,17 +920,7 @@ def _detect_denied(page) -> bool:
 
 
 def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
-    """Whether a caption line's speaker is probably a human, not our bot echo.
-
-    Meet attributes captions to the speaker's display name. When Chrome is
-    reading our fake mic, Meet still attributes captions to *our* bot name
-    (because the bot is the one "speaking"). We don't want those to trigger
-    barge-in. Anything else — real participant names — does.
-
-    Conservative: unknown / blank speakers (common when caption scraping
-    falls back to raw text) do NOT trigger barge-in, because we can't tell
-    whether it was a human or us.
-    """
+    """Whether a caption line's speaker is probably a human, not our bot echo."""
     if not speaker or not speaker.strip():
         return False
     spk = speaker.strip().lower()
@@ -819,22 +929,235 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
     return True
 
 
-def _click_join(page, state: _BotState) -> None:
-    """Click 'Join now' or 'Ask to join' if either button is visible.
+def _open_chat_panel(page) -> bool:
+    try:
+        btn = page.get_by_role("button", name="Chat with everyone", exact=False).first
+        if btn.count() and btn.is_visible():
+            btn.click(timeout=3_000)
+            page.wait_for_timeout(500)
+            return True
+    except Exception:
+        pass
+    return False
 
-    Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
-    state so the agent can surface that in status.
-    """
-    for label in ("Join now", "Ask to join"):
+
+def _send_chat_message(page, text: str) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return False
+    if not _open_chat_panel(page):
+        return False
+    selectors = [
+        'textarea[aria-label*="message" i]',
+        'textarea[placeholder*="message" i]',
+        'div[contenteditable="true"][aria-label*="message" i]',
+    ]
+    for selector in selectors:
+        editor = page.locator(selector).first
+        try:
+            if not (editor.count() and editor.is_visible()):
+                continue
+            try:
+                editor.click(timeout=2_000)
+            except Exception:
+                pass
+            try:
+                editor.fill(text, timeout=2_000)
+            except Exception:
+                try:
+                    editor.type(text, timeout=4_000)
+                except Exception:
+                    continue
+            page.keyboard.press("Enter")
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _reaction_labels(emoji: str) -> list[str]:
+    raw = (emoji or "").strip()
+    norm = raw.lower()
+    if norm in {"👍", "+1", "thumbsup", "thumbs up", "like"}:
+        return ["Thumbs up", "👍", "like"]
+    if norm in {"❤️", "heart", "love"}:
+        return ["Heart", "❤️", "love"]
+    if norm in {"😂", "laugh", "laughing"}:
+        return ["Laugh", "😂"]
+    if norm in {"😮", "wow", "surprised"}:
+        return ["Surprised", "😮", "wow"]
+    if norm in {"😢", "sad", "cry"}:
+        return ["Sad", "😢"]
+    if norm in {"😡", "angry", "dislike"}:
+        return ["Dislike", "😡", "angry"]
+    return [raw]
+
+
+def _send_reaction(page, emoji: str) -> bool:
+    labels = [label for label in _reaction_labels(emoji) if label]
+    if not labels:
+        return False
+    try:
+        btn = page.get_by_role("button", name="Send a reaction", exact=False).first
+        if btn.count() and btn.is_visible():
+            btn.click(timeout=3_000)
+            page.wait_for_timeout(500)
+    except Exception:
+        return False
+
+    for label in labels:
+        try:
+            rb = page.get_by_role("button", name=label, exact=False).first
+            if rb.count() and rb.is_visible():
+                rb.click(timeout=2_000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+_JOIN_CTA_PRIORITY = (
+    "Join now",
+    "Ask to join",
+    "Use Companion Mode",
+    "Use Companion mode",
+    "Join here too",
+)
+
+
+def _prepare_join_options(page) -> None:
+    """Dismiss pre-join overlays and expand secondary join choices."""
+    for label in ("Got it", "OK"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first
             if btn.count() and btn.is_visible():
                 btn.click(timeout=3_000)
-                if label == "Ask to join":
-                    state.set(lobby_waiting=True)
                 break
         except Exception:
             continue
+
+    try:
+        btn = page.get_by_role("button", name="Other ways to join", exact=False).first
+        if btn.count() and btn.is_visible():
+            btn.click(timeout=3_000)
+    except Exception:
+        pass
+
+
+def _click_join_dom_fallback(page) -> Optional[str]:
+    """Return the clicked join label when a DOM-text fallback succeeds.
+
+    Meet's visible pre-join CTA sometimes isn't discoverable via Playwright's
+    role/name lookup even though the button is plainly rendered on the page.
+    Fall back to DOM text probes that match the live May 2026 Meet markup and
+    walk up to the nearest clickable ancestor.
+    """
+    probe = r'''
+    (labels => {
+      const texts = labels.map(label => String(label || '').trim()).filter(Boolean);
+      const seen = new Set();
+
+      const candidateRoots = [
+        ...document.querySelectorAll('button, [role="button"]'),
+        ...document.querySelectorAll('span[jsname="V67aGc"], div[jsname], span, div')
+      ];
+
+      const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+      const hasVisibleBox = el => {
+        const rect = el && typeof el.getBoundingClientRect === 'function'
+          ? el.getBoundingClientRect()
+          : null;
+        return !!rect && rect.width > 0 && rect.height > 0;
+      };
+      const isVisible = el => {
+        if (!el || !el.isConnected) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return false;
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+          return false;
+        }
+        return hasVisibleBox(el);
+      };
+      const clickableAncestor = node => {
+        let cur = node;
+        while (cur) {
+          if ((cur.matches && cur.matches('button, [role="button"]')) || cur.onclick || cur.tabIndex >= 0) {
+            return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      };
+
+      for (const node of candidateRoots) {
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        const text = norm(node.innerText || node.textContent || '');
+        if (!text) continue;
+        const label = texts.find(target => text === target || text.includes(target));
+        if (!label) continue;
+        const target = clickableAncestor(node) || node;
+        if (!isVisible(target) && !isVisible(node)) continue;
+        try {
+          if (typeof target.scrollIntoView === 'function') {
+            target.scrollIntoView({block: 'center', inline: 'center'});
+          }
+        } catch (_) {}
+        for (const el of [target, node]) {
+          if (!el) continue;
+          try {
+            el.click();
+            return label;
+          } catch (_) {}
+          try {
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+              el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            });
+            return label;
+          } catch (_) {}
+        }
+      }
+      return null;
+    })
+    '''
+    try:
+        clicked = page.evaluate(probe, list(_JOIN_CTA_PRIORITY))
+    except Exception:
+        return None
+    return str(clicked).strip() if clicked else None
+
+
+
+def _click_join(page, state: _BotState) -> None:
+    """Click the safest visible pre-join CTA.
+
+    Preference order matters:
+    - normal join buttons first
+    - Companion mode before Switch here, because Switch here transfers the
+      active call away from another device/session on the same account
+
+    Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
+    state so the agent can surface that in status.
+    """
+    _prepare_join_options(page)
+
+    clicked_label: Optional[str] = None
+    for label in _JOIN_CTA_PRIORITY:
+        try:
+            btn = page.get_by_role("button", name=label, exact=False).first
+            if btn.count() and btn.is_visible():
+                btn.click(timeout=3_000)
+                clicked_label = label
+                break
+        except Exception:
+            continue
+
+    if clicked_label is None:
+        clicked_label = _click_join_dom_fallback(page)
+
+    if clicked_label == "Ask to join":
+        state.set(lobby_waiting=True)
+
 
 
 def _parse_duration(raw: str) -> Optional[float]:

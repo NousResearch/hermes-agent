@@ -78,6 +78,14 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     say_p.add_argument("text", help="what to say")
     say_p.add_argument("--node", default=None)
 
+    chat_p = subs.add_parser("chat", help="Send a chat message in the active meeting")
+    chat_p.add_argument("text", help="chat message text")
+    chat_p.add_argument("--node", default=None)
+
+    react_p = subs.add_parser("react", help="Send a reaction in the active meeting")
+    react_p.add_argument("emoji", help="emoji or common reaction label")
+    react_p.add_argument("--node", default=None)
+
     subs.add_parser("stop", help="Leave the current meeting")
 
     # v3: remote node host management.
@@ -107,7 +115,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def meet_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "meet_command", None)
     if not sub:
-        print("usage: hermes meet {setup,auth,join,status,transcript,say,stop,node}")
+        print("usage: hermes meet {setup,auth,join,status,transcript,say,chat,react,stop,node}")
         return 2
     if sub == "setup":
         return _cmd_setup()
@@ -133,6 +141,10 @@ def meet_command(args: argparse.Namespace) -> int:
         return _cmd_transcript(last=args.last)
     if sub == "say":
         return _cmd_say(text=args.text, node=getattr(args, "node", None))
+    if sub == "chat":
+        return _cmd_chat(text=args.text, node=getattr(args, "node", None))
+    if sub == "react":
+        return _cmd_react(emoji=args.emoji, node=getattr(args, "node", None))
     if sub == "stop":
         return _cmd_stop()
     if sub == "node":
@@ -443,6 +455,66 @@ def _cmd_say(text: str, node: Optional[str] = None) -> int:
         return 0 if res.get("ok") else 1
 
     res = pm.enqueue_say(text)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("ok") else 1
+
+
+def _cmd_chat(text: str, node: Optional[str] = None) -> int:
+    if not (text or "").strip():
+        print("refusing: empty text")
+        return 2
+    if node:
+        try:
+            from plugins.google_meet.node.registry import NodeRegistry
+            from plugins.google_meet.node.client import NodeClient
+        except ImportError as e:
+            print(f"node module unavailable: {e}")
+            return 1
+        reg = NodeRegistry()
+        entry = reg.resolve(node if node != "auto" else None)
+        if entry is None:
+            print(f"no registered node matches {node!r}")
+            return 1
+        client = NodeClient(url=entry["url"], token=entry["token"])
+        try:
+            res = client.chat(text)
+        except Exception as e:
+            print(f"remote chat failed: {e}")
+            return 1
+        print(json.dumps({"node": entry.get("name"), **res}, indent=2))
+        return 0 if res.get("ok") else 1
+
+    res = pm.enqueue_chat(text)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("ok") else 1
+
+
+def _cmd_react(emoji: str, node: Optional[str] = None) -> int:
+    if not (emoji or "").strip():
+        print("refusing: empty emoji")
+        return 2
+    if node:
+        try:
+            from plugins.google_meet.node.registry import NodeRegistry
+            from plugins.google_meet.node.client import NodeClient
+        except ImportError as e:
+            print(f"node module unavailable: {e}")
+            return 1
+        reg = NodeRegistry()
+        entry = reg.resolve(node if node != "auto" else None)
+        if entry is None:
+            print(f"no registered node matches {node!r}")
+            return 1
+        client = NodeClient(url=entry["url"], token=entry["token"])
+        try:
+            res = client.react(emoji)
+        except Exception as e:
+            print(f"remote react failed: {e}")
+            return 1
+        print(json.dumps({"node": entry.get("name"), **res}, indent=2))
+        return 0 if res.get("ok") else 1
+
+    res = pm.enqueue_reaction(emoji)
     print(json.dumps(res, indent=2))
     return 0 if res.get("ok") else 1
 

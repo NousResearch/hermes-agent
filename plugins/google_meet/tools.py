@@ -14,9 +14,15 @@ Tools:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from plugins.google_meet import process_manager as pm
+
+
+def _default_auth_state() -> Optional[str]:
+    path = Path(pm.get_hermes_home()) / "workspace" / "meetings" / "auth.json"
+    return str(path) if path.is_file() else None
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +226,40 @@ MEET_SAY_SCHEMA: Dict[str, Any] = {
     },
 }
 
+MEET_CHAT_SCHEMA: Dict[str, Any] = {
+    "name": "meet_chat",
+    "description": (
+        "Send a chat message into the active Meet call. Works in both "
+        "transcribe and realtime meetings once the bot is in-call."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "Chat message text."},
+            "node": {"type": "string"},
+        },
+        "required": ["text"],
+        "additionalProperties": False,
+    },
+}
+
+MEET_REACT_SCHEMA: Dict[str, Any] = {
+    "name": "meet_react",
+    "description": (
+        "Send a reaction in the active Meet call. Pass an emoji like 👍 or a "
+        "common label like 'thumbs up'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "emoji": {"type": "string", "description": "Reaction emoji or label."},
+            "node": {"type": "string"},
+        },
+        "required": ["emoji"],
+        "additionalProperties": False,
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Handlers
@@ -271,6 +311,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     res = pm.start(
         url=url,
         headed=bool(args.get("headed", False)),
+        auth_state=_default_auth_state(),
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
         mode=mode,
@@ -345,4 +386,40 @@ def handle_meet_say(args: Dict[str, Any], **_kw) -> str:
         except Exception as e:
             return _err(f"remote node say failed: {e}", node=node_name)
     res = pm.enqueue_say(text)
+    return _json({"success": bool(res.get("ok")), **res})
+
+
+def handle_meet_chat(args: Dict[str, Any], **_kw) -> str:
+    text = (args.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    try:
+        client, node_name = _resolve_node_client(args.get("node"))
+    except RuntimeError as e:
+        return _err(str(e))
+    if client is not None:
+        try:
+            res = client.chat(text)
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node chat failed: {e}", node=node_name)
+    res = pm.enqueue_chat(text)
+    return _json({"success": bool(res.get("ok")), **res})
+
+
+def handle_meet_react(args: Dict[str, Any], **_kw) -> str:
+    emoji = (args.get("emoji") or "").strip()
+    if not emoji:
+        return _err("emoji is required")
+    try:
+        client, node_name = _resolve_node_client(args.get("node"))
+    except RuntimeError as e:
+        return _err(str(e))
+    if client is not None:
+        try:
+            res = client.react(emoji)
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node react failed: {e}", node=node_name)
+    res = pm.enqueue_reaction(emoji)
     return _json({"success": bool(res.get("ok")), **res})

@@ -22,14 +22,18 @@ from plugins.google_meet import process_manager as pm
 from plugins.google_meet.cli import register_cli as _register_meet_cli
 from plugins.google_meet.cli import meet_command as _meet_command
 from plugins.google_meet.tools import (
+    MEET_CHAT_SCHEMA,
     MEET_JOIN_SCHEMA,
     MEET_LEAVE_SCHEMA,
+    MEET_REACT_SCHEMA,
     MEET_SAY_SCHEMA,
     MEET_STATUS_SCHEMA,
     MEET_TRANSCRIPT_SCHEMA,
     check_meet_requirements,
+    handle_meet_chat,
     handle_meet_join,
     handle_meet_leave,
+    handle_meet_react,
     handle_meet_say,
     handle_meet_status,
     handle_meet_transcript,
@@ -44,6 +48,8 @@ _TOOLS = (
     ("meet_transcript", MEET_TRANSCRIPT_SCHEMA, handle_meet_transcript, "📝"),
     ("meet_leave",      MEET_LEAVE_SCHEMA,      handle_meet_leave,      "👋"),
     ("meet_say",        MEET_SAY_SCHEMA,        handle_meet_say,        "🗣️"),
+    ("meet_chat",       MEET_CHAT_SCHEMA,       handle_meet_chat,       "💬"),
+    ("meet_react",      MEET_REACT_SCHEMA,      handle_meet_react,      "👍"),
 )
 
 

@@ -103,5 +103,11 @@ class NodeClient:
     def say(self, text: str) -> Dict[str, Any]:
         return self._rpc("say", {"text": str(text)})
 
+    def chat(self, text: str) -> Dict[str, Any]:
+        return self._rpc("chat", {"text": str(text)})
+
+    def react(self, emoji: str) -> Dict[str, Any]:
+        return self._rpc("react", {"emoji": str(emoji)})
+
     def ping(self) -> Dict[str, Any]:
         return self._rpc("ping", {})

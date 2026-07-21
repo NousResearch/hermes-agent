@@ -380,42 +380,37 @@ def test_server_handle_request_transcript(tmp_path, monkeypatch):
     assert got["last"] == 5
 
 
-def test_server_handle_request_say_enqueues_when_active(tmp_path, monkeypatch):
+def test_server_handle_request_say_delegates_to_process_manager(tmp_path, monkeypatch):
     from plugins.google_meet.node.server import NodeServer
     from plugins.google_meet.node import protocol
     from plugins.google_meet import process_manager as pm
 
-    out = tmp_path / "meet-out"
-    out.mkdir()
-    monkeypatch.setattr(pm, "_read_active",
-                        lambda: {"pid": 1, "meeting_id": "m", "out_dir": str(out)})
+    monkeypatch.setattr(pm, "enqueue_say", lambda text: {"ok": True, "text": text, "kind": "say"})
 
     s = NodeServer(token_path=tmp_path / "t.json")
     tok = s.ensure_token()
     req = protocol.make_request("say", tok, {"text": "hello"})
     resp = asyncio.run(s._handle_request(req))
     assert resp["type"] == "response"
-    assert resp["payload"]["ok"] is True
-    assert resp["payload"]["enqueued"] is True
-    q = (out / "say_queue.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(q) == 1
-    assert json.loads(q[0])["text"] == "hello"
+    assert resp["payload"] == {"ok": True, "text": "hello", "kind": "say"}
 
 
-def test_server_handle_request_say_without_active_still_ok(tmp_path, monkeypatch):
+def test_server_handle_request_chat_and_react_delegate_to_process_manager(tmp_path, monkeypatch):
     from plugins.google_meet.node.server import NodeServer
     from plugins.google_meet.node import protocol
     from plugins.google_meet import process_manager as pm
 
-    monkeypatch.setattr(pm, "_read_active", lambda: None)
+    monkeypatch.setattr(pm, "enqueue_chat", lambda text: {"ok": True, "text": text, "kind": "chat"})
+    monkeypatch.setattr(pm, "enqueue_reaction", lambda emoji: {"ok": True, "emoji": emoji, "kind": "react"})
 
     s = NodeServer(token_path=tmp_path / "t.json")
     tok = s.ensure_token()
-    req = protocol.make_request("say", tok, {"text": "hi"})
-    resp = asyncio.run(s._handle_request(req))
-    assert resp["type"] == "response"
-    assert resp["payload"]["ok"] is True
-    assert resp["payload"]["enqueued"] is False
+    chat_req = protocol.make_request("chat", tok, {"text": "hi team"})
+    react_req = protocol.make_request("react", tok, {"emoji": "👍"})
+    chat_resp = asyncio.run(s._handle_request(chat_req))
+    react_resp = asyncio.run(s._handle_request(react_req))
+    assert chat_resp["payload"] == {"ok": True, "text": "hi team", "kind": "chat"}
+    assert react_resp["payload"] == {"ok": True, "emoji": "👍", "kind": "react"}
 
 
 def test_server_handle_request_wraps_pm_exceptions(tmp_path, monkeypatch):
@@ -546,16 +541,20 @@ def test_client_convenience_methods_hit_correct_types(monkeypatch):
     c.status()
     c.transcript(last=3)
     c.say("hi")
+    c.chat("hello chat")
+    c.react("👍")
     c.ping()
 
     types = [t for t, _ in seen]
-    assert types == ["start_bot", "stop", "status", "transcript", "say", "ping"]
+    assert types == ["start_bot", "stop", "status", "transcript", "say", "chat", "react", "ping"]
     # Check specific payload routing
     assert seen[0][1]["url"] == "https://meet.google.com/a-b-c"
     assert seen[0][1]["guest_name"] == "G"
     assert seen[0][1]["duration"] == "10m"
     assert seen[3][1]["last"] == 3
     assert seen[4][1]["text"] == "hi"
+    assert seen[5][1]["text"] == "hello chat"
+    assert seen[6][1]["emoji"] == "👍"
 
 
 def test_client_init_rejects_bad_args():
@@ -672,3 +671,34 @@ def test_cli_status_reports_client_error(capsys, monkeypatch):
     data = json.loads(capsys.readouterr().out.strip())
     assert data["ok"] is False
     assert "connection refused" in data["error"]
+
+
+def test_protocol_valid_request_types_include_chat_and_react():
+    from plugins.google_meet.node import protocol
+
+    assert "chat" in protocol.VALID_REQUEST_TYPES
+    assert "react" in protocol.VALID_REQUEST_TYPES
+
+
+def test_server_handle_request_start_bot_threads_mode(tmp_path, monkeypatch):
+    from plugins.google_meet.node.server import NodeServer
+    from plugins.google_meet.node import protocol
+    from plugins.google_meet import process_manager as pm
+
+    captured = {}
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(pm, "start", fake_start)
+
+    s = NodeServer(token_path=tmp_path / "t.json")
+    tok = s.ensure_token()
+    req = protocol.make_request("start_bot", tok, {
+        "url": "https://meet.google.com/abc-defg-hij",
+        "mode": "realtime",
+    })
+    resp = asyncio.run(s._handle_request(req))
+    assert resp["type"] == "response"
+    assert captured["mode"] == "realtime"

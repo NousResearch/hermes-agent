@@ -24,6 +24,8 @@ VALID_REQUEST_TYPES = frozenset({
     "status",
     "transcript",
     "say",
+    "chat",
+    "react",
     "ping",
 })
 

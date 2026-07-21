@@ -22,6 +22,10 @@ from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
 
+SAY_QUEUE_FILENAME = "say_queue.jsonl"
+CHAT_QUEUE_FILENAME = "chat_queue.jsonl"
+REACTION_QUEUE_FILENAME = "reaction_queue.jsonl"
+
 # File + directory layout (under $HERMES_HOME):
 #
 #   workspace/meetings/
@@ -243,24 +247,16 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     }
 
 
-def enqueue_say(text: str) -> Dict[str, Any]:
-    """Append a ``say`` request to the active bot's JSONL queue.
-
-    Returns ``{"ok": False, "reason": ...}`` when no meeting is active or
-    the active bot is in transcribe-only mode. Otherwise writes a line to
-    ``<out_dir>/say_queue.jsonl`` that the bot's realtime speaker thread
-    will consume.
-    """
-    import uuid
-
-    text = (text or "").strip()
-    if not text:
-        return {"ok": False, "reason": "text is required"}
-
+def _enqueue_jsonl(
+    payload: Dict[str, Any],
+    *,
+    queue_name: str,
+    require_realtime: bool = False,
+) -> Dict[str, Any]:
     active = _read_active()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
-    if active.get("mode") != "realtime":
+    if require_realtime and active.get("mode") != "realtime":
         return {
             "ok": False,
             "reason": (
@@ -273,16 +269,53 @@ def enqueue_say(text: str) -> Dict[str, Any]:
     if not out_dir.is_dir():
         return {"ok": False, "reason": f"out_dir missing: {out_dir}"}
 
-    queue_path = out_dir / "say_queue.jsonl"
-    entry = {"id": uuid.uuid4().hex[:12], "text": text}
-    with queue_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
-    return {
+    queue_path = out_dir / queue_name
+    try:
+        with queue_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+    except OSError as e:
+        return {"ok": False, "reason": f"failed to write {queue_name}: {e}"}
+    res = {
         "ok": True,
         "meetingId": active.get("meeting_id"),
-        "enqueued_id": entry["id"],
         "queue_path": str(queue_path),
     }
+    if "id" in payload:
+        res["enqueued_id"] = payload["id"]
+    return res
+
+
+def enqueue_say(text: str) -> Dict[str, Any]:
+    """Append a ``say`` request to the active bot's JSONL queue."""
+    import uuid
+
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "reason": "text is required"}
+    entry = {"id": uuid.uuid4().hex[:12], "text": text}
+    return _enqueue_jsonl(entry, queue_name=SAY_QUEUE_FILENAME, require_realtime=True)
+
+
+def enqueue_chat(text: str) -> Dict[str, Any]:
+    """Append a chat-message request to the active bot's JSONL queue."""
+    import uuid
+
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "reason": "text is required"}
+    entry = {"id": uuid.uuid4().hex[:12], "text": text}
+    return _enqueue_jsonl(entry, queue_name=CHAT_QUEUE_FILENAME)
+
+
+def enqueue_reaction(emoji: str) -> Dict[str, Any]:
+    """Append a reaction request to the active bot's JSONL queue."""
+    import uuid
+
+    emoji = (emoji or "").strip()
+    if not emoji:
+        return {"ok": False, "reason": "emoji is required"}
+    entry = {"id": uuid.uuid4().hex[:12], "emoji": emoji}
+    return _enqueue_jsonl(entry, queue_name=REACTION_QUEUE_FILENAME)
 
 
 def stop(*, reason: str = "requested") -> Dict[str, Any]:

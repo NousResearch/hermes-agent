@@ -359,7 +359,13 @@ def test_register_wires_tools_cli_and_hook_on_linux():
         plugin.register(_Ctx())
 
     assert set(calls["tools"]) == {
-        "meet_join", "meet_status", "meet_transcript", "meet_leave", "meet_say",
+        "meet_join",
+        "meet_status",
+        "meet_transcript",
+        "meet_leave",
+        "meet_say",
+        "meet_chat",
+        "meet_react",
     }
     assert calls["cli"] == ["meet"]
     assert calls["hooks"] == ["on_session_end"]
@@ -682,6 +688,110 @@ def test_detect_denied_returns_false_on_error():
         def evaluate(self, _js): raise RuntimeError("boom")
 
     assert _detect_denied(_FakePage()) is False
+
+
+class _FakeLocator:
+    def __init__(self, *, count=0, visible=False, click_raises=False, clicked=None):
+        self._count = count
+        self._visible = visible
+        self._click_raises = click_raises
+        self._clicked = clicked if clicked is not None else []
+
+    @property
+    def clicked(self):
+        return self._clicked
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return self._count
+
+    def is_visible(self):
+        return self._visible
+
+    def click(self, timeout=None):
+        if self._click_raises:
+            raise RuntimeError("click failed")
+        self._clicked.append(timeout)
+
+
+class _FakeJoinPage:
+    def __init__(self, locators=None, evaluate_result=None, evaluate_raises=False):
+        self._locators = locators or {}
+        self._evaluate_result = evaluate_result
+        self._evaluate_raises = evaluate_raises
+        self.evaluate_calls = []
+
+    def get_by_role(self, role, name=None, exact=False):
+        return self._locators.get(name, _FakeLocator())
+
+    def evaluate(self, script, arg=None):
+        self.evaluate_calls.append((script, arg))
+        if self._evaluate_raises:
+            raise RuntimeError("evaluate failed")
+        return self._evaluate_result
+
+
+class _FakeState:
+    def __init__(self):
+        self.calls = []
+
+    def set(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def test_click_join_uses_role_selector_when_available():
+    from plugins.google_meet.meet_bot import _click_join
+
+    locator = _FakeLocator(count=1, visible=True)
+    page = _FakeJoinPage(locators={"Join now": locator})
+    state = _FakeState()
+
+    _click_join(page, state)
+
+    assert locator.clicked == [3_000]
+    assert page.evaluate_calls == []
+    assert state.calls == []
+
+
+def test_click_join_falls_back_to_dom_probe_when_role_lookup_misses():
+    from plugins.google_meet.meet_bot import _click_join
+
+    page = _FakeJoinPage(evaluate_result="Join now")
+    state = _FakeState()
+
+    _click_join(page, state)
+
+    assert len(page.evaluate_calls) == 1
+    _script, labels = page.evaluate_calls[0]
+    assert labels == [
+        "Join now",
+        "Ask to join",
+        "Use Companion Mode",
+        "Use Companion mode",
+        "Join here too",
+    ]
+    assert state.calls == []
+
+
+def test_click_join_sets_lobby_waiting_when_dom_fallback_hits_ask_to_join():
+    from plugins.google_meet.meet_bot import _click_join
+
+    page = _FakeJoinPage(evaluate_result="Ask to join")
+    state = _FakeState()
+
+    _click_join(page, state)
+
+    assert state.calls == [{"lobby_waiting": True}]
+
+
+def test_click_join_fallback_returns_none_on_evaluate_error():
+    from plugins.google_meet.meet_bot import _click_join_dom_fallback
+
+    page = _FakeJoinPage(evaluate_raises=True)
+    assert _click_join_dom_fallback(page) is None
 
 
 # ---------------------------------------------------------------------------

@@ -56,4 +56,19 @@ describe('cron helpers are profile-scoped', () => {
       expect(call[0].profile).toBe('coder')
     }
   })
+
+  it('list accepts an explicit ?profile= for endpoint-level filtering', () => {
+    // profileScoped() routes the backend process; the list endpoint ALSO
+    // aggregates 'all' by default, so callers pass an explicit profile to
+    // filter what the endpoint returns (sidebar / cron overlay scoping).
+    void getCronJobs('worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs?profile=worker_alpha')
+
+    void getCronJobs('all')
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs?profile=all')
+
+    // Omitting the arg keeps the legacy unfiltered path.
+    void getCronJobs()
+    expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs')
+  })
 })

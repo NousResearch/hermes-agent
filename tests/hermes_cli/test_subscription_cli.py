@@ -1,7 +1,7 @@
 """Tests for the /subscription CLI change flow (cli.py::_show_subscription).
 
 Parity with the TUI overlay: the classic CLI now previews + applies a plan change
-in-terminal (picker → preview → confirm → apply), grants terminal billing inline on
+in-terminal (picker → preview → confirm → apply), allows remote spending inline on
 insufficient_scope, and leads a scheduled downgrade/cancel with a prominent banner.
 Interactive screens are driven by mocking `_prompt_text_input_modal`.
 """
@@ -158,7 +158,7 @@ def test_insufficient_scope_triggers_stepup_then_replays(cli, monkeypatch, capsy
     def _put(**kw):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise nb.BillingScopeRequired("terminal billing required")
+            raise nb.BillingScopeRequired("remote spending required")
         return {"message": "Scheduled."}
 
     monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
@@ -171,7 +171,7 @@ def test_insufficient_scope_triggers_stepup_then_replays(cli, monkeypatch, capsy
 
     # applied once (scope-denied), granted, replayed → applied again
     assert calls["n"] == 2
-    assert "Terminal billing enabled" in out
+    assert "Remote Spending allowed" in out
 
 
 def test_stepup_declined_grant_does_not_replay(cli, monkeypatch, capsys):
@@ -183,7 +183,7 @@ def test_stepup_declined_grant_does_not_replay(cli, monkeypatch, capsys):
 
     def _put(**kw):
         calls["n"] += 1
-        raise nb.BillingScopeRequired("terminal billing required")
+        raise nb.BillingScopeRequired("remote spending required")
 
     monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
     import hermes_cli.auth as auth
@@ -194,7 +194,7 @@ def test_stepup_declined_grant_does_not_replay(cli, monkeypatch, capsys):
     out = capsys.readouterr().out
 
     assert calls["n"] == 1  # applied once, grant denied, no replay
-    assert "Couldn't enable terminal billing" in out
+    assert "Couldn't allow Remote Spending" in out
 
 
 def test_unknown_preview_effect_fails_safe(cli, monkeypatch, capsys):
@@ -235,7 +235,10 @@ def test_bounded_stepup_does_not_loop_on_repeat_denial(cli, monkeypatch, capsys)
     out = capsys.readouterr().out
 
     assert calls["n"] == 2  # applied, granted, replayed once — no third attempt
-    assert "still isn't enabled" in out
+    assert (
+        "Remote Spending still isn't active for this terminal — the authorization "
+        "didn't take. Retry, or make this change on the portal."
+    ) in out
 
 
 def test_upgrade_transport_failure_is_ambiguous_not_flat_failure(cli, monkeypatch, capsys):

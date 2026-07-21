@@ -242,6 +242,12 @@ _LONG_HANDLERS = frozenset(
         # the WS read loop and causing false "needs setup" (#50005 family).
         "setup.runtime_check",
         "setup.status",
+        # Desktop also polls the in-memory live-session registry every 15s.
+        # The handler is normally cheap, but under heavy agent GIL pressure it
+        # can still stall for tens of seconds. Keep it off the WS reader thread
+        # so a delayed status rehydrate cannot block runtime readiness, prompt
+        # submission, or interrupts queued behind it on the same socket.
+        "session.active_list",
         "session.branch",
         "session.compress",
         "session.list",
@@ -422,6 +428,20 @@ def _load_busy_input_mode() -> str:
         display = {}
     raw = str(display.get("busy_input_mode", "") or "").strip().lower()
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+
+
+def _load_interim_assistant_messages() -> bool:
+    """Return whether interim assistant commentary should be surfaced to UIs.
+
+    Honors ``display.interim_assistant_messages`` (default true). When false,
+    the tui_gateway does not install ``interim_assistant_callback``, so
+    interim text from tool-call turns and verify-on-stop candidates is never
+    emitted as ``message.interim`` — mirroring the messaging gateway's gating.
+    """
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        return True
+    return is_truthy_value(display.get("interim_assistant_messages", True))
 
 
 def _notify_session_boundary(
@@ -1984,8 +2004,13 @@ def _ensure_session_db_row(session: dict) -> None:
             )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
-    if tier := session.get("create_service_tier_override"):
-        model_config["service_tier"] = tier
+    create_service_tier_override = session.get("create_service_tier_override")
+    if create_service_tier_override is not None:
+        # Empty string is the in-memory sentinel for an explicit normal tier:
+        # it bypasses _make_agent's profile fallback without sending a bogus
+        # service_tier value to the provider. Persist a durable marker so resume
+        # can distinguish that choice from an omitted/inherited tier.
+        model_config["service_tier"] = create_service_tier_override or "normal"
     # Branch lineage: stamp the same ``_branched_from`` marker the TUI /branch
     # uses so list_sessions_rich keeps the branch listed and the desktop sidebar
     # can nest it under its parent.
@@ -2604,7 +2629,11 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
-    if service_tier:
+    if service_tier.lower() == "normal":
+        # None means "inherit the profile" at _make_agent. Empty string is a
+        # real override that means "do not request a priority service tier".
+        overrides["service_tier_override"] = ""
+    elif service_tier:
         overrides["service_tier_override"] = service_tier
 
     return overrides
@@ -2692,6 +2721,12 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             if isinstance(parsed, dict):
                 existing_config = parsed
         model_config = _runtime_model_config(agent, existing_config)
+        create_service_tier_override = session.get("create_service_tier_override")
+        if create_service_tier_override is not None:
+            # _runtime_model_config sees agent.service_tier=None for explicit
+            # normal and would otherwise erase the distinction on every live
+            # metadata persist.
+            model_config["service_tier"] = create_service_tier_override or "normal"
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -3206,6 +3241,7 @@ def _apply_model_switch(
             is_global_flag,
             is_session,
             is_once=one_turn,
+            explicit_provider=explicit_provider,
         )
     )
     if not model_input:
@@ -3686,7 +3722,8 @@ def _current_profile_name() -> str:
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
-DESKTOP_BACKEND_CONTRACT = 3
+# v4: session.create fast=false is an explicit per-session normal-tier override.
+DESKTOP_BACKEND_CONTRACT = 4
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -4284,7 +4321,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
-    return {
+    callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
@@ -4338,6 +4375,22 @@ def _agent_cbs(sid: str) -> dict:
             timeout=30,
         ),
     }
+
+    # Interim assistant commentary (text alongside tool calls, or the attempted
+    # final answer before a verify-on-stop nudge). Gated on
+    # display.interim_assistant_messages (default true). Also set per-turn in
+    # _run_prompt_submit as defense-in-depth — the per-turn set overwrites
+    # this, and the finally block clears it so a stale closure can't fire.
+    if _load_interim_assistant_messages():
+        callbacks["interim_assistant_callback"] = (
+            lambda text, *, already_streamed=False: _emit(
+                "message.interim",
+                sid,
+                {"text": str(text), "already_streamed": bool(already_streamed)},
+            )
+        )
+
+    return callbacks
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
@@ -4748,22 +4801,22 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
-        # Preserve this session's chosen model AND reasoning across /new so a
-        # reset doesn't silently revert to global config (or to a model
-        # another session set). See the cross-session-contamination note in
-        # _apply_model_switch.
-        reset_kw = {"model_override": session.get("model_override")}
-        old_reasoning = getattr(session.get("agent"), "reasoning_config", None)
-        if old_reasoning is None:
-            old_reasoning = session.get("create_reasoning_override")
-        if isinstance(old_reasoning, dict):
-            reset_kw["reasoning_config_override"] = old_reasoning
+        # /new is a full conversation boundary: session-scoped runtime
+        # overrides (/model, /reasoning, /fast) do NOT carry forward — the
+        # fresh agent re-derives model/provider, reasoning, and service tier
+        # from config.yaml (#48055, #23131). Session pins are cleared below so
+        # a rebuild can't resurrect them. (Global process state is still never
+        # touched — see the cross-session-contamination note in
+        # _apply_model_switch.)
+        session.pop("model_override", None)
+        session.pop("create_reasoning_override", None)
+        session.pop("create_service_tier_override", None)
+        session.pop("one_turn_model_restore", None)
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
             platform_override=_session_source(session),
-            **reset_kw,
         )
     finally:
         _clear_session_context(tokens)
@@ -5759,9 +5812,14 @@ def _(rid, params: dict) -> dict:
             create_reasoning_override = parse_reasoning_effort(effort)
         except Exception:
             create_reasoning_override = None
-    # Only pin "fast" when explicitly requested; leaving it None lets the build
-    # fall back to the profile default service tier rather than forcing normal.
-    create_service_tier_override = "priority" if params.get("fast") else None
+    # Presence is part of the contract: omitted means inherit the profile,
+    # true pins priority, and false pins normal. Empty string is the internal
+    # explicit-normal sentinel because _make_agent uses None for inheritance.
+    create_service_tier_override = None
+    if "fast" in params:
+        create_service_tier_override = (
+            "priority" if is_truthy_value(params.get("fast")) else ""
+        )
 
     ready = threading.Event()
     now = time.time()
@@ -6287,7 +6345,7 @@ def _(rid, params: dict) -> dict:
         # Display keeps the full transcript; the model-fed history drops a
         # dangling/interrupted tool-call tail so a session killed mid-loop does
         # not replay the unanswered call forever (#29086).
-        prefix = display_history[: max(0, len(display_history) - len(raw_history))]
+        prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
@@ -6363,9 +6421,7 @@ def _(rid, params: dict) -> dict:
         # re-issue the unanswered call forever — the permanent-"thinking" stuck
         # session in #29086.  The messaging gateway already strips this; this is
         # the WebUI/TUI resume path picking up the same cleanup.
-        display_history_prefix = display_history[
-            : max(0, len(display_history) - len(raw_history))
-        ]
+        display_history_prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
@@ -8080,7 +8136,7 @@ def _(rid, params: dict) -> dict:
 
 
 # ===========================================================================
-# Phase 2b terminal billing RPC methods
+# Phase 2b Remote Spending RPC methods
 # ===========================================================================
 #
 # These return STRUCTURED success envelopes (result.ok / result.error) rather
@@ -10006,6 +10062,22 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
+            # Surface interim assistant text (commentary emitted alongside
+            # tool calls, or the attempted final answer before a verify-on-stop
+            # nudge) so the desktop can seal it as its own segment instead of
+            # losing it when message.complete replaces the streaming buffer.
+            # Gated on display.interim_assistant_messages (default true).
+            if _load_interim_assistant_messages():
+                def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                    _emit("message.interim", sid, {
+                        "text": text,
+                        "already_streamed": already_streamed,
+                    })
+
+                agent.interim_assistant_callback = _interim_assistant_cb
+            else:
+                agent.interim_assistant_callback = None
+
             run_kwargs = {
                 "conversation_history": list(history),
                 "stream_callback": _stream,
@@ -10127,6 +10199,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
+            if result.get("response_previewed"):
+                payload["response_previewed"] = True
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -10310,6 +10384,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
+            # Clear the per-turn interim callback so a stale closure from
+            # this turn can't fire during a later turn on the same agent.
+            agent.interim_assistant_callback = None
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
@@ -11530,6 +11607,8 @@ def _(rid, params: dict) -> dict:
             from hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
+            scope = str(params.get("scope") or "").strip().lower()
+            global_scope = scope == "global"
             if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
@@ -11609,23 +11688,25 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            if session is not None:
+            if global_scope or session is None:
+                _write_config_key("agent.reasoning_effort", arg)
+                if session is not None:
+                    session.pop("create_reasoning_override", None)
+            else:
                 # Session-scoped, like the messaging gateway's `/reasoning
                 # <level>` (global persistence is `--global` / Settings →
                 # Model territory). Writing config.yaml here let every
                 # desktop model-menu selection rewrite the user's global
                 # agent.reasoning_effort to the preset default.
                 session["create_reasoning_override"] = parsed
-                if session.get("agent") is not None:
-                    session["agent"].reasoning_config = parsed
-                    _persist_live_session_runtime(session)
-                    _emit(
-                        "session.info",
-                        params.get("session_id", ""),
-                        _session_info(session["agent"], session),
-                    )
-            else:
-                _write_config_key("agent.reasoning_effort", arg)
+            if session and session.get("agent") is not None:
+                session["agent"].reasoning_config = parsed
+                _persist_live_session_runtime(session)
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(session["agent"], session),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -12004,7 +12085,67 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     return real == home or real == hermes_home
 
 
-def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dict]:
+def _repo_discovery_policy(raw: dict | None = None) -> dict:
+    """Return the effective, profile-local Desktop repository scan policy."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    defaults = DEFAULT_CONFIG["desktop"]
+    source = raw if isinstance(raw, dict) else (_load_cfg().get("desktop") or {})
+    if not isinstance(source, dict):
+        source = {}
+
+    enabled = source.get("enabled", source.get("repo_scan_enabled", defaults["repo_scan_enabled"]))
+    roots = source.get("roots", source.get("repo_scan_roots", defaults["repo_scan_roots"]))
+    excludes = source.get(
+        "exclude_paths",
+        source.get("repo_scan_exclude_paths", defaults["repo_scan_exclude_paths"]),
+    )
+
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else defaults["repo_scan_enabled"],
+        "roots": [value.strip() for value in roots if isinstance(value, str) and value.strip()]
+        if isinstance(roots, list)
+        else list(defaults["repo_scan_roots"]),
+        "exclude_paths": [
+            value.strip()
+            for value in excludes
+            if isinstance(value, str) and value.strip()
+        ]
+        if isinstance(excludes, list)
+        else list(defaults["repo_scan_exclude_paths"]),
+    }
+
+
+def _repo_discovery_policy_key(policy: dict) -> str:
+    def _paths(values: list[str]) -> list[str]:
+        normalized = set()
+        home = os.path.expanduser("~")
+        for value in values:
+            expanded = os.path.expanduser(value)
+            if not os.path.isabs(expanded):
+                expanded = os.path.join(home, expanded)
+            normalized.add(os.path.normcase(os.path.abspath(expanded)))
+        return sorted(normalized)
+
+    canonical = {
+        "enabled": bool(policy["enabled"]),
+        "roots": _paths(policy["roots"]),
+        "exclude_paths": _paths(policy["exclude_paths"]),
+    }
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+
+
+def _repo_discovery_policy_is_default(policy: dict) -> bool:
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
+        _repo_discovery_policy(DEFAULT_CONFIG["desktop"])
+    )
+
+
+def _discover_repos_payload(
+    db, *, conn=None, backfill: bool = True, include_cached: bool = True
+) -> list[dict]:
     """Merge filesystem-scanned repos (cached) with session-derived repo roots.
 
     Repo-first: the disk scan (persisted by `projects.record_repos`) surfaces
@@ -12048,6 +12189,16 @@ def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dic
         except Exception:
             logger.debug("failed to backfill repo roots", exc_info=True)
 
+    if not include_cached:
+        out = sorted(repos.values(), key=lambda repo: repo["last_active"], reverse=True)
+        for repo in out:
+            repo["label"] = (
+                repo["label"]
+                or os.path.basename(repo["root"].rstrip("/\\"))
+                or repo["root"]
+            )
+        return out
+
     # Filesystem-scanned roots from the cache (may have zero sessions). Reuse the
     # caller's projects.db connection when given, else open a short-lived one.
     try:
@@ -12084,7 +12235,20 @@ def _(rid, params: dict) -> dict:
         db = _get_db()
         if db is None:
             return _ok(rid, {"repos": []})
-        return _ok(rid, {"repos": _discover_repos_payload(db)})
+        from hermes_cli import projects_db as pdb
+
+        policy = _repo_discovery_policy()
+        policy_key = _repo_discovery_policy_key(policy)
+        with pdb.connect_closing() as conn:
+            pdb.reconcile_discovered_repos_policy(
+                conn,
+                policy_key,
+                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+            )
+            repos = _discover_repos_payload(
+                db, conn=conn, include_cached=policy["enabled"]
+            )
+        return _ok(rid, {"repos": repos, "discovery_policy": policy})
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -12097,6 +12261,22 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli import projects_db as pdb
 
+        policy = _repo_discovery_policy()
+        policy_key = _repo_discovery_policy_key(policy)
+        incoming_raw = params.get("discovery_policy")
+        incoming_policy = (
+            _repo_discovery_policy(incoming_raw)
+            if isinstance(incoming_raw, dict)
+            else None
+        )
+        incoming_matches = (
+            incoming_policy is not None
+            and _repo_discovery_policy_key(incoming_policy) == policy_key
+        )
+        accept_legacy_default = (
+            incoming_policy is None and _repo_discovery_policy_is_default(policy)
+        )
+
         pairs: list[tuple[str, str | None]] = []
         for item in params.get("repos") or []:
             if isinstance(item, str):
@@ -12105,10 +12285,34 @@ def _(rid, params: dict) -> dict:
                 pairs.append((str(item["root"]), item.get("label")))
 
         with pdb.connect_closing() as conn:
-            pdb.record_discovered_repos(conn, pairs, replace=True)
+            pdb.reconcile_discovered_repos_policy(
+                conn,
+                policy_key,
+                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+            )
+            accepted = bool(
+                policy["enabled"] and (incoming_matches or accept_legacy_default)
+            )
+            if accepted:
+                pdb.record_discovered_repos(
+                    conn, pairs, replace=True, policy_key=policy_key
+                )
+            elif not policy["enabled"]:
+                pdb.clear_discovered_repos(conn, policy_key=policy_key)
 
         db = _get_db()
-        return _ok(rid, {"repos": _discover_repos_payload(db) if db is not None else []})
+        return _ok(
+            rid,
+            {
+                "repos": _discover_repos_payload(
+                    db, include_cached=policy["enabled"]
+                )
+                if db is not None
+                else [],
+                "accepted": accepted,
+                "discovery_policy": policy,
+            },
+        )
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -12179,11 +12383,28 @@ def _project_tree_inputs(
 
     from hermes_cli import projects_db as pdb
 
+    policy = _repo_discovery_policy()
+    policy_key = _repo_discovery_policy_key(policy)
     with pdb.connect_closing() as conn:
+        if include_discovered:
+            pdb.reconcile_discovered_repos_policy(
+                conn,
+                policy_key,
+                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+            )
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
-        discovered = _discover_repos_payload(db, conn=conn, backfill=False) if include_discovered else []
+        discovered = (
+            _discover_repos_payload(
+                db,
+                conn=conn,
+                backfill=False,
+                include_cached=policy["enabled"],
+            )
+            if include_discovered
+            else []
+        )
 
     return sessions, projects, discovered, active_id
 
@@ -12320,19 +12541,23 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = ""
-        # Prefer the session's live value — `config.set reasoning` is
-        # session-scoped, so the global key may not reflect this chat.
         session = _sessions.get(params.get("session_id", ""))
-        live = getattr((session or {}).get("agent"), "reasoning_config", None)
-        if live is None and session is not None:
-            live = session.get("create_reasoning_override")
-        if isinstance(live, dict):
-            if live.get("enabled") is False:
+        reasoning_config = None
+        if session is not None:
+            if isinstance(session.get("create_reasoning_override"), dict):
+                reasoning_config = session.get("create_reasoning_override")
+            else:
+                agent = session.get("agent")
+                agent_reasoning = getattr(agent, "reasoning_config", None)
+                if isinstance(agent_reasoning, dict):
+                    reasoning_config = agent_reasoning
+
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
                 effort = "none"
             else:
-                effort = str(live.get("effort", "") or "")
-        if not effort:
+                effort = str(reasoning_config.get("effort") or "medium")
+        else:
             raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
             if raw_effort is False:
                 # YAML `reasoning_effort: false`/`off`/`no` — thinking

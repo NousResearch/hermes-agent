@@ -684,6 +684,143 @@ def test_delete_task_not_found(client):
 
 
 # ---------------------------------------------------------------------------
+# DELETE /tasks/:id ?board=  (regression: #29347)
+# ---------------------------------------------------------------------------
+#
+# The dashboard delete callbacks used to send DELETE /tasks/:id without the
+# ``?board=`` query string. The backend then fell through to
+# ``_resolve_board(None)`` → the active board (env var / current pointer /
+# ``default``), so a task that lives on a non-default board was looked up
+# on the wrong DB and the user saw a 404.
+#
+# Anchor the contract end-to-end on the backend: each non-default board's
+# task must be deletable by passing ``?board=<slug>`` and must *not* be
+# reachable via the default board's resolution chain.
+
+
+def test_delete_task_on_non_default_board_requires_board_param(client):
+    """Tasks on a non-default board are only deletable when ``?board=`` is set.
+
+    Reproduces #29347: with the buggy frontend the URL has no ``board=``,
+    the backend's ``_resolve_board(None)`` picks the active pointer (here
+    we leave the pointer on ``default``), so ``kanban_db.delete_task``
+    looks at the wrong DB and returns 404.
+    """
+    kb.create_board("my-board")
+    other_conn = kb.connect(board="my-board")
+    try:
+        other_task_id = kb.create_task(other_conn, title="lives-on-my-board")
+    finally:
+        other_conn.close()
+
+    # The pointer stays on ``default`` (mirrors the bug report's UX: user
+    # switched boards in the dashboard via localStorage, the CLI pointer
+    # wasn't touched).
+    assert kb.get_current_board() == "default"
+
+    # Buggy path: no ``?board=`` → backend resolves to ``default`` → 404.
+    bad = client.delete(f"/api/plugins/kanban/tasks/{other_task_id}")
+    assert bad.status_code == 404
+    assert "not found" in bad.json()["detail"]
+
+    # Task is still alive on its real board — the 404 was a routing miss,
+    # not a destructive operation against the wrong DB.
+    after_bad = kb.connect(board="my-board")
+    try:
+        assert kb.get_task(after_bad, other_task_id) is not None
+    finally:
+        after_bad.close()
+
+    # Fixed path: pass the dashboard's selected board explicitly.
+    good = client.delete(
+        f"/api/plugins/kanban/tasks/{other_task_id}",
+        params={"board": "my-board"},
+    )
+    assert good.status_code == 200
+    assert good.json() == {"deleted": True, "task_id": other_task_id}
+
+    after_good = kb.connect(board="my-board")
+    try:
+        assert kb.get_task(after_good, other_task_id) is None
+    finally:
+        after_good.close()
+
+
+def test_delete_task_with_board_param_does_not_cross_boards(client):
+    """``?board=`` must be honored so a delete on board A leaves board B alone.
+
+    Same task id on two boards is contrived but the strongest possible
+    isolation assertion: deleting on ``other`` must not even touch
+    ``default``.
+    """
+    default_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "stays-on-default"},
+    ).json()["task"]
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        other_task_id = kb.create_task(other_conn, title="goes-away")
+    finally:
+        other_conn.close()
+
+    r = client.delete(
+        f"/api/plugins/kanban/tasks/{other_task_id}",
+        params={"board": "other"},
+    )
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+
+    # Default board untouched.
+    default_after = client.get("/api/plugins/kanban/board?board=default").json()
+    default_ids = {
+        task["id"]
+        for column in default_after["columns"]
+        for task in column["tasks"]
+    }
+    assert default_task["id"] in default_ids
+
+    # Other board's task is gone.
+    other_after = client.get("/api/plugins/kanban/board?board=other").json()
+    other_ids = {
+        task["id"]
+        for column in other_after["columns"]
+        for task in column["tasks"]
+    }
+    assert other_task_id not in other_ids
+
+
+def test_dashboard_bundle_threads_board_into_delete_callbacks():
+    """Dashboard bundle must thread the active board into both DELETE call sites.
+
+    Pin the fix at the bundle level so a future rebuild that regresses to
+    ``${API}/tasks/${id}`` without ``withBoard()`` trips here instead of
+    silently shipping #29347 again.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    # Both callbacks must route through withBoard() with the current board.
+    assert (
+        'withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board)' in js
+    ), "deleteTask must thread board into the URL (#29347)"
+    assert (
+        'withBoard(`${API}/tasks/${encodeURIComponent(id)}`, board)' in js
+    ), "deleteSelected must thread board into each per-id URL (#29347)"
+
+    # Guard the regression: any naked ``${API}/tasks/${...}`` followed by a
+    # DELETE method literal would mean a code path got reintroduced that
+    # skips withBoard(). We allow the wrapper form (withBoard(`${API}/...`))
+    # but reject the bare form for the task-delete URL shape.
+    bad_taskid = '`${API}/tasks/${encodeURIComponent(taskId)}`, {\n       method: "DELETE",'
+    bad_loopid = '`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" }'
+    assert bad_taskid not in js, "deleteTask regressed to a board-less DELETE (#29347)"
+    assert bad_loopid not in js, "deleteSelected regressed to a board-less DELETE (#29347)"
+
+
+# ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------
 

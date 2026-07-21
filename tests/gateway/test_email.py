@@ -1773,6 +1773,32 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertTrue(ok, reason)
 
+    def test_pinned_authserv_auth_pass_authenticates(self):
+        """Purelymail's proprietary auth=pass is trusted only when its
+        Authentication-Results authserv-id is explicitly pinned."""
+        ok, reason = self._verify(
+            "Dave <dave@flatlineaudio.com>",
+            ["purelymail.com; auth=pass"],
+            authserv_id="purelymail.com",
+        )
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "auth=pass from pinned authserv-id")
+
+    def test_unpinned_auth_pass_rejected(self):
+        ok, reason = self._verify(
+            "Dave <dave@flatlineaudio.com>",
+            ["purelymail.com; auth=pass"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_auth_pass_from_wrong_authserv_rejected(self):
+        ok, reason = self._verify(
+            "Dave <dave@flatlineaudio.com>",
+            ["attacker.example; auth=pass"],
+            authserv_id="purelymail.com",
+        )
+        self.assertFalse(ok, reason)
+
     def test_spf_pass_misaligned_rejected(self):
         # SPF passes for the envelope domain, but it doesn't match From: domain.
         ok, reason = self._verify(

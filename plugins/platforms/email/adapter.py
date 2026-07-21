@@ -277,9 +277,12 @@ def _domains_aligned(a: str, b: str) -> bool:
 
 
 # Match a single "method=result" token in an Authentication-Results header,
-# e.g. ``dmarc=pass`` or ``spf=fail``.
+# e.g. ``dmarc=pass``, ``spf=fail``, or Purelymail's ``auth=pass`` for
+# authenticated SMTP submissions. ``auth=pass`` is accepted only when the
+# operator explicitly pins authserv_id to the receiving server; see
+# _verify_sender_authentication().
 _AUTH_METHOD_RE = re.compile(
-    r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE
+    r"\b(dmarc|dkim|spf|auth)\s*=\s*([a-z]+)", re.IGNORECASE
 )
 # Match a property value like ``header.from=example.com`` or
 # ``smtp.mailfrom=user@example.com``.
@@ -309,7 +312,8 @@ def _verify_sender_authentication(
     Returns ``(authenticated, reason)``. ``authenticated`` is True when:
       * a DMARC pass is recorded for the From domain, OR
       * an SPF pass aligned with the From domain, OR
-      * a DKIM pass aligned (``header.d``) with the From domain.
+      * a DKIM pass aligned (``header.d``) with the From domain, OR
+      * ``auth=pass`` comes from an explicitly pinned ``authserv_id``.
 
     When no ``Authentication-Results`` header is present at all, we return
     ``(False, "no Authentication-Results header")`` — fail-closed. Operators
@@ -365,6 +369,16 @@ def _verify_sender_authentication(
         dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
         if _domains_aligned(dkim_domain, from_domain):
             return True, "dkim=pass aligned"
+
+    # 4) Some receiving servers (notably Purelymail) stamp ``auth=pass`` for
+    # messages submitted through an authenticated SMTP session instead of
+    # emitting SPF/DKIM/DMARC properties. Trust that proprietary result only
+    # when the operator explicitly pinned authserv_id and the selected header
+    # came from that server. Without the pin, an attacker-injected
+    # Authentication-Results header could turn an allowlisted From address into
+    # host access.
+    if authserv_id and methods.get("auth") == "pass":
+        return True, "auth=pass from pinned authserv-id"
 
     return False, f"authentication failed ({trusted[:120]})"
 

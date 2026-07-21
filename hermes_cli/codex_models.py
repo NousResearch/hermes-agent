@@ -217,9 +217,12 @@ def _read_cache_models(codex_home: Path) -> List[str]:
 
     sortable.sort(key=lambda item: (item[0], item[1]))
     deduped: List[str] = []
+    seen: set[str] = set()
     for _, slug in sortable:
-        if slug not in deduped:
-            deduped.append(slug)
+        if slug in seen:
+            continue
+        seen.add(slug)
+        deduped.append(slug)
     return deduped
 
 

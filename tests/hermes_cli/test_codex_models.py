@@ -37,6 +37,30 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
     assert "gpt-5-hidden-codex" not in models
 
 
+def test_get_codex_model_ids_dedupes_duplicate_cache_slugs(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"slug": "gpt-5.3-codex", "priority": 20},
+                    {"slug": "gpt-5.4", "priority": 1},
+                    {"slug": "gpt-5.4", "priority": 2},
+                    {"slug": "gpt-5.3-codex", "priority": 30},
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    models = get_codex_model_ids()
+
+    assert models.count("gpt-5.4") == 1
+    assert models.count("gpt-5.3-codex") == 1
+    assert models.index("gpt-5.4") < models.index("gpt-5.3-codex")
+
+
 def test_setup_wizard_codex_import_resolves():
     """Regression test for #712: setup.py must import the correct function name."""
     # This mirrors the exact import used in hermes_cli/setup.py line 873.

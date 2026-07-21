@@ -599,6 +599,31 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _build_role_prompt_prefix(job: dict) -> str:
+    """Return optional role-specific execution guidance for a cron job."""
+    role = str(job.get("role") or "").strip().lower()
+    if role == "study":
+        return (
+            "[SYSTEM: This cron job is classified as role=study. Treat it as an execution loop, not a passive summary. "
+            "When a run confirms a durable gap, convert that gap into explicit follow-through before you report: update the "
+            "owning backlog/control surface in the target repo, and if the gap is really Hermes's own capability "
+            "(planning, verification, delegation, evidence handling, candidate selection, or similar), also create or "
+            "update Hermes self-improvement work via self_improvement_pipeline or an equivalent backlog issue when those "
+            "tools are available. If you decide no action is warranted yet, say why in the report instead of silently "
+            "continuing.]"
+        )
+    if role == "self-improve":
+        return (
+            "[SYSTEM: This cron job is classified as role=self-improve. Treat stale or missing evidence as a concrete "
+            "follow-through item, not a passive observation. If self_improvement_pipeline or self_improvement_evidence_gate "
+            "shows journal_entries stale or missing, either refresh the owning journal/control surface with a legitimate "
+            "new entry when this run produced a real durable outcome, or leave the reliability floor degraded and report "
+            "the exact external blocker. Do not claim the issue is fixed without advancing the journal source itself, and "
+            "do not mask true stale evidence.]"
+        )
+    return ""
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -2447,7 +2472,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "Never combine [SILENT] with content — either report your "
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
-    prompt = cron_hint + prompt
+    role_prefix = _build_role_prompt_prefix(job)
+    prompt = cron_hint + (role_prefix + "\n\n" if role_prefix else "") + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []

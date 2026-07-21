@@ -2777,6 +2777,26 @@ class TestBuildJobPromptSilentHint:
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
 
+    def test_study_role_injects_execution_guidance(self):
+        job = {"prompt": "Study Chapter 7", "role": "study"}
+        result = _build_job_prompt(job)
+        assert "classified as role=study" in result
+        assert "execution loop, not a passive summary" in result
+        assert "self_improvement_pipeline" in result
+
+    def test_self_improve_role_injects_journal_followthrough_guidance(self):
+        job = {"prompt": "Run the loop", "role": "self-improve"}
+        result = _build_job_prompt(job)
+        assert "classified as role=self-improve" in result
+        assert "journal_entries stale or missing" in result
+        assert "do not mask true stale evidence" in result
+
+    def test_non_study_role_does_not_inject_role_guidance(self):
+        job = {"prompt": "Send report", "role": "report"}
+        result = _build_job_prompt(job)
+        assert "classified as role=study" not in result
+        assert "classified as role=self-improve" not in result
+
 
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""

@@ -1,5 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { Leva, useControls } from 'leva'
 import { type CSSProperties, useEffect, useState } from 'react'
+
+import { $backdrop } from '@/store/backdrop'
 
 const BLEND_MODES = [
   'normal',
@@ -25,6 +28,7 @@ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/
 
 export function Backdrop() {
   const [controlsOpen, setControlsOpen] = useState(false)
+  const on = useStore($backdrop)
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -87,7 +91,7 @@ export function Backdrop() {
     <>
       <Leva collapsed hidden={!import.meta.env.DEV || !controlsOpen} titleBar={{ title: 'backdrop', drag: true }} />
 
-      {statue.enabled && (
+      {on && statue.enabled && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-2"

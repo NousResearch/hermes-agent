@@ -505,6 +505,20 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    # Mirror the main notification-handling block below so
+                    # display events surface and stay in step with projector
+                    # state. Without this, item/started / item/completed
+                    # events drained as part of the approval-roundtrip
+                    # preamble are projected into messages but never reach
+                    # the tool-progress display, silently hiding tool
+                    # bubbles around approvals.
+                    if self._on_event is not None:
+                        try:
+                            self._on_event(pending)
+                        except Exception:  # pragma: no cover - display callback
+                            logger.debug(
+                                "on_event callback raised", exc_info=True
+                            )
                     _apply_token_usage_notification(result, pending)
                     _apply_compaction_notification(result, pending)
                     self._track_pending_file_change(pending)
@@ -755,22 +769,22 @@ class CodexAppServerSession:
                 turn_obj = (note.get("params") or {}).get("turn") or {}
                 result.turn_id = turn_obj.get("id") or result.turn_id
                 turn_status = turn_obj.get("status")
-                if turn_status and turn_status not in {"completed", "interrupted"}:
+                if turn_status == "interrupted":
+                    result.interrupted = True
+                    result.error = result.error or "compact turn interrupted"
+                elif turn_status and turn_status != "completed":
                     err_obj = turn_obj.get("error")
-                    if err_obj:
-                        err_msg = _format_responses_error(err_obj, str(turn_status))
-                        stderr_blob = "\n".join(
-                            self._client.stderr_tail(40)
+                    err_msg = _format_responses_error(err_obj, str(turn_status))
+                    stderr_blob = "\n".join(self._client.stderr_tail(40))
+                    hint = _classify_oauth_failure(err_msg, stderr_blob)
+                    if hint is not None:
+                        result.error = hint
+                        result.should_retire = True
+                    else:
+                        result.error = self._format_error_with_stderr(
+                            f"compact turn ended status={turn_status}",
+                            err_msg,
                         )
-                        hint = _classify_oauth_failure(err_msg, stderr_blob)
-                        if hint is not None:
-                            result.error = hint
-                            result.should_retire = True
-                        else:
-                            result.error = self._format_error_with_stderr(
-                                f"compact turn ended status={turn_status}",
-                                err_msg,
-                            )
 
         if not turn_complete and not result.interrupted:
             self._issue_interrupt(result.turn_id)

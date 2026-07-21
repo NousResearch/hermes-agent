@@ -65,6 +65,7 @@ THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # maps to low on every model.  See:
 # https://platform.claude.com/docs/en/about-claude/models/migration-guide
 ADAPTIVE_EFFORT_MAP = {
+    "ultra":   "max",
     "max":     "max",
     "xhigh":   "xhigh",
     "high":    "high",
@@ -126,6 +127,8 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
     "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8":   128_000,
     # Claude 4.7
@@ -246,7 +249,13 @@ def _supports_adaptive_thinking(model: str) -> bool:
     only returns False for the explicit legacy list of older Claude families
     that require manual budget-based thinking. Non-Claude Anthropic-Messages
     models (minimax, qwen3, …) return False so they keep the manual path.
+
+    Kimi / Moonshot models are the exception: their Anthropic-compatible
+    endpoints implement the adaptive contract (``thinking.type="adaptive"``
+    + ``output_config.effort``, including ``xhigh`` and ``display``).
     """
+    if _model_name_is_kimi_family(model):
+        return True
     if not _is_claude_model(model):
         return False
     m = model.lower()
@@ -448,7 +457,8 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
 
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
-# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``
+# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
+#   and the bare Coding Plan slug ``k3`` (plus ``k3.x``/``k3-...`` variants)
 # Matched case-insensitively against the post-``normalize_model_name`` form,
 # so a caller's ``provider/vendor/model`` slug is handled the same as a
 # bare name.
@@ -458,7 +468,13 @@ _KIMI_FAMILY_MODEL_PREFIXES = (
     "k1.", "k1-",
     "k2.", "k2-",
     "k25", "k2.5",
+    "k3.", "k3-",
 )
+
+# Bare release slugs with no separator suffix (Kimi Coding Plan serves K3
+# as the exact slug ``k3``). Kept exact-match so unrelated model names that
+# merely start with the same characters don't get misclassified.
+_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
 
 
 def _model_name_is_kimi_family(model: str | None) -> bool:
@@ -470,6 +486,8 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
     if "/" in m:
         m = m.rsplit("/", 1)[-1]
+    if m in _KIMI_FAMILY_EXACT_SLUGS:
+        return True
     return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
 
 
@@ -533,8 +551,9 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
     require Authorization: Bearer instead of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints, and Azure AI
-    Foundry's Anthropic-style endpoint follow this pattern.
+    MiniMax's global and China Anthropic-compatible endpoints, Azure AI
+    Foundry's Anthropic-style endpoint, and Palantir Foundry's LLM proxy
+    follow this pattern.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
@@ -543,6 +562,11 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return (
         normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
         or "azure.com" in normalized
+        # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
+        # rejects x-api-key with 401 and requires Authorization: Bearer.
+        # Hostname match (not substring) so e.g. evil.com/palantirfoundry
+        # paths don't trigger Bearer auth.
+        or base_url_host_matches(normalized, "palantirfoundry.com")
     )
 
 
@@ -1567,7 +1591,10 @@ def _is_bedrock_model_id(model: str) -> bool:
     """
     lower = model.lower()
     # Regional inference-profile prefixes
-    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+    if any(lower.startswith(p) for p in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    )):
         return True
     # Bare Bedrock model IDs: provider.model-family
     if lower.startswith("anthropic."):
@@ -2102,7 +2129,7 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
         if not converted_blocks or all(
-            b.get("text", "").strip() == ""
+            (b.get("text") or "").strip() == ""
             for b in converted_blocks
             if isinstance(b, dict) and b.get("type") == "text"
         ):
@@ -2269,13 +2296,6 @@ def _manage_thinking_signatures(
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
-    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2287,8 +2307,12 @@ def _manage_thinking_signatures(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _preserve_unsigned_thinking:
-            # Kimi / DeepSeek: strip signed, preserve unsigned.
+        if _is_kimi_family_endpoint(base_url, model):
+            # Kimi does not enforce thinking signatures — replay as-is
+            # (shared cleanup below still strips cache markers + the internal flag).
+            pass
+        elif _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
@@ -2620,25 +2644,19 @@ def build_anthropic_kwargs(
     # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
     # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
     #
-    # Kimi's /coding endpoint speaks the Anthropic Messages protocol but has
-    # its own thinking semantics: when ``thinking.enabled`` is sent, Kimi
-    # validates the message history and requires every prior assistant
-    # tool-call message to carry OpenAI-style ``reasoning_content``.  The
-    # Anthropic path never populates that field, and
-    # ``convert_messages_to_anthropic`` strips all Anthropic thinking blocks
-    # on third-party endpoints — so the request fails with HTTP 400
-    # "thinking is enabled but reasoning_content is missing in assistant
-    # tool call message at index N".  Kimi's reasoning is driven server-side
-    # on the /coding route, so skip Anthropic's thinking parameter entirely
-    # for that host.  (Kimi on chat_completions enables thinking via
-    # extra_body in the ChatCompletionsTransport — see #13503.)
+    # Kimi / Moonshot models also use adaptive thinking: their
+    # Anthropic-compatible endpoints (api.moonshot.cn/anthropic,
+    # api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
+    # ``output_config.effort``, and the replay-validation 400s that
+    # originally motivated dropping the parameter (#13848) no longer
+    # occur.  (Kimi on chat_completions enables thinking via extra_body
+    # in the ChatCompletionsTransport — see #13503.)
     #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
-    _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
-    if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
+    if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)

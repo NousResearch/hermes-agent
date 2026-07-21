@@ -8,16 +8,22 @@ import { cn } from '@/lib/utils'
 
 import { PAGE_INSET_X } from '../layout-constants'
 
-export function SettingsContent({ children }: { children: ReactNode }) {
+// `bare` drops the page gutters + tall bottom pad for embedding in a tighter
+// surface (e.g. the boot-failure recovery card owns its own padding).
+export function SettingsContent({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
   return (
     <section className="min-h-0 overflow-hidden">
-      <div className={cn('h-full min-h-0 overflow-y-auto pb-20', PAGE_INSET_X)}>{children}</div>
+      <div className={cn('h-full min-h-0 overflow-y-auto', bare ? 'px-5 pb-6' : cn('pb-20', PAGE_INSET_X))}>
+        {children}
+      </div>
     </section>
   )
 }
 
-export function Pill({ tone = 'muted', children }: { tone?: 'muted' | 'primary'; children: ReactNode }) {
-  return <Badge variant={tone === 'primary' ? 'default' : 'muted'}>{children}</Badge>
+const PILL_VARIANT = { muted: 'muted', primary: 'default', warn: 'warn' } as const
+
+export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VARIANT; children: ReactNode }) {
+  return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
 }
 
 export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {

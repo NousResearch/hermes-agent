@@ -20,7 +20,7 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
-import { flashPet } from './petFlashStore.js'
+import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -717,6 +717,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'reaction':
+        // Core-detected affection (ily / <3 / good bot): flash the ♥ and let the
+        // pet celebrate. Same signal drives the desktop's floating hearts.
+        flashGoodVibes()
+        flashPet('jump')
+
+        return
+
       case 'tool.start':
         turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(
@@ -778,7 +786,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const allowPermanent = ev.payload.allow_permanent !== false
 
         patchOverlayState({
-          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+          approval: {
+            allowPermanent,
+            choices: ev.payload.choices,
+            command: String(ev.payload.command ?? ''),
+            description,
+            smartDenied: ev.payload.smart_denied === true
+          }
         })
         setStatus('approval needed')
 
@@ -796,6 +810,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
         setStatus('secret input needed')
+
+        return
+
+      case 'sudo.expire':
+        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
+
+        return
+
+      case 'secret.expire':
+        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
 
         return
 
@@ -922,6 +946,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.recordMessageDelta(ev.payload ?? {})
 
         return
+      case 'message.interim': {
+        const text = ev.payload?.text
+
+        if (typeof text === 'string' && text.trim()) {
+          turnController.recordInterimMessage(text)
+        }
+
+        return
+      }
+
       case 'message.complete': {
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 

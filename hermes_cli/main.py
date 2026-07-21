@@ -899,8 +899,36 @@ def _termux_should_prefetch_update_check() -> bool:
     return os.environ.get("HERMES_TERMUX_PREFETCH_UPDATES") == "1"
 
 
+def _coerce_timestamp(ts):
+    """Best-effort parse for epoch or ISO-8601 timestamp values.
+
+    SessionDB normalizes legacy ISO TEXT timestamps at the source (v23
+    migration + import coercion), but rows written by older builds can
+    still reach the formatter before that migration has run. Defensive
+    coercion keeps `hermes sessions` from crashing on `time.time() - ts`.
+    """
+    if ts is None or ts == "":
+        return None
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str):
+        raw = ts.strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def _relative_time(ts) -> str:
     """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+    ts = _coerce_timestamp(ts)
     if not ts:
         return "?"
     delta = _time.time() - ts

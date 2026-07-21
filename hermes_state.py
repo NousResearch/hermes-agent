@@ -23,6 +23,7 @@ import sqlite3
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -152,7 +153,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -1948,6 +1949,34 @@ class SessionDB:
                         )
                 except sqlite3.OperationalError as exc:
                     logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
+            if current_version < 23:
+                # v23: normalize legacy ISO-8601 TEXT timestamps to REAL epoch
+                # seconds. Sessions imported from external tools (e.g. the
+                # OpenClaw migration) could land with ISO strings in
+                # sessions.started_at/ended_at and messages.timestamp. TEXT
+                # values break SQL-level ORDER BY/MAX (TEXT sorts after REAL
+                # regardless of instant) and downstream arithmetic
+                # (``time.time() - ts`` TypeErrors in the CLI/dashboard).
+                # Normalizing once at the source fixes every reader — the
+                # rich list, the order_by_last_active CTE, list_cron_job_runs,
+                # and the dashboard's last_active subtraction — without
+                # per-row coercion on every read. strftime('%s') parses
+                # ISO-8601 (naive treated as UTC); non-parseable TEXT is
+                # left untouched rather than destroyed.
+                try:
+                    for _tbl, _cols in (
+                        ("sessions", ("started_at", "ended_at")),
+                        ("messages", ("timestamp",)),
+                    ):
+                        for _col in _cols:
+                            cursor.execute(
+                                f"UPDATE {_tbl} "
+                                f"SET {_col} = CAST(strftime('%s', {_col}) AS REAL) "
+                                f"WHERE typeof({_col}) = 'text' "
+                                f"AND strftime('%s', {_col}) IS NOT NULL"
+                            )
+                except sqlite3.OperationalError as exc:
+                    logger.debug("v23 timestamp normalization skipped: %s", exc)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -4375,14 +4404,18 @@ class SessionDB:
             tool_calls = msg.get("tool_calls")
             message_timestamp = now_ts
             if msg.get("timestamp") is not None:
-                try:
-                    ts_value = msg.get("timestamp")
-                    if hasattr(ts_value, "timestamp"):
+                ts_value = msg.get("timestamp")
+                if hasattr(ts_value, "timestamp"):
+                    try:
                         message_timestamp = float(ts_value.timestamp())
+                    except (TypeError, ValueError, OSError):
+                        logger.debug("Ignoring invalid explicit message timestamp: %r", ts_value)
+                else:
+                    coerced = self._timestamp_or_none(ts_value)
+                    if coerced is not None:
+                        message_timestamp = coerced
                     else:
-                        message_timestamp = float(ts_value)
-                except (TypeError, ValueError):
-                    logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
+                        logger.debug("Ignoring invalid explicit message timestamp: %r", ts_value)
             reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
             codex_reasoning_items = (
                 msg.get("codex_reasoning_items") if role == "assistant" else None
@@ -6220,6 +6253,36 @@ class SessionDB:
             return None
 
     @staticmethod
+    def _timestamp_or_none(value: Any) -> Optional[float]:
+        """Coerce an epoch number, numeric string, or ISO-8601 string to epoch seconds.
+
+        Import payloads produced by external exporters routinely carry ISO
+        strings; storing them as TEXT breaks SQL ordering and timestamp
+        arithmetic (see the v23 migration). Naive ISO strings are treated as
+        UTC to match SQLite's strftime('%s') used by that migration.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        return None
+
+    @staticmethod
     def _import_int_or_none(value: Any, field: str) -> Optional[int]:
         if value is None:
             return None
@@ -6435,7 +6498,7 @@ class SessionDB:
                     skipped_ids.append(session_id)
                     continue
 
-                started_at = self._float_or_none(raw.get("started_at"))
+                started_at = self._timestamp_or_none(raw.get("started_at"))
                 if started_at is None:
                     started_at = time.time()
                 archived = 1 if raw.get("archived") else 0
@@ -6470,7 +6533,7 @@ class SessionDB:
                         "model_config": raw.get("model_config"),
                         "system_prompt": raw.get("system_prompt"),
                         "started_at": started_at,
-                        "ended_at": self._float_or_none(raw.get("ended_at")),
+                        "ended_at": self._timestamp_or_none(raw.get("ended_at")),
                         "end_reason": raw.get("end_reason"),
                         "input_tokens": self._int_or_default(raw.get("input_tokens")),
                         "output_tokens": self._int_or_default(raw.get("output_tokens")),

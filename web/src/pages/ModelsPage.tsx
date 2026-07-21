@@ -7,6 +7,7 @@ import {
   DollarSign,
   Eye,
   RefreshCw,
+  ShieldCheck,
   Settings2,
   Star,
   Wrench,
@@ -31,6 +32,7 @@ import {
 import { formatTokenCount } from "@/lib/format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -41,6 +43,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { readOpenRouterZdr, withOpenRouterZdr } from "@/lib/openrouter-zdr";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -907,6 +910,105 @@ function MoaModelsModal({
   );
 }
 
+function OpenRouterZdrToggle() {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmDisable, setConfirmDisable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getConfig()
+      .then((config) => {
+        if (!cancelled) setEnabled(readOpenRouterZdr(config));
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const persist = async (next: boolean) => {
+    setSaving(true);
+    setError(null);
+    try {
+      // Re-read before writing so this focused toggle does not overwrite a
+      // model/config change made elsewhere after the page first loaded.
+      const config = await api.getConfig();
+      await api.saveConfig(withOpenRouterZdr(config, next));
+      setEnabled(next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+      setConfirmDisable(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="flex min-w-0 flex-col gap-2 border border-border/50 bg-muted/20 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="mb-0.5 flex items-center gap-2">
+            <ShieldCheck
+              className={cn(
+                "h-3 w-3",
+                enabled ? "text-success" : "text-text-tertiary",
+              )}
+            />
+            <span className="text-display text-xs font-medium tracking-wider">
+              OpenRouter Zero Data Retention
+            </span>
+            <Badge tone={enabled ? "success" : "outline"} className="text-[10px]">
+              {enabled ? "ENFORCED" : "ACCOUNT POLICY"}
+            </Badge>
+          </div>
+          <div className="text-xs text-text-secondary">
+            {enabled
+              ? "Adds provider.zdr=true to every OpenRouter request, including auxiliary calls."
+              : "Uses OpenRouter account and guardrail privacy settings without a request-time override."}
+          </div>
+          {error && (
+            <div className="mt-1 text-xs text-destructive">Failed to save: {error}</div>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
+          {(loading || saving) && <Spinner className="h-3.5 w-3.5" />}
+          <Switch
+            aria-label="Enforce OpenRouter Zero Data Retention"
+            checked={enabled}
+            disabled={loading || saving}
+            onCheckedChange={(next) => {
+              if (next) void persist(true);
+              else setConfirmDisable(true);
+            }}
+          />
+        </div>
+      </div>
+      <ConfirmDialog
+        open={confirmDisable}
+        title="Disable request-time ZDR?"
+        description="OpenRouter account and guardrail policies will still apply, but Hermes will stop forcing Zero Data Retention on each request. Some providers may retain prompts or use them for training."
+        confirmLabel="Disable ZDR"
+        cancelLabel="Keep enabled"
+        loading={saving}
+        onCancel={() => setConfirmDisable(false)}
+        onConfirm={() => void persist(false)}
+      />
+    </>
+  );
+}
+
+
 function ModelSettingsPanel({
   aux,
   refreshKey,
@@ -973,6 +1075,8 @@ function ModelSettingsPanel({
       </CardHeader>
 
       <CardContent className="min-w-0 space-y-3 pt-3">
+        <OpenRouterZdrToggle />
+
         {/* Main row */}
         <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 flex-1">

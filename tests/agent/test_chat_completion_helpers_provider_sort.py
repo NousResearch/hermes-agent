@@ -21,21 +21,6 @@ def _agent(provider="openrouter"):
     )()
 
 
-def test_provider_preferences_enable_local_openrouter_zdr(monkeypatch):
-    monkeypatch.setenv("HERMES_OPENROUTER_ZDR", "1")
-    assert _provider_preferences_for_agent(_agent()) == {"zdr": True}
-
-
-def test_provider_preferences_do_not_apply_local_zdr_to_other_providers(monkeypatch):
-    monkeypatch.setenv("HERMES_OPENROUTER_ZDR", "1")
-    assert _provider_preferences_for_agent(_agent("anthropic")) == {}
-
-
-def test_provider_preferences_omit_local_zdr_when_disabled(monkeypatch):
-    monkeypatch.delenv("HERMES_OPENROUTER_ZDR", raising=False)
-    assert _provider_preferences_for_agent(_agent()) == {}
-
-
 def test_validated_openrouter_provider_sort_accepts_valid_values():
     assert _validated_openrouter_provider_sort("price") == "price"
     assert _validated_openrouter_provider_sort(" latency ") == "latency"

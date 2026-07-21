@@ -112,6 +112,52 @@ class TestOpenRouterProfile:
         body = p.build_extra_body()
         assert body == {}
 
+    def test_transport_enforces_configured_zdr_after_request_overrides(self, monkeypatch):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        monkeypatch.setattr("hermes_cli.config.openrouter_zdr_enabled", lambda: True)
+        p = get_provider_profile("openrouter")
+        assert p is not None
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek/deepseek-chat",
+            messages=[{"role": "user", "content": "ping"}],
+            provider_profile=p,
+            extra_body_additions={"provider": {"sort": "price", "zdr": False}},
+            request_overrides={
+                "extra_body": {"provider": {"allow": ["deepinfra"], "zdr": False}}
+            },
+        )
+        assert kwargs["extra_body"]["provider"] == {
+            "allow": ["deepinfra"],
+            "zdr": True,
+        }
+
+    def test_transport_omits_zdr_when_configured_off(self, monkeypatch):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        monkeypatch.setattr("hermes_cli.config.openrouter_zdr_enabled", lambda: False)
+        p = get_provider_profile("openrouter")
+        assert p is not None
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek/deepseek-chat",
+            messages=[{"role": "user", "content": "ping"}],
+            provider_profile=p,
+        )
+        assert "extra_body" not in kwargs
+
+    def test_transport_does_not_apply_zdr_to_other_profiles(self, monkeypatch):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        monkeypatch.setattr("hermes_cli.config.openrouter_zdr_enabled", lambda: True)
+        p = get_provider_profile("nvidia")
+        assert p is not None
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="nvidia/nemotron",
+            messages=[{"role": "user", "content": "ping"}],
+            provider_profile=p,
+        )
+        assert "provider" not in kwargs.get("extra_body", {})
+
     def test_pareto_min_coding_score_emitted_for_pareto_model(self):
         """min_coding_score → plugins block when model is openrouter/pareto-code."""
         p = get_provider_profile("openrouter")

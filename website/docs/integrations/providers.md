@@ -1467,6 +1467,24 @@ Notes:
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](/user-guide/configuration#openrouter-routing--pareto-code-for-auxiliary-tasks).
 
+## OpenRouter Zero Data Retention
+
+Hermes can enforce OpenRouter's Zero Data Retention policy on every inference
+request as defense in depth beyond the privacy and guardrail settings in your
+OpenRouter account:
+
+```yaml
+openrouter:
+  zdr: true
+```
+
+Toggle **OpenRouter Zero Data Retention** from the Desktop **Models** page, or
+run `hermes config set openrouter.zdr true|false`. Changes apply to the next
+request without restarting Hermes or rebuilding the current chat session.
+When enabled, Hermes adds `provider.zdr: true` to main-agent and auxiliary
+OpenRouter requests. OpenRouter account and guardrail policies still apply and
+cannot be weakened by turning this request-level setting off.
+
 ## Fallback Providers
 
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:

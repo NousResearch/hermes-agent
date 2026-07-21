@@ -6412,14 +6412,22 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*.
+    
+    Zero or negative values are treated as "disabled timeout override" and return
+    the default, since passing timeout=0 to OpenAI/httpx SDKs can cause immediate
+    connection failures (zero timeout behaves like an already-expired deadline).
+    """
     if not task:
         return default
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("timeout")
     if raw is not None:
         try:
-            return float(raw)
+            val = float(raw)
+            # Normalize: 0 or negative means "use default" (disabled timeout override)
+            if val > 0:
+                return val
         except (ValueError, TypeError):
             pass
     return default

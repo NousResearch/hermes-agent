@@ -133,6 +133,108 @@ def test_memory_gate_on_then_apply(hermes_home):
     assert "approved entry" in store.user_entries[0]
 
 
+def test_memory_pending_v2_binds_review_to_target_revision(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    store = MemoryStore(); store.load_from_disk()
+    staged = json.loads(memory_tool("add", "memory", "reviewed fact", store=store))
+    record = wa.get_pending("memory", staged["pending_id"])
+
+    assert record["proposal_version"] == 2
+    assert record["freshness"]["target"] == "memory"
+    assert wa.versioned_record_is_intact(record)
+
+    output = handle_pending_subcommand(
+        wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store,
+    )
+    assert "Approved 1" in output
+    assert wa.pending_count("memory") == 0
+    assert "reviewed fact" in store.memory_entries
+
+
+@pytest.mark.parametrize(
+    ("proposal", "intervening"),
+    [
+        (("add", "approved add", None), ("add", "intervening", None)),
+        (("replace", "rewritten", "first"), ("add", "intervening", None)),
+        (("remove", None, "first"), ("add", "intervening", None)),
+    ],
+)
+def test_stale_memory_pending_is_terminal_and_never_mutates_live_state(
+    hermes_home, proposal, intervening,
+):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    store = MemoryStore(); store.load_from_disk()
+    store.add("memory", "first")
+    action, content, old_text = proposal
+    staged = json.loads(memory_tool(action, "memory", content, old_text, store=store))
+    action, content, old_text = intervening
+    if action == "add":
+        store.add("memory", content)
+
+    output = handle_pending_subcommand(
+        wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store,
+    )
+
+    assert "Approved 0" in output
+    assert "changed after this proposal was staged" in output
+    assert wa.pending_count("memory") == 0
+    reloaded = MemoryStore(); reloaded.load_from_disk()
+    assert "first" in reloaded.memory_entries
+    assert "intervening" in reloaded.memory_entries
+    assert "approved add" not in reloaded.memory_entries
+    assert "rewritten" not in reloaded.memory_entries
+
+
+def test_legacy_memory_pending_is_terminal_without_replay(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        wa.MEMORY,
+        {"action": "add", "target": "memory", "content": "legacy proposal"},
+        summary="legacy proposal",
+        origin="foreground",
+    )
+    store = MemoryStore(); store.load_from_disk()
+    output = handle_pending_subcommand(wa.MEMORY, ["approve", record["id"]], memory_store=store)
+
+    assert "Approved 0" in output
+    assert "legacy or failed integrity verification" in output
+    assert wa.pending_count("memory") == 0
+    assert "legacy proposal" not in store.memory_entries
+
+
+def test_modified_memory_pending_is_terminal_without_replay(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    store = MemoryStore(); store.load_from_disk()
+    staged = json.loads(memory_tool("add", "memory", "reviewed", store=store))
+    path = wa._pending_path(wa.MEMORY, staged["pending_id"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["content"] = "tampered"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    output = handle_pending_subcommand(
+        wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store,
+    )
+    assert "Approved 0" in output
+    assert "legacy or failed integrity verification" in output
+    assert wa.pending_count("memory") == 0
+    assert store.memory_entries == []
+
+
 def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
     """#46783: ``/memory approve`` from a context with no live agent (e.g. the
     Desktop GUI) passed ``memory_store=None`` into the shared handler, which
@@ -260,6 +362,31 @@ def test_skill_gate_on_then_apply_writes_file(hermes_home):
     res = json.loads(smt.apply_skill_pending(rec["payload"]))
     assert res["success"] is True
     assert smt._find_skill("applied-skill") is not None
+
+
+def test_background_skill_approval_preserves_original_provenance(hermes_home):
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import skill_usage
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        staged = json.loads(smt.skill_manage("create", "review-owned", content=_SKILL))
+    finally:
+        reset_current_write_origin(token)
+
+    output = handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+    assert "Approved 1" in output
+    assert smt._find_skill("review-owned") is not None
+    assert skill_usage.get_record("review-owned")["created_by"] == "agent"
 
 
 def test_skill_create_diff_is_full_content(hermes_home):
@@ -645,17 +772,17 @@ def test_handle_pending_list_empty(hermes_home):
 
 def test_handle_approve_all(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import MemoryStore
+    from tools.memory_tool import memory_tool, MemoryStore
     from tools import write_approval as wa
+    _set_approval("memory", True)
     store = MemoryStore(); store.load_from_disk()
-    wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
-                   summary="a", origin="foreground")
-    wa.stage_write("memory", {"action": "add", "target": "user", "content": "b"},
-                   summary="b", origin="foreground")
+    memory_tool("add", "user", "a", store=store)
+    memory_tool("add", "memory", "b", store=store)
     out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
     assert "Approved 2" in out
     assert wa.pending_count("memory") == 0
-    assert len(store.user_entries) == 2
+    assert store.user_entries == ["a"]
+    assert store.memory_entries == ["b"]
 
 
 def test_handle_reject(hermes_home):

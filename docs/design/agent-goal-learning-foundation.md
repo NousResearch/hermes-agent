@@ -94,11 +94,34 @@ The session form releases on the registered process trigger or exit; the time
 form releases at its deadline. All three reuse the existing persisted barrier
 and CAS-backed continuation flow.
 
+## Approved learning proposal freshness
+
+Memory proposals are an approval boundary, not an automatic bridge from a
+verified outcome into prompt memory.  A newly staged memory proposal carries a
+versioned, canonical record digest and a target-bound raw-byte revision of
+`MEMORY.md` or `USER.md`.  At approval, Hermes claims the record, verifies the
+review record, then compares the revision while holding the same target lock
+used for the mutation.  A changed, malformed, or legacy proposal is not
+applied and is terminally removed from the actionable queue; ordinary write
+errors still retain the existing release-and-retry behavior.
+
+The rule is deliberately strict: two proposals for the same target that were
+staged against the same old revision cannot both be applied by a later
+`approve all`.  After the first changes that target, the next proposal must be
+restaged against the current reviewed state.  This avoids silently applying a
+model-authored learning change that no longer matches the user-reviewed file.
+
+An approved staged skill proposal also replays with its original trusted
+`foreground` or `background_review` provenance.  The existing ownership,
+pin, bundled, and external-skill protections therefore remain active at the
+action sink.  This does not claim that skill review diffs are immutable:
+action-specific snapshots and conditional writes are intentionally separate
+future design work.
+
 ## Research basis and bounded decisions
 
-The local ULR journal is under
-`.omo/ultraresearch/20260721-183500-ai-agent-os/`; it records codebase and
-independent-review evidence. The following primary sources informed the
+The local ULR journals are under `.omo/ultraresearch/`; they record codebase
+and independent-review evidence. The following primary sources informed the
 boundaries rather than being copied into an implementation wholesale:
 
 - SQLite's [atomic commit design](https://sqlite.org/atomiccommit.html) and

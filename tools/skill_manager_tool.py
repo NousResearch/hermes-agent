@@ -1320,11 +1320,34 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     )
 
 
-def apply_skill_pending(payload: Dict[str, Any]) -> str:
+def apply_skill_pending(
+    payload: Dict[str, Any], *, origin: Optional[str] = None
+) -> str:
     """Replay a staged skill write, bypassing the gate. Returns the tool result
     JSON string. Called by the /skills approve handler.
+
+    An approved background proposal retains its trusted host-bound provenance
+    so the normal background ownership, pin, bundled, and external guards are
+    still evaluated at the action sink.  Direct legacy callers keep the
+    foreground default.
     """
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    replay_origin = "foreground" if origin is None else origin
+    if replay_origin not in {"foreground", BACKGROUND_REVIEW}:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Pending skill proposal has an unsupported write origin; no changes were applied.",
+            },
+            ensure_ascii=False,
+        )
     token = _skill_gate_bypass.set(True)
+    origin_token = set_current_write_origin(replay_origin)
     try:
         return skill_manage(
             action=payload.get("action", ""),
@@ -1339,6 +1362,7 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             absorbed_into=payload.get("absorbed_into"),
         )
     finally:
+        reset_current_write_origin(origin_token)
         _skill_gate_bypass.reset(token)
 
 

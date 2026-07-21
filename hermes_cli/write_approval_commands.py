@@ -128,11 +128,20 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             failed.append(f"{pending_id}: no longer pending or already being processed")
             continue
         rec, claim_path = claimed
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+        apply_result = _apply_one(subsystem, rec, memory_store)
+        ok, msg = apply_result[:2]
+        terminal = bool(apply_result[2]) if len(apply_result) > 2 else False
         if ok:
             applied += 1
             if not wa.complete_claim(claim_path):
                 failed.append(f"{pending_id}: applied; cleanup is pending and will not be replayed")
+        elif terminal:
+            if wa.complete_claim(claim_path):
+                failed.append(f"{pending_id}: {msg}")
+            else:
+                failed.append(
+                    f"{pending_id}: {msg}; terminal cleanup is pending and requires manual recovery"
+                )
         else:
             release_result = wa.release_claim(subsystem, pending_id, claim_path)
             if release_result is False:
@@ -156,16 +165,20 @@ def _apply_one(subsystem: str, rec, memory_store):
     try:
         if subsystem == wa.MEMORY:
             if memory_store is None:
-                return False, "memory store unavailable"
-            from tools.memory_tool import apply_memory_pending
-            result = apply_memory_pending(payload, memory_store)
-            return bool(result.get("success")), result.get("error", "")
+                return False, "memory store unavailable", False
+            from tools.memory_tool import apply_memory_pending_record
+            result = apply_memory_pending_record(rec, memory_store)
+            return (
+                bool(result.get("success")),
+                result.get("error", ""),
+                bool(result.get("terminal")),
+            )
         else:
             from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
-            return bool(result.get("success")), result.get("error", "")
+            result = json.loads(apply_skill_pending(payload, origin=rec.get("origin")))
+            return bool(result.get("success")), result.get("error", ""), False
     except Exception as e:
-        return False, str(e)
+        return False, str(e), False
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:

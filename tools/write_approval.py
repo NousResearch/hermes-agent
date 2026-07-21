@@ -43,6 +43,8 @@ web dashboard.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -186,8 +188,41 @@ def _valid_record(record: Any, subsystem: str, pending_id: str) -> bool:
     )
 
 
-def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str) -> Optional[Dict[str, Any]]:
+def proposal_record_digest(record: Dict[str, Any]) -> str:
+    """Return a canonical digest for a versioned pending proposal.
+
+    It binds the user-visible summary and the executable payload, but does not
+    replace the subsystem's live-state freshness check at approval time.
+    """
+    protected = {key: value for key, value in record.items() if key != "record_digest"}
+    encoded = json.dumps(
+        protected,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def versioned_record_is_intact(record: Any) -> bool:
+    """Return true only for a versioned record whose digest still matches."""
+    if not isinstance(record, dict) or not isinstance(record.get("proposal_version"), int):
+        return False
+    digest = record.get("record_digest")
+    return isinstance(digest, str) and hmac.compare_digest(
+        digest, proposal_record_digest(record)
+    )
+
+
+def stage_write(
+    subsystem: str,
+    payload: Dict[str, Any],
+    *,
+    summary: str,
+    origin: str,
+    proposal_version: Optional[int] = None,
+    freshness: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Persist a pending write and return a short record describing it.
 
     Args:
@@ -199,6 +234,11 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             For skills this is the LLM/heuristic gist; for memory it can be the
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
+        proposal_version: Optional version of a subsystem-specific proposal
+            contract.  Omitted for legacy proposal shapes.
+        freshness: Optional subsystem-specific immutable precondition captured
+            when the proposal was staged.  It must be revalidated by the
+            subsystem immediately before applying the payload.
 
     Returns a dict with ``id`` and metadata, or ``None`` when the proposal
     cannot be persisted.  A lost proposal must never be reported to a caller
@@ -217,6 +257,12 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "created_at": time.time(),
         "payload": payload,
     }
+    if proposal_version is not None:
+        record["proposal_version"] = proposal_version
+    if freshness is not None:
+        record["freshness"] = freshness
+    if proposal_version is not None:
+        record["record_digest"] = proposal_record_digest(record)
     try:
         from utils import atomic_json_write
 

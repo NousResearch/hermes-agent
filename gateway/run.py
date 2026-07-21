@@ -10996,6 +10996,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "curator":
+            return await self._handle_curator_command(event)
+
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 

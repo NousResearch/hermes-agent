@@ -5,8 +5,9 @@ Listens on ``http://<host>:<port>/v1/<path>`` and forwards each request to
 replaced by a freshly-resolved bearer from the configured adapter. The
 response is streamed back unmodified, preserving SSE.
 
-The server is intentionally minimal: it does NOT mediate, log, transform,
-or rewrite request/response bodies. It's a credential-attaching forwarder.
+The server is intentionally minimal. It supports optional adapter methods
+`map_path()` and `transform_request_body()` for path/body rewriting
+(e.g. OpenAI TTS → xAI TTS) without breaking adapters that don't implement them.
 """
 
 from __future__ import annotations
@@ -133,6 +134,13 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # need to forward large multipart uploads we'll switch to streaming
         # the request body too.
         body = await request.read()
+
+        # Safely apply optional adapter transformations.
+        # Adapters that don't implement map_path() / transform_request_body()
+        # will fall back to a lambda no-op. This keeps Nous + other
+        # adapters working without modification.
+        rel_path = getattr(adapter, "map_path", lambda p: p)(rel_path)
+        body = getattr(adapter, "transform_request_body", lambda b: b)(rel_path, body)
 
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
 

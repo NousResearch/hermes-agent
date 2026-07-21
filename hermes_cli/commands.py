@@ -2002,6 +2002,24 @@ class SlashCommandCompleter(Completer):
                             start_position=-len(sub_text),
                             display=sub,
                         )
+                return
+
+            # Path / @ context completions inside slash-command arguments.
+            # Skill slash commands often take a workspace path as their first
+            # argument (e.g. `/foundation-ai-dev-workflow ../foundation`).
+            # Once input starts with `/`, the normal non-slash path completion
+            # branch above no longer runs, so explicitly reuse it for the
+            # current argument token. Keep dynamic and static subcommand
+            # completions above first so built-in command arguments preserve
+            # their existing behavior.
+            ctx_word = self._extract_context_word(sub_text)
+            if ctx_word is not None:
+                yield from self._context_completions(ctx_word)
+                return
+            path_word = self._extract_path_word(sub_text)
+            if path_word is not None:
+                yield from self._path_completions(path_word)
+                return
             return
 
         word = text[1:]

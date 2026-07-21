@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+from prompt_toolkit.document import Document
+
 from hermes_cli.commands import SlashCommandCompleter
 
 
@@ -88,3 +90,67 @@ def test_at_file_bare_without_colon_lists_files(tmp_path, monkeypatch):
 
     assert any(t == "@file:readme.md" for t in texts), texts
     assert not any(t == "@file:src/" for t in texts)
+
+
+def test_slash_skill_argument_completes_relative_paths(tmp_path, monkeypatch):
+    """Slash skill arguments should reuse normal path completion.
+
+    Regression coverage for `/foundation-ai-dev-workflow ../foundation`,
+    where the slash-command branch previously returned before path
+    completions could run.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "foundation").mkdir()
+    (tmp_path / "foundation_dev").mkdir()
+    monkeypatch.chdir(workspace)
+
+    completer = SlashCommandCompleter(
+        skill_commands_provider=lambda: {
+            "foundation-ai-dev-workflow": {"description": "Foundation workflow"}
+        }
+    )
+    text = "/foundation-ai-dev-workflow ../foundation"
+
+    completions = list(completer.get_completions(Document(text, cursor_position=len(text)), None))
+    texts = [c.text for c in completions]
+
+    assert "../foundation/" in texts
+    assert "../foundation_dev/" in texts
+
+
+def test_slash_skill_argument_completes_at_folder_paths(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "foundation").mkdir()
+    (tmp_path / "readme.md").write_text("x")
+    monkeypatch.chdir(workspace)
+
+    completer = SlashCommandCompleter(
+        skill_commands_provider=lambda: {
+            "foundation-ai-dev-workflow": {"description": "Foundation workflow"}
+        }
+    )
+    text = "/foundation-ai-dev-workflow @folder:../"
+
+    completions = list(completer.get_completions(Document(text, cursor_position=len(text)), None))
+    texts = [c.text for c in completions]
+
+    assert "@folder:../foundation/" in texts
+    assert "@folder:../readme.md" not in texts
+
+
+def test_static_subcommand_completion_still_takes_precedence(monkeypatch, tmp_path):
+    """Built-in subcommand completions should run before path fallback."""
+    (tmp_path / "onboarding").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    completer = SlashCommandCompleter()
+    text = "/voice o"
+
+    completions = list(completer.get_completions(Document(text, cursor_position=len(text)), None))
+    texts = [c.text for c in completions]
+
+    assert "on" in texts
+    assert "onboarding/" not in texts
+

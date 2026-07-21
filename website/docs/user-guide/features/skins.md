@@ -107,6 +107,7 @@ Text strings used throughout the CLI interface.
 | `tool_emojis` | dict | Per-tool emoji overrides for spinners and progress (`{tool_name: emoji}`) | `{}` |
 | `banner_logo` | string | Rich-markup ASCII art logo (replaces the default HERMES_AGENT banner) | `""` |
 | `banner_hero` | string | Rich-markup hero art (replaces the default caduceus art) | `""` |
+| `compact` | bool | Use the minimal single-line startup banner instead of the full ASCII art and listings | `false` |
 
 ## Custom skins
 
@@ -185,6 +186,9 @@ tool_emojis:
 #   [bold #FFD700] MY AGENT [/]
 # banner_hero: |
 #   [#FFD700]  Custom art here  [/]
+
+# Compact startup banner — single line, no ASCII art or tool listing (optional)
+# compact: true
 ```
 
 ### Minimal custom skin example

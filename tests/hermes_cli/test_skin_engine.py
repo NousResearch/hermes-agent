@@ -388,3 +388,49 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+class TestSkinCompactField:
+    """Tests for the skin-level compact banner mode."""
+
+    def test_compact_defaults_to_false(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("default")
+        assert skin.compact is False
+
+    def test_compact_parsed_from_yaml(self, tmp_path, monkeypatch):
+        import yaml
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        (skins_dir / "minimal.yaml").write_text(yaml.dump({
+            "name": "minimal",
+            "description": "Compact skin",
+            "compact": True,
+        }))
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("minimal")
+        assert skin.compact is True
+
+    def test_compact_false_when_omitted_in_yaml(self, tmp_path, monkeypatch):
+        import yaml
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        (skins_dir / "normal.yaml").write_text(yaml.dump({
+            "name": "normal",
+            "description": "Normal skin without compact field",
+        }))
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("normal")
+        assert skin.compact is False
+
+    def test_compact_only_accepts_real_booleans(self):
+        from hermes_cli.skin_engine import _build_skin_config
+        # Quoted booleans must not be truthy (the bool() regression).
+        assert _build_skin_config({"name": "a", "compact": "false"}).compact is False
+        assert _build_skin_config({"name": "b", "compact": "true"}).compact is False

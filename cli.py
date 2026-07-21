@@ -3797,6 +3797,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # bell_on_approval: ring the terminal bell when a command is waiting for
+        # approval. null inherits bell_on_complete so users who enabled the bell
+        # also get alerted when the agent blocks on a prompt.
+        self.bell_on_approval = self._resolve_bell_on_approval(
+            CLI_CONFIG["display"].get("bell_on_approval", None), self.bell_on_complete
+        )
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
         # reasoning_full: when reasoning display is on, print the post-response
@@ -11389,6 +11395,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
+    @staticmethod
+    def _resolve_bell_on_approval(configured, bell_on_complete: bool) -> bool:
+        """null inherits bell_on_complete; an explicit true/false overrides it."""
+        return bool(bell_on_complete) if configured is None else bool(configured)
+
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            smart_denied: bool = False) -> str:
@@ -11424,6 +11435,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+
+            # Ring the terminal bell so a user who stepped away knows the agent
+            # is blocked waiting for approval (not just on task completion).
+            if getattr(self, "bell_on_approval", False):
+                try:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
 
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms

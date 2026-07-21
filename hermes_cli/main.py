@@ -2248,10 +2248,13 @@ def _migrate_profile_config(profile) -> None:
     settings are needed, the user is told to run ``hermes config migrate``
     with that profile active.
     """
-    import os
-    saved_home = os.environ.get("HERMES_HOME")
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = set_hermes_home_override(profile.path)
     try:
-        os.environ["HERMES_HOME"] = str(profile.path)
         from hermes_cli.config import (
             get_missing_env_vars,
             get_missing_config_fields,
@@ -2265,10 +2268,7 @@ def _migrate_profile_config(profile) -> None:
             if not (missing_env or missing_config):
                 migrate_config(interactive=False, quiet=True)
     finally:
-        if saved_home is not None:
-            os.environ["HERMES_HOME"] = saved_home
-        else:
-            os.environ.pop("HERMES_HOME", None)
+        reset_hermes_home_override(token)
 
 
 def _resolve_use_tui(args) -> bool:

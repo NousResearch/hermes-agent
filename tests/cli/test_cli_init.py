@@ -295,17 +295,22 @@ class TestPromptToolkitTerminalCompatibility:
         Broader coverage (Application wiring + delayed-CPR PTY repro) lives in
         ``tests/cli/test_cpr_local_leak.py``.
         """
+        import sys as _sys
+
         from cli import _terminal_may_leak_cpr
 
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):
             monkeypatch.delenv(var, raising=False)
 
-        assert _terminal_may_leak_cpr(platform="linux") is True
-        assert _terminal_may_leak_cpr(platform="darwin") is True
-        assert _terminal_may_leak_cpr(platform="win32") is False
+        monkeypatch.setattr(_sys, "platform", "linux")
+        assert _terminal_may_leak_cpr() is True
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        assert _terminal_may_leak_cpr() is True
+        monkeypatch.setattr(_sys, "platform", "win32")
+        assert _terminal_may_leak_cpr() is False
 
         monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
-        assert _terminal_may_leak_cpr(platform="win32") is True
+        assert _terminal_may_leak_cpr() is True
 
 
 class TestSingleQueryState:

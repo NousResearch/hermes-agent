@@ -150,6 +150,31 @@ class TestCliApprovalUi:
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
+    def test_approval_timeout_zero_waits_until_response(self):
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/example", "recursive delete")
+
+        with patch.dict(cli_module.CLI_CONFIG, {"approvals": {"timeout": 0}}):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            assert cli._approval_deadline == 0
+            time.sleep(0.2)
+            assert result == {}
+
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=2)
+
+        assert result["value"] == "once"
+
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()
         cli._approval_state = {

@@ -139,13 +139,20 @@ Deny rules are a guardrail against an honest-but-wrong agent, the same threat mo
 
 ### Approval Timeout
 
-When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
+Positive integer values for `approvals.timeout` specify a finite number of seconds; if no response arrives, the command is **denied** (fail-closed).
 
-Configure the timeout in `~/.hermes/config.yaml`:
+The values `0`, negative numbers, `null`, `false`, an empty string, and the strings `none`, `false`, `never`, and `off` disable the timeout. In this mode, approval remains pending until an explicit response or interruption.
 
 ```yaml
+# Deny if there is no response after 60 seconds.
 approvals:
-  timeout: 60  # seconds (default: 60)
+  timeout: 60
+```
+
+```yaml
+# Wait for an explicit response or interruption.
+approvals:
+  timeout: 0
 ```
 
 ### What Triggers Approval

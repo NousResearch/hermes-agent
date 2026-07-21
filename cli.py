@@ -11407,9 +11407,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         and the shared _approval_state / _approval_deadline aren't clobbered.
         """
         import time as _time
+        from tools.approval import _normalize_approval_timeout
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
+            timeout = _normalize_approval_timeout(
+                CLI_CONFIG.get("approvals", {}).get("timeout", 60)
+            )
             response_queue = queue.Queue()
 
             self._approval_state = {
@@ -11423,7 +11426,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "selected": 0,
                 "response_queue": response_queue,
             }
-            self._approval_deadline = _time.monotonic() + timeout
+            self._approval_deadline = 0 if timeout is None else _time.monotonic() + timeout
 
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
@@ -11451,9 +11454,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
                     return result
                 except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
+                    if timeout is not None:
+                        remaining = self._approval_deadline - _time.monotonic()
+                        if remaining <= 0:
+                            break
                     now = _time.monotonic()
                     if now - _last_countdown_refresh >= 1.0:
                         _last_countdown_refresh = now
@@ -14258,10 +14262,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ]
 
             if cli_ref._approval_state:
-                remaining = max(0, int(cli_ref._approval_deadline - time.monotonic()))
+                countdown = ''
+                if cli_ref._approval_deadline:
+                    remaining = max(0, int(cli_ref._approval_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
                 return [
                     ('class:hint', '  ↑/↓ to select, Enter to confirm'),
-                    ('class:clarify-countdown', f'  ({remaining}s)'),
+                    ('class:clarify-countdown', countdown),
                 ]
 
             if cli_ref._slash_confirm_state:

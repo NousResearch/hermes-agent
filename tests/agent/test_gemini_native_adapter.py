@@ -52,6 +52,40 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
     assert parts[0]["thoughtSignature"] == "sig-123"
 
 
+def test_build_native_request_adds_dummy_signature_for_cross_provider_tool_replay():
+    """Gemini 3 requires a signature on every model-side functionCall part.
+
+    Calls replayed after switching from another provider cannot carry a real
+    Gemini signature, so Google documents this sentinel for that exact case.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_from_another_provider",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": '{"name": "hermes-agent"}',
+                        },
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    part = request["contents"][0]["parts"][0]
+    assert part["functionCall"]["name"] == "skill_view"
+    assert part["thoughtSignature"] == "skip_thought_signature_validator"
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 

@@ -19,11 +19,12 @@ def message_timestamps_enabled(config: Optional[dict]) -> bool:
 
     configured = config.get("message_timestamps")
     if configured is not None:
-        return (
-            bool(configured.get("enabled", False))
-            if isinstance(configured, dict)
-            else bool(configured)
-        )
+        if isinstance(configured, dict):
+            enabled = configured.get("enabled")
+            if enabled is not None:
+                return bool(enabled)
+        else:
+            return bool(configured)
 
     gateway = config.get("gateway")
     if not isinstance(gateway, dict):
@@ -51,11 +52,19 @@ def render_turn_with_message_timestamps(
 
     for message in rendered_history:
         if message.get("role") == "user":
+            timestamp = message.get("timestamp")
             message["content"] = _render_user_message_content(
                 message.get("content"),
-                message.get("timestamp"),
+                timestamp,
                 tz=tz,
             )
+            # ``api_content`` wins over ``content`` at the final API boundary.
+            # Render the sidecar too, otherwise persisted prefetch/plugin bytes
+            # silently erase the timestamp we just added to historical context.
+            if isinstance(message.get("api_content"), str):
+                message["api_content"] = render_user_content_with_timestamp(
+                    message["api_content"], timestamp, tz=tz
+                )
 
     effective_timestamp = coerce_message_timestamp(
         time.time() if current_timestamp is None else current_timestamp,

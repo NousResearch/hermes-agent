@@ -98,6 +98,36 @@ try:
 except ImportError:
     _GUARD_AVAILABLE = False
 
+# Semantic Firewall — protects against prompt injection and persistent skill poisoning.
+# Blocks skill creation from ingested/untrusted content.
+try:
+    from agent.semantic_firewall import (
+        verify_skill_write,
+        Provenance,
+        SemanticFirewallResult,
+    )
+    _FIREWALL_AVAILABLE = True
+except ImportError:
+    _FIREWALL_AVAILABLE = False
+
+
+def _firewall_enabled() -> bool:
+    """Read skills.firewall from config (default True — defense in depth).
+
+    The semantic firewall blocks skill creation from untrusted content.
+    Users can disable with `hermes config set skills.firewall false` if
+    they understand the risks.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "firewall", "enabled"),
+            default=True,
+        )
+    except Exception:
+        return True  # Default ON for safety
+
 
 def _guard_agent_created_enabled() -> bool:
     """Read skills.guard_agent_created from config (default False).
@@ -842,6 +872,47 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Semantic Firewall Gate ──
+    # Block skill creation from ingested/untrusted content.
+    if _FIREWALL_AVAILABLE and _firewall_enabled():
+        fw_provenance = Provenance.AGENT_CREATED
+        try:
+            from tools.skill_provenance import is_background_review
+            if is_background_review():
+                fw_provenance = Provenance.CURATOR_SUGGESTED
+        except Exception:
+            pass
+        fw_result = verify_skill_write(
+            skill_name=name,
+            skill_content=content,
+            provenance=fw_provenance,
+            trigger_context=f"agent requested skill_manage create: {name}",
+        )
+        if not fw_result.allowed:
+            # Clean up the empty directory
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            if fw_result.quarantined:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Semantic Firewall blocked skill '{name}'. "
+                        f"Skill has been quarantined for review. "
+                        f"Verdict: {fw_result.verification_result.verdict if fw_result.verification_result else 'unknown'}",
+                        "Run `hermes firewall review` to inspect quarantined skills.",
+                    ),
+                    "firewall_verdict": fw_result.verification_result.verdict if fw_result.verification_result else None,
+                    "firewall_reasons": fw_result.verification_result.reasons if fw_result.verification_result else [],
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Semantic Firewall cannot verify skill '{name}'. "
+                        f"Reason: {fw_result.verification_result.reasons if fw_result.verification_result else 'unknown'} "
+                        f"Suggested action: {fw_result.verification_result.suggested_action if fw_result.verification_result else 'ask_user'}"
+                    ),
+                }
+
     # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
@@ -904,6 +975,43 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+
+    # ── Semantic Firewall Gate ──
+    if _FIREWALL_AVAILABLE and _firewall_enabled():
+        fw_provenance = Provenance.AGENT_CREATED
+        try:
+            from tools.skill_provenance import is_background_review
+            if is_background_review():
+                fw_provenance = Provenance.CURATOR_SUGGESTED
+        except Exception:
+            pass
+        fw_result = verify_skill_write(
+            skill_name=name,
+            skill_content=content,
+            provenance=fw_provenance,
+            trigger_context=f"agent requested skill_manage edit: {name}",
+        )
+        if not fw_result.allowed:
+            if fw_result.quarantined:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Semantic Firewall blocked edit on skill '{name}'. "
+                        f"Modified version has been quarantined. "
+                        f"Original skill unchanged. "
+                        f"Run `hermes firewall review` to inspect."
+                    ),
+                    "firewall_verdict": fw_result.verification_result.verdict if fw_result.verification_result else None,
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Semantic Firewall cannot verify edit on skill '{name}'. "
+                        f"Suggested: {fw_result.verification_result.suggested_action if fw_result.verification_result else 'ask_user'}"
+                    ),
+                }
+
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block

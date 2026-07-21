@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -44,9 +43,8 @@ def test_slash_worker_close_joins_drain_threads():
     references to the _SlashWorker instance and its buffers.
 
     The fix stores thread references and calls join(timeout=2) in close().
-    In production, closing proc.stdout/proc.stderr causes the readline()
-    in the drain threads to hit EOF and exit, so join() returns quickly.
-    This test uses threads that exit promptly to verify the join path works.
+    This test uses drain-thread doubles so the test directly verifies the
+    join contract rather than relying on threads that had already exited.
     """
     from tui_gateway.server import _SlashWorker
 
@@ -58,24 +56,10 @@ def test_slash_worker_close_joins_drain_threads():
     worker._closed = False
     worker.proc = _FakeProc()
 
-    # Use threads that exit quickly (simulating EOF on the pipe)
-    exit_event = threading.Event()
-    exit_event.set()  # let them exit immediately
-
-    def quick_drain():
-        exit_event.wait(timeout=5)
-
-    worker._drain_thread_stdout = threading.Thread(
-        target=quick_drain, daemon=True, name="test-drain-stdout"
-    )
-    worker._drain_thread_stderr = threading.Thread(
-        target=quick_drain, daemon=True, name="test-drain-stderr"
-    )
-    worker._drain_thread_stdout.start()
-    worker._drain_thread_stderr.start()
-
-    # Give threads time to exit
-    time.sleep(0.1)
+    stdout_thread = MagicMock(name="stdout_drain_thread")
+    stderr_thread = MagicMock(name="stderr_drain_thread")
+    worker._drain_thread_stdout = stdout_thread
+    worker._drain_thread_stderr = stderr_thread
 
     # Call close()
     worker.close()
@@ -91,14 +75,8 @@ def test_slash_worker_close_joins_drain_threads():
     worker.proc.stdout.close.assert_called()
     worker.proc.stderr.close.assert_called()
 
-    # The drain threads should have exited (they exit on their own, and
-    # close() joins them — so they're definitely not alive after close()).
-    assert not worker._drain_thread_stdout.is_alive(), (
-        "_drain_thread_stdout is still alive after close()"
-    )
-    assert not worker._drain_thread_stderr.is_alive(), (
-        "_drain_thread_stderr is still alive after close()"
-    )
+    assert stdout_thread.mock_calls == [call.join(timeout=2)]
+    assert stderr_thread.mock_calls == [call.join(timeout=2)]
 
 
 def test_slash_worker_close_is_idempotent():

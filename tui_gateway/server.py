@@ -5305,6 +5305,7 @@ def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
 def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     """Pre-analyze attached images via vision and prepend descriptions to user text."""
     import asyncio, json as _json
+    from agent.image_routing import format_image_attachment_block
     from tools.vision_tools import vision_analyze_tool
 
     prompt = (
@@ -5314,6 +5315,9 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     )
 
     parts: list[str] = []
+    attachment_block = format_image_attachment_block(image_paths)
+    if attachment_block:
+        parts.append(attachment_block)
     for path in image_paths:
         p = Path(path)
         if not p.exists():

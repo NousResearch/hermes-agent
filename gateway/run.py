@@ -16581,6 +16581,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             The enriched message string with vision descriptions prepended.
         """
         from tools.vision_tools import vision_analyze_tool
+        from agent.image_routing import format_image_attachment_block
         from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
@@ -16590,6 +16591,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         enriched_parts = []
+        attachment_block = format_image_attachment_block(image_paths)
+        if attachment_block:
+            enriched_parts.append(attachment_block)
         for path in image_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)

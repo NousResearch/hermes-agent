@@ -149,6 +149,13 @@ describe('SubscriptionOverlay — overview', () => {
     expect(out.toLowerCase()).not.toContain('credits')
   })
 
+  it('free with catalog: offers "Choose a plan" alongside the portal row', () => {
+    const out = render(overlay(freeWithCatalog()))
+
+    expect(out).toContain('Choose a plan')
+    expect(out).toContain('Start a subscription')
+  })
+
   it('subscriber: status line + plan bar + top-up bar, no "credits"', () => {
     const out = render(
       overlay(
@@ -318,6 +325,15 @@ const at = (
   extra: Partial<SubscriptionOverlayState> = {}
 ): SubscriptionOverlayState => ({ ctx, screen, state: s, ...extra })
 
+// Free account that can still see the catalog: no current sub, but NAS returns
+// the tier list (is_current false everywhere).
+const freeWithCatalog = (): SubscriptionStateResponse =>
+  state({
+    current: null,
+    tiers: TIERS.map(tier => ({ ...tier, is_current: false })),
+    usage: { available: true, plan_name: null, status: 'free' }
+  })
+
 describe('SubscriptionOverlay — overview actions', () => {
   it('admin subscriber: offers Change plan + Cancel subscription', () => {
     const out = render(overlay(subscriber()))
@@ -371,6 +387,36 @@ describe('SubscriptionOverlay — picker', () => {
     expect(out).toContain('upgrade') // ultra (order 2) > plus (order 1)
     expect(out).not.toContain('Plus · $20/mo') // current tier is not selectable
     expect(out).not.toContain('$0/mo') // free tier excluded — use Cancel instead
+  })
+
+  it('free: lists paid plans with credits instead of direction hints', () => {
+    const out = render(at('picker', freeWithCatalog()))
+
+    expect(out).toContain('Choose a plan')
+    expect(out).toContain('Plus · $20/mo · 1000 credits/mo')
+    expect(out).toContain('Ultra · $40/mo · 3000 credits/mo')
+    expect(out).not.toContain('upgrade') // nothing to move from — it's a start
+    expect(out).not.toContain('$0/mo')
+    expect(out).toContain('Enter opens the portal')
+  })
+
+  it('free: picking a plan opens the portal instead of previewing', async () => {
+    const openManageLink = vi.fn(() => Promise.resolve(true))
+    const preview = vi.fn(() => Promise.resolve(null))
+    const sys = vi.fn()
+
+    const mounted = mount(
+      at('picker', freeWithCatalog(), {
+        ctx: { ...ctx, openManageLink, preview, sys } as SubscriptionOverlayState['ctx']
+      })
+    )
+
+    inputHarness.handler?.('', { return: true }) // first row = Plus
+    await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
+    mounted.cleanup()
+
+    expect(preview).not.toHaveBeenCalled()
+    expect(sys).toHaveBeenCalledWith(expect.stringContaining('finish starting Plus'))
   })
 })
 

@@ -374,6 +374,10 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // Admin/owner on a personal paid plan can change it in-terminal; otherwise the
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
+  // On Free nothing can be mutated in-terminal (starting a subscription lives
+  // on the portal — card capture + checkout), but the catalog still renders
+  // here so plans and prices are visible before leaving the terminal.
+  const hasCatalog = isFree && s.tiers.some(tier => tier.is_enabled && tier.tier_order > 0)
 
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
   const busyRef = useRef(false)
@@ -420,6 +424,10 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
         run: () => onPatch({ pending: { kind: 'cancellation', preview: null, targetTierId: null }, screen: 'confirm' })
       })
     }
+  }
+
+  if (hasCatalog) {
+    rows.push({ label: 'Choose a plan', run: () => onPatch({ pending: null, screen: 'picker' }) })
   }
 
   rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
@@ -485,8 +493,9 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
 // ── Screen: Picker (choose a tier → preview → confirm) ───────────────
 
-function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
+function PickerScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   const { ctx, state: s } = overlay
+  const isFree = !s.current?.tier_id
   const currentOrder = s.tiers.find(tier => tier.is_current)?.tier_order ?? 0
 
   // Selectable = enabled, not the current plan, and not the free/no-sub tier
@@ -503,6 +512,20 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
       return
     }
 
+    // On Free there is no subscription to mutate — starting one lives on the
+    // portal (card capture + checkout). Route the chosen plan there.
+    if (isFree) {
+      if (s.portal_url) {
+        void ctx.openManageLink()
+        ctx.sys(`Opening the portal — finish starting ${tier.name} there, then re-run /subscription.`)
+      } else {
+        ctx.sys('🔴 No portal URL available — start your subscription on the Nous portal.')
+      }
+
+      onClose()
+      return
+    }
+
     busyRef.current = true
     void previewAndRoute(ctx, tier.tier_id, onPatch)
   }
@@ -510,6 +533,17 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
   const back = () => onPatch({ screen: 'overview' })
 
   const rows: MenuRowSpec[] = choices.map(tier => {
+    // From Free every option is a start, not a move — show what the plan
+    // includes instead of a direction hint.
+    if (isFree) {
+      const credits = tier.monthly_credits ? ` · ${tier.monthly_credits} credits/mo` : ''
+
+      return {
+        label: `${tier.name} · ${tier.dollars_per_month_display}/mo${credits}`,
+        run: () => pick(tier)
+      }
+    }
+
     const direction = tier.tier_order > currentOrder ? 'upgrade' : 'downgrade'
 
     return {
@@ -525,10 +559,12 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Change plan
+        {isFree ? 'Choose a plan' : 'Change plan'}
       </Text>
       <Text color={t.color.muted}>
-        Current: {s.current?.tier_name ?? 'Free'}. Pick a plan to see the effect before confirming.
+        {isFree
+          ? 'Current: Free. Pick a plan — you finish starting it on the portal.'
+          : `Current: ${s.current?.tier_name ?? 'Free'}. Pick a plan to see the effect before confirming.`}
       </Text>
       <Text />
       {choices.length === 0 && <Text color={t.color.muted}>No other plans are available to switch to right now.</Text>}
@@ -536,7 +572,7 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
         <MenuRow active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
       ))}
       <Text />
-      {footer('↑/↓ select · Enter preview · Esc back', t)}
+      {footer(isFree ? '↑/↓ select · Enter opens the portal · Esc back' : '↑/↓ select · Enter preview · Esc back', t)}
     </Box>
   )
 }

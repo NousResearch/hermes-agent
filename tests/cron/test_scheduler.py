@@ -166,6 +166,7 @@ class TestResolveDeliveryTarget:
             ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
             ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
             ("qqbot", "QQ_HOME_CHANNEL", "group-openid-home"),
+            ("whatsapp_cloud", "WHATSAPP_CLOUD_HOME_CHANNEL", "15551234567"),
         ],
     )
     def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
@@ -187,6 +188,7 @@ class TestResolveDeliveryTarget:
             "WECOM_HOME_CHANNEL",
             "WEIXIN_HOME_CHANNEL",
             "QQ_HOME_CHANNEL",
+            "WHATSAPP_CLOUD_HOME_CHANNEL",
         ):
             monkeypatch.delenv(fallback_env, raising=False)
         monkeypatch.setenv(env_var, chat_id)
@@ -4223,10 +4225,11 @@ class TestHomeTargetEnvVarRegistry:
         """``deliver=whatsapp_cloud`` routes through
         WHATSAPP_CLOUD_HOME_CHANNEL — added alongside the existing
         ``whatsapp`` Baileys entry."""
-        from cron.scheduler import _HOME_TARGET_ENV_VARS
+        from cron.scheduler import _HOME_TARGET_ENV_VARS, _is_known_delivery_platform
 
         assert "whatsapp_cloud" in _HOME_TARGET_ENV_VARS
         assert _HOME_TARGET_ENV_VARS["whatsapp_cloud"] == "WHATSAPP_CLOUD_HOME_CHANNEL"
+        assert _is_known_delivery_platform("whatsapp_cloud") is True
 
     def test_baileys_whatsapp_still_registered(self):
         """Sanity guard: the Cloud addition didn't disturb Baileys

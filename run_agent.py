@@ -4696,16 +4696,29 @@ class AIAgent:
             else:
                 self._client_kwargs.pop("default_headers", None)
 
-        # User-configured overrides win over URL/profile defaults — keep them
-        # applied across credential swaps and client rebuilds, not just at
-        # first construction.
-        self._apply_user_default_headers()
+        isolated_custom_fallback = getattr(
+            self, "_custom_fallback_header_isolation", False
+        )
+        if isolated_custom_fallback:
+            fallback_headers = getattr(self, "_custom_fallback_headers", {})
+            if fallback_headers:
+                merged = dict(self._client_kwargs.get("default_headers") or {})
+                merged.update(fallback_headers)
+                self._client_kwargs["default_headers"] = merged
+        else:
+            # User-configured overrides win over URL/profile defaults — keep them
+            # applied across credential swaps and client rebuilds, not just at
+            # first construction.
+            self._apply_user_default_headers()
 
         # Per-provider extra HTTP headers (providers.<name>.extra_headers /
         # custom_providers[].extra_headers) — applied last so the most
         # specific config level survives credential swaps and rebuilds too.
         # SECURITY: values may carry credentials — never log them.
-        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
+        if (
+            not isolated_custom_fallback
+            and self.api_mode not in ("anthropic_messages", "bedrock_converse")
+        ):
             try:
                 from hermes_cli.config import (
                     apply_custom_provider_extra_headers_to_client_kwargs,

@@ -7,6 +7,8 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -181,6 +183,364 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    @pytest.mark.parametrize(
+        "fallback_url",
+        [
+            "ftp://collector.invalid/v1",
+            "https:///missing-host/v1",
+            "https://trusted.example@collector.invalid/v1",
+        ],
+        ids=("non-http-scheme", "missing-host", "userinfo"),
+    )
+    def test_rejects_malformed_credential_bearing_fallback_url(
+        self, fallback_url
+    ):
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": fallback_url,
+                    "api_key": "explicit-fallback-key",
+                }
+            ]
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(
+                _mock_client(
+                    base_url=fallback_url,
+                    api_key="explicit-fallback-key",
+                ),
+                "fallback-model",
+            ),
+        ) as mock_rpc:
+            assert agent._try_activate_fallback() is False
+
+        mock_rpc.assert_not_called()
+
+    def test_bare_custom_fallback_recovers_named_provider_from_base_url(
+        self, tmp_path, monkeypatch
+    ):
+        """A persisted bare custom fallback must recover its named identity.
+
+        Exercise the real config, reverse-lookup, named-provider, and client
+        construction path. The unrelated primary key must never reach the
+        fallback endpoint.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENAI_API_KEY", "primary-provider-key")
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "custom_providers:\n"
+            "  - name: fallback-example\n"
+            "    base_url: http://127.0.0.1:1/v1\n"
+            "    api_key: named-provider-key\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": "http://127.0.0.1:1/v1",
+                }
+            ]
+        )
+
+        assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "provider") == "custom:fallback-example"
+        assert agent.api_key == "named-provider-key"
+        assert agent.client is not None
+        assert agent.client.api_key == "named-provider-key"
+        assert str(agent.client.base_url).rstrip("/") == "http://127.0.0.1:1/v1"
+
+    def test_named_fallback_key_env_uses_active_secret_scope(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FALLBACK_API_KEY", "foreign-process-key")
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "custom_providers:\n"
+            "  - name: fallback-example\n"
+            "    base_url: http://127.0.0.1:1/v1\n"
+            "    key_env: FALLBACK_API_KEY\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": "http://127.0.0.1:1/v1",
+                }
+            ]
+        )
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope(
+            {"FALLBACK_API_KEY": "active-profile-key"}
+        )
+        try:
+            assert agent._try_activate_fallback() is True
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert getattr(agent, "provider") == "custom:fallback-example"
+        assert agent.api_key == "active-profile-key"
+        assert agent.client is not None
+        assert agent.client.api_key == "active-profile-key"
+
+    def test_recovered_named_fallback_preserves_explicit_api_mode(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "custom_providers:\n"
+            "  - name: native-anthropic\n"
+            "    base_url: https://generic-relay.example/v1\n"
+            "    api_key: named-provider-key\n"
+            "    api_mode: anthropic_messages\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "claude-test",
+                    "base_url": "https://generic-relay.example/v1",
+                }
+            ]
+        )
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "provider") == "custom:native-anthropic"
+        assert getattr(agent, "api_mode") == "anthropic_messages"
+        assert agent.client is None
+
+    def test_recovered_codex_responses_fallback_keeps_raw_main_client(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "custom_providers:\n"
+            "  - name: responses-relay\n"
+            "    base_url: https://responses-relay.example/v1\n"
+            "    api_key: named-provider-key\n"
+            "    api_mode: codex_responses\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "responses-model",
+                    "base_url": "https://responses-relay.example/v1",
+                }
+            ]
+        )
+
+        assert agent._try_activate_fallback() is True
+        assert getattr(agent, "api_mode") == "codex_responses"
+        assert agent.client is not None
+        assert not isinstance(agent.client, CodexAuxiliaryClient)
+        assert hasattr(agent.client, "responses")
+
+    def test_custom_fallback_header_isolation_survives_client_rebuild(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "  default_headers:\n"
+            "    X-Primary-Auth: primary-header-value\n"
+            "custom_providers:\n"
+            "  - name: fallback-example\n"
+            "    base_url: https://fallback.example/v1\n"
+            "    api_key: named-provider-key\n"
+            "    extra_headers:\n"
+            "      X-Fallback-Auth: fallback-header-value\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": "https://fallback.example/v1",
+                }
+            ]
+        )
+
+        assert agent._try_activate_fallback() is True
+        assert agent._client_kwargs["default_headers"] == {
+            "X-Fallback-Auth": "fallback-header-value"
+        }
+
+        agent._apply_client_headers_for_base_url("https://fallback.example/v1")
+
+        assert agent._client_kwargs["default_headers"] == {
+            "X-Fallback-Auth": "fallback-header-value"
+        }
+
+    @pytest.mark.parametrize(
+        ("provider_config", "fallback_url"),
+        [
+            (
+                "custom_providers:\n"
+                "  - name: other\n"
+                "    base_url: http://127.0.0.1:1/v1\n"
+                "    api_key: other-provider-key\n",
+                "http://127.0.0.1:2/v1",
+            ),
+            (
+                "custom_providers:\n"
+                "  - name: tenant-a\n"
+                "    base_url: http://127.0.0.1:1/v1\n"
+                "    api_key: tenant-a-key\n"
+                "  - name: tenant-b\n"
+                "    base_url: http://127.0.0.1:1/v1\n"
+                "    api_key: tenant-b-key\n",
+                "http://127.0.0.1:1/v1",
+            ),
+            (
+                "providers:\n"
+                "  disabled-tenant:\n"
+                "    enabled: false\n"
+                "    api: http://127.0.0.1:1/v1\n"
+                "    api_key: disabled-provider-key\n",
+                "http://127.0.0.1:1/v1",
+            ),
+        ],
+        ids=("unknown", "shared", "disabled"),
+    )
+    def test_bare_custom_fallback_without_unique_identity_fails_closed(
+        self, tmp_path, monkeypatch, provider_config, fallback_url
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENAI_API_KEY", "primary-provider-key")
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "  extra_headers:\n"
+            "    Authorization: Bearer primary-header-secret\n"
+            + provider_config,
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": fallback_url,
+                }
+            ]
+        )
+
+        assert agent._try_activate_fallback() is True
+        assert getattr(agent, "provider") == "custom"
+        assert agent.api_key == "no-key-required"
+        assert agent.client is not None
+        assert agent.client.api_key == "no-key-required"
+        assert "primary-header-secret" not in repr(agent.client.default_headers)
+
+    def test_custom_fallback_explicit_key_env_beats_named_provider(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MY_FALLBACK_KEY", "explicit-fallback-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "primary-provider-key")
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "custom_providers:\n"
+            "  - name: fallback-example\n"
+            "    base_url: http://127.0.0.1:1/v1\n"
+            "    api_key: named-provider-key\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "key_env": "MY_FALLBACK_KEY",
+                }
+            ]
+        )
+
+        assert agent._try_activate_fallback() is True
+        assert getattr(agent, "provider") == "custom"
+        assert agent.api_key == "explicit-fallback-key"
+        assert agent.client is not None
+        assert agent.client.api_key == "explicit-fallback-key"
+
+    def test_named_custom_fallback_explicit_key_beats_configured_key(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "custom_providers:\n"
+            "  - name: fallback-example\n"
+            "    base_url: http://127.0.0.1:1/v1\n"
+            "    api_key: configured-key\n",
+            encoding="utf-8",
+        )
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom:fallback-example",
+                    "model": "fallback-model",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "api_key": "explicit-fallback-key",
+                }
+            ]
+        )
+
+        assert agent._try_activate_fallback() is True
+        assert agent.api_key == "explicit-fallback-key"
+        assert agent.client is not None
+        assert agent.client.api_key == "explicit-fallback-key"
 
     def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
         """A custom provider on the native api.anthropic.com host (no

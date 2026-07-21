@@ -1335,6 +1335,10 @@ def restore_primary_runtime(agent) -> bool:
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._client_kwargs = dict(rt["client_kwargs"])
+        # Header isolation belongs to the active custom fallback only. Clear it
+        # before any primary pool re-selection can rebuild the restored client.
+        agent._custom_fallback_header_isolation = False
+        agent._custom_fallback_headers = {}
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
         # native-vs-proxy split (older sessions saved before this PR).

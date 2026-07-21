@@ -106,6 +106,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.secret_scope import get_secret
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -4674,6 +4675,7 @@ def resolve_provider_client(
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
     task: Optional[str] = None,
+    apply_user_default_headers: bool = True,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -4701,6 +4703,9 @@ def resolve_provider_client(
             "codex_responses", or None (auto-detect).  When set to
             "codex_responses", the client is wrapped in
             CodexAuxiliaryClient to route through the Responses API.
+        apply_user_default_headers: Whether to merge model-level default
+            headers. Disable for fallback routes whose endpoint identity is
+            outside the primary model's credential boundary.
 
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
@@ -4962,7 +4967,11 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
-            _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
+            _merged_custom = (
+                _apply_user_default_headers(extra.get("default_headers"))
+                if apply_user_default_headers
+                else extra.get("default_headers")
+            )
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
@@ -4990,7 +4999,10 @@ def resolve_provider_client(
 
     # ── Named custom providers (config.yaml providers dict / custom_providers list) ───
     try:
-        from hermes_cli.runtime_provider import _get_named_custom_provider
+        from hermes_cli.runtime_provider import (
+            _get_named_custom_provider,
+            _normalize_base_url_for_match,
+        )
         # When the raw requested name is an alias (``kimi`` → ``kimi-coding``)
         # and the user defined a ``custom_providers`` entry under that alias
         # name, the custom entry is the intended target — the built-in alias
@@ -5004,11 +5016,19 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
-            custom_base = (custom_entry.get("base_url") or "").strip()
-            custom_key = (custom_entry.get("api_key") or "").strip()
+            configured_base = (custom_entry.get("base_url") or "").strip()
+            custom_base = (explicit_base_url or configured_base).strip()
+            endpoint_matches_config = (
+                not explicit_base_url
+                or _normalize_base_url_for_match(explicit_base_url)
+                == _normalize_base_url_for_match(configured_base)
+            )
+            custom_key = (explicit_api_key or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
-            if not custom_key and custom_key_env:
-                custom_key = os.getenv(custom_key_env, "").strip()
+            if not custom_key and endpoint_matches_config:
+                custom_key = (custom_entry.get("api_key") or "").strip()
+                if not custom_key and custom_key_env:
+                    custom_key = (get_secret(custom_key_env, "") or "").strip()
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
@@ -5041,7 +5061,14 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
-                _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                configured_headers = custom_entry.get("extra_headers")
+                if endpoint_matches_config and isinstance(configured_headers, dict):
+                    _extra2["default_headers"] = dict(configured_headers)
+                _headers2 = (
+                    _apply_user_default_headers(_extra2.get("default_headers"))
+                    if apply_user_default_headers
+                    else _extra2.get("default_headers")
+                )
                 if _headers2:
                     _extra2["default_headers"] = _headers2
                 logger.debug(
@@ -5066,7 +5093,13 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        if endpoint_matches_config and isinstance(configured_headers, dict):
+                            _fb_extra["default_headers"] = dict(configured_headers)
+                        _fb_headers = (
+                            _apply_user_default_headers(_fb_extra.get("default_headers"))
+                            if apply_user_default_headers
+                            else _fb_extra.get("default_headers")
+                        )
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
@@ -5083,11 +5116,11 @@ def resolve_provider_client(
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
                 # flows through here.
-                if entry_api_mode == "codex_responses" and not isinstance(
+                if not raw_codex and entry_api_mode == "codex_responses" and not isinstance(
                     client, CodexAuxiliaryClient
                 ):
                     client = CodexAuxiliaryClient(client, final_model)
-                else:
+                elif not raw_codex:
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))

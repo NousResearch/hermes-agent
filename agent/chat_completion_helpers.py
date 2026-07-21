@@ -34,6 +34,7 @@ from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
+from agent.secret_scope import get_secret
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -1633,22 +1634,99 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # endpoints (e.g. Ollama Cloud) resolve correctly instead of
         # falling through to OpenRouter defaults.
         fb_base_url_hint = (fb.get("base_url") or "").strip() or None
+        if fb_base_url_hint:
+            from hermes_cli.runtime_provider import is_valid_http_provider_base_url
+
+            if not is_valid_http_provider_base_url(fb_base_url_hint):
+                unavailable.add(fb_key)
+                logger.warning(
+                    "Fallback skip: refusing malformed or non-HTTP(S) base_url"
+                )
+                return agent._try_activate_fallback(reason)
         fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+        fb_api_mode_hint = (
+            fb.get("api_mode") or fb.get("transport") or ""
+        ).strip() or None
+        fb_custom_entry = None
+        fb_custom_headers = {}
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
             # _normalize_custom_provider_entry in hermes_cli/config.py).
             fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
             if fb_key_env:
-                fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
+                fb_api_key_hint = (get_secret(fb_key_env, "") or "").strip() or None
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.
         if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-            fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+            fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
+        if fb_provider == "custom" and fb_base_url_hint and not fb_api_key_hint:
+            # A bare custom fallback has no credential identity. Recover it only
+            # when exactly one enabled named provider owns the endpoint; shared
+            # URLs may represent different tenants, keys, or transports.
+            from hermes_cli.runtime_provider import find_custom_provider_identities
+
+            custom_identities = find_custom_provider_identities(fb_base_url_hint)
+            if len(custom_identities) == 1:
+                fb_provider = custom_identities[0]
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+
+                fb_custom_entry = _get_named_custom_provider(fb_provider) or {}
+                if not fb_api_mode_hint:
+                    fb_api_mode_hint = (
+                        fb_custom_entry.get("api_mode") or ""
+                    ).strip() or None
+            elif len(custom_identities) > 1:
+                logger.warning(
+                    "Custom fallback endpoint matches %d named providers; "
+                    "refusing to guess credentials. Set provider to "
+                    "custom:<name> explicitly.",
+                    len(custom_identities),
+                )
+                fb_api_key_hint = "no-key-required"
+            else:
+                # An anonymous endpoint has no credential identity. Fail closed
+                # instead of inheriting a primary/global key across hosts.
+                # Authenticated endpoints must declare key_env/api_key or a
+                # unique custom:<name> provider.
+                logger.warning(
+                    "Bare custom fallback has no named provider identity; "
+                    "refusing to inherit global credentials. Set provider to "
+                    "custom:<name> or configure api_key/key_env explicitly."
+                )
+                fb_api_key_hint = "no-key-required"
+        if fb_provider.lower().startswith("custom:"):
+            from hermes_cli.config import normalize_extra_headers
+            from hermes_cli.runtime_provider import (
+                _get_named_custom_provider,
+                _normalize_base_url_for_match,
+            )
+
+            if fb_custom_entry is None:
+                fb_custom_entry = _get_named_custom_provider(fb_provider) or {}
+            configured_base = str(fb_custom_entry.get("base_url") or "").strip()
+            endpoint_matches_config = (
+                not fb_base_url_hint
+                or _normalize_base_url_for_match(fb_base_url_hint)
+                == _normalize_base_url_for_match(configured_base)
+            )
+            if endpoint_matches_config:
+                fb_custom_headers = normalize_extra_headers(
+                    fb_custom_entry.get("extra_headers")
+                )
+            if not fb_api_mode_hint:
+                fb_api_mode_hint = (
+                    fb_custom_entry.get("api_mode") or ""
+                ).strip() or None
         fb_client, _resolved_fb_model = resolve_provider_client(
-            fb_provider, model=fb_model, raw_codex=True,
+            fb_provider,
+            model=fb_model,
+            raw_codex=True,
             explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint)
+            explicit_api_key=fb_api_key_hint or "",
+            api_mode=fb_api_mode_hint or "",
+            apply_user_default_headers=not fb_provider.lower().startswith("custom"),
+        )
         if fb_client is None:
             logger.warning(
                 "Fallback to %s failed: provider not configured",
@@ -1666,10 +1744,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        fb_api_mode = fb_api_mode_hint or "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if fb_api_mode_hint:
+            pass
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif (
             fb_provider == "anthropic"
@@ -1714,6 +1794,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        agent._custom_fallback_header_isolation = (
+            fb_provider.lower().startswith("custom")
+        )
+        agent._custom_fallback_headers = dict(fb_custom_headers)
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
@@ -1785,9 +1869,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # _create_request_openai_client) drop the headers,
             # causing 403s from providers like Kimi Coding that
             # require a User-Agent sentinel.
-            fb_headers = getattr(fb_client, "_custom_headers", None)
-            if not fb_headers:
-                fb_headers = getattr(fb_client, "default_headers", None)
+            if agent._custom_fallback_header_isolation:
+                fb_headers = fb_custom_headers
+            else:
+                fb_headers = getattr(fb_client, "_custom_headers", None)
+                if not fb_headers:
+                    fb_headers = getattr(fb_client, "default_headers", None)
             agent._client_kwargs = {
                 "api_key": fb_client.api_key,
                 "base_url": fb_base_url,

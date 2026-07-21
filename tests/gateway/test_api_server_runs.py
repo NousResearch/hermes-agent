@@ -25,6 +25,7 @@ from gateway.platforms.api_server import (
     security_headers_middleware,
 )
 from tools import approval as approval_mod
+from tools import clarify_gateway as clarify_mod
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,10 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    app.router.add_post(
+        "/v1/runs/{run_id}/clarification",
+        adapter._handle_run_clarification,
+    )
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 
@@ -377,6 +382,167 @@ class TestRunEvents:
         )
 
     @pytest.mark.asyncio
+    async def test_clarification_event_waits_for_exact_choice_response(self, adapter):
+        app = _create_runs_app(adapter)
+        callback_result = {}
+
+        def make_agent(**kwargs):
+            mock_agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                callback_result["answer"] = kwargs["clarify_callback"](
+                    "Pick a color OPENAI_API_KEY=sk-secret-12345678901234567890",
+                    ["Red", "Blue"],
+                )
+                return {"final_response": callback_result["answer"]}
+
+            mock_agent.run_conversation.side_effect = run_conversation
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=make_agent) as create:
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=3)
+
+                assert event["event"] == "clarify.request"
+                assert event["run_id"] == run_id
+                assert event["request_id"].startswith("clarify_")
+                assert event["prompt"] == {
+                    "version": 1,
+                    "type": "choice",
+                    "question": "Pick a color OPENAI_API_KEY=***",
+                    "choices": [
+                        {"id": "choice-1", "label": "Red"},
+                        {"id": "choice-2", "label": "Blue"},
+                    ],
+                }
+                assert create.call_args.kwargs["enable_clarify"] is True
+
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/clarification",
+                    json={
+                        "request_id": event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-2"},
+                    },
+                )
+                assert response.status == 200
+                payload = await response.json()
+                assert payload["request_id"] == event["request_id"]
+                assert payload["choice_id"] == "choice-2"
+
+                for _ in range(40):
+                    status = adapter._run_statuses[run_id]
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert callback_result["answer"] == "Blue"
+                assert status["status"] == "completed"
+                assert run_id not in adapter._run_clarify_sessions
+
+    @pytest.mark.asyncio
+    async def test_clarification_is_bound_to_run_and_single_use(self, adapter):
+        app = _create_runs_app(adapter)
+        first_run = "run_first"
+        second_run = "run_second"
+        request_id = "clarify_" + "a" * 32
+        for run_id in (first_run, second_run):
+            adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+            adapter._run_clarify_sessions[run_id] = run_id
+        clarify_mod.register(request_id, second_run, "Question?", ["One", "Two"])
+
+        async with TestClient(TestServer(app)) as cli:
+            cross_run = await cli.post(
+                f"/v1/runs/{first_run}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "choice", "choice_id": "choice-1"},
+                },
+            )
+            assert cross_run.status == 409
+
+            exact = await cli.post(
+                f"/v1/runs/{second_run}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "choice", "choice_id": "choice-2"},
+                },
+            )
+            assert exact.status == 200
+            assert clarify_mod.wait_for_response(request_id, timeout=0.1) == "Two"
+
+            duplicate = await cli.post(
+                f"/v1/runs/{second_run}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "choice", "choice_id": "choice-2"},
+                },
+            )
+            assert duplicate.status == 409
+
+    @pytest.mark.asyncio
+    async def test_clarification_rejects_malformed_and_oversized_text(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_validation"
+        request_id = "clarify_" + "b" * 32
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_clarify_sessions[run_id] = run_id
+        clarify_mod.register(request_id, run_id, "Question?", None)
+
+        async with TestClient(TestServer(app)) as cli:
+            malformed = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={"request_id": "../not-safe", "response": {"type": "text", "text": "ok"}},
+            )
+            assert malformed.status == 400
+
+            too_long = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "text", "text": "x" * 2001},
+                },
+            )
+            assert too_long.status == 400
+            assert clarify_mod.get_pending_by_id(request_id, session_key=run_id) is not None
+
+            accepted = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "text", "text": "A bounded answer"},
+                },
+            )
+            assert accepted.status == 200
+            assert clarify_mod.wait_for_response(request_id, timeout=0.1) == "A bounded answer"
+
+    @pytest.mark.asyncio
+    async def test_clarification_requires_api_auth(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        run_id = "run_auth"
+        request_id = "clarify_" + "c" * 32
+        auth_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        auth_adapter._run_clarify_sessions[run_id] = run_id
+        clarify_mod.register(request_id, run_id, "Question?", None)
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "text", "text": "answer"},
+                },
+            )
+            assert response.status == 401
+            assert clarify_mod.get_pending_by_id(request_id, session_key=run_id) is not None
+
+        clarify_mod.clear_session(run_id)
+
+    @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
         """Same client session_id must not let one run approve another run's queue."""
         app = _create_runs_app(auth_adapter)
@@ -603,6 +769,52 @@ class TestRunLifecycleSweep:
 
 
 class TestStopRun:
+    @pytest.mark.asyncio
+    async def test_stop_releases_pending_clarification(self, adapter):
+        app = _create_runs_app(adapter)
+
+        def make_agent(**kwargs):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = lambda **_run_kwargs: {
+                "final_response": kwargs["clarify_callback"](
+                    "Q" * 2500,
+                    ["X" * 600, "Y" * 600, "Z" * 600, "W" * 600, "extra"],
+                )
+            }
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=make_agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                event = await asyncio.wait_for(
+                    adapter._run_streams[run_id].get(), timeout=3
+                )
+                assert event["event"] == "clarify.request"
+                assert len(event["prompt"]["question"]) == 2000
+                assert len(event["prompt"]["choices"]) == 4
+                assert all(
+                    len(choice["label"]) == 500
+                    for choice in event["prompt"]["choices"]
+                )
+
+                stopped = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stopped.status == 200
+                assert clarify_mod.get_pending_by_id(
+                    event["request_id"], session_key=run_id
+                ) is None
+
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+                assert run_id not in adapter._run_clarify_sessions
+
     @pytest.mark.asyncio
     async def test_stop_before_agent_creation_prevents_run_start(self, adapter):
         """A stop accepted while queued must prevent agent construction."""

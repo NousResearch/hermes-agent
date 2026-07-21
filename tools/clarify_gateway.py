@@ -147,18 +147,48 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
 # Public API — gateway / adapter side
 # =========================================================================
 
-def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
-    """Unblock the agent thread waiting on ``clarify_id``.
+def get_pending_by_id(
+    clarify_id: str,
+    *,
+    session_key: Optional[str] = None,
+) -> Optional[Dict[str, object]]:
+    """Return a snapshot of an unresolved clarify request.
 
-    Returns True if an entry was found and resolved, False otherwise
-    (already resolved, expired, or never existed).
+    ``session_key`` lets transports bind an opaque request identifier to the
+    run/session that owns it without exposing the mutable queue entry.
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if (
+            entry is None
+            or entry.event.is_set()
+            or (session_key is not None and entry.session_key != session_key)
+        ):
+            return None
+        return entry.signature()
+
+
+def resolve_gateway_clarify(
+    clarify_id: str,
+    response: str,
+    *,
+    session_key: Optional[str] = None,
+) -> bool:
+    """Unblock the agent thread waiting on ``clarify_id``.
+
+    Returns True if an entry was found and resolved, False otherwise
+    (wrong session, already resolved, expired, or never existed).
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if (
+            entry is None
+            or entry.event.is_set()
+            or (session_key is not None and entry.session_key != session_key)
+        ):
             return False
-    entry.response = str(response) if response is not None else ""
-    entry.event.set()
+        entry.response = str(response) if response is not None else ""
+        entry.event.set()
     return True
 
 

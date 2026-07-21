@@ -124,6 +124,31 @@ class TestClarifyPrimitive:
 
         assert cm.resolve_gateway_clarify("nope", "anything") is False
 
+    def test_exact_resolution_is_session_bound_and_single_use(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-bound", "owner", "Q?", ["A"])
+        assert cm.get_pending_by_id("id-bound", session_key="other") is None
+        assert cm.resolve_gateway_clarify(
+            "id-bound", "A", session_key="other"
+        ) is False
+        assert not entry.event.is_set()
+
+        snapshot = cm.get_pending_by_id("id-bound", session_key="owner")
+        assert snapshot == {
+            "clarify_id": "id-bound",
+            "session_key": "owner",
+            "question": "Q?",
+            "choices": ["A"],
+        }
+        assert cm.resolve_gateway_clarify(
+            "id-bound", "A", session_key="owner"
+        ) is True
+        assert cm.resolve_gateway_clarify(
+            "id-bound", "A", session_key="owner"
+        ) is False
+        assert cm.get_pending_by_id("id-bound", session_key="owner") is None
+
     def test_resolve_after_wait_completes_is_noop(self):
         """A late resolve on a finished entry doesn't blow up."""
         from tools import clarify_gateway as cm

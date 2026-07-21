@@ -11027,6 +11027,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
+        if command and _cmd_def is None:
+            # Telegram exposes hyphenated plugin commands with underscores.
+            # Canonicalize a recognized plugin alias before access checks and
+            # hooks, not only at the later dispatch sink; otherwise an
+            # admin-only plugin could bypass its gate via /plugin_name.
+            plugin_candidate = command.replace("_", "-")
+            if plugin_candidate != command and is_gateway_known_command(plugin_candidate):
+                canonical = plugin_candidate
 
         # Expand alias quick commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.

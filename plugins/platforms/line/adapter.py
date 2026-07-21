@@ -633,6 +633,19 @@ def _truthy_env(name: str, default: bool = False) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _message_mentions_bot(message: Dict[str, Any], bot_user_id: Optional[str]) -> bool:
+    mention = message.get("mention") or {}
+    mentionees = mention.get("mentionees") or []
+    for mentionee in mentionees:
+        if mentionee.get("type") != "user":
+            continue
+        if mentionee.get("isSelf") is True:
+            return True
+        if bot_user_id and mentionee.get("userId") == bot_user_id:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -690,6 +703,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
+        # ``require_mention`` is the shared config.yaml platform setting.
+        # LINE applies it only to group and room messages; DMs remain direct.
+        self.require_group_mention = bool(extra.get("require_mention", False))
 
         # Slow-LLM postback button threshold
         try:
@@ -887,6 +903,10 @@ class LineAdapter(BasePlatformAdapter):
         except (UnicodeDecodeError, json.JSONDecodeError):
             return web.Response(status=400, text="bad json")
 
+        destination = payload.get("destination", "") or ""
+        if destination and not self._bot_user_id:
+            self._bot_user_id = destination
+
         events = payload.get("events", []) or []
         for event in events:
             try:
@@ -939,6 +959,14 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
+
+        if (
+            self.require_group_mention
+            and chat_type in ("group", "room")
+            and not _message_mentions_bot(msg, self._bot_user_id)
+        ):
+            logger.info("LINE: ignoring group/room message without bot mention chat=%s", chat_id)
+            return
 
         # Stash the reply token for outbound use.
         if chat_id and reply_token:

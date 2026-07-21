@@ -74,10 +74,10 @@ LINE_PUBLIC_URL=https://my-tunnel.example.com
 然后在 `~/.hermes/config.yaml` 中：
 
 ```yaml
-gateway:
-  platforms:
-    line:
-      enabled: true
+line:
+  enabled: true
+  # 可选：仅转发在群聊/房间中提及机器人的消息。
+  # require_mention: true
 ```
 
 这就够了 — `gateway/config.py` 中的捆绑插件扫描会自动识别 `plugins/platforms/line/`。无需编辑 `Platform.LINE` 枚举，无需注册 `_create_adapter`。
@@ -181,6 +181,15 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 **webhook 验证时提示"invalid signature"。** `Channel secret` 复制有误，或隧道重写了请求体。请先用 `curl -i https://<tunnel>/line/webhook/health` 验证 — 应返回 `{"status":"ok","platform":"line"}`。
 
 **机器人在群组中收不到消息。** 检查 `LINE_ALLOWED_GROUPS` 是否包含对应的 `C...` 群组 ID。如需查找群组 ID，发送一条测试消息后在 `~/.hermes/logs/gateway.log` 中搜索 `LINE: rejecting unauthorized source` — 被拒绝的 source 字典中包含相关 ID。
+
+**机器人在群聊或房间中对每条消息都进行回复。** 在 `~/.hermes/config.yaml` 中设置：
+
+```yaml
+line:
+  require_mention: true
+```
+
+Hermes 将只转发其 LINE 提及元数据中包含机器人用户 ID 的群聊/房间消息。私信不受影响。
 
 **`send_image` 报错"LINE_PUBLIC_URL must be set"。** LINE Messaging API 不接受二进制上传 — 图片、音频和视频必须是可访问的 HTTPS URL。将 `LINE_PUBLIC_URL` 设置为隧道的公网主机名，适配器会自动从 `/line/media/<token>/<filename>` 提供文件服务。
 

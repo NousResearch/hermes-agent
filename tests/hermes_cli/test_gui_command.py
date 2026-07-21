@@ -1094,8 +1094,9 @@ def test_desktop_macos_fixup_uses_configured_stable_identity(monkeypatch, tmp_pa
          patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value="Hermes Local"), \
          patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
          patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
-        cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+        result = cli_main._desktop_macos_relaunchable_fixup(tmp_path)
 
+    assert result is True
     assert mock_run.call_args_list[1].args[0] == [
         "/usr/bin/codesign",
         "--force",
@@ -1105,6 +1106,9 @@ def test_desktop_macos_fixup_uses_configured_stable_identity(monkeypatch, tmp_pa
         "--timestamp=none",
         "--preserve-metadata=entitlements,flags,runtime",
         str(app),
+    ]
+    assert mock_run.call_args_list[2].args[0] == [
+        "/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)
     ]
 
 
@@ -1122,11 +1126,90 @@ def test_desktop_macos_fixup_defaults_to_adhoc_signature(monkeypatch, tmp_path):
          patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value=None), \
          patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
          patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
-        cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+        result = cli_main._desktop_macos_relaunchable_fixup(tmp_path)
 
+    assert result is True
     assert mock_run.call_args_list[1].args[0] == [
         "/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)
     ]
+    assert mock_run.call_args_list[2].args[0] == [
+        "/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)
+    ]
+
+
+@pytest.mark.parametrize("key", ["CSC_LINK", "APPLE_SIGNING_IDENTITY"])
+def test_desktop_macos_fixup_honors_authoritative_no_publisher_decision(
+    monkeypatch, tmp_path, key
+):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setenv(key, "loaded-later-from-dotenv")
+    app = tmp_path / "Hermes.app"
+    executable = app / "Contents" / "MacOS" / "Hermes"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    completed = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._desktop_packaged_executable", return_value=executable), \
+         patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value=None), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
+        result = cli_main._desktop_macos_relaunchable_fixup(
+            tmp_path, publisher_signing_configured=False
+        )
+
+    assert result is True
+    assert mock_run.call_args_list[1].args[0] == [
+        "/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)
+    ]
+
+
+def test_desktop_macos_fixup_reports_sign_failure(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    app = tmp_path / "Hermes.app"
+    executable = app / "Contents" / "MacOS" / "Hermes"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    succeeded = subprocess.CompletedProcess([], 0)
+    failed = subprocess.CompletedProcess([], 1)
+
+    with patch("hermes_cli.main._desktop_packaged_executable", return_value=executable), \
+         patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value=None), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[succeeded, failed]) as mock_run:
+        result = cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+
+    assert result is False
+    assert len(mock_run.call_args_list) == 2
+    assert "macOS signing failed" in capsys.readouterr().out
+
+
+def test_desktop_macos_fixup_strictly_verifies_signature(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    app = tmp_path / "Hermes.app"
+    executable = app / "Contents" / "MacOS" / "Hermes"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    succeeded = subprocess.CompletedProcess([], 0)
+    failed = subprocess.CompletedProcess([], 1)
+
+    with patch("hermes_cli.main._desktop_packaged_executable", return_value=executable), \
+         patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value=None), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch(
+             "hermes_cli.main.subprocess.run",
+             side_effect=[succeeded, succeeded, failed],
+         ) as mock_run:
+        result = cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+
+    assert result is False
+    assert mock_run.call_args_list[2].args[0] == [
+        "/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)
+    ]
+    assert "macOS signature verification failed" in capsys.readouterr().out
 
 
 def test_desktop_macos_signing_config_error_is_visible(monkeypatch, capsys):
@@ -1146,7 +1229,8 @@ def test_desktop_macos_fixup_never_clobbers_publisher_signing(
     monkeypatch.setenv(key, "publisher-signing-configured")
     with patch("hermes_cli.main._desktop_packaged_executable") as mock_executable, \
          patch("hermes_cli.main.subprocess.run") as mock_run:
-        cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+        result = cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+    assert result is True
     mock_executable.assert_not_called()
     mock_run.assert_not_called()
 

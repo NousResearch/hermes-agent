@@ -5675,7 +5675,11 @@ def _desktop_macos_local_signing_identity() -> str | None:
         return None
 
 
-def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
+def _desktop_macos_relaunchable_fixup(
+    desktop_dir: Path,
+    *,
+    publisher_signing_configured: bool | None = None,
+) -> bool:
     """Make a locally-built macOS desktop app survive in-place self-update.
 
     An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
@@ -5693,22 +5697,29 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     that survives future rebuilds instead of changing with every cdhash.
 
     Publisher signing (CSC_LINK / APPLE_SIGNING_IDENTITY) still wins and is
-    never clobbered. Best-effort: never raises.
+    never clobbered. Callers that already made the publisher-signing decision
+    for the build may pass it explicitly so later dotenv loading cannot change
+    the fixup policy. Returns whether no fixup was needed or signing and strict
+    verification succeeded. Best-effort: never raises.
     """
     if sys.platform != "darwin":
-        return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
-        return
+        return True
+    if publisher_signing_configured is None:
+        publisher_signing_configured = bool(
+            os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY")
+        )
+    if publisher_signing_configured:
+        return True
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
-        return
+        return False
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
-        return
+        return False
     codesign = shutil.which("codesign")
     if not codesign:
-        return
+        return False
     identity = _desktop_macos_local_signing_identity() or "-"
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
@@ -5723,13 +5734,29 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
             ])
         command.append(str(app))
         result = subprocess.run(command, check=False)
-        if result.returncode != 0 and identity != "-":
+        if result.returncode != 0:
+            if identity != "-":
+                print(
+                    "  (warning: configured macOS signing identity failed: "
+                    f"{identity!r}; Full Disk Access may need to be granted again)"
+                )
+            else:
+                print("  (warning: macOS signing failed; app may not relaunch)")
+            return False
+        verification = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False,
+        )
+        if verification.returncode != 0:
             print(
-                "  (warning: configured macOS signing identity failed: "
-                f"{identity!r}; Full Disk Access may need to be granted again)"
+                "  (warning: macOS signature verification failed; "
+                "app may not relaunch)"
             )
+            return False
+        return True
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+        return False
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:

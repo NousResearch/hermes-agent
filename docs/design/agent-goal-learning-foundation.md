@@ -65,7 +65,9 @@ the goal terminal state, then records a `judge_done_unconfirmed` receipt for
 the frontend's actual workspace. Hermes reports the receipt id but does not
 promote it: the same active session in the same workspace must run
 `/goal confirm <receipt-id>`. A receipt id from another session or workspace
-is treated as unavailable. Retrieval rechecks the receipt's current workspace
+is treated as unavailable. Retrying the same confirmation from its owning
+session/workspace is idempotent: Hermes returns the first confirmation without
+rewriting its actor, timestamp, or verification snapshot. Retrieval rechecks the receipt's current workspace
 evidence and excludes a receipt after a later edit by **any** session in that
 workspace makes its supporting evidence stale. This workspace edit marker is
 monotonic: a later verification can establish a new receipt, but cannot revive

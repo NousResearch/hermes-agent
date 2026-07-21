@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import agent.verification_evidence as verification_evidence
 from agent.verification_evidence import (
     classify_verification_command,
     confirm_outcome_receipt,
@@ -346,6 +347,153 @@ def test_outcome_receipt_confirmation_requires_current_session_and_workspace(
     )
     assert confirmed is not None
     assert confirmed["reusable"] is True
+
+
+def test_confirmed_outcome_receipt_retry_is_idempotent_and_keeps_ownership_boundary(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="make confirmation retries safe",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+
+    first = confirm_outcome_receipt(
+        receipt["id"],
+        expected_session_id="s1",
+        cwd=tmp_path,
+        actor="first-confirmation",
+    )
+    retry = confirm_outcome_receipt(
+        receipt["id"],
+        expected_session_id="s1",
+        cwd=tmp_path,
+        actor="retry-must-not-overwrite",
+    )
+
+    assert first is not None
+    assert retry == first
+    with sqlite3.connect(tmp_path / ".hermes" / "verification_evidence.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM outcome_receipts").fetchone()[0] == 1
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="other-session", cwd=tmp_path
+    ) is None
+
+
+def test_confirmation_race_returns_first_winner_without_overwriting_it(
+    tmp_path, monkeypatch
+):
+    """Force a winner between the guarded read and conditional UPDATE."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1",
+        cwd=tmp_path,
+        goal="return the existing winner after a confirmation race",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+    database_path = tmp_path / ".hermes" / "verification_evidence.db"
+    winner = {
+        "actor": "concurrent-winner",
+        "confirmed_at": "2026-07-21T00:00:00+00:00",
+        "verification_status": "passed",
+        "verification_event_id": receipt["verification_event_id"],
+        "reusable": 1,
+    }
+    original_connect = verification_evidence._connect
+    injected = False
+
+    class RacingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, statement, parameters=()):
+            nonlocal injected
+            if not injected and "UPDATE outcome_receipts" in statement:
+                injected = True
+                with sqlite3.connect(database_path) as competing_connection:
+                    competing_connection.execute(
+                        """
+                        UPDATE outcome_receipts
+                        SET terminal_kind = 'achieved_confirmed',
+                            verification_status = ?,
+                            verification_event_id = ?,
+                            actor = ?,
+                            user_confirmed_at = ?,
+                            reusable = ?
+                        WHERE id = ?
+                          AND terminal_kind = 'judge_done_unconfirmed'
+                        """,
+                        (
+                            winner["verification_status"],
+                            winner["verification_event_id"],
+                            winner["actor"],
+                            winner["confirmed_at"],
+                            winner["reusable"],
+                            receipt["id"],
+                        ),
+                    )
+            return self.connection.execute(statement, parameters)
+
+        def commit(self):
+            return self.connection.commit()
+
+    monkeypatch.setattr(
+        verification_evidence,
+        "_connect",
+        lambda: RacingConnection(original_connect()),
+    )
+
+    raced = confirm_outcome_receipt(
+        receipt["id"],
+        expected_session_id="s1",
+        cwd=tmp_path,
+        actor="losing-retry-must-not-overwrite",
+    )
+
+    assert injected is True
+    assert raced is not None
+    assert raced["terminal_kind"] == "achieved_confirmed"
+    assert raced["actor"] == winner["actor"]
+    assert raced["user_confirmed_at"] == winner["confirmed_at"]
+    assert raced["verification_status"] == winner["verification_status"]
+    assert raced["verification_event_id"] == winner["verification_event_id"]
+    assert raced["reusable"] is True
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="other-session", cwd=tmp_path
+    ) is None
+    other_root = tmp_path / "other-workspace"
+    other_root.mkdir()
+    _node_project(other_root)
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=other_root
+    ) is None
 
 
 def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch):

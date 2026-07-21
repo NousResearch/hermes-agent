@@ -854,6 +854,11 @@ def confirm_outcome_receipt(
         # Do not disclose another session's receipt existence to a shared
         # gateway or TUI user who guesses a global receipt id.
         return None
+    if existing["terminal_kind"] == "achieved_confirmed":
+        # A retry from the same session/workspace is a read-only success.  In
+        # particular, do not re-evaluate proof or overwrite the first actor,
+        # timestamp, and verification snapshot.
+        return _receipt_from_row(row)
     if existing["terminal_kind"] != "judge_done_unconfirmed":
         raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
 
@@ -870,7 +875,7 @@ def confirm_outcome_receipt(
     with _DB_LOCK:
         with _connect() as conn:
             current = conn.execute(
-                "SELECT session_id, root, terminal_kind FROM outcome_receipts WHERE id = ?",
+                "SELECT * FROM outcome_receipts WHERE id = ?",
                 (receipt_id,),
             ).fetchone()
             if current is None:
@@ -880,9 +885,11 @@ def confirm_outcome_receipt(
                 or current["root"] != expected_root
             ):
                 return None
+            if current["terminal_kind"] == "achieved_confirmed":
+                return _receipt_from_row(current)
             if current["terminal_kind"] != "judge_done_unconfirmed":
                 raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
-            conn.execute(
+            update = conn.execute(
                 """
                 UPDATE outcome_receipts
                 SET terminal_kind = 'achieved_confirmed',
@@ -892,6 +899,9 @@ def confirm_outcome_receipt(
                     user_confirmed_at = ?,
                     reusable = ?
                 WHERE id = ?
+                  AND session_id = ?
+                  AND root = ?
+                  AND terminal_kind = 'judge_done_unconfirmed'
                 """,
                 (
                     verification_status_value,
@@ -900,8 +910,27 @@ def confirm_outcome_receipt(
                     confirmed_at,
                     reusable,
                     receipt_id,
+                    expected_sid,
+                    expected_root,
                 ),
             )
+            if update.rowcount == 0:
+                # Another process may have won the confirmation after the
+                # read above. Re-read instead of allowing this retry to
+                # overwrite its actor, timestamp, or evidence snapshot.
+                raced = conn.execute(
+                    "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
+                ).fetchone()
+                if raced is None:
+                    return None
+                if (
+                    raced["session_id"] != expected_sid
+                    or raced["root"] != expected_root
+                ):
+                    return None
+                if raced["terminal_kind"] == "achieved_confirmed":
+                    return _receipt_from_row(raced)
+                raise ValueError("only judge_done_unconfirmed receipts can be confirmed")
             updated = conn.execute(
                 "SELECT * FROM outcome_receipts WHERE id = ?", (receipt_id,)
             ).fetchone()

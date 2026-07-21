@@ -717,6 +717,18 @@ class TestVoiceReceiver:
         completed = receiver.check_silence()
         assert len(completed) == 0
 
+    def test_flush_pending_returns_recent_utterance_before_silence(self):
+        """Disconnect drains a valid utterance even before silence is detected."""
+        receiver = self._make_receiver()
+        receiver.map_ssrc(100, 42)
+        pcm_data = bytearray(b"\x00" * 96000)
+        receiver._buffers[100] = pcm_data
+        receiver._last_packet_time[100] = time.monotonic()
+
+        assert receiver.flush_pending() == [(42, bytes(pcm_data))]
+        assert 100 not in receiver._buffers
+        assert 100 not in receiver._last_packet_time
+
     def test_check_silence_unknown_user_discarded(self):
         receiver = self._make_receiver()
         # No SSRC mapping — user_id will be 0
@@ -1158,6 +1170,37 @@ class TestDiscordVoiceChannelMethods:
         assert 111 not in adapter._voice_text_channels
         assert 111 not in adapter._voice_sources
         assert 111 not in adapter._voice_receivers
+
+    @pytest.mark.asyncio
+    async def test_leave_voice_channel_processes_pending_audio_before_disconnect(self):
+        """Recent speech is transcribed before the voice connection is torn down."""
+        adapter = self._make_adapter()
+        events = []
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+
+        async def disconnect():
+            events.append("disconnect")
+
+        mock_vc.disconnect = disconnect
+        adapter._voice_clients[111] = mock_vc
+
+        mock_receiver = MagicMock()
+        mock_receiver.flush_pending.side_effect = lambda: events.append("flush") or [(42, b"pcm")]
+        mock_receiver.stop.side_effect = lambda: events.append("stop")
+        adapter._voice_receivers[111] = mock_receiver
+        adapter._voice_listen_tasks[111] = MagicMock()
+        adapter._is_allowed_user = MagicMock(return_value=True)
+
+        async def process(guild_id, user_id, pcm_data):
+            events.append("process")
+
+        adapter._process_voice_input = process
+
+        await adapter.leave_voice_channel(111)
+
+        assert events == ["flush", "stop", "process", "disconnect"]
+        adapter._is_allowed_user.assert_called_once_with("42", guild=adapter._client.get_guild(111), is_dm=False)
 
     @pytest.mark.asyncio
     async def test_leave_voice_channel_no_connection(self):

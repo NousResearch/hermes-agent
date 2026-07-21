@@ -101,9 +101,10 @@ fallback_providers:
 
 The fallback activates automatically when the primary model fails with:
 
-- **Rate limits** (HTTP 429) — after exhausting retry attempts
-- **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
-- **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
+- **Rate limits / billing** (HTTP 429, quota or credits exhausted) — immediately; retrying the same provider won't clear a quota
+- **Provider overload / timeouts** (HTTP 503/529, connection timeouts) — after a quick retry, since transient blips usually recover on their own
+- **Server errors** (HTTP 500, 502) — after exhausting retry attempts
+- **Auth failures** (HTTP 401, 403) — after a credential-refresh attempt fails
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly
 
@@ -121,7 +122,7 @@ Prompt caches are keyed to the model (and on most providers, the account) servin
 :::
 
 :::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+Fallback is **turn-scoped**: each new user message starts with the primary model restored (unless a rate-limit cooldown from the previous turn is still active — then the session stays on the fallback until it clears). If the primary fails mid-turn, Hermes walks the `fallback_providers` chain **in order, within that turn**: each failure advances to the next entry — the walk never returns to an earlier entry in the same turn — and entries that are unavailable, misconfigured, or resolve to the same backend that just failed are skipped. Only when the whole chain is exhausted does normal error handling take over (retries, then an error message), and a short cooldown then keeps the next turn from immediately replaying the full chain. Once things recover, the next message tries the primary again.
 :::
 
 ### Examples

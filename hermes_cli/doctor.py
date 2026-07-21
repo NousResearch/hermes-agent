@@ -799,8 +799,32 @@ def run_doctor(args):
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            oauth_logged_in = False
+            try:
+                from hermes_cli.auth import (
+                    get_codex_auth_status,
+                    get_minimax_oauth_auth_status,
+                    get_nous_auth_status,
+                    get_xai_oauth_auth_status,
+                )
+
+                oauth_logged_in = any(
+                    (status() or {}).get("logged_in")
+                    for status in (
+                        get_nous_auth_status,
+                        get_codex_auth_status,
+                        get_minimax_oauth_auth_status,
+                        get_xai_oauth_auth_status,
+                    )
+                )
+            except Exception:
+                oauth_logged_in = False
+
+            if oauth_logged_in:
+                check_ok("API key or OAuth auth configured")
+            else:
+                check_warn(f"No API key found in {_DHH}/.env")
+                issues.append("Run 'hermes setup' to configure API keys")
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'

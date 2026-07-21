@@ -443,9 +443,7 @@ describe('usePromptActions /yolo status', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.get', { key: 'yolo' })
     expect(requestGateway).not.toHaveBeenCalledWith('config.set', expect.anything())
     expect($yoloActive.get()).toBe(true)
-    expect($notifications.get()[0]?.message).toBe(
-      'YOLO mode is ON. Dangerous-command approval prompts are bypassed.'
-    )
+    expect($notifications.get()[0]?.message).toBe('YOLO mode is ON. Dangerous-command approval prompts are bypassed.')
   })
 
   it('keeps runtime and stored session identity paired while status is pending', async () => {
@@ -592,11 +590,7 @@ describe('usePromptActions /yolo status', () => {
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
     await handle!.submitText('/yolo status')

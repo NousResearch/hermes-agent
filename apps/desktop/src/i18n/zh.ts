@@ -2732,8 +2732,7 @@ export const zh: Translations = {
     warningLine: message => `警告：${message}`,
     yoloArmed: '此对话已启用 YOLO',
     yoloOff: 'YOLO 已关闭',
-    yoloStatus: active =>
-      active ? 'YOLO 模式已开启。危险命令的审批提示会被跳过。' : 'YOLO 模式已关闭。',
+    yoloStatus: active => (active ? 'YOLO 模式已开启。危险命令的审批提示会被跳过。' : 'YOLO 模式已关闭。'),
     yoloStatusFailed: '无法读取 YOLO 状态',
     yoloStatusRequiresNewerBackend: '精确的 YOLO 状态需要更新版本的 Hermes 后端',
     yoloSystem: active => `此会话 YOLO ${active ? '已开启' : '已关闭'}`,

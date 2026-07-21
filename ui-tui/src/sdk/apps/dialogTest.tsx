@@ -64,4 +64,3 @@ export const dialogTestApp = defineWidgetApp<DialogTestState>({
     )
   }
 })
-

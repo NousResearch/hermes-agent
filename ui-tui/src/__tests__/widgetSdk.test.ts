@@ -7,13 +7,18 @@ import { getWidgetApp, listWidgetApps } from '../sdk/registry.js'
 import type { WidgetInput } from '../sdk/types.js'
 
 const key = (overrides: Partial<WidgetInput['key']> = {}, ch = ''): WidgetInput =>
-  ({ ch, key: { ctrl: false, escape: false, leftArrow: false, return: false, rightArrow: false, ...overrides } }) as WidgetInput
+  ({
+    ch,
+    key: { ctrl: false, escape: false, leftArrow: false, return: false, rightArrow: false, ...overrides }
+  }) as WidgetInput
 
 beforeEach(() => resetOverlayState())
 
 describe('widget SDK host', () => {
   it('registers the reference apps', () => {
-    expect(listWidgetApps().map(app => app.id)).toEqual(expect.arrayContaining(['dialog-test', 'grid-test', 'ticker', 'weather']))
+    expect(listWidgetApps().map(app => app.id)).toEqual(
+      expect.arrayContaining(['dialog-test', 'grid-test', 'ticker', 'weather'])
+    )
     expect(getWidgetApp('grid-test')).toBe(gridTestApp)
   })
 

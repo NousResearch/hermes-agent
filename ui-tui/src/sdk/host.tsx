@@ -12,21 +12,35 @@ import type { ActiveWidget, AmbientZone, WidgetApp, WidgetInput } from './types.
 /**
  * The widget-app host. Core integrates through exactly four touchpoints:
  * launch (slash commands), dispatch (the input pipeline), the MODAL render
- * slot (viewport-level), and the AMBIENT dock (in-flow, above the status
- * bar). Everything else — state shape, keybindings, presentation — belongs
- * to the app.
+ * slot (viewport-level), and the AMBIENT surfaces (dock rows + side rails,
+ * all reserving real space). Everything else — state shape, keybindings,
+ * presentation — belongs to the app.
  */
+
+// ── placement ────────────────────────────────────────────────────────
 
 const isAmbient = (app: WidgetApp<never>) => app.mode === 'ambient'
 
-const withoutApp = (dock: ActiveWidget[], id: string) => dock.filter(active => active.appId !== id)
+const zoneOf = (active: ActiveWidget): AmbientZone => getWidgetApp(active.appId)?.zone ?? 'dock-bottom'
 
-const dockWith = (dock: ActiveWidget[], entry: ActiveWidget) => [...withoutApp(dock, entry.appId), entry]
+const withoutApp = (ambient: ActiveWidget[], id: string) => ambient.filter(active => active.appId !== id)
+
+/** Route a launched app to its slot: ambient apps join the dock array
+ *  (replacing any prior instance), modal apps take the single modal slot. */
+function place(app: WidgetApp<never>, state: unknown): void {
+  if (isAmbient(app)) {
+    patchOverlayState({ ambient: [...withoutApp($overlayState.get().ambient, app.id), { appId: app.id, state }] })
+  } else {
+    patchOverlayState({ widget: { appId: app.id, state } })
+  }
+}
+
+// ── launch / close / update ──────────────────────────────────────────
 
 /** Launch by id. Returns null on success, a printable error/usage line on
- *  refusal — the caller owns the transcript. Relaunching a DOCKED ambient
- *  app (with no new argument) toggles it out of the dock — ambient apps
- *  capture no input, so the command is their only dismissal. */
+ *  refusal — the caller owns the transcript. Relaunching an active ambient
+ *  app (with no new argument) toggles it away — ambient apps capture no
+ *  input, so the command is their only dismissal. */
 export function launchWidget(id: string, arg = ''): null | string {
   const app = getWidgetApp(id)
 
@@ -35,10 +49,10 @@ export function launchWidget(id: string, arg = ''): null | string {
   }
 
   if (isAmbient(app)) {
-    const dock = $overlayState.get().ambient
+    const ambient = $overlayState.get().ambient
 
-    if (dock.some(active => active.appId === id) && !arg.trim()) {
-      patchOverlayState({ ambient: withoutApp(dock, id) })
+    if (ambient.some(active => active.appId === id) && !arg.trim()) {
+      patchOverlayState({ ambient: withoutApp(ambient, id) })
 
       return null
     }
@@ -50,11 +64,7 @@ export function launchWidget(id: string, arg = ''): null | string {
     return app.usage ?? `usage: /${id}`
   }
 
-  if (isAmbient(app)) {
-    patchOverlayState({ ambient: dockWith($overlayState.get().ambient, { appId: id, state }) })
-  } else {
-    patchOverlayState({ widget: { appId: id, state } })
-  }
+  place(app, state)
 
   return null
 }
@@ -65,40 +75,30 @@ export const closeWidget = () => patchOverlayState({ widget: null })
 
 /** Programmatic, TYPED launch — bypasses string parsing. Apps use this to
  *  stack each other (the host swaps the active modal app). */
-export function openWidget<S>(app: WidgetApp<S>, state: S): void {
-  if (isAmbient(app as WidgetApp<never>)) {
-    patchOverlayState({ ambient: dockWith($overlayState.get().ambient, { appId: app.id, state }) })
-  } else {
-    patchOverlayState({ widget: { appId: app.id, state } })
-  }
-}
+export const openWidget = <S,>(app: WidgetApp<S>, state: S): void => place(app as WidgetApp<never>, state)
 
 /** Async state delivery: patch the app's state ONLY while it is still active
  *  in its slot — a late fetch resolution can never resurrect a closed app or
  *  clobber a different one. This is how data-backed apps land results
  *  outside the input pipeline (see the weather reference app). */
 export function updateWidget<S>(app: WidgetApp<S>, fn: (state: S) => S): void {
-  if (isAmbient(app as WidgetApp<never>)) {
-    const dock = $overlayState.get().ambient
+  const overlay = $overlayState.get()
 
-    if (!dock.some(active => active.appId === app.id)) {
-      return
+  if (isAmbient(app as WidgetApp<never>)) {
+    if (overlay.ambient.some(active => active.appId === app.id)) {
+      patchOverlayState({
+        ambient: overlay.ambient.map(active =>
+          active.appId === app.id ? { appId: app.id, state: fn(active.state as S) } : active
+        )
+      })
     }
 
-    patchOverlayState({
-      ambient: dock.map(active => (active.appId === app.id ? { appId: app.id, state: fn(active.state as S) } : active))
-    })
-
     return
   }
 
-  const active = $overlayState.get().widget
-
-  if (active?.appId !== app.id) {
-    return
+  if (overlay.widget?.appId === app.id) {
+    patchOverlayState({ widget: { appId: app.id, state: fn(overlay.widget.state as S) } })
   }
-
-  patchOverlayState({ widget: { appId: app.id, state: fn(active.state as S) } })
 }
 
 /** Feed one keypress to the active MODAL app (ambient apps capture no
@@ -129,6 +129,8 @@ export function dispatchWidgetInput(input: WidgetInput): boolean {
 
   return true
 }
+
+// ── render ───────────────────────────────────────────────────────────
 
 /** Crash isolation: a widget throwing in render must NEVER take the TUI
  *  down (user widgets are agent-generated code). The boundary swaps the
@@ -163,43 +165,52 @@ class WidgetBoundary extends Component<
   }
 }
 
-const renderApp = (active: ActiveWidget, ctx: { cols: number; rows: number; t: never }) => {
+interface RenderCtx {
+  cols: number
+  rows: number
+  t: never
+}
+
+const useRenderCtx = (): RenderCtx => {
+  const t = useStore($uiTheme)
+  const { stdout } = useStdout()
+
+  return { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never }
+}
+
+const renderApp = (active: ActiveWidget, ctx: RenderCtx) => {
   const app = getWidgetApp(active.appId)
 
   if (!app) {
     return null
   }
 
-  const t = ctx.t as { color: { error: string } }
-
   return (
-    <WidgetBoundary appId={active.appId} errorColor={t.color.error} key={active.appId}>
+    <WidgetBoundary
+      appId={active.appId}
+      errorColor={(ctx.t as { color: { error: string } }).color.error}
+      key={active.appId}
+    >
       {app.render({ ...ctx, state: active.state as never })}
     </WidgetBoundary>
   )
 }
 
+const CardStack = ({ apps, ctx }: { apps: ActiveWidget[]; ctx: RenderCtx }) => (
+  <Box flexDirection="column" rowGap={1}>
+    {apps.map(active => (
+      <Box key={active.appId}>{renderApp(active, ctx)}</Box>
+    ))}
+  </Box>
+)
+
 /** Render slot for the MODAL app — viewport-level, so it can anchor
  *  `Overlay` zones and backdrops against the full terminal. */
 export function ActiveWidgetSlot(): ReactNode {
   const overlay = useStore($overlayState)
-  const t = useStore($uiTheme)
-  const { stdout } = useStdout()
+  const ctx = useRenderCtx()
 
-  if (!overlay.widget) {
-    return null
-  }
-
-  return renderApp(overlay.widget, { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never })
-}
-
-const zoneOf = (active: ActiveWidget): AmbientZone => getWidgetApp(active.appId)?.zone ?? 'dock-bottom'
-
-const useAmbientCtx = () => {
-  const t = useStore($uiTheme)
-  const { stdout } = useStdout()
-
-  return { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never }
+  return overlay.widget ? renderApp(overlay.widget, ctx) : null
 }
 
 /** An in-FLOW dock row: reserves real rows in the chrome (never covers
@@ -207,7 +218,7 @@ const useAmbientCtx = () => {
  *  bar, `dock-bottom` above the bottom one. */
 export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-top' }): ReactNode {
   const overlay = useStore($overlayState)
-  const ctx = useAmbientCtx()
+  const ctx = useRenderCtx()
   const docked = overlay.ambient.filter(active => zoneOf(active) === placement)
 
   if (!docked.length) {
@@ -225,10 +236,12 @@ export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-to
   )
 }
 
+// ── rails ────────────────────────────────────────────────────────────
+
 const DEFAULT_RAIL_WIDTH = 44
 
 const railSide = (zone: AmbientZone): 'left' | 'right' | null =>
-  zone === 'top-left' || zone === 'bottom-left' ? 'left' : zone === 'top-right' || zone === 'bottom-right' ? 'right' : null
+  zone.endsWith('-left') ? 'left' : zone.endsWith('-right') ? 'right' : null
 
 const railApps = (ambient: ActiveWidget[], side: 'left' | 'right') =>
   ambient.filter(active => railSide(zoneOf(active)) === side)
@@ -244,39 +257,30 @@ export function ambientRailWidth(side: 'left' | 'right', ambient = $overlayState
 
 /** Live rail width for layout math (re-renders on dock changes). */
 export function useAmbientRailWidth(side: 'left' | 'right'): number {
-  const overlay = useStore($overlayState)
-
-  return ambientRailWidth(side, overlay.ambient)
+  return ambientRailWidth(side, useStore($overlayState).ambient)
 }
 
 /** A side rail: a RESERVED column beside the transcript holding corner
- *  widgets — `top-*` zones anchor to its top, `bottom-*` to its bottom.
- *  Widgets take real space; nothing overlays content. */
+ *  widgets — `top-*` zones stack from its top, `bottom-*` from its bottom. */
 export function AmbientRail({ side }: { side: 'left' | 'right' }): ReactNode {
   const overlay = useStore($overlayState)
-  const ctx = useAmbientCtx()
+  const ctx = useRenderCtx()
   const apps = railApps(overlay.ambient, side)
 
   if (!apps.length) {
     return null
   }
 
-  const top = apps.filter(active => zoneOf(active).startsWith('top'))
-  const bottom = apps.filter(active => zoneOf(active).startsWith('bottom'))
-  const width = ambientRailWidth(side, overlay.ambient)
-
   return (
-    <Box flexDirection="column" flexShrink={0} justifyContent="space-between" paddingX={1} width={width}>
-      <Box flexDirection="column" rowGap={1}>
-        {top.map(active => (
-          <Box key={active.appId}>{renderApp(active, ctx)}</Box>
-        ))}
-      </Box>
-      <Box flexDirection="column" rowGap={1}>
-        {bottom.map(active => (
-          <Box key={active.appId}>{renderApp(active, ctx)}</Box>
-        ))}
-      </Box>
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      justifyContent="space-between"
+      paddingX={1}
+      width={ambientRailWidth(side, overlay.ambient)}
+    >
+      <CardStack apps={apps.filter(active => zoneOf(active).startsWith('top'))} ctx={ctx} />
+      <CardStack apps={apps.filter(active => zoneOf(active).startsWith('bottom'))} ctx={ctx} />
     </Box>
   )
 }

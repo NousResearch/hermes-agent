@@ -320,6 +320,47 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     assert session.get("_compute_host_active") is not True
 
 
+def test_agent_terminal_live_output_is_redacted_before_tui_emit(monkeypatch):
+    from tools.process_registry import ProcessSession, process_registry
+
+    secret = "sk-proj-synthetictuigatewaysecret123456789"
+    emitted = []
+    sid = "terminal-redaction-sid"
+    session_key = "terminal-redaction-key"
+    process = ProcessSession(
+        id="proc_terminal_redaction",
+        command=f"API_TOKEN={secret} python app.py",
+        session_key=session_key,
+    )
+    server._sessions[sid] = {"session_key": session_key}
+    monkeypatch.setattr(process_registry, "on_output", None)
+    monkeypatch.setattr(process_registry, "on_close", None)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, owner_sid, payload=None: emitted.append((
+            event,
+            owner_sid,
+            payload,
+        )),
+    )
+
+    try:
+        server._wire_agent_terminal_output()
+        split_at = 1
+        process_registry._emit_output(process, f"READY {secret[:split_at]}")
+        process_registry._emit_output(process, f"{secret[split_at:]}\n")
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert emitted[0][0:2] == ("agent.terminal.output", sid)
+    assert emitted[0][2]["process_id"] == process.id
+    tui_output = "".join(event[2]["chunk"] for event in emitted)
+    assert "READY" in tui_output
+    assert secret not in tui_output
+    assert secret not in json.dumps(emitted)
+
+
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
     session = _session(
         agent=None,

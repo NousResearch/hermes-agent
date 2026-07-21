@@ -20,6 +20,9 @@ from tools.process_registry import (
 )
 
 
+SYNTHETIC_SECRET = "sk-proj-syntheticprocessregistrysecret123456789"
+
+
 @pytest.fixture()
 def registry():
     """Create a fresh ProcessRegistry."""
@@ -251,6 +254,106 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert session.exited is True
     assert session.exit_code == 0
     assert moved == ["proc_reader_live"]
+
+
+def test_reader_redacts_before_process_output_reaches_any_surface(
+    registry, monkeypatch
+):
+    class _FakeBuffer:
+        def __init__(self):
+            split_at = 1
+            self._chunks = [
+                f"READY {SYNTHETIC_SECRET[:split_at]}".encode(),
+                f"{SYNTHETIC_SECRET[split_at:]}\n".encode(),
+                b"",
+            ]
+
+        def read1(self, _size):
+            return self._chunks.pop(0)
+
+    class _FakeStdout:
+        def __init__(self):
+            self.buffer = _FakeBuffer()
+
+    class _FakeProcess:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    session = _make_session(
+        sid="proc_redaction_surfaces",
+        command=f"API_TOKEN={SYNTHETIC_SECRET} python app.py",
+        task_id="redaction-task",
+    )
+    session.process = _FakeProcess()
+    session.notify_on_complete = True
+    session.watch_patterns = ["k-proj-"]
+    registry._running[session.id] = session
+    live_tui_chunks = []
+    registry.on_output = lambda _session, chunk: live_tui_chunks.append(chunk)
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
+
+    registry._reader_loop(session)
+
+    queued_events = []
+    while not registry.completion_queue.empty():
+        queued_events.append(registry.completion_queue.get_nowait())
+
+    from tools import process_registry as process_registry_module
+
+    monkeypatch.setattr(process_registry_module, "process_registry", registry)
+    listed = json.loads(
+        process_registry_module._handle_process(
+            {"action": "list"}, task_id="redaction-task"
+        )
+    )
+    surfaced = {
+        "persisted": session.output_buffer,
+        "list": listed,
+        "live_tui": live_tui_chunks,
+        "completion_queue": queued_events,
+        "poll": registry.poll(session.id),
+        "log": registry.read_log(session.id),
+        "wait": registry.wait(session.id, timeout=1),
+    }
+
+    assert any(event["type"] == "watch_match" for event in queued_events)
+    assert any(event["type"] == "completion" for event in queued_events)
+    assert "READY" in session.output_buffer
+    assert "READY" in "".join(live_tui_chunks)
+    assert SYNTHETIC_SECRET not in json.dumps(surfaced)
+
+
+def test_reader_uses_command_aware_terminal_redaction(registry, monkeypatch):
+    opaque_secret = "syntheticopaqueprocesssecret123456789"
+
+    class _FakeStdout:
+        class _Buffer:
+            def __init__(self):
+                self._chunks = [f"PRIVATE_TOKEN={opaque_secret}\n".encode(), b""]
+
+            def read1(self, _size):
+                return self._chunks.pop(0)
+
+        def __init__(self):
+            self.buffer = self._Buffer()
+
+    process = MagicMock(stdout=_FakeStdout(), returncode=0)
+    process.wait.return_value = 0
+    session = _make_session(sid="proc_env_redaction", command="printenv")
+    session.process = process
+    registry._running[session.id] = session
+    emitted = []
+    registry.on_output = lambda _session, chunk: emitted.append(chunk)
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
+
+    registry._reader_loop(session)
+
+    assert opaque_secret not in session.output_buffer
+    assert opaque_secret not in "".join(emitted)
 
 
 # =========================================================================

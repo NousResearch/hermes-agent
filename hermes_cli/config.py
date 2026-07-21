@@ -3006,16 +3006,18 @@ DEFAULT_CONFIG = {
             #   Tier 0 — no MCP/plugin tools: everything stays eager.
             #   Tier 1 — catalog listing fits the budget: bridge + skills-style
             #     name+description manifest (degrades to names-only).
-            #   Tier 2 — listing over budget even names-only (e.g. Cloudflare's
-            #     ~3,300-tool flat API surface): bare bridge, discovery through
-            #     tool_search only.
+            #   Tier 2 — per-tool listing over budget even names-only (e.g.
+            #     Cloudflare's ~3,300-tool flat API surface): bare bridge +
+            #     a one-line-per-server summary (name + tool count) so the
+            #     model knows which domains are reachable; individual tools
+            #     discoverable through tool_search only.
             # "auto"/"on" — activate when at least one deferrable tool exists.
             # "off" — disable entirely. Tools-array assembly is a pass-through.
             "enabled": "auto",
             # Listing budget as a percentage of the active model's context
             # length. Effective budget = min(this % of context,
-            # listing_max_tokens). 10 matches the Claude Code default. Range 0..100.
-            "threshold_pct": 10,
+            # listing_max_tokens). Range 0..100.
+            "threshold_pct": 5,
             # When the model calls tool_search without a ``limit`` argument,
             # how many hits to return. Range 1..max_search_limit.
             "search_default_limit": 5,

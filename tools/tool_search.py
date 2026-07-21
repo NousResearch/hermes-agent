@@ -14,12 +14,14 @@ for the full rationale):
   size is the *listing*, not the activation decision:
     - Tier 0 — no MCP/plugin tools: pure passthrough, everything eager.
     - Tier 1 — deferred tools whose catalog listing fits the listing budget
-      (``min(threshold_pct`` of context, ``listing_max_tokens)``): bridge +
-      skills-style listing (name + short description per tool), degrading to
-      a names-only listing when the full form is over budget.
-    - Tier 2 — listing over budget even names-only (e.g. Cloudflare's flat
-      API surface, ~3,300 tools whose names alone are ~32K tokens): bare
-      bridge; tools are discoverable only through ``tool_search``.
+      (``min(threshold_pct`` of context — default 5% — ``, listing_max_tokens)``):
+      bridge + skills-style listing (name + short description per tool),
+      degrading to a names-only listing when the full form is over budget.
+    - Tier 2 — per-tool listing over budget even names-only (e.g.
+      Cloudflare's flat API surface, ~3,300 tools whose names alone are
+      ~32K tokens): bare bridge + a one-line-per-server summary (server
+      name + tool count) so the model still knows WHICH domains are
+      reachable; individual tools are discoverable only via ``tool_search``.
 * The catalog is stateless across turns and tools-array assemblies. It is
   rebuilt from the current tool-defs list every time. This is the lesson
   from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
@@ -104,13 +106,13 @@ class ToolSearchConfig:
         break the agent.
         """
         if raw is True:
-            return cls(enabled="auto", threshold_pct=10.0,
+            return cls(enabled="auto", threshold_pct=5.0,
                        search_default_limit=5, max_search_limit=20)
         if raw is False:
-            return cls(enabled="off", threshold_pct=10.0,
+            return cls(enabled="off", threshold_pct=5.0,
                        search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
-            return cls(enabled="auto", threshold_pct=10.0,
+            return cls(enabled="auto", threshold_pct=5.0,
                        search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
@@ -123,7 +125,7 @@ class ToolSearchConfig:
         else:
             enabled = "auto"
 
-        threshold_pct = _safe_float(raw.get("threshold_pct"), 10.0)
+        threshold_pct = _safe_float(raw.get("threshold_pct"), 5.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
 
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
@@ -298,13 +300,13 @@ def listing_token_budget(
     """Effective token budget for the embedded catalog listing.
 
     ``min(listing_max_tokens, threshold_pct% of context)``. Without a known
-    context size, the percentage leg falls back to the fixed 20K cutoff the
-    activation gate historically used (10% of a typical 200K window).
+    context size, the percentage leg falls back to a fixed 10K cutoff
+    (5% of a typical 200K window).
     """
     if context_length and context_length > 0:
         pct_leg = int(context_length * (config.threshold_pct / 100.0))
     else:
-        pct_leg = 20_000
+        pct_leg = 10_000
     return max(0, min(config.listing_max_tokens, pct_leg))
 
 
@@ -529,7 +531,10 @@ def build_catalog_listing(
     activation gate):
       1. full listing (names + short descriptions)
       2. names-only listing, still grouped
-      3. ``None`` — caller falls back to the legacy bare-count description
+      3. server-level summary — one line per MCP server / plugin toolset
+         (name + tool count), so the model always knows WHICH domains are
+         reachable through the bridge even when per-tool names don't fit
+      4. ``None`` — only when the summary itself exceeds the budget
     """
     text, _form = build_catalog_listing_with_form(deferrable, max_tokens=max_tokens)
     return text
@@ -543,8 +548,15 @@ def build_catalog_listing_with_form(
     """Like :func:`build_catalog_listing` but also reports the form used.
 
     Returns ``(text, form)`` where ``form`` is ``"full"`` (names + short
-    descriptions), ``"names"`` (names-only fallback), or ``"none"`` (over
-    budget in every form — tier-2 bare bridge).
+    descriptions), ``"names"`` (names-only fallback), ``"mixed"`` (per-server
+    degradation: small servers keep per-tool lines, oversized servers
+    collapse to a name + tool-count summary line), ``"groups"`` (every
+    server summarized), or ``"none"`` (over budget in every form).
+
+    Degradation is PER SERVER, not global: one huge server (Cloudflare's
+    3,320 flat tools) must not cost a small co-attached server (Linear's 24)
+    its listing. Greedy fit, smallest rendered group first, is deterministic
+    for a given catalog — byte-stable across assemblies, cache-safe.
     """
     if not deferrable:
         return None, "none"
@@ -562,29 +574,59 @@ def build_catalog_listing_with_form(
     if not groups:
         return None, "none"
 
-    def render(with_descriptions: bool) -> str:
-        lines: List[str] = ["Deferred tool catalog (call schemas via "
-                            f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):"]
-        for label in sorted(groups):
-            tools = sorted(groups[label])
-            lines.append(f"{label} tools ({len(tools)}):")
-            if with_descriptions:
-                for name, desc in tools:
-                    lines.append(f"- {name}: {desc}" if desc else f"- {name}")
-            else:
-                lines.append(", ".join(name for name, _ in tools))
+    def render_group(label: str, mode: str) -> str:
+        """Render one server's block. mode: 'full' | 'names' | 'summary'."""
+        tools = sorted(groups[label])
+        if mode == "summary":
+            return (f"{label} ({len(tools)} tools — names not listed; "
+                    f"discover via `{TOOL_SEARCH_NAME}`)")
+        lines = [f"{label} tools ({len(tools)}):"]
+        if mode == "full":
+            for name, desc in tools:
+                lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        else:
+            lines.append(", ".join(name for name, _ in tools))
         return "\n".join(lines)
 
-    for with_desc, form in ((True, "full"), (False, "names")):
-        text = render(with_desc)
-        if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens:
-            return text, form
+    header = ("Deferred tool catalog (call schemas via "
+              f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
+
+    def assemble(modes: Dict[str, str]) -> str:
+        return "\n".join([header] + [render_group(lbl, modes[lbl])
+                                     for lbl in sorted(groups)])
+
+    def fits(text: str) -> bool:
+        return math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens
+
+    # 1. Everything full.
+    modes = {lbl: "full" for lbl in groups}
+    if fits(assemble(modes)):
+        return assemble(modes), "full"
+
+    # 2. Everything names-only.
+    modes = {lbl: "names" for lbl in groups}
+    if fits(assemble(modes)):
+        return assemble(modes), "names"
+
+    # 3. Per-server degradation: collapse the LARGEST rendered groups to
+    #    summary lines first, keeping per-tool names for small servers.
+    #    Deterministic: size then label. One oversized server (Cloudflare)
+    #    must not cost a small co-attached server (Linear) its listing.
+    by_size = sorted(groups, key=lambda lbl: (-len(render_group(lbl, "names")), lbl))
+    for lbl in by_size:
+        modes[lbl] = "summary"
+        if fits(assemble(modes)):
+            form = "groups" if all(m == "summary" for m in modes.values()) else "mixed"
+            return assemble(modes), form
+
+    # 4. Even the all-summary form is over budget.
     return None, "none"
 
 
 def bridge_tool_schemas(
     deferred_count: int,
     listing: Optional[str] = None,
+    listing_form: str = "",
 ) -> List[Dict[str, Any]]:
     """Build the bridge tool schemas to inject in place of deferred tools.
 
@@ -596,7 +638,10 @@ def bridge_tool_schemas(
     embedded in the ``tool_search`` description so every deferred capability
     stays *visible* by name — the skills-listing pattern — closing the
     "model doesn't know what it doesn't know" gap while full parameter
-    schemas remain deferred.
+    schemas remain deferred. ``listing_form`` selects the framing: per-tool
+    forms ("full"/"names") tell the model it may skip the search when it
+    sees the exact name; the server-summary form ("groups") tells it which
+    DOMAINS are reachable and that search is mandatory for tool discovery.
     """
     desc_search = (
         f"Search {deferred_count} additional tools that are loaded on demand. "
@@ -605,13 +650,28 @@ def bridge_tool_schemas(
         f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
         "system prompt are already available and do not need to be searched."
     )
-    if listing:
+    if listing and listing_form == "groups":
         desc_search += (
-            "\n\nEvery deferred tool is listed below. If the capability you "
-            "need appears here, do NOT claim it is unavailable — load it with "
-            f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
-            "already see the exact name).\n\n" + listing
+            "\n\nThe servers below are connected and their tools ARE available "
+            "through this bridge. For any request in these domains, search "
+            "here FIRST — do not claim the capability is unavailable and do "
+            "not substitute a generic tool (terminal/browser) without "
+            "searching.\n\n" + listing
         )
+    elif listing:
+        desc_search += (
+            "\n\nEvery deferred capability is listed below. If a tool name "
+            "appears here, do NOT claim it is unavailable — load it with "
+            f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
+            "already see the exact name)."
+        )
+        if listing_form == "mixed":
+            desc_search += (
+                " For servers marked 'names not listed', the tools exist "
+                f"too — find them with `{TOOL_SEARCH_NAME}` before "
+                "concluding anything is missing."
+            )
+        desc_search += "\n\n" + listing
     desc_describe = (
         f"Load the full JSON schema for one tool returned by `{TOOL_SEARCH_NAME}`. "
         f"Required before `{TOOL_CALL_NAME}` if the tool's parameters are unknown."
@@ -753,9 +813,14 @@ def assemble_tool_defs(
     if config.listing != "off":
         listing, listing_form = build_catalog_listing_with_form(
             deferrable, max_tokens=listing_budget)
-    bridge = bridge_tool_schemas(len(deferrable), listing=listing)
+    bridge = bridge_tool_schemas(len(deferrable), listing=listing,
+                                 listing_form=listing_form)
     result = visible + bridge
-    tier = 1 if listing else 2
+    # Tier 1 = per-tool listing for at least part of the catalog (full,
+    # names, or mixed). Tier 2 = search-only discovery; the server-level
+    # "groups" summary keeps domains visible but individual tools are only
+    # reachable via tool_search.
+    tier = 1 if listing_form in ("full", "names", "mixed") else 2
 
     logger.info(
         "tool_search activated (tier %d): %d core/visible tools kept, %d deferred "

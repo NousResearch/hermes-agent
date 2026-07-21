@@ -1547,6 +1547,21 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
 
+    def test_execution_guidance_requires_intent_before_side_effects(self):
+        """Tool persistence should not turn discussion into permission to act."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+
+        assert "Questions, brainstorming, design discussion, and requests for opinion are not action requests" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "Side-effectful actions require explicit execution intent" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "When a question has an obvious default interpretation, act on it immediately" not in OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    def test_tool_use_enforcement_says_discussion_is_valid_final_result(self):
+        """The generic enforcement block should allow advisory-only answers."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+
+        assert "Do not convert discussion into action" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "A recommendation, explanation, or risk assessment is a valid final result" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
     def test_auto_does_not_inject_execution_guidance_for_claude(self):
         """Sanity: execution guidance stays off for non-targeted families."""
         from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE

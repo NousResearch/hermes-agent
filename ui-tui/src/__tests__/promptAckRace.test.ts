@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { OverlayState } from '../app/interfaces.js'
-import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, patchOverlayState, resetOverlayState, resolveAnsweredPrompt } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
-import { resolveAnsweredPrompt } from '../app/useMainApp.js'
 
 // Regression: the backend FIFO can emit prompt B after removing prompt A but
 // before A's `*.respond` RPC resolves. If a newer B of the SAME kind has taken
@@ -107,6 +106,27 @@ describe('resolveAnsweredPrompt — late prompt ACK must not erase a newer same-
 
     expect(getOverlayState()[kind]).toBeNull()
     expect(getUiState().status).toBe('running…')
+    expect(result.supersededByNewer).toBe(false)
+  })
+
+  it('preserves a newer cross-kind prompt and its waiting status when A’s ACK arrives late', async () => {
+    installPrompt('approval', 'req-A')
+    patchUiState({ status: BUSY_STATUS.approval })
+
+    const rpc = deferred<{ ok: true }>()
+    const flow = rpc.promise.then(() => resolveAnsweredPrompt('approval', 'req-A'))
+
+    // A secret prompt can own a different overlay slot while approval A's ACK
+    // is still in flight. The shared status line must remain owned by B.
+    installPrompt('secret', 'req-B')
+    patchUiState({ status: BUSY_STATUS.secret })
+
+    rpc.resolve({ ok: true })
+    const result = await flow
+
+    expect(getOverlayState().approval).toBeNull()
+    expect(getOverlayState().secret).toEqual(makeReq('secret', 'req-B'))
+    expect(getUiState().status).toBe(BUSY_STATUS.secret)
     expect(result.supersededByNewer).toBe(false)
   })
 

@@ -23,7 +23,7 @@ import type {
   InputHandlerResult,
   OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, patchOverlayState, resolveAnsweredPrompt } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -103,6 +103,16 @@ export function applyVoiceRecordResponse(
   }
 }
 
+/**
+ * Ctrl+C / Esc dismissal for sudo & secret prompts. `overlay` may be a stale
+ * React render snapshot — the backend can install a newer same-kind prompt B
+ * between that render and this handler firing. Clearing via
+ * resolveAnsweredPrompt (request-ID-aware against the LIVE store) instead of
+ * an unconditional patchOverlayState keeps that newer B on screen. The RPC
+ * and sys message still target A's captured requestId, matching prior
+ * behaviour, and neither branch resets status (mirrors the empty-input
+ * decline path in answerSudo/answerSecret).
+ */
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo'>,
   rpc: GatewayRpc,
@@ -112,7 +122,7 @@ export function dismissSensitivePrompt(
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
 
-    patchOverlayState({ sudo: null })
+    resolveAnsweredPrompt('sudo', requestId, { resetStatus: false })
     sys('sudo cancelled')
 
     return rpc<SudoRespondResponse>('sudo.respond', {
@@ -125,7 +135,7 @@ export function dismissSensitivePrompt(
   if (overlay.secret) {
     const requestId = overlay.secret.requestId
 
-    patchOverlayState({ secret: null })
+    resolveAnsweredPrompt('secret', requestId, { resetStatus: false })
     sys('secret entry cancelled')
 
     return rpc<SecretRespondResponse>('secret.respond', {
@@ -134,6 +144,39 @@ export function dismissSensitivePrompt(
       value: ''
     })
   }
+}
+
+/**
+ * Ctrl+C dismissal for the approval prompt. Captures A's requestId up front
+ * and only clears A — via the request-ID-aware resolveAnsweredPrompt — after
+ * the deny RPC actually resolves. A newer approval B installed while A's RPC
+ * was in flight is left untouched instead of being erased by an unconditional
+ * clear. Status is left alone (resetStatus: false), matching prior behaviour
+ * where this path never touched ui status.
+ */
+export function dismissApprovalPrompt(
+  overlay: Pick<OverlayState, 'approval'>,
+  rpc: GatewayRpc,
+  sessionId: null | string = getUiState().sid
+) {
+  if (!overlay.approval) {
+    return
+  }
+
+  const requestId = overlay.approval.requestId
+
+  return rpc<ApprovalRespondResponse>('approval.respond', {
+    choice: 'deny',
+    request_id: requestId,
+    session_id: sessionId
+  }).then(r => {
+    if (!r) {
+      return
+    }
+
+    patchTurnState({ outcome: 'denied' })
+    resolveAnsweredPrompt('approval', requestId, { resetStatus: false })
+  })
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -183,13 +226,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.approval) {
-      return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', {
-          choice: 'deny',
-          request_id: overlay.approval.requestId,
-          session_id: getUiState().sid
-        })
-        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+      return dismissApprovalPrompt(overlay, gateway.rpc)
     }
 
     if (overlay.sudo || overlay.secret) {

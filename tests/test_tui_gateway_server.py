@@ -2226,6 +2226,169 @@ def test_session_branch_claims_slot_in_source_profile(monkeypatch, tmp_path):
         server._sessions.pop("source-sid", None)
 
 
+def test_session_branch_uses_source_profile_db_agent_and_session_context(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    source = _session(
+        history=[{"role": "user", "content": "hello"}],
+        profile_home=str(profile_home),
+        cwd=str(tmp_path / "workspace"),
+    )
+    server._sessions["source-sid"] = source
+    captured = {}
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            assert db_path is not None
+            captured["db_path"] = Path(db_path)
+
+        def get_session_title(self, session_id):
+            captured["title_lookup"] = session_id
+            return "parent"
+
+        def get_next_title_in_lineage(self, title):
+            return f"{title} (2)"
+
+        def create_session(self, session_id, **kwargs):
+            captured["created"] = (session_id, kwargs)
+
+        def append_message(self, **kwargs):
+            captured.setdefault("messages", []).append(kwargs)
+
+        def set_session_title(self, session_id, title):
+            captured["title"] = (session_id, title)
+
+    class Lease:
+        released = False
+
+        def release(self):
+            self.released = True
+
+    lease = Lease()
+
+    def claim(*_args, profile_home=None, **_kwargs):
+        captured["claim_profile_home"] = profile_home
+        return lease, None
+
+    def make_agent(*_args, session_db=None, **_kwargs):
+        captured["agent_db"] = session_db
+        captured["agent_home"] = server.get_hermes_home_override()
+        return types.SimpleNamespace(model="test/model")
+
+    def init_session(sid, key, agent, history, **kwargs):
+        captured["init"] = {
+            "sid": sid,
+            "key": key,
+            "agent": agent,
+            "history": history,
+            "kwargs": kwargs,
+            "home": server.get_hermes_home_override(),
+        }
+        server._sessions[sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": history,
+            "history_lock": threading.Lock(),
+            "profile_home": str(kwargs["profile_home"]),
+        }
+
+    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: (_ for _ in ()).throw(AssertionError("launch DB must not be used")),
+    )
+    monkeypatch.setattr(server, "_claim_active_session_slot_for_profile", claim)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "profile/model")
+    monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_init_session", init_session)
+
+    branch_sid = None
+    try:
+        response = server._methods["session.branch"](
+            "branch", {"session_id": "source-sid"}
+        )
+
+        assert "error" not in response
+        branch_sid = response["result"]["session_id"]
+        assert captured["claim_profile_home"] == str(profile_home)
+        assert captured["db_path"] == profile_home / "state.db"
+        assert captured["title_lookup"] == source["session_key"]
+        assert captured["created"][1]["model"] == "profile/model"
+        assert captured["agent_db"].__class__ is ProfileDB
+        assert Path(captured["agent_home"]) == profile_home
+        assert Path(captured["init"]["home"]) == profile_home
+        assert captured["init"]["kwargs"]["session_db"] is captured["agent_db"]
+        assert captured["init"]["kwargs"]["profile_home"] == str(profile_home)
+        assert server._sessions[branch_sid]["profile_home"] == str(profile_home)
+        assert server._sessions[branch_sid]["active_session_lease"] is lease
+        assert lease.released is False
+        assert server.get_hermes_home_override() is None
+    finally:
+        server._sessions.pop("source-sid", None)
+        if branch_sid is not None:
+            server._sessions.pop(branch_sid, None)
+
+
+def test_session_branch_remote_profile_failure_releases_lease_and_db(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    source = _session(
+        history=[{"role": "user", "content": "hello"}],
+        profile_home=str(profile_home),
+    )
+    existing_session_ids = set(server._sessions)
+    server._sessions["source-sid"] = source
+    state = {"db_closed": False, "lease_released": False}
+
+    class FailingProfileDB:
+        def __init__(self, db_path=None):
+            assert db_path is not None
+            assert Path(db_path) == profile_home / "state.db"
+
+        def get_session_title(self, _session_id):
+            return "parent"
+
+        def get_next_title_in_lineage(self, title):
+            return f"{title} (2)"
+
+        def create_session(self, *_args, **_kwargs):
+            raise RuntimeError("write failed")
+
+        def close(self):
+            state["db_closed"] = True
+
+    class Lease:
+        def release(self):
+            state["lease_released"] = True
+
+    monkeypatch.setattr("hermes_state.SessionDB", FailingProfileDB)
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: (_ for _ in ()).throw(AssertionError("launch DB must not be used")),
+    )
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot_for_profile",
+        lambda *_args, **_kwargs: (Lease(), None),
+    )
+    try:
+        response = server._methods["session.branch"](
+            "branch", {"session_id": "source-sid"}
+        )
+
+        assert response["error"]["code"] == 5008
+        assert "write failed" in response["error"]["message"]
+        assert state == {"db_closed": True, "lease_released": True}
+        assert set(server._sessions) == existing_session_ids | {"source-sid"}
+        assert server.get_hermes_home_override() is None
+    finally:
+        server._sessions.pop("source-sid", None)
+
+
 def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     target = "stored-profile-session"
     launch_cwd = tmp_path / "launch"

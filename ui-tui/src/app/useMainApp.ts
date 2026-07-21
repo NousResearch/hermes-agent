@@ -45,7 +45,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
-import { $overlayState, getOverlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, patchOverlayState, resolveAnsweredPrompt } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -144,46 +144,6 @@ export async function startPromptLiveSession({
   dispatchSubmission(trimmed)
 
   return sid
-}
-
-/** Prompt overlays whose answer is a backend round-trip (`*.respond` RPC). */
-type PromptOverlayKind = 'approval' | 'clarify' | 'secret' | 'sudo'
-
-/**
- * Resolve an answered prompt overlay race-safely and report whether a *newer*
- * same-kind prompt is now active.
- *
- * Backend prompts are FIFO but their response RPCs are async. The backend can
- * emit prompt B (same kind, fresh requestId) right after removing prompt A yet
- * before A's `*.respond` round-trip resolves — so by the time A's late ACK
- * lands, B may already own the overlay slot. Clearing the slot unconditionally
- * (the old behaviour) erased B and left its backend waiter with no visible
- * prompt, and flipped the status back to `running…`, hiding that B still needs
- * input.
- *
- * So we clear the slot ONLY while the live overlay still carries the answered
- * requestId, and reset the status to `running…` only when no newer same-kind
- * prompt has superseded it. `supersededByNewer` is returned for callers whose
- * status handling is branch-specific (clarify's cancel path resets nothing).
- * Mirrors the `sudo.expire` / `secret.expire` guards in createGatewayEventHandler.
- */
-export function resolveAnsweredPrompt(
-  kind: PromptOverlayKind,
-  requestId: string,
-  { resetStatus = true }: { resetStatus?: boolean } = {}
-): { supersededByNewer: boolean } {
-  patchOverlayState(prev =>
-    (prev[kind] as null | { requestId: string })?.requestId === requestId ? { ...prev, [kind]: null } : prev
-  )
-
-  const live = getOverlayState()[kind] as null | { requestId: string }
-  const supersededByNewer = live != null && live.requestId !== requestId
-
-  if (resetStatus && !supersededByNewer) {
-    patchUiState({ status: 'running…' })
-  }
-
-  return { supersededByNewer }
 }
 
 export function useMainApp(gw: GatewayClient) {

@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getTurnState, resetTurnState } from '../app/turnStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   applyVoiceRecordResponse,
+  dismissApprovalPrompt,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
@@ -150,5 +153,120 @@ describe('dismissSensitivePrompt', () => {
       value: ''
     })
     await pending
+  })
+
+  it('does not erase a newer sudo prompt B when acting on a stale sudo A snapshot', async () => {
+    resetOverlayState()
+    patchOverlayState({ sudo: { requestId: 'sudo-A' } })
+    const staleOverlay = getOverlayState()
+
+    // Newer sudo prompt B has already taken the slot by the time the Ctrl+C
+    // handler (holding a stale render snapshot) fires.
+    patchOverlayState({ sudo: { requestId: 'sudo-B' } })
+
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(staleOverlay, rpc, sys, 'owner-sid')
+
+    expect(getOverlayState().sudo).toEqual({ requestId: 'sudo-B' })
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', {
+      password: '',
+      request_id: 'sudo-A',
+      session_id: 'owner-sid'
+    })
+    expect(sys).toHaveBeenCalledWith('sudo cancelled')
+    await pending
+  })
+
+  it('does not erase a newer secret prompt B when acting on a stale secret A snapshot', async () => {
+    resetOverlayState()
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-A' } })
+    const staleOverlay = getOverlayState()
+
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-B' } })
+
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(staleOverlay, rpc, sys, 'owner-sid')
+
+    expect(getOverlayState().secret).toEqual({ envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-B' })
+    expect(rpc).toHaveBeenCalledWith('secret.respond', {
+      request_id: 'secret-A',
+      session_id: 'owner-sid',
+      value: ''
+    })
+    expect(sys).toHaveBeenCalledWith('secret entry cancelled')
+    await pending
+  })
+})
+
+describe('dismissApprovalPrompt — Ctrl+C dismissal must not erase a newer approval prompt', () => {
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void
+
+    const promise = new Promise<T>(r => {
+      resolve = r
+    })
+
+    return { promise, resolve }
+  }
+
+  it("captures A's requestId, denies A only after the RPC resolves, and leaves a newer B installed while A's RPC was in flight intact", async () => {
+    resetOverlayState()
+    resetTurnState()
+    resetUiState()
+    patchOverlayState({ approval: { command: 'rm -rf /tmp/x', description: 'delete tmp', requestId: 'req-A' } })
+    patchUiState({ status: 'approval needed' })
+
+    const rpcDeferred = deferred<{ ok: true }>()
+    const rpc = vi.fn().mockReturnValue(rpcDeferred.promise)
+    const staleOverlaySnapshot = getOverlayState()
+
+    const pending = dismissApprovalPrompt(staleOverlaySnapshot, rpc, 'sid-1')
+
+    // Backend FIFO removes A and installs a newer B (same kind) before A's
+    // deny RPC resolves.
+    patchOverlayState({ approval: { command: 'sudo reboot', description: 'reboot', requestId: 'req-B' } })
+    patchUiState({ status: 'approval needed' })
+
+    rpcDeferred.resolve({ ok: true })
+    await pending
+
+    expect(rpc).toHaveBeenCalledWith('approval.respond', {
+      choice: 'deny',
+      request_id: 'req-A',
+      session_id: 'sid-1'
+    })
+    expect(getOverlayState().approval).toEqual({ command: 'sudo reboot', description: 'reboot', requestId: 'req-B' })
+    expect(getTurnState().outcome).toBe('denied')
+    expect(getUiState().status).toBe('approval needed')
+  })
+
+  it('clears its own approval prompt once denied when no newer prompt has superseded it', async () => {
+    resetOverlayState()
+    resetTurnState()
+    patchOverlayState({ approval: { command: 'rm -rf /tmp/x', description: 'delete tmp', requestId: 'req-A' } })
+
+    const rpc = vi.fn().mockResolvedValue({ ok: true })
+
+    await dismissApprovalPrompt(getOverlayState(), rpc, 'sid-1')
+
+    expect(getOverlayState().approval).toBeNull()
+    expect(getTurnState().outcome).toBe('denied')
+  })
+
+  it('does not deny or touch the overlay when the RPC fails (resolves null)', async () => {
+    resetOverlayState()
+    resetTurnState()
+    patchOverlayState({ approval: { command: 'rm -rf /tmp/x', description: 'delete tmp', requestId: 'req-A' } })
+
+    const rpc = vi.fn().mockResolvedValue(null)
+
+    await dismissApprovalPrompt(getOverlayState(), rpc, 'sid-1')
+
+    expect(getOverlayState().approval).toEqual({ command: 'rm -rf /tmp/x', description: 'delete tmp', requestId: 'req-A' })
+    expect(getTurnState().outcome).toBe('')
   })
 })

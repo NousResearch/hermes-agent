@@ -3392,11 +3392,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 _GATE_ASSIGNEES = {"review", "qa", "release"}
 _FAILED_GATE_VERDICTS = {
     "REQUEST_CHANGES", "CHANGES_REQUESTED",
-    "QA_FAIL", "QA_FAILED", "FAIL",
+    "QA_FAIL", "QA_FAILED", "FAIL", "FAILED",
     "NOT_READY", "RELEASE_NOT_READY", "BLOCKED",
 }
 _GATE_VERDICT_RE = re.compile(
-    r"^\s*(REQUEST_CHANGES|CHANGES_REQUESTED|QA_FAIL(?:ED)?|FAIL|"
+    r"^\s*(REQUEST_CHANGES|CHANGES_REQUESTED|QA_FAIL(?:ED)?|FAIL(?:ED)?|"
     r"NOT_READY|RELEASE_NOT_READY|BLOCKED|APPROVE(?:D)?|QA_PASS|PASS|"
     r"RELEASE_READY|DEPLOYED|READY_FOR_CONFIRMATION)\b",
     re.IGNORECASE,
@@ -3418,17 +3418,17 @@ def _is_gate_task(assignee: object, title: object) -> bool:
     boards without letting incidental text such as ``[Release notes]`` in the
     middle of an implementation title turn that task into a gate.
     """
-    return (
-        str(assignee or "").lower() in _GATE_ASSIGNEES
-        or bool(_GATE_TITLE_RE.match(str(title or "")))
-    )
+    normalized_assignee = str(assignee or "").strip().lower()
+    if normalized_assignee:
+        return normalized_assignee in _GATE_ASSIGNEES
+    return bool(_GATE_TITLE_RE.match(str(title or "")))
 
 
 def _latest_completed_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
     """Return the newest completed attempt for semantic-verdict readback."""
     row = conn.execute(
         "SELECT * FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
-        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        "ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
@@ -3441,8 +3441,9 @@ def _explicit_failed_gate_verdict(
 
     Backward compatibility is deliberate: old terminal cards with no typed or
     anchored verdict retain the historical status-only behaviour.  New gate
-    workers are required to emit structured metadata, so an explicit failure
-    can be held without freezing legacy boards.
+    workers are required to emit structured metadata and repeat the verdict as
+    the summary's first token.  The fallback intentionally matches that first
+    token only; scanning arbitrary prose would create false-positive gates.
     """
     task = conn.execute(
         "SELECT assignee, title, result FROM tasks WHERE id = ?", (task_id,)
@@ -3461,7 +3462,7 @@ def _explicit_failed_gate_verdict(
     ).upper().strip()
     if not verdict:
         summary = str((run.summary if run else None) or task["result"] or "")
-        match = _GATE_VERDICT_RE.search(summary)
+        match = _GATE_VERDICT_RE.match(summary)
         verdict = match.group(1).upper() if match else ""
     return verdict if verdict in _FAILED_GATE_VERDICTS else None
 

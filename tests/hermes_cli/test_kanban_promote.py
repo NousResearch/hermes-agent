@@ -372,6 +372,43 @@ def test_failed_gate_summary_only_fallback_holds_child(conn):
     assert kb.get_task(conn, child).status == "todo"
 
 
+def test_summary_fallback_requires_verdict_as_first_token(conn):
+    parent = kb.create_task(conn, title="[Review] gate", assignee="review")
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary="Review finished.\nREQUEST_CHANGES quoted later in the handoff.",
+        metadata=None,
+    )
+    child = kb.create_task(conn, title="legacy-compatible child", parents=[parent])
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_known_non_gate_assignee_overrides_gate_like_title(conn):
+    parent = kb.create_task(conn, title="[Review] implementation notes", assignee="vibe")
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary="REQUEST_CHANGES is business prose, not a gate verdict",
+        metadata={"verdict": "REQUEST_CHANGES"},
+    )
+    child = kb.create_task(conn, title="normal downstream", parents=[parent])
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_gate_title_fallback_is_only_for_unassigned_legacy_task(conn):
+    parent = kb.create_task(conn, title="[Review] legacy gate", assignee="review")
+    conn.execute("UPDATE tasks SET assignee = NULL WHERE id = ?", (parent,))
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary="REQUEST_CHANGES legacy fallback",
+        metadata=None,
+    )
+    child = kb.create_task(conn, title="held child", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+
+
 def test_later_crashed_run_does_not_erase_completed_gate_verdict(conn):
     parent = _completed_gate(conn, "REQUEST_CHANGES")
     conn.execute(
@@ -423,7 +460,7 @@ def test_archived_parent_is_satisfied_across_create_link_and_unblock(conn):
 
 @pytest.mark.parametrize(
     "verdict",
-    ["CHANGES_REQUESTED", "QA_FAILED", "RELEASE_NOT_READY", "BLOCKED"],
+    ["CHANGES_REQUESTED", "QA_FAILED", "FAILED", "RELEASE_NOT_READY", "BLOCKED"],
 )
 def test_failed_gate_verdict_aliases_hold_children(conn, verdict):
     parent = _completed_gate(conn, verdict)

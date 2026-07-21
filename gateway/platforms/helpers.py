@@ -174,7 +174,10 @@ class TextBatchAggregator:
         """Cancel all pending flush tasks."""
         for task in self._pending_tasks.values():
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
         self._pending_tasks.clear()
         self._pending.clear()
 

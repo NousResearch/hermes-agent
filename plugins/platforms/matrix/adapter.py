@@ -1608,7 +1608,10 @@ class MatrixAdapter(BasePlatformAdapter):
         invite_join_tasks = list(self._invite_join_tasks.values())
         for task in invite_join_tasks:
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
         if invite_join_tasks:
             await asyncio.gather(*invite_join_tasks, return_exceptions=True)
         self._invite_join_tasks.clear()
@@ -1616,7 +1619,10 @@ class MatrixAdapter(BasePlatformAdapter):
         redaction_tasks = list(self._reaction_redaction_tasks)
         for task in redaction_tasks:
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
         if redaction_tasks:
             await asyncio.gather(*redaction_tasks, return_exceptions=True)
         self._reaction_redaction_tasks.clear()

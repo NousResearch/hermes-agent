@@ -1315,11 +1315,17 @@ class WeixinAdapter(BasePlatformAdapter):
         self._running = False
         for task in self._pending_text_batch_tasks.values():
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
         if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
+            try:
+                self._poll_task.cancel()
+            except RuntimeError:
+                pass
             try:
                 await self._poll_task
             except asyncio.CancelledError:

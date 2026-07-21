@@ -1095,6 +1095,7 @@ def play_audio_file(file_path: str) -> bool:
     for cmd in players:
         exe = shutil.which(cmd[0])
         if exe:
+            proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
                 with _playback_lock:
@@ -1105,12 +1106,19 @@ def play_audio_file(file_path: str) -> bool:
                 return True
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
-                proc.kill()
-                proc.wait()
+                if proc is not None:
+                    proc.kill()
+                    proc.wait()
                 with _playback_lock:
                     _active_playback = None
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
                 with _playback_lock:
                     _active_playback = None
 

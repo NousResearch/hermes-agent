@@ -1864,7 +1864,10 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _cancel_pending_tasks(self, tasks: Dict[str, asyncio.Task]) -> None:
         pending = [task for task in tasks.values() if task and not task.done()]
         for task in pending:
-            task.cancel()
+            try:
+                task.cancel()
+            except RuntimeError:
+                pass
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         tasks.clear()

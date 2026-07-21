@@ -2155,10 +2155,10 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
+                        t.cancel()
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, RuntimeError, Exception):
                         pass
 
         if self._shutdown_event.is_set():
@@ -2199,10 +2199,10 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
+                        t.cancel()
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, RuntimeError, Exception):
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -3114,14 +3114,17 @@ class MCPServerTask:
                     "MCP server '%s' shutdown timed out, cancelling task",
                     self.name,
                 )
-                self._task.cancel()
                 try:
+                    self._task.cancel()
                     await self._task
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, RuntimeError):
                     pass
         if self._pending_refresh_tasks:
             for task in list(self._pending_refresh_tasks):
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
             await asyncio.gather(*self._pending_refresh_tasks, return_exceptions=True)
             self._pending_refresh_tasks.clear()
         self._deregister_tools()
@@ -3155,10 +3158,10 @@ class MCPServerTask:
         finally:
             for task in (shutdown_task, reconnect_task):
                 if not task.done():
-                    task.cancel()
                     try:
+                        task.cancel()
                         await task
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, RuntimeError, Exception):
                         pass
 
 

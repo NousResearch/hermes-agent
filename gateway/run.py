@@ -8805,7 +8805,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if isinstance(task, asyncio.Task) and task is not current and not task.done():
                     tasks.append(task)
         for task in tasks:
-            task.cancel()
+            try:
+                task.cancel()
+            except RuntimeError:
+                pass
         timeout = self._adapter_disconnect_timeout_secs()
         if tasks and timeout > 0:
             _done, unfinished = await asyncio.wait(tasks, timeout=timeout)
@@ -9169,7 +9172,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # into this _stop_impl and skip _shutdown_event.set() /
                     # _exit_code = 75 (#12875).  It self-terminates anyway.
                     continue
-                _task.cancel()
+                try:
+                    _task.cancel()
+                except RuntimeError:
+                    pass
             self._background_tasks.clear()
 
             self.adapters.clear()
@@ -22015,12 +22021,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
-            if log_task:
-                log_task.cancel()
-            interrupt_monitor.cancel()
-            _notify_task.cancel()
+            for _t in (progress_task, log_task, interrupt_monitor, _notify_task):
+                if _t is not None:
+                    try:
+                        _t.cancel()
+                    except RuntimeError:
+                        pass
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -22051,7 +22057,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pass
             
             # Clean up tracking
-            tracking_task.cancel()
+            try:
+                tracking_task.cancel()
+            except RuntimeError:
+                pass
             if session_key:
                 # Only release the slot if this run's generation still owns
                 # it.  A /stop or /new that bumped the generation while we

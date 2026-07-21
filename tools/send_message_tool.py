@@ -453,10 +453,10 @@ def _handle_send(args):
                 # core.  Their adapter owns final target validation.
                 chat_id = target_ref
             elif resolution_failed:
-                return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                return tool_error(
+                    f"Could not resolve '{target_ref}' on {platform_name}. "
                     f"Try using a numeric channel ID instead."
-                })
+                )
             else:
                 return tool_error(
                     f"Could not resolve '{target_ref}' on {platform_name}. "

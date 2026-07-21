@@ -1924,6 +1924,7 @@ from gateway.session import (
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.background_compaction import GatewayBackgroundCompactionMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.platforms.base import (
@@ -3056,7 +3057,12 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
+class GatewayRunner(
+    GatewayBackgroundCompactionMixin,
+    GatewayAuthorizationMixin,
+    GatewayKanbanWatchersMixin,
+    GatewaySlashCommandsMixin,
+):
     """
     Main gateway controller.
 
@@ -3455,6 +3461,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        self._init_background_compaction()
 
         # Event-loop liveness heartbeat (#66892): rewritten every 30s while
         # the loop is dispatching. External supervisors use the file mtime /
@@ -11465,6 +11472,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        _agent_result = None
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
@@ -11519,6 +11527,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (routing key, run generation) so this unwind can only ever free
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
+            # Response delivery and transcript persistence are complete at this
+            # point. Start soft-threshold compaction only after releasing the
+            # foreground session/turn leases; the summary model call then runs
+            # fully in the background and publication reacquires only a short
+            # commit lease with a DB prefix-CAS.
+            if (
+                isinstance(_agent_result, dict)
+                and not _agent_result.get("interrupted")
+                and not _agent_result.get("failed")
+            ):
+                try:
+                    self._maybe_schedule_background_compaction(
+                        source=source,
+                        session_key=_quick_key,
+                        session_id=str(_agent_result.get("session_id") or ""),
+                        observed_prompt_tokens=int(
+                            _agent_result.get("last_prompt_tokens") or 0
+                        ),
+                        context_length=int(
+                            _agent_result.get("context_length") or 0
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not schedule background compaction for %s",
+                        _quick_key,
+                        exc_info=True,
+                    )
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn.

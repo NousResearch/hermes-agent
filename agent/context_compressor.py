@@ -867,6 +867,11 @@ class ContextCompressor(ContextEngine):
       5. On subsequent compactions, iteratively update the previous summary
     """
 
+    # Class-level default keeps lightweight test/plugin instances created via
+    # object.__new__ compatible; normal construction also writes the instance
+    # value below.
+    force_main_runtime: bool = False
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -1398,6 +1403,10 @@ class ContextCompressor(ContextEngine):
         self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
+        # Background gateway compaction can pin summary generation to the
+        # conversation's active chat runtime instead of applying an explicit
+        # auxiliary.compression provider/model override.
+        self.force_main_runtime = False
         self._session_db: Any = None
         self._session_id: str = ""
 
@@ -2377,7 +2386,23 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
-            if self.summary_model:
+            # Gateway background compaction is intentionally performed by the
+            # session's active chat model. Unlike foreground compression, it
+            # must not silently pick a differently configured per-task model:
+            # the background result may be committed after later turns have
+            # already continued, so using the same runtime keeps reasoning and
+            # provider semantics aligned with that conversation. Explicit
+            # provider/model kwargs override auxiliary.compression routing;
+            # ``task`` remains for timeout and usage attribution.
+            if self.force_main_runtime:
+                call_kwargs.update(
+                    provider=self.provider,
+                    model=self.model,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    api_mode=self.api_mode,
+                )
+            elif self.summary_model:
                 call_kwargs["model"] = self.summary_model
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message

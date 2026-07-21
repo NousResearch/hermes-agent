@@ -1083,6 +1083,14 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Keep the reusable WAL high-water mark bounded after a successful reset.
+    # PASSIVE checkpoints deliberately avoid exclusive locking and therefore
+    # do not truncate the file themselves; journal_size_limit asks SQLite to
+    # trim the WAL after a reset while retaining a modest buffer for steady
+    # write throughput.  Active readers may postpone the reset, so this is a
+    # safe eventual bound rather than a reason to force TRUNCATE on the hot
+    # write path.
+    _WAL_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
     # Merge fragmented FTS5 segments every N successful writes. The message
     # triggers append one segment per insert; left unmaintained these grow
     # into tens of thousands of segments, so every MATCH must scan them all
@@ -1156,6 +1164,7 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._configure_journal_size_limit()
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 
@@ -1487,10 +1496,12 @@ class SessionDB:
         periodic use because it does not block concurrent writers and
         cannot corrupt B-tree pages under I/O pressure.
 
-        PASSIVE does not truncate the WAL file — it stays at its
-        high-water mark.  WAL truncation happens in :meth:`close`
-        (TRUNCATE) and pre-VACUUM checkpoints, which run infrequently
-        under controlled conditions.
+        PASSIVE itself does not truncate the WAL file. Once every frame is
+        checkpointed, the next writer can reset the WAL and SQLite applies
+        ``journal_size_limit`` (configured to 64 MiB), preventing a multi-GB
+        high-water mark from persisting indefinitely. Explicit truncation is
+        reserved for :meth:`close` and pre-VACUUM checkpoints, which run
+        infrequently under controlled conditions.
 
         Previous TRUNCATE strategy caused B-tree corruption on large
         databases (65K+ pages) due to the exclusive-lock I/O pressure
@@ -1508,6 +1519,30 @@ class SessionDB:
                     )
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
+
+    def _configure_journal_size_limit(self) -> None:
+        """Apply the bounded WAL/journal high-water mark. Never raises.
+
+        ``journal_size_limit`` is connection-persistent database state, but
+        every writable SessionDB applies it so a restored or externally
+        created database converges without a migration. SQLite enforces the
+        limit only when a journal/WAL reset can complete; long-lived readers
+        remain non-blocking and the periodic PASSIVE checkpoint retries later.
+        """
+        try:
+            row = self._conn.execute(
+                f"PRAGMA journal_size_limit={self._WAL_JOURNAL_SIZE_LIMIT_BYTES}"
+            ).fetchone()
+            applied = int(row[0]) if row else -1
+            if applied != self._WAL_JOURNAL_SIZE_LIMIT_BYTES:
+                logger.warning(
+                    "state.db journal_size_limit requested %d bytes but SQLite "
+                    "reported %d bytes",
+                    self._WAL_JOURNAL_SIZE_LIMIT_BYTES,
+                    applied,
+                )
+        except Exception as exc:
+            logger.warning("Could not configure state.db journal_size_limit: %s", exc)
 
     def _try_optimize_fts(self) -> None:
         """Best-effort FTS5 segment merge. Never raises.
@@ -4515,6 +4550,163 @@ class SessionDB:
             )
             return cursor.fetchone() is not None
 
+    def get_compaction_snapshot(self, session_id: str) -> Dict[str, Any]:
+        """Return an ID-stamped snapshot of a session's active transcript.
+
+        Background compaction performs the expensive summary call without a
+        database lock. Stable message IDs let the later commit prove that the
+        snapshotted prefix is still the live prefix while allowing new turns
+        to append behind it.
+        """
+        with self._lock:
+            session_row = self._conn.execute(
+                "SELECT ended_at FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if session_row is None:
+                return {
+                    "status": "missing",
+                    "session_id": session_id,
+                    "active_message_ids": [],
+                    "messages": [],
+                }
+            if session_row["ended_at"] is not None:
+                return {
+                    "status": "ended",
+                    "session_id": session_id,
+                    "active_message_ids": [],
+                    "messages": [],
+                }
+            rows = self._conn.execute(
+                f"SELECT id, {self._CONVERSATION_ROW_COLUMNS} "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+
+        return {
+            "status": "ready",
+            "session_id": session_id,
+            "active_message_ids": [int(row["id"]) for row in rows],
+            "messages": self._rows_to_conversation(
+                rows,
+                session_id=session_id,
+                include_ancestors=False,
+                repair_alternation=False,
+                include_state_message_id=True,
+            ),
+        }
+
+    def commit_compaction_snapshot(
+        self,
+        session_id: str,
+        expected_prefix_ids: List[int],
+        compacted_prefix: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Atomically publish a background-compacted transcript prefix.
+
+        The commit succeeds only when ``expected_prefix_ids`` still exactly
+        matches the active transcript's prefix. Rows appended after the
+        snapshot are decoded and reinserted after ``compacted_prefix`` in the
+        same transaction, so users may continue chatting while the summary is
+        generated. Rewinds, resets, foreground compression, and session end
+        make the result stale and leave the transcript unchanged.
+
+        Superseded prefix rows are soft-archived with ``compacted=1`` so they
+        remain searchable. The unchanged live tail must be reinserted to put
+        it after the new summary in AUTOINCREMENT order; its superseded copies
+        use ``compacted=0`` so search does not return duplicate tail hits.
+        """
+        try:
+            prefix_ids = [int(value) for value in expected_prefix_ids]
+        except (TypeError, ValueError):
+            prefix_ids = []
+        cleaned_prefix = [
+            {
+                key: value
+                for key, value in message.items()
+                if key != "_state_message_id"
+            }
+            for message in compacted_prefix
+            if isinstance(message, dict)
+        ]
+        if not prefix_ids or not cleaned_prefix:
+            return {
+                "status": "stale",
+                "reason": "empty_prefix",
+                "session_id": session_id,
+            }
+
+        def _do(conn):
+            session_row = conn.execute(
+                "SELECT ended_at FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if session_row is None:
+                return {
+                    "status": "stale",
+                    "reason": "missing_session",
+                    "session_id": session_id,
+                }
+            if session_row["ended_at"] is not None:
+                return {
+                    "status": "stale",
+                    "reason": "ended_session",
+                    "session_id": session_id,
+                }
+
+            current_rows = conn.execute(
+                f"SELECT id, {self._CONVERSATION_ROW_COLUMNS} "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            current_ids = [int(row["id"]) for row in current_rows]
+            prefix_len = len(prefix_ids)
+            if current_ids[:prefix_len] != prefix_ids:
+                return {
+                    "status": "stale",
+                    "reason": "prefix_changed",
+                    "session_id": session_id,
+                    "active_count": len(current_ids),
+                }
+
+            tail_rows = current_rows[prefix_len:]
+            tail_messages = self._rows_to_conversation(
+                tail_rows,
+                session_id=session_id,
+                include_ancestors=False,
+                repair_alternation=False,
+            )
+
+            # The rows stay recoverable, but only the actually summarized
+            # prefix is marked compacted/searchable. Old copies of the
+            # preserved tail are hidden to avoid duplicate search results.
+            prefix_last_id = prefix_ids[-1]
+            conn.execute(
+                "UPDATE messages SET active = 0, "
+                "compacted = CASE WHEN id <= ? THEN 1 ELSE 0 END "
+                "WHERE session_id = ? AND active = 1",
+                (prefix_last_id, session_id),
+            )
+
+            live_messages = cleaned_prefix + tail_messages
+            inserted, tool_calls_total = self._insert_message_rows(
+                conn, session_id, live_messages
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (inserted, tool_calls_total, session_id),
+            )
+            return {
+                "status": "committed",
+                "session_id": session_id,
+                "active_count": inserted,
+                "archived_prefix_count": prefix_len,
+                "preserved_tail_count": len(tail_messages),
+            }
+
+        return self._execute_write(_do)
+
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]
     ) -> int:
@@ -5010,6 +5202,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool,
         repair_alternation: bool,
+        include_state_message_id: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -5024,6 +5217,8 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            if include_state_message_id:
+                msg["_state_message_id"] = int(row["id"])
             # api_content is the byte-fidelity sidecar: the exact string sent
             # to the API when it differed from the clean content. Returned
             # VERBATIM — no sanitize_context, no strip — because the replay

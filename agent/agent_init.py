@@ -1603,6 +1603,18 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # App-level empty-response retry count (fires when the model returns a
+    # completely empty response — no content, no reasoning).  Default 3,
+    # overridable via agent.empty_response_max_retries in config.yaml.
+    # See #58670.
+    try:
+        _raw_empty_retries = _agent_section.get("empty_response_max_retries", 3)
+        _empty_retries = int(_raw_empty_retries)
+        _empty_retries = max(_empty_retries, 0)  # 0 = no retry
+    except (TypeError, ValueError):
+        _empty_retries = 3
+    agent._empty_response_max_retries = _empty_retries
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

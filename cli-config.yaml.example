@@ -722,6 +722,14 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Max retries when the model returns a completely empty response (no content
+  # and no reasoning). Distinct from api_max_retries, which covers HTTP-level
+  # failures (5xx/429/timeouts). Some providers exhibit higher empty-response
+  # rates under load; raise this to tolerate them, or set 0 to disable
+  # empty-response retries and fail over / surface "No reply" immediately.
+  # See #58670.
+  # empty_response_max_retries: 3
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

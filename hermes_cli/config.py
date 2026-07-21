@@ -1040,6 +1040,13 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Max retries when the model returns a completely empty response
+        # (no content and no reasoning).  Distinct from api_max_retries,
+        # which covers HTTP-level failures (5xx/429/timeouts).  Some
+        # providers exhibit higher empty-response rates under load; raise
+        # this to tolerate them, or set 0 to disable empty-response retries
+        # and fail over / surface "No reply" immediately.  See #58670.
+        "empty_response_max_retries": 3,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

@@ -22,6 +22,43 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = CopilotACPClient(acp_cwd="/tmp")
 
+    def test_kimi_model_selection_uses_advertised_model_alias(self) -> None:
+        client = CopilotACPClient(base_url="acp://kimi", acp_cwd="/tmp")
+        requests: list[tuple[str, dict]] = []
+
+        def request(method: str, params: dict, **_kwargs):
+            requests.append((method, params))
+            return {}
+
+        client._select_requested_model(
+            request,
+            session_id="kimi-session",
+            config_options=[
+                {
+                    "id": "model",
+                    "options": [
+                        {"value": "kimi-code/kimi-for-coding"},
+                        {"value": "kimi-code/k3"},
+                    ],
+                }
+            ],
+            model="kimi-code/k3",
+        )
+
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "session/set_config_option",
+                    {
+                        "sessionId": "kimi-session",
+                        "configId": "model",
+                        "value": "kimi-code/k3",
+                    },
+                )
+            ],
+        )
+
     def test_extracted_tool_calls_match_openai_sdk_shape(self) -> None:
         tool_response = (
             "I'll inspect that.\n"

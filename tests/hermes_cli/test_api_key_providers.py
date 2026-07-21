@@ -693,6 +693,20 @@ class TestRuntimeProviderResolution:
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
+    def test_runtime_kimi_acp_uses_authenticated_kimi_cli(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="kimi-acp")
+
+        assert result["provider"] == "kimi-acp"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "kimi-acp"
+        assert result["base_url"] == "acp://kimi"
+        assert result["command"] == "/usr/local/bin/kimi"
+        assert result["args"] == ["acp"]
+
 
 # =============================================================================
 # _has_any_provider_configured tests

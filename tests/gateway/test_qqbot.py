@@ -150,6 +150,78 @@ class TestIsVoiceContentType:
 
 
 # ---------------------------------------------------------------------------
+# _normalize_attachment_content_type
+# ---------------------------------------------------------------------------
+
+class TestNormalizeAttachmentContentType:
+    def _fn(self, content_type, filename):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter._normalize_attachment_content_type(content_type, filename)
+
+    def test_generic_file_uses_filename_mime(self):
+        assert self._fn("file", "design.png") == "image/png"
+
+    def test_generic_octet_stream_uses_filename_mime(self):
+        assert self._fn("application/octet-stream", "notes.webp") == "image/webp"
+
+    def test_specific_mime_is_preserved(self):
+        assert self._fn("image/jpeg", "document.pdf") == "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# _process_attachments
+# ---------------------------------------------------------------------------
+
+class TestProcessAttachments:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_generic_file_png_is_treated_as_image(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._download_and_cache = mock.AsyncMock(return_value="/tmp/design.png")
+
+        attachments = [{
+            "content_type": "file",
+            "url": "https://multimedia.nt.qq.com.cn/design.png",
+            "filename": "design.png",
+        }]
+
+        with mock.patch("gateway.platforms.qqbot.adapter.os.path.isfile", return_value=True):
+            result = asyncio.run(adapter._process_attachments(attachments))
+
+        adapter._download_and_cache.assert_awaited_once_with(
+            "https://multimedia.nt.qq.com.cn/design.png",
+            "image/png",
+        )
+        assert result["image_urls"] == ["/tmp/design.png"]
+        assert result["image_media_types"] == ["image/png"]
+        assert result["voice_transcripts"] == []
+        assert result["attachment_info"] == ""
+
+    def test_generic_file_zip_stays_attachment(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._download_and_cache = mock.AsyncMock(return_value="/tmp/assets.zip")
+
+        attachments = [{
+            "content_type": "file",
+            "url": "https://multimedia.nt.qq.com.cn/assets.zip",
+            "filename": "assets.zip",
+        }]
+
+        result = asyncio.run(adapter._process_attachments(attachments))
+
+        adapter._download_and_cache.assert_awaited_once_with(
+            "https://multimedia.nt.qq.com.cn/assets.zip",
+            "application/zip",
+        )
+        assert result["image_urls"] == []
+        assert result["image_media_types"] == []
+        assert result["voice_transcripts"] == []
+        assert result["attachment_info"] == "[Attachment: assets.zip]"
+
+
+# ---------------------------------------------------------------------------
 # Voice attachment SSRF protection
 # ---------------------------------------------------------------------------
 

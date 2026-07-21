@@ -1678,9 +1678,10 @@ class QQAdapter(BasePlatformAdapter):
             if not isinstance(att, dict):
                 continue
 
-            ct = str(att.get("content_type", "")).strip().lower()
+            raw_ct = str(att.get("content_type", "")).strip().lower()
             url_raw = str(att.get("url", "")).strip()
             filename = str(att.get("filename", ""))
+            ct = self._normalize_attachment_content_type(raw_ct, filename)
             if url_raw.startswith("//"):
                 url = f"https:{url_raw}"
             elif url_raw:
@@ -1690,8 +1691,9 @@ class QQAdapter(BasePlatformAdapter):
                 continue
 
             logger.debug(
-                "[%s] Processing attachment: content_type=%s, url=%s, filename=%s",
+                "[%s] Processing attachment: content_type=%s normalized_content_type=%s, url=%s, filename=%s",
                 self._log_tag,
+                raw_ct,
                 ct,
                 url[:80],
                 filename,
@@ -1825,6 +1827,15 @@ class QQAdapter(BasePlatformAdapter):
         if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
             return True
         return False
+
+    @staticmethod
+    def _normalize_attachment_content_type(content_type: str, filename: str) -> str:
+        """Infer a real MIME type when QQ sends generic file content types."""
+        ct = content_type.strip().lower()
+        if ct and ct not in {"file", "application/octet-stream", "binary/octet-stream"}:
+            return ct
+        guessed_type = mimetypes.guess_type(filename.strip())[0] if filename.strip() else None
+        return (guessed_type or ct).lower()
 
     def _qq_media_headers(self) -> Dict[str, str]:
         """Return Authorization headers for QQ multimedia CDN downloads.

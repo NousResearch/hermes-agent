@@ -127,6 +127,23 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_terminal_nonzero_exit_is_reported_as_error(self):
+        result = json.dumps({"output": "", "exit_code": 1, "error": None})
+        with (
+            patch("model_tools.registry.dispatch", return_value=result),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            assert handle_function_call("terminal", {"command": "false"}) == result
+
+        kwargs_by_hook = {
+            hook.args[0]: hook.kwargs for hook in mock_invoke_hook.call_args_list
+        }
+        for hook_name in ("post_tool_call", "transform_tool_result"):
+            assert kwargs_by_hook[hook_name]["status"] == "error"
+            assert kwargs_by_hook[hook_name]["error_type"] == "tool_error"
+            assert kwargs_by_hook[hook_name]["error_message"] == "exit 1"
+
     def test_no_listener_skips_post_and_transform_emit(self):
         """When no plugin is registered for post_tool_call /
         transform_tool_result, the emit path must short-circuit on

@@ -991,11 +991,22 @@ def _coerce_boolean(value: str):
     return value
 
 
-def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
+def _tool_result_observer_fields(
+    tool_name: str,
+    result: Any,
+) -> tuple[str, Optional[str], Optional[str]]:
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):
             return "error", "tool_error", str(parsed_result.get("error"))
+    except Exception:
+        pass
+    try:
+        from agent.display import _detect_tool_failure
+
+        failed, suffix = _detect_tool_failure(tool_name, result)
+        if failed:
+            return "error", "tool_error", suffix.strip().strip("[]") or None
     except Exception:
         pass
     return "ok", None, None
@@ -1031,7 +1042,10 @@ def _emit_post_tool_call_hook(
         if not has_hook("post_tool_call"):
             return
         if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(result)
+            status, error_type, error_message = _tool_result_observer_fields(
+                function_name,
+                result,
+            )
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -1387,7 +1401,10 @@ def handle_function_call(
         try:
             from hermes_cli.lifecycle import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
-                status, error_type, error_message = _tool_result_observer_fields(result)
+                status, error_type, error_message = _tool_result_observer_fields(
+                    function_name,
+                    result,
+                )
                 hook_results = invoke_hook(
                     "transform_tool_result",
                     tool_name=function_name,

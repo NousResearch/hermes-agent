@@ -678,8 +678,11 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
+        reasoning_config = getattr(agent, "reasoning_config", None) or {}
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            model=getattr(agent, "model", None),
+            reasoning_effort=reasoning_config.get("effort"),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

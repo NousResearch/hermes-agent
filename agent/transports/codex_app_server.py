@@ -74,6 +74,7 @@ class CodexAppServerClient:
         codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        workspace_cwd: Optional[str] = None,
     ) -> None:
         self._codex_bin = codex_bin
         # codex app-server is a model-driving CLI executor: it runs a
@@ -112,12 +113,33 @@ class CodexAppServerClient:
                     ),
                 )
             )
+            writable_roots = [kanban_root]
+            workspace = os.path.abspath(workspace_cwd or os.getcwd())
+            git_marker = os.path.join(workspace, ".git")
+            if os.path.isfile(git_marker):
+                try:
+                    marker = open(git_marker, encoding="utf-8").readline().strip()
+                    if marker.startswith("gitdir:"):
+                        git_dir = marker.removeprefix("gitdir:").strip()
+                        if not os.path.isabs(git_dir):
+                            git_dir = os.path.join(workspace, git_dir)
+                        git_dir = os.path.realpath(git_dir)
+                        commondir_file = os.path.join(git_dir, "commondir")
+                        if os.path.isfile(commondir_file):
+                            common = open(
+                                commondir_file, encoding="utf-8"
+                            ).read().strip()
+                            git_dir = os.path.realpath(os.path.join(git_dir, common))
+                        writable_roots.append(git_dir)
+                except OSError:
+                    pass
             app_server_args.extend(
                 [
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    "sandbox_workspace_write.writable_roots="
+                    f"{json.dumps(writable_roots)}",
                     "-c",
                     "sandbox_workspace_write.network_access=false",
                 ]

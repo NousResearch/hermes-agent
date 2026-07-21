@@ -858,7 +858,6 @@ Alternatively, use the CLI: `lms load model-name --context-length 64000`
 You can use the CLI to estimate if the model will fit: `lms load model-name --context-length 64000 --estimate-only`
 
 To set persistent per-model defaults: My Models tab → gear icon on the model → set context size.
-:::
 
 If you use LM Studio's Just-In-Time loading / Auto-Evict feature and want LM Studio to manage model loading and eviction from normal chat requests, skip Hermes' explicit preload step:
 

@@ -31,7 +31,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
-from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,11 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+# Only new-message (plus the legacy message alias) starts an agent turn.
+# BlueBubbles emits updated-message for receipt, delivery, and attachment state
+# changes, often with a different chat GUID shape for the same iMessage.
+_MESSAGE_EVENTS = {"new-message", "message"}
+_WEBHOOK_EVENTS = ["new-message"]
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -155,6 +158,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._message_dedup = MessageDeduplicator(ttl_seconds=300)
+        self._inflight_message_ids: Dict[str, asyncio.Future] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -292,13 +297,25 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # Register webhook with BlueBubbles server
         # This is required for the server to know where to send events
-        await self._register_webhook()
+        if not await self._register_webhook():
+            logger.error("[bluebubbles] webhook registration failed")
+            # Do not unregister here: a failed lookup/POST means this adapter
+            # did not establish ownership of a replacement, and removing an
+            # older working registration would turn a transient error into an
+            # inbound outage.
+            await self._cleanup_local_resources()
+            return False
 
         return True
 
     async def disconnect(self) -> None:
         # Unregister webhook before cleaning up
         await self._unregister_webhook()
+
+        await self._cleanup_local_resources()
+
+    async def _cleanup_local_resources(self) -> None:
+        """Close local HTTP resources without changing server registrations."""
 
         if self.client:
             await self.client.aclose()
@@ -339,16 +356,43 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return f"{base}?password=***"
         return base
 
-    async def _find_registered_webhooks(self, url: str) -> list:
+    async def _find_registered_webhooks(
+        self, url: str
+    ) -> Optional[List[Dict[str, Any]]]:
         """Return list of BB webhook entries matching *url*."""
         try:
             res = await self._api_get("/api/v1/webhook")
             data = res.get("data")
             if isinstance(data, list):
                 return [wh for wh in data if wh.get("url") == url]
-        except Exception:
-            pass
-        return []
+            logger.warning("[bluebubbles] webhook lookup returned invalid data")
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to list registered webhooks: %s", exc)
+        return None
+
+    async def _remove_registered_webhooks(
+        self, webhooks: List[Dict[str, Any]]
+    ) -> bool:
+        """Best-effort cleanup after a working registration is available."""
+        assert self.client is not None
+        removed_all = True
+        for webhook in webhooks:
+            webhook_id = webhook.get("id")
+            if not webhook_id:
+                removed_all = False
+                continue
+            try:
+                response = await self.client.delete(
+                    self._api_url(f"/api/v1/webhook/{webhook_id}")
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                removed_all = False
+                logger.warning(
+                    "[bluebubbles] failed to remove stale webhook registration: %s",
+                    exc,
+                )
+        return removed_all
 
     async def _register_webhook(self) -> bool:
         """Register this webhook URL with the BlueBubbles server.
@@ -362,18 +406,33 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         webhook_url = self._webhook_register_url
 
-        # Crash resilience — reuse an existing registration if present
+        # A lookup failure is not the same as an empty list. Failing closed here
+        # avoids creating duplicate registrations during transient API errors.
         existing = await self._find_registered_webhooks(webhook_url)
-        if existing:
+        if existing is None:
+            return False
+
+        expected_events = set(_WEBHOOK_EVENTS)
+        exact = [
+            webhook
+            for webhook in existing
+            if set(webhook.get("events") or []) == expected_events
+        ]
+        if exact:
             logger.info(
                 "[bluebubbles] webhook already registered: %s",
                 self._webhook_register_url_for_log,
             )
+            # Keep one exact registration and clean up stale/duplicate entries.
+            keep = exact[0]
+            stale = [webhook for webhook in existing if webhook is not keep]
+            if stale:
+                await self._remove_registered_webhooks(stale)
             return True
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": _WEBHOOK_EVENTS,
         }
 
         try:
@@ -384,6 +443,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     "[bluebubbles] webhook registered with server: %s",
                     self._webhook_register_url_for_log,
                 )
+                # Create first, then remove stale registrations. If creation
+                # fails, the existing working webhook remains untouched.
+                if existing:
+                    await self._remove_registered_webhooks(existing)
                 return True
             else:
                 logger.warning(
@@ -412,7 +475,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         removed = False
 
         try:
-            for wh in await self._find_registered_webhooks(webhook_url):
+            existing = await self._find_registered_webhooks(webhook_url)
+            if existing is None:
+                return False
+            for wh in existing:
                 wh_id = wh.get("id")
                 if wh_id:
                     res = await self.client.delete(
@@ -863,6 +929,37 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return payload.get("message")
         return payload if isinstance(payload, dict) else None
 
+    def _claim_inbound_message(
+        self, message_id: str
+    ) -> tuple[Optional[asyncio.Future], bool]:
+        """Reserve a GUID, or return the existing in-flight outcome."""
+        if self._message_dedup.contains(message_id):
+            return None, False
+        existing = self._inflight_message_ids.get(message_id)
+        if existing is not None:
+            return existing, False
+        claim = asyncio.get_running_loop().create_future()
+        self._inflight_message_ids[message_id] = claim
+        return claim, True
+
+    def _finish_inbound_claim(
+        self,
+        message_id: Optional[str],
+        claim: Optional[asyncio.Future],
+        *,
+        accepted: bool,
+    ) -> None:
+        """Commit a successful handoff, or release a failed reservation."""
+        if not message_id or claim is None:
+            return
+        if self._inflight_message_ids.get(message_id) is not claim:
+            return
+        self._inflight_message_ids.pop(message_id, None)
+        if accepted:
+            self._message_dedup.is_duplicate(message_id)
+        if not claim.done():
+            claim.set_result(accepted)
+
     @staticmethod
     def _value(*candidates: Any) -> Optional[str]:
         for candidate in candidates:
@@ -924,6 +1021,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         }:
             return web.Response(text="ok")
 
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        claim: Optional[asyncio.Future] = None
+        if message_id:
+            claim, is_owner = self._claim_inbound_message(message_id)
+            if claim is None:
+                logger.info("[bluebubbles] duplicate inbound message ignored")
+                return web.Response(text="ok")
+            if not is_owner:
+                accepted = await asyncio.shield(claim)
+                return web.Response(
+                    text="ok" if accepted else "handoff unavailable",
+                    status=200 if accepted else 503,
+                )
+
         text = (
             self._value(
                 record.get("text"), record.get("message"), record.get("body")
@@ -933,16 +1048,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
+        if not isinstance(attachments, list):
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            return web.json_response({"error": "invalid attachments"}, status=400)
         media_urls: List[str] = []
         media_types: List[str] = []
         msg_type = MessageType.TEXT
+        attachment_failed = False
 
-        for att in attachments:
-            att_guid = att.get("guid", "")
-            if not att_guid:
-                continue
-            cached = await self._download_attachment(att_guid, att)
-            if cached:
+        try:
+            for att in attachments:
+                if not isinstance(att, dict):
+                    attachment_failed = True
+                    continue
+                att_guid = att.get("guid", "")
+                if not att_guid:
+                    continue
+                cached = await self._download_attachment(att_guid, att)
+                if not cached:
+                    attachment_failed = True
+                    continue
                 mime = (att.get("mimeType") or "").lower()
                 media_urls.append(cached)
                 media_types.append(mime)
@@ -956,6 +1081,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     msg_type = MessageType.VIDEO
                 else:
                     msg_type = MessageType.DOCUMENT
+        except asyncio.CancelledError:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            raise
+        except Exception:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            logger.exception("[bluebubbles] inbound attachment processing failed")
+            return web.Response(text="attachment unavailable", status=503)
+
+        if attachment_failed:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            return web.Response(text="attachment unavailable", status=503)
 
         # With multiple attachments, prefer PHOTO if any images present
         if len(media_urls) > 1:
@@ -1001,6 +1137,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
         if not sender or not (chat_guid or chat_identifier) or not text:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
             return web.json_response({"error": "missing message fields"}, status=400)
 
         session_chat_id = chat_guid or chat_identifier
@@ -1010,36 +1147,44 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.debug(
                     "[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)"
                 )
+                self._finish_inbound_claim(message_id, claim, accepted=True)
                 return web.Response(text="ok")
             text = self._clean_mention_text(text)
-        source = self.build_source(
-            chat_id=session_chat_id,
-            chat_name=chat_identifier or sender,
-            chat_type="group" if is_group else "dm",
-            user_id=sender,
-            user_name=sender,
-            chat_id_alt=chat_identifier,
-        )
-        event = MessageEvent(
-            text=text,
-            message_type=msg_type,
-            source=source,
-            raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
-            reply_to_message_id=self._value(
-                record.get("threadOriginatorGuid"),
-                record.get("associatedMessageGuid"),
-            ),
-            media_urls=media_urls,
-            media_types=media_types,
-        )
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        try:
+            source = self.build_source(
+                chat_id=session_chat_id,
+                chat_name=chat_identifier or sender,
+                chat_type="group" if is_group else "dm",
+                user_id=sender,
+                user_name=sender,
+                chat_id_alt=chat_identifier,
+            )
+            event = MessageEvent(
+                text=text,
+                message_type=msg_type,
+                source=source,
+                raw_message=payload,
+                message_id=message_id,
+                reply_to_message_id=self._value(
+                    record.get("threadOriginatorGuid"),
+                    record.get("associatedMessageGuid"),
+                ),
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+            # BasePlatformAdapter.handle_message returns after accepting the
+            # handoff and spawning agent work; awaiting it lets us release a
+            # failed claim without waiting for the agent turn itself.
+            await self.handle_message(event)
+        except asyncio.CancelledError:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            raise
+        except Exception:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            logger.exception("[bluebubbles] failed to hand off inbound message")
+            return web.Response(text="handoff unavailable", status=503)
+
+        self._finish_inbound_claim(message_id, claim, accepted=True)
 
         # Fire-and-forget read receipt
         if self.send_read_receipts and session_chat_id:

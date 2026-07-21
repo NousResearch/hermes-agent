@@ -99,7 +99,7 @@ iMessage → Messages.app → BlueBubbles Server → Webhook → Hermes
 Hermes → BlueBubbles REST API → Messages.app → iMessage
 ```
 
-- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery.
+- **Inbound:** BlueBubbles sends `new-message` webhook events to a local listener. Hermes acknowledges `updated-message` delivery/read-state events without starting another agent turn, and also rejects duplicate message GUIDs as a safety net.
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
 
@@ -164,6 +164,10 @@ Without the Private API, basic text messaging and media still work.
 - Check that the webhook is registered in BlueBubbles Server → Settings → API → Webhooks
 - Verify the webhook URL is reachable from the Mac
 - Check `hermes logs gateway` for webhook errors (or `hermes logs -f` to follow in real-time)
+
+### Duplicate replies
+- Restart the gateway so Hermes can replace older webhook registrations that still subscribe to `updated-message`.
+- Check BlueBubbles Server → Settings → API → Webhooks and confirm the Hermes webhook subscribes only to `new-message`.
 
 ### "Private API helper not connected"
 - Install the Private API helper: [docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)

@@ -10,6 +10,7 @@ from gateway.config import Platform, PlatformConfig
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1")
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(
@@ -172,6 +173,221 @@ class _FakeBlueBubblesRequest:
 
     async def read(self):
         return self._body
+
+
+class TestBlueBubblesDuplicateDelivery:
+    @pytest.mark.asyncio
+    async def test_v019_new_and_updated_chat_variants_dispatch_once(self, monkeypatch):
+        """Regression for #30708/#34372 as reproduced on Hermes v0.19.0."""
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        app = web.Application()
+        app.router.add_post("/bluebubbles-webhook", adapter._handle_webhook)
+
+        async with TestClient(TestServer(app)) as client:
+            first = await client.post(
+                "/bluebubbles-webhook?password=secret",
+                json={
+                    "type": "new-message",
+                    "data": {
+                        "guid": "v019-msg-1",
+                        "text": "approve",
+                        "chatGuid": "any;-;+15555550100",
+                        "chatIdentifier": "+15555550100",
+                        "handle": {"address": "+15555550100"},
+                        "isFromMe": False,
+                    },
+                },
+            )
+            second = await client.post(
+                "/bluebubbles-webhook?password=secret",
+                json={
+                    "type": "updated-message",
+                    "data": {
+                        "guid": "v019-msg-1",
+                        "text": "approve",
+                        "chatIdentifier": "+15555550100",
+                        "handle": {"address": "+15555550100"},
+                        "isFromMe": False,
+                    },
+                },
+            )
+            await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert [(event.message_id, event.text) for event in handled] == [
+            ("v019-msg-1", "approve")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_guid_is_dropped_but_same_text_new_guid_is_kept(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "duplicate-guid-1",
+                "text": "hello",
+                "chatIdentifier": "user@example.com",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        distinct = {**payload, "data": {**payload["data"], "guid": "duplicate-guid-2"}}
+        third = await adapter._handle_webhook(_FakeBlueBubblesRequest(distinct))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert third.status == 200
+        assert [event.message_id for event in handled] == [
+            "duplicate-guid-1",
+            "duplicate-guid-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_failed_handoff_releases_guid_for_redelivery(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        attempts = 0
+        handled = []
+
+        async def flaky_handle_message(event):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("transient handoff failure")
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", flaky_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "retry-guid-1",
+                "text": "retry me",
+                "chatIdentifier": "user@example.com",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert first.status == 503
+        assert second.status == 200
+        assert attempts == 2
+        assert [event.message_id for event in handled] == ["retry-guid-1"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_handoff_releases_guid_for_redelivery(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        attempts = 0
+
+        async def cancelled_once(event):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(adapter, "handle_message", cancelled_once)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "cancelled-guid-1",
+                "text": "retry after cancellation",
+                "chatIdentifier": "user@example.com",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+            },
+        }
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        retry = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert retry.status == 200
+        assert attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_concurrent_attachment_duplicate_downloads_once_and_can_retry(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        download_started = asyncio.Event()
+        release_download = asyncio.Event()
+        downloads = 0
+        handled = []
+
+        async def flaky_download(attachment_guid, metadata):
+            nonlocal downloads
+            downloads += 1
+            if downloads == 1:
+                download_started.set()
+                await release_download.wait()
+                return None
+            return "/tmp/retried-image.png"
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "_download_attachment", flaky_download)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "attachment-guid-1",
+                "text": "image caption",
+                "chatIdentifier": "user@example.com",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "attachments": [
+                    {
+                        "guid": "file-guid-1",
+                        "mimeType": "image/png",
+                        "transferName": "image.png",
+                    }
+                ],
+            },
+        }
+
+        first_task = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await download_started.wait()
+        concurrent_task = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await asyncio.sleep(0)
+        release_download.set()
+        first, concurrent_duplicate = await asyncio.gather(first_task, concurrent_task)
+        retry = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert concurrent_duplicate.status == 503
+        assert first.status == 503
+        assert retry.status == 200
+        assert downloads == 2
+        assert [event.media_urls for event in handled] == [
+            ["/tmp/retried-image.png"]
+        ]
 
 
 class TestBlueBubblesMentionGating:
@@ -774,7 +990,7 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert result == []
 
-    def test_find_registered_webhooks_handles_api_error(self, monkeypatch):
+    def test_find_registered_webhooks_reports_api_error(self, monkeypatch):
         import asyncio
         adapter = _make_adapter(monkeypatch)
         adapter.client = self._mock_client()
@@ -787,7 +1003,7 @@ class TestBlueBubblesWebhookRegistration:
         result = asyncio.get_event_loop().run_until_complete(
             adapter._find_registered_webhooks(adapter._webhook_url)
         )
-        assert result == []
+        assert result is None
 
     # -- _register_webhook --
 
@@ -843,6 +1059,100 @@ class TestBlueBubblesWebhookRegistration:
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
 
+    def test_register_replaces_stale_events_without_delivery_gap(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        calls = []
+        adapter.client = self._mock_client(
+            get_response={
+                "status": 200,
+                "data": [
+                    {
+                        "id": 7,
+                        "url": url,
+                        "events": ["new-message", "updated-message"],
+                    }
+                ],
+            },
+            post_response={"status": 200, "data": {"id": 8}},
+        )
+        original_delete = adapter.client.delete
+
+        async def tracking_post(path, payload):
+            calls.append(("post", payload))
+            return {"status": 200, "data": {"id": 8}}
+
+        async def tracking_delete(*args, **kwargs):
+            calls.append(("delete", args[0]))
+            return await original_delete(*args, **kwargs)
+
+        adapter._api_post = tracking_post
+        adapter.client.delete = tracking_delete
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert calls[0] == (
+            "post",
+            {"url": url, "events": ["new-message"]},
+        )
+        assert calls[1][0] == "delete"
+
+    def test_register_does_not_post_when_lookup_fails(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        posted = []
+        adapter.client = self._mock_client()
+
+        async def failed_lookup(url):
+            return None
+
+        async def tracking_post(path, payload):
+            posted.append((path, payload))
+            return {"status": 200}
+
+        adapter._find_registered_webhooks = failed_lookup
+        adapter._api_post = tracking_post
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert posted == []
+
+    def test_register_post_failure_preserves_stale_hook(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted = []
+        adapter.client = self._mock_client(
+            get_response={
+                "status": 200,
+                "data": [
+                    {
+                        "id": 7,
+                        "url": url,
+                        "events": ["new-message", "updated-message"],
+                    }
+                ],
+            },
+            post_response={"status": 500, "message": "internal error"},
+        )
+        original_delete = adapter.client.delete
+
+        async def tracking_delete(*args, **kwargs):
+            deleted.append(args[0])
+            return await original_delete(*args, **kwargs)
+
+        adapter.client.delete = tracking_delete
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert deleted == []
+
     def test_register_returns_false_without_client(self, monkeypatch):
         import asyncio
         adapter = _make_adapter(monkeypatch)
@@ -863,6 +1173,34 @@ class TestBlueBubblesWebhookRegistration:
             adapter._register_webhook()
         )
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_connect_registration_failure_does_not_unregister_existing(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, webhook_port="0")
+        unregister_calls = []
+
+        async def fake_api_get(path):
+            if path == "/api/v1/server/info":
+                return {"data": {}}
+            return {"status": 200}
+
+        async def failed_registration():
+            return False
+
+        async def tracking_unregister():
+            unregister_calls.append(True)
+            return True
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(adapter, "_register_webhook", failed_registration)
+        monkeypatch.setattr(adapter, "_unregister_webhook", tracking_unregister)
+
+        assert await adapter.connect() is False
+        assert unregister_calls == []
+        assert adapter.client is None
+        assert adapter._runner is None
 
     # -- _unregister_webhook --
 

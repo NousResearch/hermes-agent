@@ -48,8 +48,27 @@ class RelayRuntime:
         self._sessions: dict[str, RelaySession] = {}
         self._subagent_parents: dict[str, str] = {}
         self._subagent_parent_handles: dict[str, Any] = {}
+        self._execution_consumers_lock = threading.RLock()
+        self._execution_consumers: set[str] = set()
         self._shutdown_registered = True
         atexit.register(self.shutdown)
+
+    def retain_managed_execution(self, consumer: str) -> None:
+        """Keep managed LLM and tool execution active for one consumer."""
+        if not consumer:
+            raise ValueError("Relay managed-execution consumer must not be empty")
+        with self._execution_consumers_lock:
+            self._execution_consumers.add(consumer)
+
+    def release_managed_execution(self, consumer: str) -> None:
+        """Release a consumer's managed-execution requirement."""
+        with self._execution_consumers_lock:
+            self._execution_consumers.discard(consumer)
+
+    def managed_execution_enabled(self) -> bool:
+        """Return whether an active interceptor or subscriber needs the pipeline."""
+        with self._execution_consumers_lock:
+            return bool(self._execution_consumers)
 
     def ensure_session(
         self,
@@ -247,6 +266,8 @@ class RelayRuntime:
         args: dict[str, Any],
     ) -> dict[str, Any]:
         """Apply Relay request rewriting before Hermes authorizes a tool call."""
+        if not self.managed_execution_enabled():
+            return args
         request_intercepts = getattr(
             getattr(self.relay, "tools", None),
             "request_intercepts",
@@ -353,6 +374,18 @@ class NoopRelayRuntime:
     ) -> dict[str, Any]:
         del session_id, tool_name
         return args
+
+    @staticmethod
+    def retain_managed_execution(consumer: str) -> None:
+        del consumer
+
+    @staticmethod
+    def release_managed_execution(consumer: str) -> None:
+        del consumer
+
+    @staticmethod
+    def managed_execution_enabled() -> bool:
+        return False
 
     def shutdown(self) -> None:
         """No resources are allocated on unsupported platforms."""

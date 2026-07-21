@@ -240,7 +240,7 @@ def test_nemo_relay_is_a_bounded_core_dependency():
     ]
     assert len(relay_dependencies) == 1
     requirement = Requirement(relay_dependencies[0])
-    assert str(requirement.specifier) == "<0.7,>=0.5"
+    assert str(requirement.specifier) == "<0.7,>=0.6.0rc3"
     assert requirement.marker is not None
     assert requirement.marker.evaluate(
         {"sys_platform": "darwin", "platform_machine": "arm64"}

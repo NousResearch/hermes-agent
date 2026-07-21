@@ -108,6 +108,7 @@ class _Runtime:
             runtime_id=self.host.runtime_id,
         )
         self.relay.subscribers.register(self._subscriber_name, self.subscriber)
+        self.host.retain_managed_execution(self._subscriber_name)
         self._registered = True
         atexit.register(self.shutdown)
 
@@ -401,6 +402,7 @@ class _Runtime:
         self._safe(self.relay.subscribers.flush)
         self._export()
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
+        self.host.release_managed_execution(self._subscriber_name)
         self._registered = False
         try:
             atexit.unregister(self.shutdown)
@@ -414,6 +416,7 @@ class _Runtime:
         self.subscriber.deactivate()
         if self._registered:
             self._safe(self.relay.subscribers.deregister, self._subscriber_name)
+            self.host.release_managed_execution(self._subscriber_name)
             self._registered = False
         with self._sessions_lock:
             sessions = list(self._sessions.values())

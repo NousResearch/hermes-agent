@@ -103,7 +103,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, SecretStr
+    from pydantic import BaseModel, Field, SecretStr
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -119,7 +119,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel, SecretStr
+        from pydantic import BaseModel, Field, SecretStr
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -11493,6 +11493,7 @@ class CronJobCreate(BaseModel):
     schedule: str
     name: str = ""
     deliver: str = "local"
+    repeat: Optional[int] = Field(default=None, ge=1, strict=True)
     skills: Optional[List[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
@@ -11834,6 +11835,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=body.repeat,
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),

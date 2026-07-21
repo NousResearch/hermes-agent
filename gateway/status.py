@@ -799,7 +799,22 @@ def acquire_gateway_runtime_lock() -> bool:
 
     path = _get_gateway_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(path, "a+", encoding="utf-8")
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except PermissionError:
+        # Stale root-owned lock file from a previous launchd Background
+        # session that ran as root (same failure mode handled in
+        # is_gateway_runtime_lock_active).  The parent directory owner can
+        # unlink files even when they don't own them, so remove the stale
+        # lock and retry once with a fresh file.
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        try:
+            handle = open(path, "a+", encoding="utf-8")
+        except OSError:
+            return False
     if not _try_acquire_file_lock(handle):
         handle.close()
         return False

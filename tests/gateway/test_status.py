@@ -1805,3 +1805,59 @@ class TestPermissionErrorOnLockFile:
 
         result = status.is_gateway_runtime_lock_active(lock_path)
         assert result is False
+
+    def test_acquire_gateway_runtime_lock_recovers_from_permission_error(self, tmp_path, monkeypatch):
+        """acquire_gateway_runtime_lock must survive a stale root-owned lock
+        file: unlink it and retry with a fresh file instead of crashing."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+
+        real_open = open
+
+        def deny_write(path, *args, **kwargs):
+            # Simulate a root-owned file: opening fails while the ORIGINAL
+            # stale file is still on disk; after unlink, the fresh file the
+            # retry creates opens fine.
+            if (
+                str(path) == str(lock_path)
+                and lock_path.exists()
+                and lock_path.read_text(encoding="utf-8") == "stale"
+            ):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is True
+        finally:
+            status.release_gateway_runtime_lock()
+
+    def test_acquire_gateway_runtime_lock_gives_up_when_unlink_denied(self, tmp_path, monkeypatch):
+        """If the stale lock cannot even be unlinked, acquisition fails
+        cleanly (returns False) rather than raising."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+
+        real_open = open
+
+        def deny_write(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        real_unlink = Path.unlink
+
+        def deny_unlink(self, *args, **kwargs):
+            if str(self) == str(lock_path):
+                raise OSError(13, "Permission denied", str(self))
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+        monkeypatch.setattr(Path, "unlink", deny_unlink)
+
+        assert status.acquire_gateway_runtime_lock() is False

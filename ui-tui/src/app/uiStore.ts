@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { MOUSE_TRACKING } from '../config/env.js'
+import { MOUSE_TRACKING, VIM_MODE } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -29,7 +29,8 @@ const buildUiState = (): UiState => ({
   statusBar: 'top',
   streaming: true,
   theme: DEFAULT_THEME,
-  usage: ZERO
+  usage: ZERO,
+  viModeEnabled: VIM_MODE
 })
 
 export const $uiState = atom<UiState>(buildUiState())

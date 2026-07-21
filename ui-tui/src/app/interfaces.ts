@@ -318,6 +318,8 @@ export interface UiState {
   streaming: boolean
   theme: Theme
   usage: Usage
+  /** Vim mode for input area - toggled via /vim command */
+  viModeEnabled: boolean
 }
 
 export interface VirtualHistoryState {

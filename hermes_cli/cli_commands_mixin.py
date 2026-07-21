@@ -1026,17 +1026,27 @@ class CLICommandsMixin:
 
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
-        from cli import save_config_value
+        from cli import save_config_values
         parts = cmd.split(maxsplit=1)
-        
+
         if len(parts) > 1:
             # Set personality
             personality_name = parts[1].strip().lower()
-            
+
             if personality_name in {"none", "default", "neutral"}:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", ""):
+                # Both keys land in a single atomic write so the pair can't
+                # be left half-updated if the write fails partway through.
+                # Mirror the canonical personality name to display.personality
+                # so the TUI/gateway and `/personality` listing don't read
+                # stale state. Empty string clears the overlay (matches TUI
+                # gateway semantics).
+                saved = save_config_values({
+                    "agent.system_prompt": "",
+                    "display.personality": "",
+                })
+                if saved:
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
                     print("(^_^) Personality cleared (session only)")
@@ -1044,7 +1054,11 @@ class CLICommandsMixin:
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.system_prompt):
+                saved = save_config_values({
+                    "agent.system_prompt": self.system_prompt,
+                    "display.personality": personality_name,
+                })
+                if saved:
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
                     print(f"(^_^) Personality set to '{personality_name}' (session only)")

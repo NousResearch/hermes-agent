@@ -11150,3 +11150,168 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# ── _save_cfg comment-preservation regression tests ────────────────────────
+#
+# Until ~mid-2026 _save_cfg used yaml.safe_dump on a deep-loaded config dict.
+# Every /personality (or /reasoning, /details_mode, /prompt, ...) write
+# silently rewrote ~/.hermes/config.yaml top-to-bottom — top-level keys
+# reordered alphabetically, comments stripped, kaomoji/Chinese in stored
+# personality prompts mangled to \uXXXX escapes. These tests pin the
+# user-visible behavior of the comment-preserving replacement so we don't
+# regress.
+
+
+def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
+    """The TUI gateway must not strip user-edited comments on setting writes."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "# top of file note\n"
+        "model:\n"
+        "  # provider rationale\n"
+        "  default: claude-opus-4-7\n"
+        "display:\n"
+        "  skin: default  # trailing skin note\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    server._save_cfg(
+        {
+            "model": {"default": "claude-opus-4-7"},
+            "display": {"skin": "mono"},
+        }
+    )
+
+    text = cfg_path.read_text(encoding="utf-8")
+    assert "# top of file note" in text
+    assert "# provider rationale" in text
+    assert "# trailing skin note" in text
+
+    import yaml as _yaml
+
+    parsed = _yaml.safe_load(text)
+    assert parsed["display"]["skin"] == "mono"
+
+
+def test_save_cfg_preserves_top_level_key_order(tmp_path, monkeypatch):
+    """Top-level keys must keep the file's hand-edited ordering instead of
+    being rewritten alphabetically by the underlying YAML dumper."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: claude-opus-4-7\n"
+        "toolsets:\n"
+        "  - hermes-cli\n"
+        "agent:\n"
+        "  max_turns: 90\n"
+        "display:\n"
+        "  skin: default\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    # Caller's dict iteration order is intentionally alphabetical to confirm
+    # the helper consults disk order, not caller order.
+    server._save_cfg(
+        {
+            "agent": {"max_turns": 90},
+            "display": {"skin": "mono"},
+            "model": {"default": "claude-opus-4-7"},
+            "toolsets": ["hermes-cli"],
+        }
+    )
+
+    text = cfg_path.read_text(encoding="utf-8")
+    top_keys = [
+        line.split(":", 1)[0]
+        for line in text.splitlines()
+        if line and not line.startswith(" ") and not line.startswith("-")
+        and not line.startswith("#")
+    ]
+    assert top_keys == ["model", "toolsets", "agent", "display"]
+
+
+def test_save_cfg_keeps_unicode_personalities_readable(tmp_path, monkeypatch):
+    """The catgirl/kawaii personality prompts must stay readable on disk
+    instead of being \\uXXXX-escaped on every unrelated setting write."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "agent:\n"
+        "  personalities:\n"
+        "    catgirl: \"nya (=^･ω･^=) 你好\"\n"
+        "display:\n"
+        "  skin: default\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    # Simulate an unrelated /skin write — must not corrupt the catgirl
+    # personality string sitting in agent.personalities.
+    server._save_cfg(
+        {
+            "agent": {"personalities": {"catgirl": "nya (=^･ω･^=) 你好"}},
+            "display": {"skin": "mono"},
+        }
+    )
+
+    text = cfg_path.read_text(encoding="utf-8")
+    assert "你好" in text
+    assert "(=^･ω･^=)" in text
+    assert "\\u4f60" not in text
+
+
+def test_config_set_personality_writes_both_keys_and_preserves_comments(
+    tmp_path, monkeypatch
+):
+    """End-to-end: config.set personality must save the prompt body AND the
+    canonical name without nuking comments and unicode elsewhere.
+
+    Uses a built-in personality (`pirate`) because the validator reads the
+    real per-user config to discover available names, not our tmp_path
+    fixture.
+    """
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "# user-edited header\n"
+        "agent:\n"
+        "  # comment near personalities\n"
+        "  personalities:\n"
+        "    catgirl: \"nya (=^･ω･^=) 你好\"\n"
+        "display:\n"
+        "  skin: default  # inline skin note\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # Reset module-level cfg cache so we don't read state another test
+    # populated via a `_load_cfg` monkeypatch on the same xdist worker.
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_mtime", None)
+    monkeypatch.setattr(server, "_cfg_path", None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "personality", "value": "pirate"},
+        }
+    )
+
+    assert "result" in resp, f"config.set personality failed: {resp}"
+    assert resp["result"]["key"] == "personality"
+
+    import yaml as _yaml
+
+    text = cfg_path.read_text(encoding="utf-8")
+    saved = _yaml.safe_load(text)
+    assert saved["display"]["personality"] == "pirate"
+    assert "pirate" in saved["agent"]["system_prompt"].lower() or saved["agent"]["system_prompt"]
+    # The catgirl personality must survive untouched, readable.
+    assert saved["agent"]["personalities"]["catgirl"] == "nya (=^･ω･^=) 你好"
+    # User comments must survive.
+    assert "# user-edited header" in text
+    assert "# comment near personalities" in text
+    assert "# inline skin note" in text
+    # Unicode stays readable.
+    assert "\\u4f60" not in text

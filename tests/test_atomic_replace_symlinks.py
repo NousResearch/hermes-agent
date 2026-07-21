@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 from utils import (
     atomic_json_write,
     atomic_replace,
+    atomic_roundtrip_yaml_save,
     atomic_roundtrip_yaml_update,
     atomic_yaml_write,
 )
@@ -212,6 +213,29 @@ def test_atomic_roundtrip_yaml_update_restores_owner(
     )
 
     atomic_roundtrip_yaml_update(target, "model.provider", "nvidia")
+
+    assert chown_calls == [(target, 345, 678)]
+
+
+def test_atomic_roundtrip_yaml_save_restores_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors test_atomic_roundtrip_yaml_update_restores_owner for the
+    whole-state save variant that backs tui_gateway/server.py:_save_cfg()."""
+    if os.name != "posix":
+        pytest.skip("POSIX-only")
+
+    target = tmp_path / "config.yaml"
+    target.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+
+    chown_calls: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
+    monkeypatch.setattr(
+        "utils.os.chown",
+        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+    )
+
+    atomic_roundtrip_yaml_save(target, {"model": {"provider": "nvidia"}})
 
     assert chown_calls == [(target, 345, 678)]
     assert yaml.safe_load(target.read_text(encoding="utf-8"))["model"]["provider"] == "nvidia"

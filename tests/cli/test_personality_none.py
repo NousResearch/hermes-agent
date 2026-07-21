@@ -22,39 +22,79 @@ class TestCLIPersonalityNone:
 
     def test_none_clears_system_prompt(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        with patch("cli.save_config_values", return_value=True):
             cli._handle_personality_command("/personality none")
         assert cli.system_prompt == ""
 
     def test_default_clears_system_prompt(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        with patch("cli.save_config_values", return_value=True):
             cli._handle_personality_command("/personality default")
         assert cli.system_prompt == ""
 
     def test_neutral_clears_system_prompt(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        with patch("cli.save_config_values", return_value=True):
             cli._handle_personality_command("/personality neutral")
         assert cli.system_prompt == ""
 
     def test_none_forces_agent_reinit(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        with patch("cli.save_config_values", return_value=True):
             cli._handle_personality_command("/personality none")
         assert cli.agent is None
 
     def test_none_saves_to_config(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True) as mock_save:
+        with patch("cli.save_config_values", return_value=True) as mock_save:
             cli._handle_personality_command("/personality none")
-        mock_save.assert_called_once_with("agent.system_prompt", "")
+        # Saves both agent.system_prompt (the resolved prompt body, empty when
+        # clearing) AND display.personality (the canonical name, empty when
+        # clearing) in a single atomic call. Without the second key, the TUI
+        # status bar and the `/personality` listing would read stale state;
+        # without a single call, a partial failure could persist only one of
+        # the two keys.
+        assert mock_save.call_args_list == [
+            (({"agent.system_prompt": "", "display.personality": ""},),),
+        ]
+
+    def test_none_reports_session_only_when_save_fails(self, capsys):
+        """CR-01/CR-02 regression: if the config write fails, the CLI must
+        say so (session only) rather than claim it was saved."""
+        cli = self._make_cli()
+        with patch("cli.save_config_values", return_value=False):
+            cli._handle_personality_command("/personality none")
+        output = capsys.readouterr().out
+        assert "session only" in output.lower()
+        assert "saved to config" not in output.lower()
 
     def test_known_personality_still_works(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        with patch("cli.save_config_values", return_value=True):
             cli._handle_personality_command("/personality helpful")
         assert cli.system_prompt == "You are helpful."
+
+    def test_known_personality_saves_both_keys(self):
+        """Setting a named personality persists both the prompt body and the
+        canonical name in a single atomic write. Regression: previously only
+        agent.system_prompt was written, leaving display.personality stale so
+        the status bar and `/personality` listing disagreed with the active
+        overlay; and previously two separate writes meant one could succeed
+        while the other failed, leaving the pair inconsistent."""
+        cli = self._make_cli()
+        with patch("cli.save_config_values", return_value=True) as mock_save:
+            cli._handle_personality_command("/personality helpful")
+        assert mock_save.call_args_list == [
+            (({"agent.system_prompt": "You are helpful.", "display.personality": "helpful"},),),
+        ]
+
+    def test_known_personality_reports_session_only_when_save_fails(self, capsys):
+        cli = self._make_cli()
+        with patch("cli.save_config_values", return_value=False):
+            cli._handle_personality_command("/personality helpful")
+        output = capsys.readouterr().out
+        assert "session only" in output.lower()
+        assert "saved to config" not in output.lower()
 
     def test_unknown_personality_shows_none_in_available(self, capsys):
         cli = self._make_cli()
@@ -143,6 +183,83 @@ class TestGatewayPersonalityNone:
             result = await runner._handle_personality_command(event)
 
         assert "none" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_set_named_persists_both_keys_via_save_config_values(self, tmp_path):
+        """Gateway must persist BOTH agent.system_prompt and
+        display.personality via the comment-preserving save_config_values
+        helper, in a single atomic call. Previously it called
+        atomic_yaml_write on the whole config dict (clobbering comments) and
+        only wrote agent.system_prompt so display.personality stayed stale;
+        later it wrote the two keys via two separate save_config_value calls,
+        which meant a failure between them could leave the pair
+        inconsistent."""
+        runner = self._make_runner()
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("cli.save_config_values", return_value=True) as mock_save:
+            event = self._make_event("helpful")
+            await runner._handle_personality_command(event)
+
+        assert mock_save.call_args_list == [
+            (({"agent.system_prompt": "You are helpful.", "display.personality": "helpful"},),),
+        ]
+        assert runner._ephemeral_system_prompt == "You are helpful."
+
+    @pytest.mark.asyncio
+    async def test_clear_persists_both_keys_via_save_config_values(self, tmp_path):
+        """Clearing (`/personality none`) must also clear display.personality,
+        via the same single atomic call."""
+        runner = self._make_runner()
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("cli.save_config_values", return_value=True) as mock_save:
+            event = self._make_event("none")
+            await runner._handle_personality_command(event)
+
+        assert mock_save.call_args_list == [
+            (({"agent.system_prompt": "", "display.personality": ""},),),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_set_named_reports_failure_when_save_fails(self, tmp_path):
+        """CR-01 regression: save_config_values() returns False rather than
+        raising on failure. A try/except around the call would never fire,
+        so the gateway must check the return value and report failure
+        instead of silently claiming success."""
+        runner = self._make_runner()
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("cli.save_config_values", return_value=False):
+            event = self._make_event("helpful")
+            result = await runner._handle_personality_command(event)
+
+        assert "failed" in result.lower() or "error" in result.lower()
+        # In-memory state must not silently flip to "set" when the write failed.
+        assert runner._ephemeral_system_prompt != "You are helpful."
+
+    @pytest.mark.asyncio
+    async def test_clear_reports_failure_when_save_fails(self, tmp_path):
+        runner = self._make_runner()
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("cli.save_config_values", return_value=False):
+            event = self._make_event("none")
+            result = await runner._handle_personality_command(event)
+
+        assert "failed" in result.lower() or "error" in result.lower()
 
     @pytest.mark.asyncio
     async def test_empty_personality_list_uses_profile_display_path(self, tmp_path):

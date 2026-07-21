@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesRepoStatus } from '@/global'
 
-import { $repoStatus, refreshRepoStatus } from './coding-status'
-import { $currentCwd } from './session'
+import { $repoStatus, $repoStatusLoading, refreshRepoStatus } from './coding-status'
+import { $currentCwd, $selectedStoredSessionId } from './session'
 
 const sampleStatus: HermesRepoStatus = {
   branch: 'feature/login',
@@ -27,12 +27,16 @@ function stubProbe(impl: (cwd: string) => Promise<HermesRepoStatus | null>) {
 
 describe('refreshRepoStatus', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     $repoStatus.set(null)
     $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
   afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -70,5 +74,71 @@ describe('refreshRepoStatus', () => {
     $repoStatus.set(sampleStatus)
     await refreshRepoStatus('/repo')
     expect($repoStatus.get()).toBeNull()
+  })
+
+  it('runs one probe at a time and coalesces overlap into one trailing refresh', async () => {
+    const resolvers: Array<(status: HermesRepoStatus | null) => void> = []
+    const calls: string[] = []
+    let active = 0
+    let maxActive = 0
+
+    stubProbe(
+      cwd =>
+        new Promise(resolve => {
+          calls.push(cwd)
+          active++
+          maxActive = Math.max(maxActive, active)
+          resolvers.push(status => {
+            active--
+            resolve(status)
+          })
+        })
+    )
+
+    const first = refreshRepoStatus('/repo-a')
+    const second = refreshRepoStatus('/repo-b')
+    const third = refreshRepoStatus('/repo-c')
+
+    expect(calls).toEqual(['/repo-a'])
+    expect(maxActive).toBe(1)
+    expect($repoStatusLoading.get()).toBe(true)
+
+    resolvers.shift()?.(sampleStatus)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(calls).toEqual(['/repo-a', '/repo-c'])
+    expect(maxActive).toBe(1)
+    expect($repoStatus.get()).toBeNull()
+
+    resolvers.shift()?.(sampleStatus)
+    await Promise.all([first, second, third])
+
+    expect(maxActive).toBe(1)
+    expect($repoStatus.get()).toEqual(sampleStatus)
+    expect($repoStatusLoading.get()).toBe(false)
+  })
+
+  it('refreshes when the stored session id changes even if the cwd is unchanged', async () => {
+    const probe = vi.fn(async () => sampleStatus)
+    stubProbe(probe)
+
+    $currentCwd.set('/repo')
+    $selectedStoredSessionId.set('session-a')
+    // The cwd subscription fires on the set above; drain the debounced refresh.
+    vi.advanceTimersByTime(200)
+    await vi.runAllTicks()
+
+    probe.mockClear()
+
+    // Switch to a different session in the SAME repo dir. The cwd atom value is
+    // identical, so its subscription would not re-fire — but the stored-session
+    // id did change, which must still trigger a probe so the branch label
+    // tracks the new session's checked-out branch.
+    $selectedStoredSessionId.set('session-b')
+    vi.advanceTimersByTime(200)
+    await vi.runAllTicks()
+
+    expect(probe).toHaveBeenCalledWith('/repo')
   })
 })

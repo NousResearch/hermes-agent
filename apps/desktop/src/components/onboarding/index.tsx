@@ -28,9 +28,23 @@ import {
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
-import { FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
+import {
+  FeaturedProviderRow,
+  FireworksProviderRow,
+  OpenRouterProviderRow,
+  ProviderRow,
+  sortProviders
+} from './providers'
 
-export { FeaturedProviderRow, KeyProviderRow, ProviderRow, providerTitle, sortProviders } from './providers'
+export {
+  FeaturedProviderRow,
+  FireworksProviderRow,
+  KeyProviderRow,
+  OpenRouterProviderRow,
+  ProviderRow,
+  providerTitle,
+  sortProviders
+} from './providers'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -48,18 +62,20 @@ export interface ApiKeyOption {
   short?: string
 }
 
+// Curated order mirrors CANONICAL_PROVIDERS: Fireworks sits #2 overall (after
+// Nous Portal OAuth), ahead of OpenRouter and the rest of the key catalog.
 const API_KEY_OPTIONS: ApiKeyOption[] = [
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    envKey: 'OPENROUTER_API_KEY',
-    docsUrl: 'https://openrouter.ai/keys'
-  },
   {
     id: 'fireworks',
     name: 'Fireworks AI',
     envKey: 'FIREWORKS_API_KEY',
     docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    envKey: 'OPENROUTER_API_KEY',
+    docsUrl: 'https://openrouter.ai/keys'
   },
   {
     id: 'openai',
@@ -453,12 +469,14 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {/* Slot #2 — always visible, matching CANONICAL_PROVIDERS (Nous → Fireworks). */}
+        <FireworksProviderRow onClick={() => openKeyForm('FIREWORKS_API_KEY')} />
         {showRest ? (
           <>
             {rest.map(p => (
               <ProviderRow key={p.id} onSelect={select} provider={p} />
             ))}
-            <KeyProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
+            <OpenRouterProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
           </>
         ) : null}
       </div>

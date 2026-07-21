@@ -9,7 +9,7 @@ import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } fro
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
-import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
+import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
   setFileBrowserOpen,
@@ -40,7 +40,7 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
-import { openNewSessionInNewWindow } from '@/store/windows'
+import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
@@ -120,7 +120,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   }
 
   handlersRef.current = {
-    'keybinds.openPanel': toggleKeybindPanel,
+    'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
@@ -145,7 +145,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),
-    'session.newWindow': () => void openNewSessionInNewWindow(),
+    'session.newWindow': () => void openNewWindow(),
     // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
     // falls through to the recent-session switcher.
     'session.next': () => void (cycleTreeTabInFocusedZone(1) || stepSession(1)),

@@ -1,3 +1,6 @@
+import pytest
+
+from agent.errors import MoAPresetNotFoundError
 from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
@@ -106,6 +109,7 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
                         {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "LOW"},
                         {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": False},
                         {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "nonsense"},
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "ultra"},
                     ],
                     "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "xhigh"},
                 }
@@ -117,6 +121,7 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
     assert preset["reference_models"][0]["reasoning_effort"] == "low"
     assert preset["reference_models"][1]["reasoning_effort"] == "none"
     assert "reasoning_effort" not in preset["reference_models"][2]
+    assert preset["reference_models"][3]["reasoning_effort"] == "ultra"
     assert preset["aggregator"]["reasoning_effort"] == "xhigh"
 
 
@@ -201,6 +206,46 @@ def test_resolve_moa_preset_returns_requested_model_set():
     assert resolve_moa_preset(cfg, "review")["reference_models"] == [
         {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
     ]
+
+
+def test_resolve_missing_moa_preset_has_actionable_error():
+    cfg = {
+        "default_preset": "日常对话-高峰",
+        "presets": {"日常对话-高峰": {}, "日常对话-非高峰": {}},
+    }
+
+    with pytest.raises(MoAPresetNotFoundError) as exc_info:
+        resolve_moa_preset(cfg, "日常对话-高峰期")
+
+    message = str(exc_info.value)
+    assert "日常对话-高峰期" in message
+    assert "日常对话-高峰" in message
+    assert "日常对话-非高峰" in message
+    assert "hermes moa list" in message
+
+
+def test_resolve_missing_moa_preset_does_not_silently_fallback():
+    cfg = {
+        "default_preset": "日常对话-高峰",
+        "presets": {"日常对话-高峰": {}},
+    }
+
+    with pytest.raises(MoAPresetNotFoundError):
+        resolve_moa_preset(cfg, "renamed-preset")
+
+
+def test_missing_moa_preset_is_non_retryable():
+    from agent.error_classifier import FailoverReason, classify_api_error
+
+    result = classify_api_error(
+        MoAPresetNotFoundError("MoA preset 'old' was not found"),
+        provider="moa",
+        model="old",
+    )
+
+    assert result.reason == FailoverReason.model_not_found
+    assert result.retryable is False
+    assert result.should_fallback is False
 
 
 def test_build_moa_turn_prompt_encodes_one_shot_default_preset():

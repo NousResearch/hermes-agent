@@ -1688,6 +1688,34 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
+
+    # --- Model-aware provider override ---
+    # When the active provider is an OAuth provider (e.g. Nous Portal) and the
+    # target model belongs to a different provider (e.g. Anthropic), check if
+    # that provider has valid credentials and switch automatically.  This
+    # prevents the active OAuth provider from "hijacking" models that belong to
+    # a direct-API provider the user has already configured.
+    # Only applies when the provider was NOT explicitly requested (auto-detect).
+    if (
+        target_model
+        and requested_provider == "auto"
+        and provider not in {"openrouter", "custom"}
+    ):
+        try:
+            from hermes_cli.models import detect_provider_for_model as _detect_prov
+            _detected = _detect_prov(target_model, provider)
+            if _detected and _detected[0] != provider:
+                _candidate = _detected[0]
+                # Verify the candidate provider has usable credentials
+                from hermes_cli.auth import PROVIDER_REGISTRY as _PR
+                _pconfig = _PR.get(_candidate)
+                if _pconfig and _pconfig.auth_type == "api_key":
+                    for _env in _pconfig.api_key_env_vars:
+                        if _env in os.environ and os.environ[_env].strip():
+                            provider = _candidate
+                            break
+        except Exception:
+            pass  # best-effort; fall through to original provider
     model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,

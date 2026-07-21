@@ -122,6 +122,7 @@ export const $dismissedWorktreeIds = persistentAtom(
 )
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
+export const $sidebarProjectsOpen = atom(true)
 // Cron-job sessions live in their own section below recents, collapsed by
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
@@ -254,6 +255,10 @@ export function setSidebarPinsOpen(open: boolean) {
 
 export function setSidebarRecentsOpen(open: boolean) {
   $sidebarRecentsOpen.set(open)
+}
+
+export function setSidebarProjectsOpen(open: boolean) {
+  $sidebarProjectsOpen.set(open)
 }
 
 export function setSidebarCronOpen(open: boolean) {

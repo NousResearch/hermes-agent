@@ -8710,6 +8710,24 @@ def _resolve_git_cmd() -> list[str]:
             "/opt/homebrew/bin/git",  # Apple Silicon Homebrew
             "/usr/local/opt/git/bin/git",  # Intel Homebrew (legacy cellar)
         ]
+
+        # Windows Git-for-Windows fallback paths (same pattern as plugins_cmd._resolve_git_executable)
+        if sys.platform == "win32":
+            _prog = _os.environ.get("ProgramFiles", r"C:\Program Files")
+            _prog_x86 = _os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+            _local = _os.environ.get("LOCALAPPDATA", "")
+            _common_locations.extend([
+                _os.path.join(_prog, "Git", "cmd", "git.exe"),
+                _os.path.join(_prog, "Git", "bin", "git.exe"),
+                _os.path.join(_prog_x86, "Git", "cmd", "git.exe"),
+                _os.path.join(_prog_x86, "Git", "bin", "git.exe"),
+            ])
+            if _local:
+                _common_locations.extend([
+                    _os.path.join(_local, "Programs", "Git", "cmd", "git.exe"),
+                    _os.path.join(_local, "Programs", "Git", "bin", "git.exe"),
+                ])
+
         for candidate in _common_locations:
             if _os.path.isfile(candidate) and _os.access(candidate, _os.X_OK):
                 git_path = candidate

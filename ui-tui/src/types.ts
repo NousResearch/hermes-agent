@@ -1,6 +1,7 @@
 export interface ActiveTool {
   context?: string
   id: string
+  label?: string
   name: string
   verboseArgs?: string
   startedAt?: number

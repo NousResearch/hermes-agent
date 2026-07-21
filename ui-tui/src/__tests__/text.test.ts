@@ -8,6 +8,7 @@ import {
   estimateRows,
   estimateTokensRough,
   fmtK,
+  formatToolCall,
   hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
@@ -35,6 +36,16 @@ describe('buildToolTrailLine', () => {
     expect(line).toBe('Read File("x") (0.9s) ✓')
     expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File("x") (0.9s)', detail: '', mark: '✓' })
     expect(splitToolDuration('Read File("x") (0.9s)')).toEqual({ label: 'Read File("x")', duration: ' (0.9s)' })
+  })
+
+  it('renders a final friendly label without formatting it as context', () => {
+    expect(formatToolCall('read_file', 'package.json L1-300', 'Reading package.json L1-300')).toBe(
+      'Reading package.json L1-300'
+    )
+    expect(buildToolTrailLine('read_file', 'package.json L1-300', false, '', 0.5, 'Reading package.json L1-300')).toBe(
+      'Reading package.json L1-300 (0.5s) ✓'
+    )
+    expect(formatToolCall('read_file', 'package.json L1-300')).toBe('Read File("package.json L1-300")')
   })
 })
 

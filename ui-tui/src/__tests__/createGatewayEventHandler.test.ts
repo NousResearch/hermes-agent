@@ -274,6 +274,30 @@ describe('createGatewayEventHandler', () => {
     expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
   })
 
+  it('keeps final labels separate from raw context through live and completed tool state', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        context: 'package.json L1-300',
+        label: 'Reading package.json L1-300',
+        name: 'read_file',
+        tool_id: 'tool-1'
+      },
+      type: 'tool.start'
+    } as any)
+
+    expect(getTurnState().tools[0]).toMatchObject({
+      context: 'package.json L1-300',
+      label: 'Reading package.json L1-300',
+      name: 'read_file'
+    })
+
+    onEvent({ payload: { duration_s: 0.5, name: 'read_file', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+
+    expect(getTurnState().streamPendingTools[0]).toBe('Reading package.json L1-300 (0.5s) ✓')
+  })
+
   it('keeps tool tokens across handler recreation mid-turn', () => {
     const appended: Msg[] = []
 

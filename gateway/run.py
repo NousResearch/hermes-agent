@@ -10574,6 +10574,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "curator":
+                return await self._handle_curator_command(event)
+
             # /goal is safe mid-run for status/pause/clear/wait (inspection
             # and control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -10995,6 +10998,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "curator":
+            return await self._handle_curator_command(event)
 
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)

@@ -509,6 +509,41 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_curator_command(self, event: MessageEvent) -> str:
+        """Handle /curator — delegate to the shared curator CLI."""
+        import asyncio
+        import io
+        import shlex
+
+        from hermes_cli.curator import cli_main
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("curator"):
+            text = text[len("curator"):].lstrip()
+
+        tokens = shlex.split(text) if text else ["status"]
+
+        try:
+            buf = io.StringIO()
+            import sys
+            old_stdout = sys.stdout
+            sys.stdout = buf
+            try:
+                cli_main(tokens)
+            except SystemExit:
+                pass
+            finally:
+                sys.stdout = old_stdout
+            output = buf.getvalue().strip()
+        except Exception as exc:
+            return f"(._.) curator: {exc}"
+
+        if len(output) > 3800:
+            output = output[:3800] + "\n... (truncated)"
+        return output or "(._.) curator: no output"
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

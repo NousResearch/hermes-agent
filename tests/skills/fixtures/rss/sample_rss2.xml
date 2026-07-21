@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample Test Blog</title>
+    <link>https://example.com/</link>
+    <description>A sample RSS 2.0 feed used for testing the rss-feed skill.</description>
+    <language>en-us</language>
+    <pubDate>Mon, 05 May 2026 12:00:00 GMT</pubDate>
+    <lastBuildDate>Mon, 05 May 2026 12:00:00 GMT</lastBuildDate>
+    <item>
+      <title>First Post Title</title>
+      <link>https://example.com/posts/first</link>
+      <guid isPermaLink="true">https://example.com/posts/first</guid>
+      <pubDate>Mon, 05 May 2026 09:30:00 GMT</pubDate>
+      <description>&lt;p&gt;Some text with &lt;em&gt;emphasis&lt;/em&gt; about the first post.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Second Post Title</title>
+      <link>https://example.com/posts/second</link>
+      <guid isPermaLink="true">https://example.com/posts/second</guid>
+      <pubDate>Sun, 04 May 2026 14:15:00 GMT</pubDate>
+      <description>&lt;p&gt;The &lt;strong&gt;second&lt;/strong&gt; entry, with a &lt;a href="https://example.com/ref"&gt;link&lt;/a&gt;.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Third Post Title &#8212; Has Special Chars &amp; Stuff</title>
+      <link>https://example.com/posts/third</link>
+      <guid isPermaLink="true">https://example.com/posts/third</guid>
+      <pubDate>Sat, 03 May 2026 22:00:00 GMT</pubDate>
+      <description>&lt;p&gt;Third post with ampersands &amp;amp; quotes &amp;quot;like this&amp;quot;.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Fourth Post</title>
+      <link>https://example.com/posts/fourth</link>
+      <guid isPermaLink="true">https://example.com/posts/fourth</guid>
+      <pubDate>Fri, 02 May 2026 08:45:00 GMT</pubDate>
+      <description>&lt;p&gt;A &lt;em&gt;short&lt;/em&gt; fourth post for testing limits.&lt;/p&gt;</description>
+    </item>
+  </channel>
+</rss>

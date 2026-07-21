@@ -341,6 +341,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "stepfun": [
+        "step-3.7-flash",
         "step-3.5-flash",
         "step-3.5-flash-2603",
     ],
@@ -355,20 +356,30 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax": [
         "MiniMax-M3",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
         "MiniMax-M2",
     ],
     "minimax-oauth": [
         "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
     ],
     "minimax-cn": [
         "MiniMax-M3",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
         "MiniMax-M2",
     ],
     "anthropic": [

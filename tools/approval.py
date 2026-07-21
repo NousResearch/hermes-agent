@@ -2045,6 +2045,23 @@ _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, 
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
+def attach_gateway_approval_id(session_key: str, approval_id: int) -> bool:
+    """Attach a platform callback id to the oldest queued approval for a session.
+
+    Button callbacks may be tapped by an authorized operator whose Telegram
+    identity differs from the bot/group session that initiated the command.
+    The approval id is therefore the durable prompt→queue binding; the session
+    key is only a hint/fallback for legacy text approval flows.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key) or []
+        for entry in queue:
+            if entry.data.get("approval_id") is None:
+                entry.data["approval_id"] = approval_id
+                return True
+    return False
+
+
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
@@ -2104,6 +2121,51 @@ def resolve_gateway_approval(session_key: str, choice: str,
             entry.reason = reason
         entry.event.set()
     return len(targets)
+
+
+def resolve_gateway_approval_by_id(approval_id: int, choice: str,
+                                   expected_session_key: str | None = None) -> tuple[int, str | None]:
+    """Resolve one queued gateway approval by its platform callback id.
+
+    This is the operator-override path for inline buttons: once the platform
+    adapter has authenticated the user, the approval id carried in the button
+    is the authority that selects the waiting approval, independent of the
+    Telegram user/session identity that clicked it.
+
+    Returns ``(count, resolved_session_key)``. ``count`` is 0 when the prompt
+    is stale or the queue was already cleared.
+    """
+    target = None
+    resolved_session_key = None
+    with _lock:
+        # Prefer the expected session when it still exists, but do not require
+        # it. A gateway restart or operator-identity callback can leave the
+        # prompt's visible session hint stale while the queued approval remains
+        # active elsewhere.
+        session_order = []
+        if expected_session_key:
+            session_order.append(expected_session_key)
+        session_order.extend(k for k in _gateway_queues.keys() if k not in session_order)
+
+        for session_key in session_order:
+            queue = _gateway_queues.get(session_key) or []
+            for entry in list(queue):
+                if entry.data.get("approval_id") == approval_id:
+                    queue.remove(entry)
+                    if not queue:
+                        _gateway_queues.pop(session_key, None)
+                    target = entry
+                    resolved_session_key = session_key
+                    break
+            if target is not None:
+                break
+
+    if target is None:
+        return 0, None
+
+    target.result = choice
+    target.event.set()
+    return 1, resolved_session_key
 
 
 def has_blocking_approval(session_key: str) -> bool:

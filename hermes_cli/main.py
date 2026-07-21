@@ -5175,7 +5175,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
     dist_index = project_root / "hermes_cli" / "web_dist" / "index.html"
     try:
-        lock_file = open(project_root / ".web_ui_build.lock", "a")
+        lock_file = open(project_root / ".web_ui_build.lock", "a", encoding="utf-8")
     except OSError:
         return _do_build_web_ui(web_dir, fatal=fatal)
     try:

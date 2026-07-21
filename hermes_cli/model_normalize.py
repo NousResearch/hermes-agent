@@ -457,6 +457,14 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         # rejects "MiMo-V2.5-Pro" but accepts "mimo-v2.5-pro").
         if provider in _LOWERCASE_MODEL_PROVIDERS:
             result = result.lower()
+        # Ollama Cloud: models.dev appends :cloud/-cloud suffixes that
+        # the live API does not use.  Strip them so that config entries
+        # copied from models.dev resolve to the correct bare model ID.
+        if provider == "ollama-cloud":
+            for suffix in (":cloud", "-cloud"):
+                if result.endswith(suffix):
+                    result = result[: -len(suffix)]
+                    break
         return result
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---

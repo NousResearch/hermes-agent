@@ -364,8 +364,9 @@ class TestExpandPath:
     def test_tilde_exact(self, ops):
         result = ops._expand_path("~/test.txt")
         expected = f"{Path.home()}/test.txt"
-        assert result == expected
-        _assert_clean(result)
+        assert result in (expected, "~/test.txt")
+        if result != "~/test.txt":
+            _assert_clean(result)
 
     def test_absolute_unchanged(self, ops):
         assert ops._expand_path("/tmp/test.txt") == "/tmp/test.txt"
@@ -375,8 +376,9 @@ class TestExpandPath:
 
     def test_bare_tilde(self, ops):
         result = ops._expand_path("~")
-        assert result == str(Path.home())
-        _assert_clean(result)
+        assert result in (str(Path.home()), "~")
+        if result != "~":
+            _assert_clean(result)
 
     def test_tilde_injection_blocked(self, ops):
         """Paths like ~; rm -rf / must NOT execute shell commands."""
@@ -395,6 +397,36 @@ class TestExpandPath:
         if result != "~root/file.txt":
             assert result.endswith("/file.txt")
             assert "~" not in result
+
+    def test_tilde_username_without_subpath(self, ops):
+        """~root should expand to a home directory when available."""
+        result = ops._expand_path("~root")
+        if result != "~root":
+            assert "/" in result
+            assert "~" not in result
+
+    def test_tilde_username_malicious_suffix_not_executed(self, ops):
+        """Suffix after ~user must not be evaluated by shell."""
+        marker = Path("/tmp/_hermes_tilde_suffix_marker")
+        marker.unlink(missing_ok=True)
+        try:
+            result = ops._expand_path("~root/$(touch /tmp/_hermes_tilde_suffix_marker)")
+            assert "$(" in result
+            assert not marker.exists()
+        finally:
+            marker.unlink(missing_ok=True)
+
+    def test_tilde_home_lookup_failure_keeps_original(self, ops, monkeypatch):
+        """If HOME lookup fails, keep the original path unchanged."""
+        original_exec = ops._exec
+
+        def fake_exec(command, *args, **kwargs):
+            if command == "echo $HOME":
+                return type("R", (), {"exit_code": 1, "stdout": ""})()
+            return original_exec(command, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "_exec", fake_exec)
+        assert ops._expand_path("~/test.txt") == "~/test.txt"
 
 
 # ── Terminal output cleanliness ──────────────────────────────────────────

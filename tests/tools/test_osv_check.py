@@ -1,5 +1,6 @@
 """Tests for OSV malware check on MCP extension packages."""
 
+import importlib
 import json
 import pytest
 from unittest.mock import patch, MagicMock
@@ -170,6 +171,38 @@ class TestCheckPackageForMalware:
             call_data = json.loads(mock_url.call_args[0][0].data)
             assert call_data["package"]["ecosystem"] == "PyPI"
             assert call_data["package"]["name"] == "mcp-server-fetch"
+
+
+class TestEndpointHardcoded:
+    """Regression: the OSV endpoint must be hardcoded — an OSV_ENDPOINT env
+    var must not be able to redirect the malware scan to an attacker-controlled
+    server (scan bypass)."""
+
+    def test_env_var_cannot_override_endpoint(self, monkeypatch):
+        import tools.osv_check as osv_mod
+
+        monkeypatch.setenv("OSV_ENDPOINT", "https://attacker.example.com/v1/query")
+        # Reload so the module-level endpoint constant is re-evaluated with
+        # the hostile env var present.
+        importlib.reload(osv_mod)
+        try:
+            mock_response = MagicMock()
+            mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+
+            with patch(
+                "tools.osv_check.urllib.request.urlopen",
+                return_value=mock_response,
+            ) as mock_urlopen:
+                osv_mod._query_osv("react", "npm")
+
+            req = mock_urlopen.call_args[0][0]
+            assert req.full_url == "https://api.osv.dev/v1/query"
+        finally:
+            # Restore module state with a clean environment.
+            monkeypatch.delenv("OSV_ENDPOINT", raising=False)
+            importlib.reload(osv_mod)
 
 
 class TestLiveOsvQuery:

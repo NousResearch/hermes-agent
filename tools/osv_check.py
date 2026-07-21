@@ -19,7 +19,7 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_OSV_ENDPOINT = os.getenv("OSV_ENDPOINT", "https://api.osv.dev/v1/query")
+_OSV_ENDPOINT = "https://api.osv.dev/v1/query"
 _TIMEOUT = 10  # seconds
 
 

@@ -134,6 +134,52 @@ def test_show_status_reports_nous_inference_key_without_portal_login(monkeypatch
     assert "Nous inference credentials are configured" in output
 
 
+def test_show_status_includes_plugin_registered_platform(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+    import hermes_cli.plugins as plugins_mod
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    platform_registry.unregister("testchat")
+
+    def fake_discover_plugins():
+        platform_registry.register(
+            PlatformEntry(
+                name="testchat",
+                label="TestChat",
+                adapter_factory=lambda cfg: object(),
+                check_fn=lambda: True,
+                source="plugin",
+                plugin_name="testchat-plugin",
+            )
+        )
+        return []
+
+    monkeypatch.setattr(plugins_mod, "discover_plugins", fake_discover_plugins)
+    try:
+        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        output = capsys.readouterr().out
+    finally:
+        platform_registry.unregister("testchat")
+
+    assert "TestChat" in output
+    assert "configured (plugin)" in output
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by xAI OAuth status tests
 # ---------------------------------------------------------------------------

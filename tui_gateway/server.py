@@ -10406,38 +10406,21 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
         # the goal judge / notifications re-evaluate at the end of that turn.
+        # Leftover steer must not be dropped when a user queue wins: stash it
+        # behind that queue so it still runs (CLI puts leftover steer on
+        # _pending_input instead of discarding).
+        if steer_followup:
+            _emit(
+                "status.update",
+                sid,
+                {
+                    "kind": "steer",
+                    "text": "Steer delivered as next turn (no tool window left on prior turn).",
+                },
+            )
+            _enqueue_prompt(session, steer_followup, session.get("transport"))
         if _drain_queued_prompt(rid, sid, session):
             return
-
-        # Deliver leftover steer as the next turn when the model never got a
-        # tool-result injection window. User mid-turn queue already drained
-        # above wins over this auto follow-up.
-        if steer_followup:
-            with session["history_lock"]:
-                if session.get("running"):
-                    return
-                session["running"] = True
-            try:
-                _emit("message.start", sid)
-                # System note so the transcript shows the steer was promoted
-                # from mid-turn queue to a real turn (not lost).
-                _emit(
-                    "status.update",
-                    sid,
-                    {
-                        "kind": "steer",
-                        "text": "Steer delivered as next turn (no tool window left on prior turn).",
-                    },
-                )
-                _run_prompt_submit(rid, sid, session, steer_followup)
-            except Exception as _steer_exc:
-                print(
-                    f"[tui_gateway] leftover steer dispatch failed: "
-                    f"{type(_steer_exc).__name__}: {_steer_exc}",
-                    file=sys.stderr,
-                )
-                with session["history_lock"]:
-                    session["running"] = False
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

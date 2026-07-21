@@ -6493,7 +6493,8 @@ def test_prompt_submit_delivers_leftover_steer_as_next_turn(monkeypatch):
         monkeypatch.setattr(server, "_get_usage", lambda _a: {})
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
-        monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_a: False)
+        # Do NOT stub _drain_queued_prompt — leftover steer is delivered through
+        # the real enqueue+drain path (parity with CLI leftover handling).
 
         resp = server.handle_request(
             {

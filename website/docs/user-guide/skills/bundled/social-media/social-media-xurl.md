@@ -19,7 +19,7 @@ X/Twitter via xurl CLI: post, search, DM, media, v2 API.
 | Version | `1.1.1` |
 | Author | xdevplatform + openclaw + Hermes Agent |
 | License | MIT |
-| Platforms | linux, macos |
+| Platforms | linux, macos, windows |
 | Tags | `twitter`, `x`, `social-media`, `xurl`, `official-api` |
 
 ## Reference: full SKILL.md
@@ -67,6 +67,8 @@ App credential registration and credential rotation must be done by the user man
 ## Installation
 
 Pick ONE method. On Linux, the shell script or `go install` are the easiest.
+On native Windows, prefer Go or the Hermes Windows shim; the npm installer may
+require a separate `unzip` executable on some Windows machines.
 
 ```bash
 # Shell script (installs to ~/.local/bin, no sudo, works on Linux + macOS)
@@ -82,6 +84,22 @@ npm install -g @xdevplatform/xurl
 go install github.com/xdevplatform/xurl@latest
 ```
 
+Native Windows fallback, when the Go binary hangs in an agent shell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_xurl_windows_shim.ps1
+```
+
+The shim supports `auth status`, app registration/default selection, OAuth2,
+`whoami`, `post`, `reply`, and `quote` without printing token values.
+
+On Windows with WSL2 available, prefer the normal Linux xurl path inside WSL2:
+
+```powershell
+wsl --exec bash -lc 'curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh | bash'
+wsl --exec bash -lc 'export PATH="$HOME/.local/bin:$PATH"; xurl auth status'
+```
+
 Verify:
 
 ```bash
@@ -95,14 +113,23 @@ If `xurl` is installed but `auth status` shows no apps or tokens, the user needs
 
 ## One-Time User Setup (user runs these outside the agent)
 
-These steps must be performed by the user directly, NOT by the agent, because they involve pasting secrets. Direct the user to this block; do not execute it for them.
+These steps must be performed by the user directly, NOT by the agent, because
+they may involve pasting credentials. Direct the user to this block; do not
+execute it for them.
 
 1. Create or open an app at https://developer.x.com/en/portal/dashboard
 2. Set the redirect URI to `http://localhost:8080/callback`
-3. Copy the app's Client ID and Client Secret
+3. Copy the app's Client ID. With the official xurl CLI, also copy the Client
+   Secret because upstream xurl requires `--client-secret` for app registration.
+   The Hermes Windows shim can register public OAuth2/PKCE clients without a
+   secret.
 4. Register the app locally (user runs this):
    ```bash
    xurl auth apps add my-app --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+   ```
+   If using the Hermes Windows shim with a public client and no secret:
+   ```bash
+   xurl auth apps add my-app --client-id YOUR_CLIENT_ID
    ```
 5. Authenticate (specify `--app` to bind the token to your app):
    ```bash
@@ -403,6 +430,7 @@ xurl --app staging /2/users/me             # one-off against staging
 ## Agent Workflow
 
 1. Verify prerequisites: `xurl --help` and `xurl auth status`.
+   On native Windows, if the official Go binary blocks in the agent shell, install the Hermes shim with `scripts/install_xurl_windows_shim.ps1` and repeat the same checks.
 2. **Check default app has credentials.** Parse the `auth status` output. The default app is marked with `▸`. If the default app shows `oauth2: (none)` but another app has a valid oauth2 user, tell the user to run `xurl auth default <that-app>` to fix it. This is the most common setup mistake — the user added an app with a custom name but never set it as default, so xurl keeps trying the empty `default` profile.
 3. If auth is missing entirely, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
 4. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
@@ -430,7 +458,10 @@ xurl --app staging /2/users/me             # one-off against staging
 ## Notes
 
 - **Rate limits:** X enforces per-endpoint rate limits. A 429 means wait and retry. Write endpoints (post, reply, like, repost) have tighter limits than reads.
-- **Scopes:** OAuth 2.0 tokens use broad scopes. A 403 on a specific action usually means the token is missing a scope — have the user re-run `xurl auth oauth2`.
+- **Scopes:** OAuth 2.0 tokens request the minimum posting scopes by default:
+  `tweet.read`, `tweet.write`, `users.read`, and `offline.access`. If X denies
+  authorization, verify the app is configured for OAuth 2.0 with read/write
+  permissions and that the callback URL exactly matches.
 - **Token refresh:** OAuth 2.0 tokens auto-refresh. Nothing to do.
 - **Multiple apps:** Each app has isolated credentials/tokens. Switch with `xurl auth default` or `--app`.
 - **Multiple accounts per app:** Select with `-u / --username`, or set a default with `xurl auth default APP USER`.

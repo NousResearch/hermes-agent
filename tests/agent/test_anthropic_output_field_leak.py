@@ -58,7 +58,45 @@ class TestSanitizeReplayBlock:
         assert out["citations"] == real
 
     def test_unknown_type_dropped(self):
-        assert _sanitize_replay_block({"type": "server_tool_use", "foo": 1}) is None
+        assert _sanitize_replay_block({"type": "future_tool_result", "foo": 1}) is None
+
+    @pytest.mark.parametrize(
+        ("block_type", "expected_content"),
+        [
+            ("web_search_tool_result", [{"type": "web_search_result", "url": "https://example.com"}]),
+            ("web_fetch_tool_result", {"type": "web_fetch_result", "url": "https://example.com"}),
+        ],
+    )
+    def test_server_tool_results_round_trip_without_output_only_fields(
+        self, block_type, expected_content
+    ):
+        out = _sanitize_replay_block({
+            "type": block_type,
+            "tool_use_id": "srvtoolu_1",
+            "content": expected_content,
+            "caller": {"type": "direct"},
+            "response_only": "drop-me",
+        })
+        assert out == {
+            "type": block_type,
+            "tool_use_id": "srvtoolu_1",
+            "content": expected_content,
+        }
+
+    def test_server_tool_use_round_trips(self):
+        out = _sanitize_replay_block({
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "Hermes Agent"},
+            "caller": {"type": "direct"},
+        })
+        assert out == {
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "Hermes Agent"},
+        }
 
 
 class TestContentPartConversion:

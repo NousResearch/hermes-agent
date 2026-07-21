@@ -94,6 +94,8 @@ class AnthropicTransport(ProviderTransport):
         reasoning_parts = []
         reasoning_details = []
         tool_calls = []
+        citation_sources = []
+        seen_citation_urls = set()
         # Verbatim, order-preserving copy of every content block in the turn.
         # Anthropic signs each thinking block against the turn content that
         # PRECEDES it at its position; when a turn interleaves thinking and
@@ -119,6 +121,22 @@ class AnthropicTransport(ProviderTransport):
                     ordered_blocks.append(clean_block)
             if block.type == "text":
                 text_parts.append(block.text)
+                # Anthropic returns citations as structured metadata rather
+                # than inline Markdown.  Preserve that metadata for replay
+                # (ordered_blocks above) and also render a compact source list
+                # into Hermes' provider-neutral text channel so CLI/gateway
+                # users do not lose the URLs.
+                for citation in getattr(block, "citations", None) or []:
+                    citation_dict = _to_plain_data(citation)
+                    if not isinstance(citation_dict, dict):
+                        continue
+                    url = citation_dict.get("url")
+                    if not isinstance(url, str) or not url or url in seen_citation_urls:
+                        continue
+                    seen_citation_urls.add(url)
+                    title = citation_dict.get("title") or citation_dict.get("cited_text") or url
+                    title = " ".join(str(title).split())
+                    citation_sources.append((title, url))
             elif block.type in ("thinking", "redacted_thinking"):
                 if block.type == "thinking":
                     reasoning_parts.append(block.thinking)
@@ -179,11 +197,32 @@ class AnthropicTransport(ProviderTransport):
             isinstance(b, dict) and b.get("type") == "tool_use"
             for b in ordered_blocks
         )
-        if _has_signed_thinking and _has_tool_use:
+        _has_server_tool_blocks = any(
+            isinstance(b, dict)
+            and (
+                b.get("type") == "server_tool_use"
+                or b.get("type") in {
+                    "web_search_tool_result", "web_fetch_tool_result",
+                }
+            )
+            for b in ordered_blocks
+        )
+        if (_has_signed_thinking and _has_tool_use) or _has_server_tool_blocks:
             provider_data["anthropic_content_blocks"] = ordered_blocks
 
+        normalized_content = "\n".join(text_parts) if text_parts else None
+        if citation_sources:
+            sources = "\n".join(
+                f"- {title}: {url}" for title, url in citation_sources
+            )
+            normalized_content = (
+                f"{normalized_content}\n\nSources:\n{sources}"
+                if normalized_content
+                else f"Sources:\n{sources}"
+            )
+
         return NormalizedResponse(
-            content="\n".join(text_parts) if text_parts else None,
+            content=normalized_content,
             tool_calls=tool_calls or None,
             finish_reason=finish_reason,
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
@@ -238,6 +277,7 @@ class AnthropicTransport(ProviderTransport):
         "stop_sequence": "stop",
         "refusal": "content_filter",
         "model_context_window_exceeded": "length",
+        "pause_turn": "pause_turn",
     }
 
     def map_finish_reason(self, raw_reason: str) -> str:

@@ -169,7 +169,10 @@ def _load_web_config() -> dict:
 # WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
 # a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {
+        "parallel", "firecrawl", "tavily", "exa", "searxng",
+        "brave-free", "ddgs", "xai", "anthropic",
+    }
 )
 
 
@@ -349,6 +352,13 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "anthropic":
+        # Native server-side web tools execute inside the Anthropic Messages
+        # API request.  Availability must stay a cheap credential probe: this
+        # function runs while schemas are assembled and while `hermes tools`
+        # paints.  get_env_value() (via _has_env) covers both the process env
+        # and ~/.hermes/.env, including the API key collected at setup.
+        return _has_env("ANTHROPIC_API_KEY") or _has_env("CLAUDE_CODE_OAUTH_TOKEN")
     return False
 
 
@@ -398,6 +408,8 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
     ]
 
 
@@ -684,6 +696,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         )
 
         backend = _get_search_backend()
+        if backend == "anthropic":
+            return tool_error(
+                "Anthropic web search is a server-side Messages API tool and "
+                "cannot be executed by Hermes locally. Use an Anthropic model "
+                "with api_mode=anthropic_messages, or select another web.search_backend."
+            )
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
             # Fall back to availability-walked active provider when the
@@ -856,6 +874,12 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_extract_backend()
+            if backend == "anthropic":
+                return tool_error(
+                    "Anthropic web fetch is a server-side Messages API tool and "
+                    "cannot be executed by Hermes locally. Use an Anthropic model "
+                    "with api_mode=anthropic_messages, or select another web.extract_backend."
+                )
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
@@ -1059,12 +1083,22 @@ def check_web_api_key() -> bool:
     """
     # ``or ""``: a null ``web.backend`` value yields None from ``.get``, and
     # ``None.lower()`` would raise. Mirrors ``_get_backend``.
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured and _is_backend_available(configured):
+    config = _load_web_config()
+    configured_backends = {
+        str(config.get(key) or "").lower().strip()
+        for key in ("backend", "search_backend", "extract_backend")
+    }
+    configured_backends.discard("")
+    if any(_is_backend_available(backend) for backend in configured_backends):
         return True
     # Any built-in backend with credentials present. This is a boolean OR, so
     # unlike _get_backend() the probe order is irrelevant.
-    if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
+    # Anthropic is deliberately explicit-only.  Its credential is primarily
+    # a model credential and may coexist with an OpenRouter or other active
+    # transport; treating it as a generic web-provider key would expose local
+    # web functions that cannot execute on that transport.
+    auto_detectable = _LEGACY_WEB_BACKENDS - {"anthropic"}
+    if any(_is_backend_available(backend) for backend in auto_detectable):
         return True
     # Any plugin-registered provider the registry considers active for either
     # capability. Delegating to the registry's own availability-filtered
@@ -1211,6 +1245,39 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+
+def _anthropic_web_search_schema_overrides() -> dict:
+    """Expose Anthropic's native search spec only when it is selected.
+
+    Keeping the marker out of the static schema matters: an Anthropic user
+    may deliberately select Brave, SearXNG, or another local provider.  In
+    that case the adapter must leave ``web_search`` function-shaped so Hermes
+    dispatches it through the normal provider registry.
+    """
+    if _get_search_backend() != "anthropic":
+        return {}
+    return {
+        "_anthropic_server_tool": {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+        }
+    }
+
+
+def _anthropic_web_fetch_schema_overrides() -> dict:
+    """Expose Anthropic web_fetch in place of Hermes web_extract when selected."""
+    if _get_extract_backend() != "anthropic":
+        return {}
+    return {
+        "_anthropic_server_tool": {
+            "type": "web_fetch_20250910",
+            "name": "web_fetch",
+            "max_uses": 5,
+            "citations": {"enabled": True},
+        }
+    }
+
 registry.register(
     name="web_search",
     toolset="web",
@@ -1220,6 +1287,7 @@ registry.register(
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
+    dynamic_schema_overrides=_anthropic_web_search_schema_overrides,
 )
 registry.register(
     name="web_extract",
@@ -1235,4 +1303,5 @@ registry.register(
     is_async=True,
     emoji="📄",
     max_result_size_chars=100_000,
+    dynamic_schema_overrides=_anthropic_web_fetch_schema_overrides,
 )

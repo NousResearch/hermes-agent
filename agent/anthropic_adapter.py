@@ -1685,8 +1685,17 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI tool definitions to Anthropic format."""
+def convert_tools_to_anthropic(
+    tools: List[Dict], base_url: str | None = None
+) -> List[Dict]:
+    """Convert OpenAI tool definitions to Anthropic format.
+
+    A function schema may carry an ``_anthropic_server_tool`` marker.  On
+    Anthropic's native endpoint that marker replaces the client-side function
+    definition with Anthropic's server-tool spec.  Compatible third-party
+    endpoints keep the ordinary function definition because support for
+    Anthropic-hosted tools cannot be assumed there.
+    """
     if not tools:
         return []
     result = []
@@ -1706,6 +1715,14 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             continue
         if name:
             seen_names.add(name)
+        server_spec = fn.get("_anthropic_server_tool")
+        if (
+            isinstance(server_spec, dict)
+            and server_spec.get("type")
+            and not _is_third_party_anthropic_endpoint(base_url)
+        ):
+            result.append(copy.deepcopy(server_spec))
+            continue
         anthropic_tool: Dict[str, Any] = {
             "name": name,
             "description": fn.get("description", ""),
@@ -1924,6 +1941,25 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         }
         if isinstance(b.get("cache_control"), dict):
             out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "server_tool_use":
+        out = {
+            "type": "server_tool_use",
+            "id": b.get("id", ""),
+            "name": b.get("name", ""),
+            "input": copy.deepcopy(b.get("input", {})),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = copy.deepcopy(b["cache_control"])
+        return out
+    if btype in {"web_search_tool_result", "web_fetch_tool_result"}:
+        out = {
+            "type": btype,
+            "tool_use_id": b.get("tool_use_id", ""),
+            "content": copy.deepcopy(b.get("content")),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = copy.deepcopy(b["cache_control"])
         return out
     if btype == "image":
         src = b.get("source")
@@ -2531,7 +2567,9 @@ def build_anthropic_kwargs(
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
     )
-    anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+    anthropic_tools = (
+        convert_tools_to_anthropic(tools, base_url=base_url) if tools else []
+    )
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
@@ -2600,6 +2638,11 @@ def build_anthropic_kwargs(
 
         if anthropic_tools:
             for tool in anthropic_tools:
+                # Server tools have a versioned ``type`` and a canonical name
+                # that Anthropic itself intercepts. Prefixing that name turns
+                # it back into an ordinary client tool and breaks execution.
+                if "type" in tool:
+                    continue
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
 

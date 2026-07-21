@@ -284,15 +284,29 @@ def _get_search_backend() -> str:
     return _get_capability_backend("search")
 
 
-def _get_extract_backend() -> str:
-    """Determine which backend to use for web_extract specifically.
-
+def _get_extract_backends() -> List[str]:
+    """Determine which backends to use for web_extract, returning a fallback chain.
+    
     Selection priority:
-    1. ``web.extract_backend`` (per-capability override)
-    2. ``web.backend`` (shared fallback — existing behavior)
-    3. Auto-detect from env vars
+    1. ``web.extract_backends`` (list of backends for fallback)
+    2. ``web.extract_backend`` (single per-capability override)
+    3. ``web.backend`` (shared fallback)
+    4. Auto-detect from env vars
     """
-    return _get_capability_backend("extract")
+    cfg = _load_web_config()
+    backends = cfg.get("extract_backends")
+    if isinstance(backends, list) and backends:
+        chain = []
+        for b in backends:
+            b_clean = str(b).lower().strip()
+            if b_clean and _is_backend_available(b_clean):
+                chain.append(b_clean)
+        if chain:
+            return chain
+        return [str(b).lower().strip() for b in backends if str(b).strip()]
+
+    single = _get_capability_backend("extract")
+    return [single] if single else []
 
 
 def _get_capability_backend(capability: str) -> str:
@@ -855,15 +869,8 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
+            backends = _get_extract_backends()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
@@ -871,38 +878,33 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
+            last_error_json = None
+            extracted_results = []
+            
+            for backend in backends:
+                provider = _wsp_get_provider(backend) if backend else None
+                
                 if provider is not None and not provider.supports_extract():
-                    return json.dumps(
+                    last_error_json = json.dumps(
                         {
                             "success": False,
                             "error": (
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
+                                "Set web.extract_backends or web.extract_backend to firecrawl, "
                                 "tavily, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
                     )
-                provider = get_active_extract_provider()
+                    continue
+                
+                provider = provider or get_active_extract_provider()
                 if provider is None:
-                    # If the configured backend is a bundled web plugin the
-                    # user explicitly disabled, the backend is set correctly
-                    # and the real fix is to re-enable the plugin — say so
-                    # instead of telling them to set web.extract_backend
-                    # (which they already did). #40190 follow-up.
                     disabled_key = _disabled_web_plugin_for(capability="extract")
                     if disabled_key:
                         _vendor = disabled_key.split("/", 1)[-1]
-                        return json.dumps(
+                        last_error_json = json.dumps(
                             {
                                 "success": False,
                                 "error": (
@@ -915,33 +917,64 @@ async def web_extract_tool(
                             },
                             ensure_ascii=False,
                         )
-                    return json.dumps(
+                    else:
+                        last_error_json = json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    "No web extract provider configured. "
+                                    "Set web.extract_backends or web.extract_backend to firecrawl, "
+                                    "tavily, exa, or parallel."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    continue
+
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
+                )
+
+                import inspect
+                try:
+                    if inspect.iscoroutinefunction(provider.extract):
+                        extracted_results = await provider.extract(safe_urls, format=format)
+                    else:
+                        extracted_results = await asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        )
+                    
+                    if not extracted_results:
+                        last_error_json = json.dumps({"success": False, "error": f"Empty response from {provider.name}"})
+                        logger.warning("Empty response from %s. Trying next backend if available.", provider.name)
+                        continue
+                        
+                    all_failed = all(r.get("error") for r in extracted_results)
+                    if all_failed and len(backends) > 1 and backend != backends[-1]:
+                        first_err = extracted_results[0].get("error", "Unknown error")
+                        logger.warning(
+                            "Extract via %s failed for all URLs (%s). Trying next backend.", provider.name, first_err
+                        )
+                        continue
+                    
+                    # Success (or partial success, or last backend failed). Use these results.
+                    last_error_json = None
+                    break
+                    
+                except Exception as e:
+                    logger.warning("Extract via %s failed with exception: %s", provider.name, e)
+                    last_error_json = json.dumps(
                         {
                             "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
+                            "error": f"Extraction via {provider.name} failed: {e}"
+                        }
                     )
+                    continue
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
-            import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+            if last_error_json and not extracted_results:
+                return last_error_json
+            
+            results = extracted_results
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the

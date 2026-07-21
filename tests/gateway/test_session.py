@@ -1920,6 +1920,21 @@ class TestGatewayRoutingTable:
             user_id=user_id,
         )
 
+    def _entry_data(self, session_key, session_id):
+        return {
+            "session_key": session_key,
+            "session_id": session_id,
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+        }
+
+    def _write_legacy_entry(self, tmp_path, session_key, session_id):
+        entry_data = self._entry_data(session_key, session_id)
+        (tmp_path / "sessions.json").write_text(
+            json.dumps({session_key: entry_data}), encoding="utf-8"
+        )
+        return entry_data
+
     def test_index_survives_restart_without_sessions_json(self, tmp_path):
         """Full SessionEntry state rehydrates from state.db alone."""
         config = GatewayConfig()
@@ -1995,6 +2010,201 @@ class TestGatewayRoutingTable:
         restarted._ensure_loaded()
         assert restarted._entries[entry.session_key].session_id == entry.session_id
         restarted._db.close()
+
+    def test_transient_canonical_load_failure_fails_closed_then_retries(self, tmp_path):
+        """A failed DB read must not make the legacy mirror authoritative."""
+        import hermes_state
+
+        key = "agent:main:telegram:dm:chat-1"
+        canonical = self._entry_data(key, "canonical-session")
+        self._write_legacy_entry(tmp_path, key, "stale-legacy-session")
+
+        db = hermes_state.SessionDB()
+        scope = str(tmp_path.resolve())
+        db.save_gateway_routing_entry(key, json.dumps(canonical), scope=scope)
+        db.close()
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        real_load = store._db.load_gateway_routing_entries
+        calls = 0
+
+        def fail_once(*, scope):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient routing read failure")
+            return real_load(scope=scope)
+
+        store._db.load_gateway_routing_entries = fail_once
+        with pytest.raises(RuntimeError, match="transient routing read failure"):
+            store._ensure_loaded()
+
+        assert store._loaded is False
+        assert store._entries == {}
+        assert json.loads(real_load(scope=scope)[key]) == canonical
+
+        store._ensure_loaded()
+        assert store._entries[key].session_id == "canonical-session"
+        assert calls == 2
+        store._db.close()
+
+    def test_transient_canonical_parse_failure_preserves_row_and_retries(
+        self, tmp_path
+    ):
+        """A parse failure cannot authorize sessions.json to replace the DB row."""
+        import hermes_state
+
+        key = "agent:main:telegram:dm:chat-1"
+        canonical = self._entry_data(key, "canonical-session")
+        self._write_legacy_entry(tmp_path, key, "stale-legacy-session")
+
+        db = hermes_state.SessionDB()
+        scope = str(tmp_path.resolve())
+        db.save_gateway_routing_entry(key, json.dumps(canonical), scope=scope)
+        db.close()
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        real_json_loads = json.loads
+        calls = 0
+
+        def fail_once(payload, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("transient canonical parse failure")
+            return real_json_loads(payload, *args, **kwargs)
+
+        with patch("gateway.session.json.loads", side_effect=fail_once):
+            with pytest.raises(ValueError, match="transient canonical parse failure"):
+                store._ensure_loaded()
+            assert store._loaded is False
+            assert store._entries == {}
+            store._ensure_loaded()
+
+        assert store._entries[key].session_id == "canonical-session"
+        assert real_json_loads(
+            store._db.load_gateway_routing_entries(scope=scope)[key]
+        ) == canonical
+        store._db.close()
+
+    def test_absent_legacy_key_is_seeded_once_during_successful_load(self, tmp_path):
+        """A proven-empty canonical slot is seeded immediately and only once."""
+        key = "agent:main:telegram:dm:chat-1"
+        self._write_legacy_entry(tmp_path, key, "legacy-session")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+        scope = store._routing_scope()
+        stored = store._db.load_gateway_routing_entries(scope=scope)
+        assert json.loads(stored[key])["session_id"] == "legacy-session"
+        store._db.close()
+
+        self._write_legacy_entry(tmp_path, key, "later-stale-session")
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        restarted._ensure_loaded()
+        assert restarted._entries[key].session_id == "legacy-session"
+        restarted._db.close()
+
+    def test_legacy_seed_persists_only_sanitized_entry_data(self, tmp_path):
+        key = "agent:main:telegram:dm:chat-1"
+        entry_data = self._entry_data(key, "legacy-session")
+        entry_data["model_override"] = {
+            "model": "safe-model",
+            "api_key": "must-not-persist",
+            "api_mode": "responses",
+        }
+        (tmp_path / "sessions.json").write_text(
+            json.dumps({key: entry_data}), encoding="utf-8"
+        )
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+
+        persisted = store._db.load_gateway_routing_entries(
+            scope=store._routing_scope()
+        )[key]
+        assert "must-not-persist" not in persisted
+        assert json.loads(persisted)["model_override"] == {"model": "safe-model"}
+        store._db.close()
+
+    def test_non_object_legacy_json_does_not_block_canonical_load(self, tmp_path):
+        import hermes_state
+
+        key = "agent:main:telegram:dm:chat-1"
+        canonical = self._entry_data(key, "canonical-session")
+        (tmp_path / "sessions.json").write_text("[]", encoding="utf-8")
+
+        db = hermes_state.SessionDB()
+        db.save_gateway_routing_entry(
+            key, json.dumps(canonical), scope=str(tmp_path.resolve())
+        )
+        db.close()
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._ensure_loaded()
+        assert store._entries[key].session_id == "canonical-session"
+        store._db.close()
+
+    def test_legacy_import_cas_failure_is_retryable_and_idempotent(self, tmp_path):
+        key = "agent:main:telegram:dm:chat-1"
+        self._write_legacy_entry(tmp_path, key, "legacy-session")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        real_insert = store._db.insert_gateway_routing_entry_if_absent
+        calls = 0
+
+        def fail_once(session_key, entry_json, *, scope=""):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient routing CAS failure")
+            return real_insert(session_key, entry_json, scope=scope)
+
+        store._db.insert_gateway_routing_entry_if_absent = fail_once
+        with pytest.raises(RuntimeError, match="transient routing CAS failure"):
+            store._ensure_loaded()
+        assert store._loaded is False
+        assert store._entries == {}
+
+        store._ensure_loaded()
+        store._ensure_loaded()
+        assert calls == 2
+        assert store._entries[key].session_id == "legacy-session"
+        assert len(store._db.load_gateway_routing_entries(scope=store._routing_scope())) == 1
+        store._db.close()
+
+    def test_competing_writer_wins_legacy_import_cas(self, tmp_path):
+        """Import adopts the canonical winner when another writer fills the slot."""
+        import hermes_state
+
+        key = "agent:main:telegram:dm:chat-1"
+        self._write_legacy_entry(tmp_path, key, "legacy-session")
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        scope = store._routing_scope()
+        competitor = hermes_state.SessionDB()
+        competing = self._entry_data(key, "competing-session")
+        real_insert = store._db.insert_gateway_routing_entry_if_absent
+        raced = False
+
+        def insert_after_competitor(session_key, entry_json, *, scope=""):
+            nonlocal raced
+            if not raced:
+                raced = True
+                competitor.save_gateway_routing_entry(
+                    session_key, json.dumps(competing), scope=scope
+                )
+            return real_insert(session_key, entry_json, scope=scope)
+
+        store._db.insert_gateway_routing_entry_if_absent = insert_after_competitor
+        store._ensure_loaded()
+
+        assert raced is True
+        assert store._entries[key].session_id == "competing-session"
+        persisted = store._db.load_gateway_routing_entries(scope=scope)
+        assert json.loads(persisted[key]) == competing
+        competitor.close()
+        store._db.close()
 
     def test_prune_removes_routing_rows_for_ended_sessions(self, tmp_path):
         """Startup prune drops ended sessions from the DB routing table too."""

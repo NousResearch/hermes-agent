@@ -57,6 +57,10 @@ def _db_returning(rows: dict) -> MagicMock:
     """SessionDB mock where get_session maps session_id -> row dict."""
     db = MagicMock()
     db.get_session.side_effect = lambda sid: rows.get(sid)
+    db.load_gateway_routing_entries.return_value = {}
+    db.insert_gateway_routing_entry_if_absent.side_effect = (
+        lambda _key, entry_json, *, scope="": entry_json
+    )
     return db
 
 

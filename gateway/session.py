@@ -1097,8 +1097,9 @@ class SessionStore:
 
         Read order (#9006 follow-up): the ``gateway_routing`` table in
         state.db is the primary source; sessions.json is the legacy import
-        path for pre-migration installs (its entries are folded in for keys
-        the DB doesn't have, then persisted to the DB on the next _save).
+        path for pre-migration installs. A successful canonical read is
+        required before legacy entries can seed absent keys, and each seed is
+        an insert-if-absent transaction that returns the authoritative value.
         """
         if self._loaded:
             return
@@ -1108,70 +1109,115 @@ class SessionStore:
         # Primary: state.db gateway_routing table. getattr: some tests build
         # partially-initialized stores without __init__ (same pattern as
         # _prune_stale_sessions_locked).
-        db_had_entries = False
+        loaded_entries: Dict[str, SessionEntry] = {}
+        canonical_read_succeeded = False
         _db = getattr(self, "_db", None)
         if _db:
             loader = getattr(_db, "load_gateway_routing_entries", None)
             if callable(loader):
                 try:
-                    for key, entry_json in loader(scope=self._routing_scope()).items():
-                        try:
-                            entry_data = json.loads(entry_json)
-                            if isinstance(entry_data, dict):
-                                self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError, TypeError) as e:
-                            logger.warning(
-                                "Skipping invalid routing entry %r: %s", key, e
-                            )
-                    db_had_entries = bool(self._entries)
+                    canonical_rows = loader(scope=self._routing_scope())
                 except Exception as e:
                     logger.warning(
                         "gateway.session: state.db routing load failed: %s", e
                     )
+                    raise
+                for key, entry_json in canonical_rows.items():
+                    try:
+                        entry_data = json.loads(entry_json)
+                        if not isinstance(entry_data, dict):
+                            raise TypeError(
+                                "canonical routing entry must decode to an object"
+                            )
+                        loaded_entries[key] = SessionEntry.from_dict(entry_data)
+                    except (ValueError, KeyError, TypeError) as e:
+                        logger.warning(
+                            "Invalid canonical routing entry %r: %s", key, e
+                        )
+                        raise
+                canonical_read_succeeded = True
 
-        # Legacy import: sessions.json (pre-migration installs, or entries
-        # written by an older gateway after a downgrade). Only fills keys the
-        # DB didn't provide — DB entries win.
+        # Legacy fallback/import: without SQLite, sessions.json remains the
+        # only available routing index. With SQLite, only a proven successful
+        # canonical read may proceed, and every absent key is resolved through
+        # an atomic insert-if-absent/read-authority transaction.
         sessions_file = self.sessions_dir / "sessions.json"
+        legacy_data = None
         if sessions_file.exists():
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                imported = 0
-                for key, entry_data in data.items():
-                    # Keys starting with "_" are documentation/metadata sentinels
-                    # (e.g. the "_README" note written by _save), not session
-                    # entries. Skip them so they never reach SessionEntry.from_dict.
-                    if key.startswith("_"):
-                        continue
-                    if key in self._entries:
-                        continue
-                    # Skip non-dict entries (corrupted sessions.json, e.g. a
-                    # bare bool or string where a dict is expected). Without
-                    # this, from_dict raises TypeError on `"origin" in data`
-                    # which escapes the inner except (ValueError, KeyError) and
-                    # aborts loading ALL remaining sessions (#46994).
-                    if not isinstance(entry_data, dict):
-                        logger.warning(
-                            "Skipping invalid session entry %r: "
-                            "expected dict, got %s",
-                            key, type(entry_data).__name__,
-                        )
-                        continue
-                    try:
-                        self._entries[key] = SessionEntry.from_dict(entry_data)
-                        imported += 1
-                    except (ValueError, KeyError, TypeError) as e:
-                        logger.warning("Skipping invalid session entry %r: %s", key, e)
-                if imported and db_had_entries:
-                    logger.info(
-                        "gateway.session: imported %d legacy sessions.json "
-                        "entr%s missing from state.db routing table",
-                        imported, "y" if imported == 1 else "ies",
-                    )
+                    legacy_data = json.load(f)
+                if not isinstance(legacy_data, dict):
+                    raise TypeError("sessions.json must contain an object")
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
+                legacy_data = None
 
+        imported = 0
+        if legacy_data is not None and (not _db or canonical_read_succeeded):
+            for key, entry_data in legacy_data.items():
+                # Keys starting with "_" are documentation/metadata sentinels
+                # (e.g. the "_README" note written by _save), not session
+                # entries. Skip them so they never reach SessionEntry.from_dict.
+                if key.startswith("_"):
+                    continue
+                if key in loaded_entries:
+                    continue
+                # Skip non-dict entries (corrupted sessions.json, e.g. a bare
+                # bool or string where a dict is expected).
+                if not isinstance(entry_data, dict):
+                    logger.warning(
+                        "Skipping invalid session entry %r: expected dict, got %s",
+                        key,
+                        type(entry_data).__name__,
+                    )
+                    continue
+                try:
+                    candidate = SessionEntry.from_dict(entry_data)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.warning("Skipping invalid session entry %r: %s", key, e)
+                    continue
+
+                if _db:
+                    inserter = getattr(
+                        _db, "insert_gateway_routing_entry_if_absent", None
+                    )
+                    if not callable(inserter):
+                        raise RuntimeError(
+                            "canonical routing store cannot seed absent entries"
+                        )
+                    authoritative_json = inserter(
+                        key,
+                        json.dumps(candidate.to_dict()),
+                        scope=self._routing_scope(),
+                    )
+                    try:
+                        authoritative_data = json.loads(authoritative_json)
+                        if not isinstance(authoritative_data, dict):
+                            raise TypeError(
+                                "canonical routing entry must decode to an object"
+                            )
+                        candidate = SessionEntry.from_dict(authoritative_data)
+                    except (ValueError, KeyError, TypeError) as e:
+                        logger.warning(
+                            "Invalid canonical routing entry %r after legacy "
+                            "insert: %s",
+                            key,
+                            e,
+                        )
+                        raise
+                loaded_entries[key] = candidate
+                imported += 1
+
+        if imported:
+            logger.info(
+                "gateway.session: imported %d legacy sessions.json entr%s "
+                "missing from state.db routing table",
+                imported,
+                "y" if imported == 1 else "ies",
+            )
+
+        self._entries = loaded_entries
         self._loaded = True
 
         # Prune any sessions.json entries that point to sessions already ended

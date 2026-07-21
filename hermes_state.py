@@ -2187,6 +2187,36 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def insert_gateway_routing_entry_if_absent(
+        self, session_key: str, entry_json: str, *, scope: str = ""
+    ) -> str:
+        """Seed a routing key once and return its authoritative stored value.
+
+        The insert and read share one ``BEGIN IMMEDIATE`` transaction so a
+        legacy importer that loses the insert race observes the competing
+        canonical row instead of overwriting it with its stale candidate.
+        """
+        if not session_key or not entry_json:
+            raise ValueError("session_key and entry_json are required")
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(scope, session_key) DO NOTHING""",
+                (scope, session_key, entry_json, time.time()),
+            )
+            row = conn.execute(
+                "SELECT entry_json FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, session_key),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("gateway routing insert did not produce a row")
+            return str(row["entry_json"])
+
+        return self._execute_write(_do)
+
     def replace_gateway_routing_entries(
         self, entries: Dict[str, str], *, scope: str = ""
     ) -> None:

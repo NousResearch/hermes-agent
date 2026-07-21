@@ -139,6 +139,60 @@ class TestPolicyFromExtra:
         dm = policy_from_extra(extra, "dm")
         assert dm.user_allowed_commands == frozenset({"status", "model"})
 
+    def test_explicit_empty_admin_list_keeps_gating_active(self):
+        # Regression: an operator who writes ``allow_admin_from: []`` is
+        # explicitly opting into gating with no admins. The old behaviour
+        # used ``bool(admin_ids)`` to flip ``enabled``, which collapsed
+        # this case back to "no admin list configured" and silently
+        # exposed every slash command to non-admins. Presence of the key
+        # must take precedence over emptiness of the value.
+        p = policy_from_extra({"allow_admin_from": []}, "dm")
+        assert p.enabled is True
+        assert p.admin_user_ids == frozenset()
+        assert p.is_admin("anyone") is False
+        # No commands listed → non-admin is restricted to the always-allowed
+        # floor (/help and /whoami) and nothing else.
+        assert p.can_run("anyone", "help") is True
+        assert p.can_run("anyone", "whoami") is True
+        assert p.can_run("anyone", "stop") is False
+        assert p.can_run("anyone", "restart") is False
+        assert p.can_run("anyone", "model") is False
+
+    def test_explicit_empty_admin_list_honors_user_allowed_commands(self):
+        # The reproduction case from the bug report: operator wants
+        # "no admins, but allow non-admins to run /status only".
+        p = policy_from_extra(
+            {"allow_admin_from": [], "user_allowed_commands": ["status"]},
+            "dm",
+        )
+        assert p.enabled is True
+        assert p.is_admin("999") is False
+        assert p.can_run("999", "status") is True
+        assert p.can_run("999", "stop") is False
+        assert p.can_run("999", "restart") is False
+
+    def test_explicit_empty_group_admin_list_keeps_group_gating_active(self):
+        # Same fix must apply to the group scope's admin key.
+        extra = {"group_allow_admin_from": []}
+        gp = policy_from_extra(extra, "group")
+        assert gp.enabled is True
+        assert gp.is_admin("anyone") is False
+        assert gp.can_run("anyone", "stop") is False
+        # DM scope was not configured → still backward-compat (gating off).
+        dm = policy_from_extra(extra, "dm")
+        assert dm.enabled is False
+        assert dm.can_run("anyone", "stop") is True
+
+    def test_unset_vs_explicit_empty_admin_list_diverge(self):
+        # The two cases that used to behave identically must now diverge.
+        unset = policy_from_extra({}, "dm")
+        explicit_empty = policy_from_extra({"allow_admin_from": []}, "dm")
+        assert unset.enabled is False
+        assert explicit_empty.enabled is True
+        # Backward-compat fallback still treats the unset case as "admin".
+        assert unset.is_admin("anyone") is True
+        assert explicit_empty.is_admin("anyone") is False
+
     def test_dm_admin_does_not_imply_group_admin(self):
         # Admin lists are scope-specific. DM admin must not auto-promote in groups.
         extra = {"allow_admin_from": ["111"]}

@@ -15,10 +15,18 @@ Two lists per platform scope (DM vs group, mirroring ``allow_from`` vs
 
 Backward compatibility:
 
-  If ``allow_admin_from`` is not set for a scope, slash command gating
-  is disabled entirely for that scope. Every allowed user can run every
-  slash command, exactly like before. This means existing installs are
-  unaffected until an operator opts in by listing at least one admin.
+  If ``allow_admin_from`` is not present in the platform extra for a
+  scope, slash command gating is disabled entirely for that scope.
+  Every allowed user can run every slash command, exactly like before.
+  This means existing installs are unaffected until an operator opts
+  in by adding the key.
+
+  Note the distinction between *unset* and *explicitly empty*. Setting
+  ``allow_admin_from: []`` is an explicit operator choice — gating
+  stays active for that scope, but no user is an admin. Non-admins are
+  then restricted to ``user_allowed_commands`` plus the always-allowed
+  floor (``/help``, ``/whoami``). Only omitting the key entirely turns
+  gating off.
 
 The gate is applied at the slash command dispatch site in
 ``gateway/run.py`` so it covers BOTH built-in and plugin-registered
@@ -170,6 +178,13 @@ def _keys_for_scope(scope: str) -> Tuple[str, str]:
 def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     """Build a policy from a platform's ``extra`` dict for one scope.
 
+    Gating is enabled when the scope's admin key is *present* in
+    ``extra``, regardless of whether the list is empty. An explicit
+    ``allow_admin_from: []`` is an operator choice to enforce gating
+    without naming an admin — it must not silently collapse back to
+    the unset (gating-off) behavior, since that would expose the full
+    slash command surface to non-admins.
+
     DM scope falls back to group scope keys ONLY for ``user_allowed_commands``
     when the DM scope didn't specify its own. This keeps the common case
     (operator wants the same command set DM and group) ergonomic without
@@ -185,7 +200,7 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
         # so operators only need to list it once if it's the same.
         cmds = _coerce_command_list(extra.get("group_user_allowed_commands"))
 
-    enabled = bool(admin_ids)
+    enabled = admin_key in extra
     return SlashAccessPolicy(
         enabled=enabled,
         admin_user_ids=admin_ids,
@@ -199,7 +214,9 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     Returns a "disabled" policy (gating off, allow everything) when:
       - gateway_config is None
       - the platform has no PlatformConfig
-      - the platform's PlatformConfig has no admin list set for the scope
+      - the platform's PlatformConfig does not include the scope's
+        admin key at all (an *explicit* empty list keeps gating active —
+        see ``policy_from_extra``)
 
     Callers should treat the returned policy as authoritative for slash
     command gating only. It does not gate plain chat messages.

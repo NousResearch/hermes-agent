@@ -226,6 +226,72 @@ async def test_user_runs_listed_command():
 
 
 @pytest.mark.asyncio
+async def test_explicit_empty_admin_list_whoami_reports_user_tier():
+    """Regression: ``allow_admin_from: []`` is an explicit operator choice
+    to enable gating with no admins. The /whoami response for a non-admin
+    must report the user tier (not "unrestricted"), proving the gate is
+    actually engaged on this scope."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": [],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    result = await runner._handle_message(
+        _make_event("/whoami", _make_source(user_id="999"))
+    )
+    assert "Tier: user" in result
+    assert "Tier: unrestricted" not in result
+    assert "/status" in result
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_admin_list_denies_admin_only_command():
+    """Regression: with ``allow_admin_from: []`` and a non-empty
+    ``user_allowed_commands``, a non-admin attempting a command not on
+    the list must be denied, not silently allowed.
+
+    Before the fix this returned None (gate disabled because the admin
+    list was empty), letting non-admins reach /stop, /restart, etc."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": [],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    result = await runner._handle_message(
+        _make_event("/stop", _make_source(user_id="999"))
+    )
+    assert result is not None
+    assert "⛔" in result
+    assert "/stop is admin-only here" in result
+    # Denial preview should still surface what the user CAN run.
+    assert "/status" in result
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_admin_list_running_agent_fastpath_blocks_non_admin():
+    """The running-agent fast-path must honor the explicit-empty admin
+    list too — otherwise an in-flight agent would be a bypass for the
+    same bug on the hot path."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": [],
+            "user_allowed_commands": [],
+        }
+    )
+    src = _make_source(user_id="999")
+    sk = build_session_key(src)
+    runner._running_agents[sk] = MagicMock()
+    runner._running_agents_ts[sk] = 0
+
+    result = await runner._handle_message(_make_event("/restart", src))
+    assert result is not None
+    assert "⛔" in result
+    assert "/restart is admin-only here" in result
+
+
+@pytest.mark.asyncio
 async def test_backward_compat_no_admin_list_means_no_gate():
     runner = _make_runner(platform_extra={})  # nothing configured
     # Random non-listed user runs /whoami; should return unrestricted profile,

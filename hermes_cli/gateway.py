@@ -2493,14 +2493,21 @@ def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
 
     Checks ``sys.prefix`` first (works regardless of the directory name),
-    then ``VIRTUAL_ENV`` env var (covers uv-managed environments where
-    sys.prefix == sys.base_prefix), then falls back to probing common
-    directory names under PROJECT_ROOT.
+    then probes common directory names under PROJECT_ROOT so Hermes prefers
+    its own repo-local venv over unrelated ambient shells, then falls back to
+    ``VIRTUAL_ENV`` (covers uv-managed environments where sys.prefix ==
+    sys.base_prefix).
     Returns ``None`` when no virtualenv can be found.
     """
     # If we're running inside a virtualenv, sys.prefix points to it.
     if sys.prefix != sys.base_prefix:
         venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    # Prefer a repo-local virtualenv over an unrelated ambient shell venv.
+    for candidate in (".venv", "venv"):
+        venv = PROJECT_ROOT / candidate
         if venv.is_dir():
             return venv
 
@@ -2510,12 +2517,6 @@ def _detect_venv_dir() -> Path | None:
     _virtual_env = os.environ.get("VIRTUAL_ENV")
     if _virtual_env:
         venv = Path(_virtual_env)
-        if venv.is_dir():
-            return venv
-
-    # Fallback: check common virtualenv directory names under the project root.
-    for candidate in (".venv", "venv"):
-        venv = PROJECT_ROOT / candidate
         if venv.is_dir():
             return venv
 

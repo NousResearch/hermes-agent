@@ -2689,6 +2689,27 @@ class TestSystemUnitPathRemapping:
         assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" not in unit
 
 
+class TestGatewayVenvDetection:
+    def test_get_python_path_prefers_project_local_venv_over_unrelated_virtual_env(self, monkeypatch, tmp_path):
+        project = tmp_path / "hermes-agent"
+        project.mkdir()
+        local_venv = project / ".venv" / "bin"
+        local_venv.mkdir(parents=True)
+        local_python = local_venv / "python"
+        local_python.write_text("", encoding="utf-8")
+
+        unrelated_venv = tmp_path / "webui-mvp" / "venv" / "bin"
+        unrelated_venv.mkdir(parents=True)
+        (unrelated_venv / "python").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project)
+        monkeypatch.setattr(gateway_cli.sys, "prefix", "/usr/local")
+        monkeypatch.setattr(gateway_cli.sys, "base_prefix", "/usr/local")
+        monkeypatch.setenv("VIRTUAL_ENV", str(unrelated_venv.parent))
+
+        assert gateway_cli.get_python_path() == str(local_python)
+
+
 class TestDockerAwareGateway:
     """Tests for Docker container awareness in gateway commands."""
 

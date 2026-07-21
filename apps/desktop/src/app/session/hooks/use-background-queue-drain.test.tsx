@@ -8,8 +8,11 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  MAX_AUTO_DRAIN_ATTEMPTS,
+  ORPHANED_QUEUE_MAX_AGE_MS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
@@ -48,7 +51,70 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    clearNotifications()
     clearAllSessionStates()
+  })
+
+  // Drive the auto-drain retry ladder to exhaustion for an always-failing submit.
+  async function exhaustDrainAttempts() {
+    for (let attempt = 0; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+  }
+
+  it('garbage-collects a stale undrainable entry after exhausting attempts, without toasting', async () => {
+    vi.useFakeTimers()
+
+    // No runtime mapping AND submit always rejects: the stored session can never
+    // be resolved or resumed — a provably orphaned queue.
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    // Backdate the entry past the orphan cutoff so it is eligible for GC.
+    $queuedPromptsBySession.set({
+      'stored-session-a': [
+        {
+          attachments: [],
+          id: 'q-orphan',
+          queuedAt: Date.now() - ORPHANED_QUEUE_MAX_AGE_MS - 1000,
+          text: 'orphaned prompt'
+        }
+      ]
+    })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await exhaustDrainAttempts()
+
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+    expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('keeps a recent undrainable entry queued and toasts instead of GC-ing it', async () => {
+    vi.useFakeTimers()
+
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    // A fresh entry may just be failing transiently (backend briefly down); it
+    // must survive and surface the "queue stuck" toast, not be discarded.
+    $queuedPromptsBySession.set({
+      'stored-session-a': [{ attachments: [], id: 'q-recent', queuedAt: Date.now(), text: 'recent prompt' }]
+    })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await exhaustDrainAttempts()
+
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+    expect($notifications.get().length).toBeGreaterThan(0)
   })
 
   it('drains an idle queued prompt for a non-selected background session', async () => {

@@ -75,7 +75,7 @@ services:
     # configured in data/config.yaml (username=admin, password=hermes).
     command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]
     environment:
-      - GATEWAY_HEALTH_URL=http://hermes-gateway:8789
+      - GATEWAY_HEALTH_URL=http://hermes-gateway:8642
     volumes:
       - ./data:/opt/data
       - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
@@ -114,7 +114,7 @@ services:
       hermes-web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8789/health'); sys.exit(0 if r.status==200 else 1)"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8642/health'); sys.exit(0 if r.status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -221,8 +221,13 @@ def test_ac3_creation_time_dedupe_and_ledger(board):
         ]
         assert len(comments) == 1
         assert len(events) == 1
-        assert events[0].payload["pr_ref"] == PR_REF
-        assert events[0].payload["kept_task_id"] == hard
+        payload = events[0].payload
+        assert payload["pr_ref"] == PR_REF
+        assert payload["kept_task_id"] == hard
+        assert set(payload["demoted_task_ids"] + payload["archived_task_ids"]) == {
+            standard
+        }
+        assert payload["reason"]
 
 
 # AC-4: periodic/manual sweep is idempotent and runs before dispatch work.
@@ -297,6 +302,14 @@ def test_ac5_pr257_hard_security_rereview_keeps_authority(board, monkeypatch):
     denied = kb.check_merge_authority(conn, standard)
     assert denied.allowed is False
     assert "advisory/stand-down" in denied.reason
+    event = next(
+        event for event in kb.list_events(conn, standard)
+        if event.kind == kb.MERGE_AUTHORITY_EVENT_KIND
+    )
+    assert event.payload["pr_ref"] == PR_REF
+    assert event.payload["kept_task_id"] == hard
+    assert event.payload["demoted_task_ids"] == [standard]
+    assert event.payload["reason"]
 
     from tools import kanban_tools
 
@@ -375,19 +388,21 @@ def test_ac7_unrelated_and_non_verifier_cards_are_unchanged(board):
 
 
 # AC-8: unsafe losers are advisory and cannot pass the merge-time check.
-def test_ac8_never_started_loser_with_incomplete_child_is_demoted(board):
+@pytest.mark.parametrize("child_status", ["todo", "done", "archived"])
+def test_ac8_never_started_loser_with_any_child_is_demoted(board, child_status):
     conn, _ = board
     standard, hard = _seed_duplicate_cards(conn)
     child = kb.create_task(
         conn, title="dependent implementation", assignee="builder", parents=[standard]
     )
+    conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (child_status, child))
 
     actions = kb.sweep_merge_authority(conn)
     assert actions[0].kept_task_id == hard
     assert actions[0].demoted_task_ids == (standard,)
     assert actions[0].archived_task_ids == ()
     assert kb.get_task(conn, standard).status == "ready"
-    assert kb.get_task(conn, child).status == "todo"
+    assert kb.get_task(conn, child).status == child_status
     assert kb.check_merge_authority(conn, standard).allowed is False
 
 

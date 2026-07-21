@@ -375,8 +375,8 @@ waiting and a CI-green-only competitor is runnable.
 
 Hermes enforces this in three layers: within the `create_task` write
 transaction, at step zero of every dispatcher tick, and at merge time through
-`kanban_authority`. A duplicate that never started and has no incomplete
-children is archived. An in-flight or otherwise unsafe duplicate remains open
+`kanban_authority`. A duplicate that never started and has no children is
+archived. An in-flight or otherwise unsafe duplicate remains open
 but is renamed `[ADVISORY]`, receives a deterministic `STAND-DOWN` note, and
 cannot pass the merge-time check. Every disposition is recorded in comments,
 `task_events`, and the reconciled `merge_authority` ledger.

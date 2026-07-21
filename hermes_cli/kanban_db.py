@@ -2720,6 +2720,7 @@ def _upsert_merge_authority_ledger_txn(
 
 
 def _loser_is_safe_to_archive_txn(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a losing verifier is both never-started and childless."""
     row = conn.execute(
         "SELECT status, started_at, current_run_id, claim_lock "
         "FROM tasks WHERE id = ?",
@@ -2734,12 +2735,11 @@ def _loser_is_safe_to_archive_txn(conn: sqlite3.Connection, task_id: str) -> boo
         or row["status"] == "running"
     ):
         return False
-    incomplete_child = conn.execute(
-        "SELECT 1 FROM task_links l JOIN tasks c ON c.id = l.child_id "
-        "WHERE l.parent_id = ? AND c.status NOT IN ('done', 'archived') LIMIT 1",
+    child = conn.execute(
+        "SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1",
         (task_id,),
     ).fetchone()
-    return incomplete_child is None
+    return child is None
 
 
 def _reconcile_merge_authority_pr_txn(

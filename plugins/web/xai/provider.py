@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from agent.web_search_provider import WebSearchProvider
@@ -48,6 +50,35 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "grok-build-0.1"
 DEFAULT_TIMEOUT = 90
+
+# Rate-limit (429) / overload (503) backoff. xAI enforces a low
+# requests-per-second ceiling (spend-tiered, e.g. 2 RPS); a burst of parallel
+# web_search calls trips it even when sequential use is far under budget. We
+# retry transparently with exponential backoff so the limit never surfaces to
+# the agent as a hard failure.
+RATE_LIMIT_MAX_RETRIES = 3
+RATE_LIMIT_BASE_DELAY = 1.0   # seconds
+RATE_LIMIT_MAX_DELAY = 8.0    # per-retry cap
+
+
+def _rate_limit_delay(response: Any, attempt: int) -> float:
+    """Seconds to wait before a rate-limited (429/503) xAI retry.
+
+    Honors a usable ``Retry-After`` header when present; otherwise falls back
+    to exponential backoff with jitter, capped so a retried search never
+    stalls the surrounding tool batch.
+    """
+    try:
+        if response is not None:
+            raw = response.headers.get("retry-after")
+            if raw:
+                retry_after = float(raw)
+                if retry_after >= 0:
+                    return min(retry_after, RATE_LIMIT_MAX_DELAY)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    base = min(RATE_LIMIT_BASE_DELAY * (2 ** (attempt - 1)), RATE_LIMIT_MAX_DELAY)
+    return base + random.uniform(0, RATE_LIMIT_BASE_DELAY / 2)
 _MAX_DOMAIN_FILTERS = 5  # xAI hard cap on allowed_domains / excluded_domains
 
 # Match the JSON object Grok is asked to emit. Tolerates leading/trailing
@@ -252,7 +283,9 @@ class XAIWebSearchProvider(WebSearchProvider):
         # can't refresh those and an immediate retry would just burn quota.
         is_oauth_path = (creds.get("provider") == "xai-oauth")
         resp = None
-        for attempt in range(2):
+        auth_retry_used = False
+        rate_limit_retries = 0
+        while True:
             try:
                 resp = httpx.post(
                     f"{base_url}/responses",
@@ -264,7 +297,21 @@ class XAIWebSearchProvider(WebSearchProvider):
                 break
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else 0
-                if status == 401 and attempt == 0 and is_oauth_path:
+                # Transient rate-limit (429) / overload (503): back off and
+                # retry transparently so xAI's per-second cap never surfaces
+                # to the agent as a failed search.
+                if status in (429, 503) and rate_limit_retries < RATE_LIMIT_MAX_RETRIES:
+                    rate_limit_retries += 1
+                    delay = _rate_limit_delay(exc.response, rate_limit_retries)
+                    logger.info(
+                        "xAI web search HTTP %d (rate-limited); backing off %.2fs "
+                        "then retry %d/%d.",
+                        status, delay, rate_limit_retries, RATE_LIMIT_MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    continue
+                if status == 401 and not auth_retry_used and is_oauth_path:
+                    auth_retry_used = True
                     logger.info(
                         "xAI web search got 401 on first attempt; forcing OAuth "
                         "refresh and retrying once.",
@@ -301,7 +348,7 @@ class XAIWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": f"Could not reach xAI: {exc}"}
 
         if resp is None:
-            # Defensive — both attempts somehow exited the loop without resp.
+            # Defensive — the loop somehow exited without resp.
             return {"success": False, "error": "xAI web search produced no response"}
 
         try:

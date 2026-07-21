@@ -448,13 +448,18 @@ class TestXAIProviderSearchErrors:
         posted.assert_not_called()
 
     def test_http_error_returns_failure(self):
+        """A non-retryable HTTP error (e.g. 403) surfaces as a clean failure.
+
+        429/503 are retried (see the rate-limit tests); other 4xx/5xx that
+        aren't 401 fail fast without a retry.
+        """
         import httpx
         from plugins.web.xai import provider as xai_provider
 
         bad = MagicMock()
-        bad.status_code = 429
-        bad.text = "rate limited"
-        err = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
+        bad.status_code = 403
+        bad.text = "forbidden"
+        err = httpx.HTTPStatusError("403", request=MagicMock(), response=bad)
 
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
              patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
@@ -462,7 +467,7 @@ class TestXAIProviderSearchErrors:
             result = xai_provider.XAIWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False
-        assert "429" in result["error"]
+        assert "403" in result["error"]
 
     def test_request_error_returns_failure(self):
         import httpx
@@ -610,8 +615,8 @@ class TestXAIProviderSearchErrors:
         assert calls["refresh_count"] == 1
 
     def test_non_401_http_error_is_not_retried(self):
-        """Only 401 is retryable — 429 / 500 / 503 must fail fast so the
-        agent (or upstream rate-limiter) decides what to do."""
+        """401 (auth) and 429/503 (rate-limit/overload) are retried; other
+        4xx/5xx like 500 fail fast so the agent decides what to do."""
         import httpx
         from plugins.web.xai import provider as xai_provider
 
@@ -640,6 +645,127 @@ class TestXAIProviderSearchErrors:
         assert "500" in result["error"]
         assert calls["posts"] == 1
         assert calls["refreshed"] is False
+
+    def test_429_is_retried_with_backoff_then_succeeds(self):
+        """A transient 429 (xAI per-second cap) is retried transparently so
+        the rate limit never surfaces to the agent as a failed search."""
+        import httpx
+        from plugins.web.xai import provider as xai_provider
+
+        bad = MagicMock()
+        bad.status_code = 429
+        bad.text = "resource-exhausted"
+        bad.headers = {}
+        rate_limited = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
+
+        calls = {"posts": 0}
+
+        def fake_post(url, **kwargs):
+            calls["posts"] += 1
+            if calls["posts"] <= 2:
+                raise rate_limited
+            return _mock_resp(_responses_payload(json.dumps(
+                {"results": [{"title": "T", "url": "https://e.com", "description": "d"}]}
+            )))
+
+        sleeps = []
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch.object(xai_provider.time, "sleep", side_effect=sleeps.append), \
+             patch("httpx.post", side_effect=fake_post):
+            result = xai_provider.XAIWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://e.com"
+        # Two 429s → two backoff sleeps → third post succeeds.
+        assert calls["posts"] == 3
+        assert len(sleeps) == 2
+
+    def test_503_overload_is_retried(self):
+        """503 (model overloaded) is retried on the same backoff path as 429."""
+        import httpx
+        from plugins.web.xai import provider as xai_provider
+
+        bad = MagicMock()
+        bad.status_code = 503
+        bad.text = "overloaded"
+        bad.headers = {}
+        overloaded = httpx.HTTPStatusError("503", request=MagicMock(), response=bad)
+
+        calls = {"posts": 0}
+
+        def fake_post(url, **kwargs):
+            calls["posts"] += 1
+            if calls["posts"] == 1:
+                raise overloaded
+            return _mock_resp(_responses_payload(json.dumps({"results": []})))
+
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch.object(xai_provider.time, "sleep", return_value=None), \
+             patch("httpx.post", side_effect=fake_post):
+            result = xai_provider.XAIWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert calls["posts"] == 2
+
+    def test_persistent_429_gives_up_after_max_retries(self):
+        """When 429 never clears, we stop after RATE_LIMIT_MAX_RETRIES and
+        return a clean error (bounded retries, no infinite loop)."""
+        import httpx
+        from plugins.web.xai import provider as xai_provider
+
+        bad = MagicMock()
+        bad.status_code = 429
+        bad.text = "resource-exhausted"
+        bad.headers = {}
+        rate_limited = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
+
+        calls = {"posts": 0}
+
+        def fake_post(url, **kwargs):
+            calls["posts"] += 1
+            raise rate_limited
+
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch.object(xai_provider.time, "sleep", return_value=None), \
+             patch("httpx.post", side_effect=fake_post):
+            result = xai_provider.XAIWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "429" in result["error"]
+        # Initial attempt + RATE_LIMIT_MAX_RETRIES retries.
+        assert calls["posts"] == xai_provider.RATE_LIMIT_MAX_RETRIES + 1
+
+    def test_retry_after_header_is_honored(self):
+        """A ``Retry-After`` header sets the backoff delay (capped)."""
+        import httpx
+        from plugins.web.xai import provider as xai_provider
+
+        bad = MagicMock()
+        bad.status_code = 429
+        bad.text = "resource-exhausted"
+        bad.headers = {"retry-after": "2"}
+        rate_limited = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
+
+        calls = {"posts": 0}
+
+        def fake_post(url, **kwargs):
+            calls["posts"] += 1
+            if calls["posts"] == 1:
+                raise rate_limited
+            return _mock_resp(_responses_payload(json.dumps({"results": []})))
+
+        sleeps = []
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch.object(xai_provider.time, "sleep", side_effect=sleeps.append), \
+             patch("httpx.post", side_effect=fake_post):
+            result = xai_provider.XAIWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert sleeps == [2.0]
 
     def test_http_200_with_error_envelope_surfaces_failure(self):
         """xAI sometimes returns 200 with ``{"error": {...}}`` (model

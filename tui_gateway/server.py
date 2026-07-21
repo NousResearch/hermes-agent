@@ -10118,9 +10118,9 @@ def _run_prompt_submit(
                 if "task_id" in run_sig.parameters:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
-                # turn_provenance is forwarded below fail-closed because it is
-                # a retention boundary, unlike optional metadata such as task_id.
                 pass
+            # turn_provenance is a retention boundary, unlike optional task_id;
+            # forward it unconditionally so a failed signature probe cannot drop it.
             if turn_provenance is not None:
                 run_kwargs["turn_provenance"] = turn_provenance
             result = agent.run_conversation(run_message, **run_kwargs)

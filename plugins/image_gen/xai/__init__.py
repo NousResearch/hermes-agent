@@ -239,8 +239,17 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
-        model_id, meta = _resolve_model()
+        prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+        if not prompt:
+            return error_response(
+                error="Prompt is required and must be a non-empty string",
+                error_type="invalid_argument",
+                provider=provider_name,
+                aspect_ratio=aspect,
+            )
+
+        model_id, meta = _resolve_model()
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION

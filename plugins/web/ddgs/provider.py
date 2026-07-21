@@ -156,7 +156,9 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
     if _test_hook:
         request["test_hook"] = _test_hook
 
-    env = os.environ.copy()
+    from tools.environments.local import _sanitize_subprocess_env
+
+    env = _sanitize_subprocess_env(dict(os.environ))
     if _test_hook:
         env["HERMES_DDGS_ALLOW_TEST_HOOKS"] = "1"
 

@@ -9688,8 +9688,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 
 def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
     """Inject one claimed terminal Kanban notification for this TUI session."""
-    session_key = str(session.get("session_key") or "")
-    if not session_key:
+    if not session.get("session_key"):
         return False
 
     try:
@@ -9724,16 +9723,15 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
             for sub in subs:
                 if (
                     (sub.get("platform") or "").lower() != "tui"
-                    or str(sub.get("chat_id") or "") != session_key
+                ):
+                    continue
+                if not _session_owns_notification_event(
+                    sid, session, {"session_key": str(sub.get("chat_id") or "")}
                 ):
                     continue
 
-                with session["history_lock"]:
-                    if session.get("running") or session.get("_finalized"):
-                        return False
-                    session["running"] = True
-
                 old_cursor = cursor = 0
+                reserved = False
                 try:
                     old_cursor, cursor, events = kb.claim_unseen_events_for_sub(
                         conn,
@@ -9744,9 +9742,23 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                         kinds=("completed", "blocked", "gave_up", "crashed", "timed_out"),
                     )
                     if not events:
-                        with session["history_lock"]:
-                            session["running"] = False
                         continue
+
+                    with session["history_lock"]:
+                        if not session.get("running") and not session.get("_finalized"):
+                            session["running"] = True
+                            reserved = True
+                    if not reserved:
+                        kb.rewind_notify_cursor(
+                            conn,
+                            task_id=sub["task_id"],
+                            platform=sub["platform"],
+                            chat_id=sub["chat_id"],
+                            thread_id=sub.get("thread_id") or "",
+                            claimed_cursor=cursor,
+                            old_cursor=old_cursor,
+                        )
+                        return False
 
                     lines = []
                     for event in events:
@@ -9765,6 +9777,14 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                         session,
                         "\n\n".join(lines),
                     )
+                    if any(event.kind == "completed" for event in events):
+                        kb.remove_notify_sub(
+                            conn,
+                            task_id=sub["task_id"],
+                            platform=sub["platform"],
+                            chat_id=sub["chat_id"],
+                            thread_id=sub.get("thread_id") or "",
+                        )
                     return True
                 except Exception as exc:
                     if cursor != old_cursor:
@@ -9781,8 +9801,9 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                         except Exception:
                             logger.warning("TUI Kanban poll failed to rewind cursor", exc_info=True)
                     logger.warning("TUI Kanban notification dispatch failed: %s", exc)
-                    with session["history_lock"]:
-                        session["running"] = False
+                    if reserved:
+                        with session["history_lock"]:
+                            session["running"] = False
                     return False
         except Exception as exc:
             logger.debug("TUI Kanban poll failed for board %s: %s", board, exc)

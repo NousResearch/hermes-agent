@@ -2923,6 +2923,143 @@ class _StopAfterOneNotificationPoll:
         return self._checks > 1
 
 
+def test_tui_kanban_no_event_claim_does_not_strand_prompt_submit(monkeypatch, tmp_path):
+    """A real prompt wins when a poll finds no terminal event."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="idle subscription", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+    finally:
+        conn.close()
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+    submitted = []
+    response = {}
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_args: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_args: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: None)
+
+    def _run_user_prompt(_rid, _sid, active_session, text):
+        submitted.append(text)
+        active_session["running"] = False
+
+    def _claim_while_user_submits(*_args, **_kwargs):
+        response["value"] = server.handle_request(
+            {
+                "id": "user",
+                "method": "prompt.submit",
+                "params": {"session_id": "live", "text": "real user prompt"},
+            }
+        )["result"]
+        return 0, 0, []
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _run_user_prompt)
+    monkeypatch.setattr(kb, "claim_unseen_events_for_sub", _claim_while_user_submits)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is False
+        assert response["value"] == {"status": "streaming"}
+        assert submitted == ["real user prompt"]
+        assert session.get("queued_prompt") is None
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_subscription_follows_compression_lineage(monkeypatch, tmp_path):
+    """A parent-key TUI subscription wakes its compressed continuation."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="compressed subscription", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="parent-key")
+        kb.block_task(conn, task_id, reason="needs input")
+    finally:
+        conn.close()
+
+    class _LineageDb:
+        def resolve_resume_session_id(self, key):
+            return "child-key" if key == "parent-key" else key
+
+    delivered = []
+    session = _session(
+        agent=types.SimpleNamespace(session_id="child-key"), session_key="child-key"
+    )
+    server._sessions["live"] = session
+    monkeypatch.setattr(server, "_get_db", lambda: _LineageDb())
+
+    def _deliver(_rid, _sid, active_session, text):
+        delivered.append(text)
+        active_session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        assert delivered == [f"⏸ Kanban {task_id} blocked: needs input"]
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_completed_delivery_removes_only_final_subscription(monkeypatch, tmp_path):
+    """Completed subscriptions end after delivery; retryable terminal states remain."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        completed_task = kb.create_task(conn, title="completed", assignee="worker")
+        blocked_task = kb.create_task(conn, title="blocked", assignee="worker")
+        kb.add_notify_sub(conn, task_id=completed_task, platform="tui", chat_id="live-key")
+        kb.add_notify_sub(conn, task_id=blocked_task, platform="tui", chat_id="live-key")
+        kb.complete_task(conn, completed_task, summary="done")
+        kb.block_task(conn, blocked_task, reason="needs input")
+    finally:
+        conn.close()
+
+    delivered = []
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+
+    def _deliver(_rid, _sid, active_session, text):
+        delivered.append(text)
+        active_session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        conn = kb.connect()
+        try:
+            remaining = {sub["task_id"] for sub in kb.list_notify_subs(conn)}
+        finally:
+            conn.close()
+        assert completed_task not in remaining
+        assert blocked_task in remaining
+        assert len(delivered) == 2
+    finally:
+        server._sessions.pop("live", None)
+
+
 def test_notification_poller_delivers_tui_kanban_subscription(monkeypatch, tmp_path):
     """A TUI subscription wakes the durable session that created the task."""
     import queue as _queue_mod

@@ -272,6 +272,42 @@ try:
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
+# Windows: ensure MCP subprocesses never pop a console window.
+# The MCP SDK already tries CREATE_NO_WINDOW, but a broad except Exception
+# on line ~182 of mcp/os/win32/utilities.py can fall back to creationflags=0.
+# This monkey-patch wraps create_windows_process to guarantee the flag always
+# survives any exception path.
+if sys.platform == "win32" and _MCP_AVAILABLE:
+    try:
+        import subprocess
+        from mcp.os.win32 import utilities as _win32_mcp_utils
+        _orig_create_windows_process = _win32_mcp_utils.create_windows_process
+
+        async def _patched_create_windows_process(
+            command, args, env=None, errlog=None, cwd=None
+        ):
+            # Delegate to original but ensure CREATE_NO_WINDOW sticks.
+            import anyio
+            try:
+                proc = await anyio.open_process(
+                    [command, *args],
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    stderr=errlog,
+                    cwd=cwd,
+                )
+            except NotImplementedError:
+                from mcp.os.win32.utilities import _create_windows_fallback_process
+                proc = await _create_windows_fallback_process(
+                    command, args, env, errlog, cwd
+                )
+            return proc
+
+        _win32_mcp_utils.create_windows_process = _patched_create_windows_process
+        logger.info("Applied monkey-patch: MCP Windows subprocess always uses CREATE_NO_WINDOW")
+    except Exception as _patch_err:
+        logger.warning("Failed to apply Windows MCP subprocess window patch: %s", _patch_err)
+
 
 def _check_message_handler_support() -> bool:
     """Check if ClientSession accepts ``message_handler`` kwarg.

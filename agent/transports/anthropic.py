@@ -71,6 +71,13 @@ class AnthropicTransport(ProviderTransport):
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         text_parts, reasoning_parts, reasoning_details, tool_calls = [], [], [], []
         citation_sources, seen_citation_urls = [], set()
+
+        def _add_citation_source(url: Any, title: Any = None) -> None:
+            if not isinstance(url, str) or not url or url in seen_citation_urls:
+                return
+            seen_citation_urls.add(url)
+            citation_sources.append((" ".join(str(title or url).split()), url))
+
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
         # interleaves with tool_use the parallel lists lose that order and replay -> HTTP 400.
         ordered_blocks = []
@@ -90,11 +97,13 @@ class AnthropicTransport(ProviderTransport):
                     if not isinstance(citation_dict, dict):
                         continue
                     url = citation_dict.get("url")
-                    if not isinstance(url, str) or not url or url in seen_citation_urls:
-                        continue
-                    seen_citation_urls.add(url)
-                    title = citation_dict.get("title") or citation_dict.get("cited_text") or url
-                    citation_sources.append((" ".join(str(title).split()), url))
+                    _add_citation_source(url, citation_dict.get("title") or citation_dict.get("cited_text") or url)
+            elif block.type == "web_fetch_tool_result":
+                # Fetch citations may use document-relative locations with no URL on the text block; the
+                # server result stays the authoritative source for the fetched URL, so surface it as a fallback.
+                result_content = (clean_block or {}).get("content")
+                if isinstance(result_content, dict):
+                    _add_citation_source(result_content.get("url"), result_content.get("title"))
             elif block.type in _THINKING_TYPES:
                 if block.type == "thinking":
                     reasoning_parts.append(block.thinking)
@@ -116,7 +125,9 @@ class AnthropicTransport(ProviderTransport):
             provider_data["anthropic_content_blocks"] = ordered_blocks
         content = "\n".join(text_parts) if text_parts else None
         if citation_sources:
-            sources = "Sources:\n" + "\n".join(f"- {title}: {url}" for title, url in citation_sources)
+            sources = "Sources:\n" + "\n".join(
+                f"- {url}" if title == url else f"- {title}: {url}" for title, url in citation_sources
+            )
             content = f"{content}\n\n{sources}" if content else sources
         return NormalizedResponse(
             content=content, tool_calls=tool_calls or None,

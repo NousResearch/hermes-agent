@@ -14,7 +14,7 @@ import { ListRow, Pill, SectionHeading, SettingsContent } from '../primitives'
 import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
-import { resolveRefusal } from './errors'
+import { BillingRefusalInline, InlineMessage, openExternal, StepUpInlineAction } from './inline-feedback'
 import { BillingPlansView } from './plans-view'
 import { TierArt } from './tier-art'
 import type { BillingAutoReload, BillingStateResponse } from './types'
@@ -29,13 +29,14 @@ import {
   useBillingState,
   useSubscriptionState
 } from './use-billing-state'
+import { useChargeFlow } from './use-charge-poller'
+import { useStepUpFlow } from './use-step-up'
+import { type SubscriptionSimulation, useResumeFlow } from './use-subscription-change'
 
 // `bview` mirrors the settings pview/kview sub-view pattern (deep-linkable, replace
 // navigation). `overview` is the default landing; `plans` is the in-app catalog.
 const BILLING_VIEWS = ['overview', 'plans'] as const
 type BillingSubView = (typeof BILLING_VIEWS)[number]
-import { useChargeFlow } from './use-charge-poller'
-import { useStepUpFlow } from './use-step-up'
 
 const FEATURE_BILLING_INVOICES = false
 
@@ -44,14 +45,6 @@ const BILLING_DEV_FIXTURE_NAMES = import.meta.env.DEV
   : []
 
 type BillingFixtureSelection = 'live' | BillingDevFixtureName
-
-function openExternal(url?: string) {
-  if (!url) {
-    return
-  }
-
-  void window.hermesDesktop?.openExternal?.(url)
-}
 
 function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | 'primary'; value: string }) {
   return (
@@ -159,7 +152,17 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
   )
 }
 
-function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
+function CurrentPlanCard({
+  onViewPlans,
+  plan,
+  simulateResume
+}: {
+  onViewPlans: () => void
+  plan: BillingPlanCardView
+  simulateResume?: boolean
+}) {
+  const resumeFlow = useResumeFlow(simulateResume)
+
   return (
     <div className="@container">
       <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
@@ -187,6 +190,12 @@ function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan:
               {plan.action.label}
             </Button>
           )}
+          {/* Scheduled downgrade → chargeless undo (subscription.resume), no confirm. */}
+          {plan.pending && (
+            <Button disabled={resumeFlow.busy} onClick={() => void resumeFlow.resume()} size="sm" type="button">
+              {resumeFlow.busy ? 'Undoing…' : 'Undo'}
+            </Button>
+          )}
           {plan.link && (
             <Button onClick={() => plan.link && openExternal(plan.link.url)} size="sm" type="button" variant="outline">
               {plan.link.label}
@@ -195,6 +204,7 @@ function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan:
           )}
         </div>
       </div>
+      <BillingRefusalInline refusal={resumeFlow.refusal} />
     </div>
   )
 }
@@ -622,82 +632,6 @@ function BuyCreditsOutcome({
   )
 }
 
-function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | null }) {
-  const stepUp = useStepUpFlow()
-
-  if (!refusal) {
-    return null
-  }
-
-  const resolved = resolveRefusal(refusal)
-  const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : undefined
-
-  return (
-    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-      <span>
-        <span className="font-medium text-foreground">{resolved.title}:</span> {resolved.message}
-      </span>
-      {resolved.action.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
-      {portalUrl && (
-        <Button onClick={() => openExternal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
-          <ExternalLink className="size-3.5" />
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function StepUpInlineAction({ flow }: { flow: ReturnType<typeof useStepUpFlow> }) {
-  if (flow.verification) {
-    return (
-      <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
-        <span className="font-mono text-[0.72rem] font-semibold text-foreground">{flow.verification.code}</span>
-        <Button onClick={flow.openVerification} size="sm" type="button" variant="outline">
-          Open verification page
-          <ExternalLink className="size-3.5" />
-        </Button>
-      </span>
-    )
-  }
-
-  if (flow.message) {
-    return (
-      <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
-        <span>
-          {flow.message.title}: {flow.message.text}
-        </span>
-        <Button onClick={flow.dismiss} size="sm" type="button" variant="outline">
-          Dismiss
-        </Button>
-      </span>
-    )
-  }
-
-  if (flow.phase === 'waiting') {
-    return <span>Waiting for verification link…</span>
-  }
-
-  return (
-    <Button onClick={() => void flow.start()} size="sm" type="button" variant="outline">
-      Verify to continue
-    </Button>
-  )
-}
-
-function InlineMessage({ children, kind }: { children: string; kind: 'error' | 'success' }) {
-  return (
-    <div
-      className={cn(
-        'mt-2 text-[length:var(--conversation-caption-font-size)]',
-        kind === 'error' ? 'text-destructive' : 'text-(--ui-text-tertiary)'
-      )}
-    >
-      {children}
-    </div>
-  )
-}
-
 function UsageBar({ bar, fallbackLabel }: { bar?: BillingUsageRowView['bar']; fallbackLabel: string }) {
   const resolvedBar = bar ?? {
     label: `${fallbackLabel} usage`,
@@ -890,6 +824,15 @@ function BillingSettingsContent({
   const usageUpdatedAt = oldestUpdatedAt(billingState.dataUpdatedAt, subscriptionState.dataUpdatedAt)
   const usageIsFetching = billingState.isFetching || subscriptionState.isFetching
 
+  // In fixture mode there is no live gateway, so the subscription-change RPCs run
+  // against canned success. Downgrades preview an effective date from the fixture's
+  // current cycle end.
+  const subscription = subscriptionResult?.ok ? subscriptionResult.data : null
+
+  const simulate: null | SubscriptionSimulation = fixture
+    ? { effectiveAt: subscription?.current?.cycle_ends_at ?? null }
+    : null
+
   const refreshUsage = () => {
     void Promise.all([billingState.refetch(), subscriptionState.refetch()])
   }
@@ -905,7 +848,7 @@ function BillingSettingsContent({
     return (
       <SettingsContent>
         <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
-        <BillingPlansView onBack={() => setSubView('overview')} tiers={view.tiers} />
+        <BillingPlansView onBack={() => setSubView('overview')} simulate={simulate} tiers={view.tiers} />
       </SettingsContent>
     )
   }
@@ -927,7 +870,11 @@ function BillingSettingsContent({
       {view.plan && (
         <div className="mb-5">
           <SectionHeading icon={Package} title="Plan" />
-          <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
+          <CurrentPlanCard
+            onViewPlans={() => setSubView('plans')}
+            plan={view.plan}
+            simulateResume={Boolean(fixture)}
+          />
         </div>
       )}
 

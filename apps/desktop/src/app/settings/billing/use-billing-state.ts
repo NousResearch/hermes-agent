@@ -75,6 +75,8 @@ export interface BillingAccountRowView {
  */
 export type BillingPlanCardView = {
   caption: string
+  /** A scheduled downgrade / cancellation waiting at period end (drives the undo). */
+  pending?: { tierName: string; when: string }
   price?: string
   tierName: string
 } & ({ action: { label: string }; link?: undefined } | { action?: undefined; link: { label: string; url: string } })
@@ -87,14 +89,15 @@ interface BillingPlanTierBase {
 }
 
 /**
- * One card in the `bview=plans` grid, discriminated by `state`: an `upgrade` always
- * carries its portal `action`; a `downgrade` always carries a `disabledCaption`
- * (ticket 11 wires these in-app); `current` is inert. The union lets consumers read
- * `action` / `disabledCaption` without defensive `?.`.
+ * One card in the `bview=plans` grid, discriminated by `state`: `upgrade` carries its
+ * portal `action`; `downgrade` is actionable IN-APP (the flow keys off `tierId`, so it
+ * needs no url/caption); `scheduled` is the inert pending-downgrade target; `current`
+ * is inert. The union lets consumers read `action` without defensive `?.`.
  */
 export type BillingPlanTierView =
   | (BillingPlanTierBase & { state: 'current' })
-  | (BillingPlanTierBase & { disabledCaption: string; state: 'downgrade' })
+  | (BillingPlanTierBase & { state: 'downgrade' })
+  | (BillingPlanTierBase & { state: 'scheduled' })
   | (BillingPlanTierBase & { action: { label: string; url: string }; state: 'upgrade' })
 
 export interface BillingUsageRowView {
@@ -356,20 +359,23 @@ function derivePlanCard(
   const price = findCurrentTier(subscription)?.dollars_per_month_display
   const renewal = formatBillingDate(current?.cycle_ends_at ?? billing.usage?.renews_at)
   const unavailable = subscriptionResult ? !subscriptionResult.ok : false
+  const pending = pendingDowngrade(current)
 
   const caption = unavailable
     ? 'Subscription details are unavailable; opening the portal is still available.'
-    : current
-      ? `Renews ${renewal}`
-      : 'No active subscription — paid models draw down top-up credits.'
+    : pending
+      ? `Changes to ${pending.tierName} on ${pending.when}.`
+      : current
+        ? `Renews ${renewal}`
+        : 'No active subscription — paid models draw down top-up credits.'
 
-  // Actionable = a tile the user can act on. At ticket 09 only upgrades carry an
-  // `action` (downgrades are inert), so "has an action" ⟺ an upgrade exists. (The
-  // discriminated union means `'action' in tier` rather than `tier.action != null`.)
-  const hasActionableTier = tiers.some(tier => 'action' in tier)
+  // Actionable = a paid tier above (upgrade) or an in-app downgrade below the current
+  // one. Ticket 11 counts downgrades (they act in-app, so they carry no `action`); a
+  // top-tier subscriber with neither still gets the portal-link fallback below.
+  const hasActionableTier = tiers.some(tier => tier.state === 'upgrade' || tier.state === 'downgrade')
 
   if (capable && hasActionableTier) {
-    return { action: { label: current ? 'Change plan' : 'View plans' }, caption, price, tierName }
+    return { action: { label: current ? 'Change plan' : 'View plans' }, caption, pending, price, tierName }
   }
 
   return {
@@ -379,16 +385,34 @@ function derivePlanCard(
       label: 'Adjust plan ↗',
       url: buildManageSubscriptionUrl(subscription, subscription?.portal_url ?? billing.portal_url)
     },
+    pending,
     price,
     tierName
+  }
+}
+
+// A scheduled downgrade waiting at period end, as a target + when it lands. NAS
+// carries only the tier NAME (no id) for the pending target, so the grid matches
+// the "Scheduled" marker by name.
+function pendingDowngrade(
+  current: null | undefined | NonNullable<SubscriptionStateResponse['current']>
+): { tierName: string; when: string } | undefined {
+  if (!current?.pending_downgrade_tier_name || !current.pending_downgrade_at) {
+    return undefined
+  }
+
+  return {
+    tierName: current.pending_downgrade_tier_name,
+    when: current.pending_downgrade_display ?? formatBillingDate(current.pending_downgrade_at)
   }
 }
 
 /**
  * The plans-grid catalog. Each card's state depends on its order relative to the
  * current tier: current = inert marker; higher = "Choose ↗" opening the portal with
- * the tier pre-selected; lower = disabled with a caption noting downgrades are
- * moving in-app (ticket 11 wires the gateway pending-change flow). With no active
+ * the tier pre-selected; lower = an in-app "Downgrade" (chargeless, scheduled via the
+ * gateway). The already-scheduled downgrade target renders as an inert "Scheduled"
+ * marker; other lower tiers stay actionable (picking one reschedules). With no active
  * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
  * there is no "subscribe to Free" upgrade and no downgrade state.
  *
@@ -428,6 +452,7 @@ function derivePlanTiers(
   const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
   const currentOrder = currentTier?.tier_order
   const manageBase = subscription.portal_url ?? fallbackPortalUrl
+  const pendingName = current?.pending_downgrade_at ? current.pending_downgrade_tier_name : null
 
   return gridTiers.map((tier): BillingPlanTierView => {
     const base: BillingPlanTierBase = {
@@ -441,9 +466,17 @@ function derivePlanTiers(
       return { ...base, state: 'current' }
     }
 
-    // Downgrade = strictly below the current tier's order.
+    // A scheduled downgrade target is inert (matched by name — NAS sends no id for
+    // the pending target). Name is a safe key: SubscriptionTypes.name is @unique in
+    // NAS. Checked before the downgrade branch since the target IS a lower tier.
+    if (pendingName && tier.name === pendingName) {
+      return { ...base, state: 'scheduled' }
+    }
+
+    // Downgrade = strictly below the current tier's order → an in-app chargeless
+    // change (the PlanCard wires the confirm flow by tierId).
     if (currentOrder != null && tier.tier_order < currentOrder) {
-      return { ...base, disabledCaption: 'Downgrades are moving in-app — coming soon.', state: 'downgrade' }
+      return { ...base, state: 'downgrade' }
     }
 
     return {

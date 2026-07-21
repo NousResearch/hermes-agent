@@ -311,6 +311,23 @@ export const subscriberPersonalSubscriptionState = {
   usage: subscriberPersonalBillingState.usage
 } satisfies SubscriptionStateResponse
 
+// Personal subscriber on Plus with a downgrade to Free already scheduled at period
+// end: exercises the plan-card pending state + undo, and the grid's "Scheduled"
+// marker on Free while Super/Ultra stay choosable.
+export const pendingDowngradeSubscriptionState = {
+  ...subscriberPersonalSubscriptionState,
+  current: current({
+    credits_remaining: '12',
+    cycle_ends_at: '2026-08-15T00:00:00Z',
+    monthly_credits: '22',
+    pending_downgrade_at: '2026-08-15T00:00:00Z',
+    pending_downgrade_display: 'Aug 15',
+    pending_downgrade_tier_name: 'Free',
+    tier_id: 'cltier111plus1111personal',
+    tier_name: 'Plus'
+  })
+} satisfies SubscriptionStateResponse
+
 const okBilling = (data: BillingStateResponse): BillingResult<BillingStateResponse> => ({ data, ok: true })
 
 const okSubscription = (data: SubscriptionStateResponse): BillingResult<SubscriptionStateResponse> => ({
@@ -381,6 +398,10 @@ export const billingDevFixtures = {
   'subscriber-personal': {
     billing: okBilling(subscriberPersonalBillingState),
     subscription: okSubscription(subscriberPersonalSubscriptionState)
+  },
+  'pending-downgrade': {
+    billing: okBilling(subscriberPersonalBillingState),
+    subscription: okSubscription(pendingDowngradeSubscriptionState)
   },
   'auto-refill-divergent': withUsage('Auto Refill Divergent', {
     autoReload: {

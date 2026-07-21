@@ -9,6 +9,7 @@ import type {
   BillingMutationResponse,
   BillingRefusalCode,
   BillingStateResponse,
+  SubscriptionPreviewResponse,
   SubscriptionStateResponse
 } from './types'
 
@@ -48,6 +49,12 @@ export interface BillingApi {
   chargeStatus: (chargeId: string) => Promise<BillingResult<BillingChargeStatusResponse>>
   fetchBillingState: () => Promise<BillingResult<BillingStateResponse>>
   fetchSubscriptionState: () => Promise<BillingResult<SubscriptionStateResponse>>
+  /** Chargeless quote for a plan change (POST /subscription/preview). */
+  previewSubscriptionChange: (tierId: string) => Promise<BillingResult<SubscriptionPreviewResponse>>
+  /** Clear a scheduled downgrade / cancellation — the undo (DELETE pending-change). */
+  resumeSubscription: () => Promise<BillingResult<BillingMutationResponse>>
+  /** Schedule a chargeless downgrade at period end (PUT pending-change). */
+  scheduleSubscriptionChange: (tierId: string) => Promise<BillingResult<BillingMutationResponse>>
   stepUp: (sessionId?: string) => Promise<BillingResult<BillingMutationResponse>>
   updateAutoReload: (input: UpdateAutoReloadInput) => Promise<BillingResult<BillingMutationResponse>>
 }
@@ -149,6 +156,15 @@ export const createBillingApi = (requestGateway: BillingRequestGateway): Billing
     callBilling<BillingChargeStatusResponse>(requestGateway, 'billing.charge_status', { charge_id: chargeId }),
   fetchBillingState: () => callBilling<BillingStateResponse>(requestGateway, 'billing.state'),
   fetchSubscriptionState: () => callBilling<SubscriptionStateResponse>(requestGateway, 'subscription.state'),
+  previewSubscriptionChange: tierId =>
+    callBilling<SubscriptionPreviewResponse>(requestGateway, 'subscription.preview', {
+      subscription_type_id: tierId
+    }),
+  resumeSubscription: () => callBilling<BillingMutationResponse>(requestGateway, 'subscription.resume', {}),
+  scheduleSubscriptionChange: tierId =>
+    callBilling<BillingMutationResponse>(requestGateway, 'subscription.change', {
+      subscription_type_id: tierId
+    }),
   stepUp: sessionId =>
     callBilling<BillingMutationResponse>(requestGateway, 'billing.step_up', {
       ...(sessionId !== undefined ? { session_id: sessionId } : {})

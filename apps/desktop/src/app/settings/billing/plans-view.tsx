@@ -5,11 +5,67 @@ import { cn } from '@/lib/utils'
 
 import { Pill } from '../primitives'
 
+import { BillingRefusalInline } from './inline-feedback'
 import { TierArt } from './tier-art'
-import type { BillingPlanTierView } from './use-billing-state'
+import { type BillingPlanTierView, formatBillingDate } from './use-billing-state'
+import { type SubscriptionSimulation, useDowngradeFlow } from './use-subscription-change'
 
-function PlanCard({ tier }: { tier: BillingPlanTierView }) {
+type DowngradeFlow = ReturnType<typeof useDowngradeFlow>
+
+// The in-card preview → confirm panel for a downgrade (mirrors the TUI confirm flow).
+function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierView }) {
+  const active = flow.active
+
+  if (!active || active.target.tierId !== tier.tierId) {
+    return null
+  }
+
+  const { busy, failedOp, preview, refusal } = active
+  const targetName = preview?.target_tier_name ?? tier.name
+  const effect = preview?.effect
+  const caption = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
+
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/70 bg-background/60 p-3">
+      {busy === 'preview' ? (
+        <div className={caption}>Checking this change…</div>
+      ) : effect === 'scheduled' ? (
+        <div className={caption}>
+          Change to {targetName} — takes effect {formatBillingDate(preview?.effective_at)}. No charge now; you keep your
+          current plan until then.
+          {preview?.monthly_credits_delta ? ` Monthly credits change: ${preview.monthly_credits_delta}.` : ''}
+        </div>
+      ) : effect === 'no_op' ? (
+        <div className={caption}>You are already on {targetName} — nothing to change.</div>
+      ) : effect === 'blocked' ? (
+        <div className={caption}>{preview?.reason ?? 'That change cannot be made here.'}</div>
+      ) : !refusal ? (
+        <div className={caption}>This change cannot be scheduled here.</div>
+      ) : null}
+
+      <BillingRefusalInline refusal={refusal} />
+
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {failedOp === 'preview' ? (
+          <Button disabled={busy != null} onClick={flow.retryPreview} size="sm" type="button">
+            Try again
+          </Button>
+        ) : failedOp === 'schedule' || effect === 'scheduled' ? (
+          <Button disabled={busy != null} onClick={() => void flow.confirm()} size="sm" type="button">
+            {busy === 'schedule' ? 'Scheduling…' : failedOp === 'schedule' ? 'Try again' : 'Confirm downgrade'}
+          </Button>
+        ) : null}
+        <Button disabled={busy != null} onClick={flow.cancel} size="sm" type="button" variant="outline">
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierView }) {
   const isCurrent = tier.state === 'current'
+  const confirming = flow.active?.target.tierId === tier.tierId
 
   return (
     <div
@@ -39,6 +95,8 @@ function PlanCard({ tier }: { tier: BillingPlanTierView }) {
       <div className="mt-auto min-w-0 pt-1">
         {isCurrent && <Pill tone="primary">Current plan</Pill>}
 
+        {tier.state === 'scheduled' && <Pill>Scheduled</Pill>}
+
         {tier.state === 'upgrade' && (
           <Button onClick={() => tier.action && openExternalLink(tier.action.url)} size="sm" type="button" variant="outline">
             {tier.action.label}
@@ -46,22 +104,37 @@ function PlanCard({ tier }: { tier: BillingPlanTierView }) {
           </Button>
         )}
 
-        {tier.state === 'downgrade' && (
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <Button disabled size="sm" type="button" variant="outline">
+        {tier.state === 'downgrade' &&
+          (confirming ? (
+            <DowngradeConfirm flow={flow} tier={tier} />
+          ) : (
+            <Button
+              onClick={() => flow.begin({ tierId: tier.tierId, tierName: tier.name })}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
               Downgrade
             </Button>
-            <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {tier.disabledCaption}
-            </span>
-          </div>
-        )}
+          ))}
       </div>
     </div>
   )
 }
 
-export function BillingPlansView({ onBack, tiers }: { onBack: () => void; tiers: BillingPlanTierView[] }) {
+export function BillingPlansView({
+  onBack,
+  simulate,
+  tiers
+}: {
+  onBack: () => void
+  simulate?: null | SubscriptionSimulation
+  tiers: BillingPlanTierView[]
+}) {
+  // A scheduled downgrade lands the user back on the overview, where the plan card
+  // now shows the pending state with its undo.
+  const flow = useDowngradeFlow({ onScheduled: onBack, simulate })
+
   return (
     <div className="@container">
       <div className="mb-2.5 flex items-center gap-2 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
@@ -81,7 +154,7 @@ export function BillingPlansView({ onBack, tiers }: { onBack: () => void; tiers:
       {tiers.length > 0 ? (
         <div className="grid gap-3 @lg:grid-cols-2 @3xl:grid-cols-3">
           {tiers.map(tier => (
-            <PlanCard key={tier.tierId} tier={tier} />
+            <PlanCard flow={flow} key={tier.tierId} tier={tier} />
           ))}
         </div>
       ) : (

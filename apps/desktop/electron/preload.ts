@@ -197,6 +197,22 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:notification-action', listener)
   },
+  selectionSpeech: {
+    onReadRequested: callback => {
+      const listener = (_event, text) => callback(typeof text === 'string' ? text : '')
+      ipcRenderer.on('hermes:selection-speech:read', listener)
+
+      return () => ipcRenderer.removeListener('hermes:selection-speech:read', listener)
+    }
+  },
+  selectionTranslate: {
+    onOpenRequested: callback => {
+      const listener = (_event, text) => callback(typeof text === 'string' ? text : '')
+      ipcRenderer.on('hermes:selection-translate:open', listener)
+
+      return () => ipcRenderer.removeListener('hermes:selection-translate:open', listener)
+    }
+  },
   onPreviewFileChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:preview-file-changed', listener)

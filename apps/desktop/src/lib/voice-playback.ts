@@ -6,7 +6,7 @@ import {
   type VoicePlaybackState
 } from '@/store/voice-playback'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { sanitizeTextForSpeech, splitSpeechText } from './speech-text'
 
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
@@ -58,6 +58,13 @@ export function stopVoicePlayback() {
   })
 }
 
+export function playSelectedSpeechText(text: string): Promise<boolean> {
+  return playSpeechText(text, {
+    messageId: 'selection-read-aloud',
+    source: 'read-aloud'
+  })
+}
+
 export async function playSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
   stopVoicePlayback()
 
@@ -72,70 +79,80 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
 
   setVoicePlaybackState(currentState('preparing', options))
 
+  const chunks = splitSpeechText(speakableText)
+
   try {
-    const response = await speakText(speakableText)
-
-    if (!isCurrent()) {
-      return false
-    }
-
-    const audio = new Audio(response.data_url)
-    currentAudio = audio
-    setVoicePlaybackState(currentState('speaking', options, audio))
-
-    await new Promise<void>((resolve, reject) => {
-      let stall: number | null = null
-
-      const cleanup = () => {
-        if (stall !== null) {
-          window.clearTimeout(stall)
-          stall = null
-        }
-
-        audio.removeEventListener('ended', onEnded)
-        audio.removeEventListener('error', onError)
-        audio.removeEventListener('timeupdate', armStall)
-        currentStop = null
+    for (const chunk of chunks) {
+      if (!isCurrent()) {
+        return false
       }
 
-      const armStall = () => {
-        if (stall !== null) {
-          window.clearTimeout(stall)
+      setVoicePlaybackState(currentState('preparing', options))
+      const response = await speakText(chunk)
+
+      if (!isCurrent()) {
+        return false
+      }
+
+      const audio = new Audio(response.data_url)
+      currentAudio = audio
+      setVoicePlaybackState(currentState('speaking', options, audio))
+
+      await new Promise<void>((resolve, reject) => {
+        let stall: number | null = null
+
+        const cleanup = () => {
+          if (stall !== null) {
+            window.clearTimeout(stall)
+            stall = null
+          }
+
+          audio.removeEventListener('ended', onEnded)
+          audio.removeEventListener('error', onError)
+          audio.removeEventListener('timeupdate', armStall)
+          currentStop = null
         }
 
-        stall = window.setTimeout(() => {
+        const armStall = () => {
+          if (stall !== null) {
+            window.clearTimeout(stall)
+          }
+
+          stall = window.setTimeout(() => {
+            cleanup()
+            reject(new Error('Playback stalled'))
+          }, PLAYBACK_STALL_MS)
+        }
+
+        const onEnded = () => {
           cleanup()
-          reject(new Error('Playback stalled'))
-        }, PLAYBACK_STALL_MS)
+          resolve()
+        }
+
+        const onError = () => {
+          cleanup()
+          reject(new Error('Playback failed'))
+        }
+
+        currentStop = () => {
+          cleanup()
+          resolve()
+        }
+
+        audio.addEventListener('ended', onEnded, { once: true })
+        audio.addEventListener('error', onError, { once: true })
+        audio.addEventListener('timeupdate', armStall)
+        armStall()
+        void audio.play().catch(onError)
+      })
+
+      if (!isCurrent()) {
+        return false
       }
 
-      const onEnded = () => {
-        cleanup()
-        resolve()
-      }
-
-      const onError = () => {
-        cleanup()
-        reject(new Error('Playback failed'))
-      }
-
-      currentStop = () => {
-        cleanup()
-        resolve()
-      }
-
-      audio.addEventListener('ended', onEnded, { once: true })
-      audio.addEventListener('error', onError, { once: true })
-      audio.addEventListener('timeupdate', armStall)
-      armStall()
-      void audio.play().catch(onError)
-    })
-
-    if (!isCurrent()) {
-      return false
+      currentAudio = null
     }
 
-    currentAudio = null
     setVoicePlaybackState(currentState('idle'))
 
     return true

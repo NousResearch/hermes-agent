@@ -2573,6 +2573,25 @@ export const zh: Translations = {
     zoneCount: count => `${count} 个区域`
   },
 
+  selectionTranslate: {
+    title: '翻译',
+    providerNote: '使用你配置的 Hermes 模型。所选文本可能通过该提供商离开本机。',
+    detected: '检测语言',
+    target: '翻译为',
+    defaultPreference: '下次默认',
+    modeAuto: '自动（英↔阿）',
+    modeArabic: '始终阿拉伯语',
+    modeEnglish: '始终英语',
+    source: '所选文本',
+    translation: '译文',
+    translating: '翻译中…',
+    failed: '翻译失败',
+    retry: '重试',
+    copy: '复制',
+    copied: '译文已复制',
+    copyFailed: '无法复制译文'
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在加载会话',

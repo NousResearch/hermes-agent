@@ -53,13 +53,14 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope } from './scope'
+import { SelectionTranslateDialog } from './selection-translate-dialog'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { extractClipboardImageBlobs } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
-import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+import { SelectionSpeechActivity, SelectionTranslateActivity, VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
   busy,
@@ -961,7 +962,10 @@ export function ChatBar({
                     All four render nothing until something contributes. */}
                 <ContribSlot area={COMPOSER_AREAS.top} />
                 <VoiceActivity state={voiceActivityState} />
+                <SelectionSpeechActivity />
+                <SelectionTranslateActivity />
                 <VoicePlaybackActivity />
+                <SelectionTranslateDialog />
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
                     <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">

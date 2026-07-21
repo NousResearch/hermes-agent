@@ -231,6 +231,42 @@ def test_ack_crash_after_processing_removal_does_not_retain_completed_payload(
     assert list(restarted.pending_dir.glob("*.json")) == []
 
 
+def test_ack_crash_before_processing_removal_does_not_requeue_completed_work(
+    tmp_path, spool_mod, monkeypatch
+):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue({**_source_envelope(), "turn_id": "ack-crash-before-unlink"})["ok"] is True
+    claim = spool.claim_next(owner="worker")
+    assert claim is not None
+
+    processing_path = Path(claim["path"])
+    payload_path = Path(str(claim["record"]["payload_path"]))
+    original_unlink = Path.unlink
+
+    def _simulate_process_death(path, *args, **kwargs):
+        if path == processing_path:
+            raise SystemExit("synthetic death before processing unlink")
+        return original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as crash:
+        crash.setattr(Path, "unlink", _simulate_process_death)
+        with pytest.raises(SystemExit, match="synthetic death before processing unlink"):
+            spool.ack_processing(processing_path)
+
+    assert processing_path.exists() is True
+    assert payload_path.exists() is True
+    assert len(list(spool.completed_dir.glob("*.json"))) == 1
+
+    stale = time.time() - 600
+    os.utime(processing_path, (stale, stale))
+    restarted = spool_mod.TruthSpool(tmp_path)
+    assert restarted.recover_stale_processing(stale_seconds=60) == 1
+    assert processing_path.exists() is False
+    assert payload_path.exists() is False
+    assert list(restarted.pending_dir.glob("*.json")) == []
+    assert len(list(restarted.completed_dir.glob("*.json"))) == 1
+
+
 def test_dead_letter_and_soft_overflow_remove_payload_files(tmp_path, spool_mod):
     spool = spool_mod.TruthSpool(tmp_path, soft_count=1, hard_count=5)
 

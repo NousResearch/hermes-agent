@@ -253,6 +253,79 @@ def test_extract_canonicalizes_workflow_and_rollout_aliases():
     ]
 
 
+def test_extract_canonicalizes_negative_requirements_and_contextual_styles():
+    extractor = _load_extractor_module()
+    raw_facts = []
+    for key, value, scope, kind in (
+        (
+            "rollout.independent_exact_commit_review_required",
+            "not required",
+            "project",
+            "constraint",
+        ),
+        (
+            "rollout.merge_requires_explicit_approval",
+            "false",
+            "project",
+            "constraint",
+        ),
+        (
+            "rollout.default_profile_change_requires_explicit_approval",
+            False,
+            "project",
+            "constraint",
+        ),
+        ("response.style.engineering_review", "detailed by default", "user", "preference"),
+        ("response.style.slack_progress", "concise by default", "user", "preference"),
+    ):
+        candidate = _candidate(value=value)
+        candidate["fact"].update({"key": key, "scope": scope, "kind": kind})
+        raw_facts.append(candidate)
+
+    llm = _FakeLLM(
+        lambda **_kwargs: _FakeStructuredResult(
+            parsed={"schema_name": "truth-ledger.fact-candidates.v1", "facts": raw_facts}
+        )
+    )
+
+    out = _run(extractor.extract_candidates(ctx=_FakeCtx(llm), envelope=_envelope()))
+
+    assert out["status"] == "ok"
+    assert [(fact["key"], fact["value"]) for fact in out["facts"]] == [
+        ("rollout.independent_exact_commit_review_required", False),
+        ("rollout.merge_requires_explicit_approval", False),
+        ("rollout.default_profile_change_requires_explicit_approval", False),
+        ("response.style.engineering_review", "detailed"),
+        ("response.style.slack_progress", "concise"),
+    ]
+
+
+def test_extract_rejects_noncanonical_requirement_and_contextual_style_values():
+    extractor = _load_extractor_module()
+
+    for key, value in (
+        ("rollout.merge_requires_explicit_approval", 0),
+        ("rollout.merge_requires_explicit_approval", "sometimes"),
+        ("proposal.presentation_order", "start with options"),
+        ("proposal.delivery_format", 1),
+        ("response.style.engineering_review", "verbose"),
+        ("response.style.slack_progress", {"verbosity": "concise"}),
+    ):
+        candidate = _candidate(value=value)
+        candidate["fact"]["key"] = key
+        llm = _FakeLLM(
+            lambda **_kwargs: _FakeStructuredResult(
+                parsed={"schema_name": "truth-ledger.fact-candidates.v1", "facts": [candidate]}
+            )
+        )
+
+        out = _run(extractor.extract_candidates(ctx=_FakeCtx(llm), envelope=_envelope()))
+
+        assert out["status"] == "dead_letter"
+        assert out["reason"] == "schema_mismatch"
+        assert out["dead_letter"]["reason_code"] == "schema_mismatch"
+
+
 def test_extractor_prompt_declares_response_style_value_contract():
     extractor = _load_extractor_module()
     llm = _FakeLLM(
@@ -274,7 +347,9 @@ def test_extractor_prompt_declares_response_style_value_contract():
     assert "rollout.independent_exact_commit_review_required" in instructions
     assert "rollout.merge_requires_explicit_approval" in instructions
     assert "rollout.default_profile_change_requires_explicit_approval" in instructions
-    assert out["extraction"]["prompt_version"] == 4
+    assert "Requirement values must be JSON booleans true or false" in instructions
+    assert "Context-specific response.style.* values must also be exactly concise or detailed" in instructions
+    assert out["extraction"]["prompt_version"] == 5
 
 
 def test_default_timeout_is_bounded_above_observed_structured_latency():

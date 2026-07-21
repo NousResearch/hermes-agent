@@ -528,8 +528,16 @@ class TruthSpool:
                 record = self._load_record(src)
                 validate_document("spool-record.v1", record)
                 key = str(record.get("idempotency_key") or "")
-                completed = self._find_idempotency_key(key)
-                if completed is not None and completed.parent == self.completed_dir:
+                completed = None
+                for completed_path in self.completed_dir.glob("*.json"):
+                    try:
+                        completed_record = self._load_record(completed_path)
+                    except Exception:
+                        continue
+                    if str(completed_record.get("idempotency_key") or "") == key:
+                        completed = completed_path
+                        break
+                if completed is not None:
                     src.unlink()
                     self._unlink_payload_if_owned(record)
                     moved += 1

@@ -34,9 +34,11 @@ _KIND_BY_KEY = {
 _VALUE_ALIASES_BY_KEY = {
     "proposal.presentation_order": {
         "options_first": "options first",
+        "options first": "options first",
     },
     "proposal.delivery_format": {
         "google_docs_with_links": "Google Docs with links",
+        "google docs with links": "Google Docs with links",
     },
 }
 _BOOLEAN_REQUIREMENT_KEYS = {
@@ -45,31 +47,54 @@ _BOOLEAN_REQUIREMENT_KEYS = {
     "rollout.default_profile_change_requires_explicit_approval",
 }
 _RESPONSE_STYLE_VALUE_ALIASES = {
+    "concise": "concise",
     "concise by default": "concise",
+    "detailed": "detailed",
     "detailed by default": "detailed",
 }
 
 
 def _normalize_fact_value(key: str, value: Any) -> Any:
-    if isinstance(value, str):
+    if key in _VALUE_ALIASES_BY_KEY:
+        if not isinstance(value, str):
+            raise ValueError(f"{key} value must be a canonical string")
         normalized_text = value.strip().lower()
-        aliases = _VALUE_ALIASES_BY_KEY.get(key, {})
-        if normalized_text in aliases:
-            return aliases[normalized_text]
-        if key in _BOOLEAN_REQUIREMENT_KEYS and (
-            ("required" in normalized_text and "not required" not in normalized_text)
+        aliases = _VALUE_ALIASES_BY_KEY[key]
+        if normalized_text not in aliases:
+            raise ValueError(f"{key} value is not canonical")
+        return aliases[normalized_text]
+
+    if key in _BOOLEAN_REQUIREMENT_KEYS:
+        if isinstance(value, bool):
+            return value
+        if not isinstance(value, str):
+            raise ValueError(f"{key} value must be a boolean")
+        normalized_text = value.strip().lower()
+        if normalized_text in {"false", "not required"} or "not required" in normalized_text:
+            return False
+        if (
+            normalized_text in {"true", "required"}
+            or "required" in normalized_text
             or "without explicit approval" in normalized_text
         ):
             return True
-    if key != "response.style":
-        return value
-    if isinstance(value, str):
-        return _RESPONSE_STYLE_VALUE_ALIASES.get(value.strip().lower(), value)
-    if isinstance(value, Mapping):
+        raise ValueError(f"{key} value must be an explicit boolean requirement")
+
+    if key == "response.style" and isinstance(value, Mapping):
         verbosity = str(value.get("verbosity") or "").strip().lower()
         context = str(value.get("context") or "").strip().lower()
         if verbosity == "detailed" and context in {"engineering", "engineering topics"}:
             return "detailed"
+        raise ValueError("response.style mapping is not canonical")
+
+    if key == "response.style" or key.startswith("response.style."):
+        if not isinstance(value, str):
+            raise ValueError(f"{key} value must be concise or detailed")
+        normalized_text = value.strip().lower()
+        if normalized_text not in _RESPONSE_STYLE_VALUE_ALIASES:
+            raise ValueError(f"{key} value must be concise or detailed")
+        return _RESPONSE_STYLE_VALUE_ALIASES[normalized_text]
+
     return value
 
 
@@ -79,7 +104,7 @@ class ExtractorSettings:
     max_attempts: int = 6
     base_delay_ms: int = 500
     max_delay_ms: int = 60_000
-    prompt_version: int = 4
+    prompt_version: int = 5
     override_mode: str = "off"  # off | explicit
     provider_override: str | None = None
     model_override: str | None = None
@@ -239,13 +264,15 @@ async def extract_candidates(
         "a response.style value must be exactly concise or detailed. "
         "For a context-specific response preference, preserve the context in a dotted key; "
         "for example, use response.style.engineering_review for engineering reviews and "
-        "response.style.slack_progress for Slack progress updates, with a concise or detailed value. "
+        "response.style.slack_progress for Slack progress updates. "
+        "Context-specific response.style.* values must also be exactly concise or detailed. "
         "Emit separate atomic facts when one message states preferences for multiple contexts. "
         "For proposal workflows, use proposal.presentation_order with value options first and "
         "proposal.delivery_format with value Google Docs with links. "
         "For rollout constraints, use rollout.independent_exact_commit_review_required, "
         "rollout.merge_requires_explicit_approval, and "
-        "rollout.default_profile_change_requires_explicit_approval with boolean values. "
+        "rollout.default_profile_change_requires_explicit_approval. "
+        "Requirement values must be JSON booleans true or false. "
         "Use canonical key timezone for timezone preferences. "
         "User-scoped subjects are derived from trusted origin metadata after extraction. "
         "Conversational gratitude, acknowledgements, pleasantries, and transient remarks are not durable facts. "

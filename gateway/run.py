@@ -2164,6 +2164,7 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         with open(cfg_path, encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
+            cfg = _expand_env_vars(cfg)
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -5480,6 +5481,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
+                    cfg = _expand_env_vars(cfg)
                 fb = get_fallback_chain(cfg)
                 if fb:
                     return fb

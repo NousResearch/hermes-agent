@@ -150,7 +150,8 @@ After this, the agent can use any command below without further setup. OAuth 2.0
 | Mute / Unmute | `xurl mute @handle` / `xurl unmute @handle` |
 | Send DM | `xurl dm @handle "message"` |
 | List DMs | `xurl dms -n 10` |
-| Upload media | `xurl media upload path/to/file.mp4` |
+| Upload image | `xurl media upload --media-type image/jpeg --category tweet_image photo.jpg` |
+| Upload video | `xurl media upload video.mp4` |
 | Media status | `xurl media status MEDIA_ID` |
 | List apps | `xurl auth apps list` |
 | Remove app | `xurl auth apps remove NAME` |
@@ -257,19 +258,20 @@ xurl dms -n 25
 ### Media Upload
 
 ```bash
-# Auto-detect type
-xurl media upload photo.jpg
-xurl media upload video.mp4
-
-# Explicit type/category
+# Images — MUST specify --media-type and --category (default is amplify_video, which breaks image uploads)
 xurl media upload --media-type image/jpeg --category tweet_image photo.jpg
+xurl media upload --media-type image/png --category tweet_image photo.png
+xurl media upload --media-type image/gif --category tweet_gif photo.gif
+
+# Videos — bare command works because default category is amplify_video
+xurl media upload video.mp4
 
 # Videos need server-side processing — check status (or poll)
 xurl media status MEDIA_ID
 xurl media status --wait MEDIA_ID
 
 # Full workflow
-xurl media upload meme.png                  # returns media id
+xurl media upload --media-type image/png --category tweet_image photo.png   # returns media id
 xurl post "lol" --media-id MEDIA_ID
 ```
 
@@ -345,7 +347,8 @@ Errors are also JSON:
 
 ### Post with an image
 ```bash
-xurl media upload photo.jpg
+# --media-type and --category are required; bare upload defaults to amplify_video and breaks image uploads
+xurl media upload --media-type image/jpeg --category tweet_image photo.jpg
 xurl post "Check out this photo!" --media-id MEDIA_ID
 ```
 
@@ -408,7 +411,7 @@ xurl --app staging /2/users/me             # one-off against staging
 | 401 on every request | Token expired or wrong default app | Check `xurl auth status` — verify `▸` points to an app with oauth2 tokens |
 | `client-forbidden` / `client-not-enrolled` | X platform enrollment issue | Dashboard → Apps → Manage → Move to "Pay-per-use" package → Production environment |
 | `CreditsDepleted` | $0 balance on X API | Buy credits (min $5) in Developer Console → Billing |
-| `media processing failed` on image upload | Default category is `amplify_video` | Add `--category tweet_image --media-type image/png` |
+| `media processing failed` on image upload | Default category is `amplify_video` | Add `--category tweet_image` (or `tweet_gif` for GIF) and `--media-type` matching the file (`image/jpeg`, `image/png`, `image/gif`) |
 | Two "Client Secret" values in X dashboard | UI bug — first is actually Client ID | Confirm on the "Keys and tokens" page; ID ends in `MTpjaQ` |
 
 ---

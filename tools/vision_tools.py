@@ -31,6 +31,7 @@ Usage:
 import base64
 import contextlib
 import asyncio
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
@@ -1197,10 +1198,18 @@ async def vision_analyze_tool(
                 )
 
         debug_call_data["image_size_bytes"] = image_size_bytes
-        
+
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
-        
+
+        # Add image fingerprint to prevent LMCache KV cache collision when the same
+        # question is used for different images. The fingerprint is a short hash of
+        # the image URL, prefixed to the prompt. LLMs ignore this invisible marker,
+        # but it ensures each vision call has a unique cache key.
+        # See https://github.com/NousResearch/hermes-agent/issues/62574
+        img_fingerprint = hashlib.md5(image_url.encode("utf-8")).hexdigest()[:8]
+        comprehensive_prompt = f"[img:{img_fingerprint}] {comprehensive_prompt}"
+
         # Prepare the message with base64-encoded image
         messages = [
             {

@@ -11,89 +11,82 @@ that instructs the live agent to:
      (``read_file`` / ``search_files`` for dirs, ``web_extract`` for URLs, the
      current conversation for "what I just did", the user's text for pasted
      material).
-  2. Author a single ``SKILL.md`` via ``skill_manage`` that follows the Hermes
-     skill-authoring standards (description <=60 chars, the modern section
-     order, Hermes-tool framing, no invented commands).
+  2. Load the bundled Hermes authoring skill and contract without executing
+     inline shell.
+  3. Inspect existing skills, choose update/create/consolidate/skip, then apply
+     and validate only the selected decision.
 
-There is no separate distillation engine and no model-tool footprint: the
-agent does the work with its existing toolset, so this works identically on
-local, Docker, and remote terminal backends. Every surface (CLI ``/learn``,
-gateway ``/learn``, the dashboard "Learn a skill" panel) calls
-:func:`build_learn_prompt` and feeds the result to the agent as a normal turn.
+There is no separate distillation engine. Prompt construction uses the shared
+raw bundled-guidance loader, then the agent does the work with its existing
+toolset, so this works identically on local, Docker, and remote terminal
+backends. Every surface (CLI ``/learn``, gateway ``/learn``, the dashboard
+"Learn a skill" panel) calls :func:`build_learn_prompt` and feeds the result to
+the agent as a normal turn.
 """
 
 from __future__ import annotations
 
-# The house-style rules, distilled from AGENTS.md "Skill authoring standards
-# (HARDLINE)" and the hermes-agent-dev new-skill salvage reference. Embedded in
-# the prompt so the agent authors skills the way a maintainer would by hand.
-_AUTHORING_STANDARDS = """\
-Follow the Hermes skill-authoring standards exactly. These are the same
-HARDLINE rules a maintainer enforces in review:
+from agent.skill_authoring_guidance import (
+    load_bundled_skill_authoring_guidance,
+)
 
-Frontmatter:
-- name: lowercase-hyphenated, <=64 chars, no spaces.
-- description: ONE sentence, **<=60 characters**, ends with a period. State the
-  capability, not the implementation. No marketing words (powerful,
-  comprehensive, seamless, advanced, robust). Do NOT repeat the skill name. If
-  the description contains a colon, wrap the whole value in double quotes.
-  This is the most-violated rule and it is NOT cosmetic: the system-prompt
-  skill index truncates the description to 60 chars and loads it every
-  session, so anything past char 60 is silently cut and never routes. After
-  you write the description, COUNT the characters; if it is over 60, cut it
-  down before saving — do not ship a sentence and hope.
-    Good (<=60): `Search arXiv papers by keyword, author, or ID.`
-    Bad (123):   `A comprehensive skill that lets the agent search arXiv for
-                  academic papers using keywords, authors, and categories.`
-- version: 0.1.0
-- author: always the literal value `Hermes`. NEVER fill it from the host
-  environment — the OS/login username (e.g. the `user=` line in your
-  environment hints), git config, or any identity you can probe must not be
-  written. Skills get shared and published, so an environment-derived name is
-  a privacy leak the user never opted into; the skill names itself as Hermes.
-- platforms: declare `[macos]`, `[linux]`, and/or `[windows]` IF the skill
-  uses OS-bound primitives (osascript/apt/systemctl => the matching OS; /proc,
-  os.setsid, signal.SIGKILL => linux; fcntl/termios => POSIX). Prefer fixing it
-  cross-platform first (tempfile.gettempdir(), pathlib.Path, psutil); gate only
-  when the dependency is genuinely platform-bound. Omit the field for portable
-  skills.
-- metadata.hermes.tags: a few Capitalized, Relevant, Tags.
+# This is deliberately compact. The bundled authoring skill and its linked
+# contract are the primary source of truth; this text only keeps /learn safe
+# and useful when bundled guidance is missing, disabled, or invalid.
+_FALLBACK_AUTHORING_GUIDANCE = """\
+The bundled Hermes authoring guidance is unavailable. Use this conservative
+fallback:
 
-Body section order (omit a section only if it genuinely has no content):
-1. "# <Human Title>" then a 2-3 sentence intro: what it does, what it does NOT
-   do, and the key dependency stance (e.g. "stdlib only").
-2. "## When to Use" — bullet list of concrete trigger phrases.
-3. "## Prerequisites" — exact env vars, install steps, credentials.
-4. "## How to Run" — the canonical invocation, framed through Hermes tools.
-5. "## Quick Reference" — a flat command/endpoint list, no narration.
-6. "## Procedure" — numbered steps with copy-paste-exact commands.
-7. "## Pitfalls" — known limits, rate limits, things that look broken but aren't.
-8. "## Verification" — a single command/check that proves the skill worked.
+- Inspect existing skills with `skills_list`, then read plausible owners with
+  `skill_view` before writing anything.
+- Choose exactly one outcome: update an existing owner, create a distinct
+  reusable skill, consolidate overlapping skills, or skip when the behavior is
+  already covered or not reusable.
+- Use a lowercase hyphenated name that matches its directory. Keep the
+  description to one capability sentence of at most 60 characters ending in a
+  period; avoid marketing language.
+- Preserve human authorship. Credit the human contributor first and Hermes
+  second when both contributed. Never derive an author from host identity.
+- Use the modern body order: title and scope, `When to Use`, `Prerequisites`,
+  `How to Run`, `Quick Reference`, `Procedure`, `Pitfalls`, and `Verification`.
+- Name Hermes native tools in prose. Put repeated deterministic logic in
+  `scripts/`, detailed material in `references/`, and reusable skeletons in
+  `templates/`.
+- Validate frontmatter, links, platform claims, helpers, and behavior. Ask
+  before an unrequested deletion or other destructive consolidation step.
+"""
 
-Hermes-tool framing (this is what makes it a skill, not shell docs):
-- Frame running scripts as "invoke through the `terminal` tool".
-- Reference Hermes tools by name in backticks: `terminal`, `read_file`,
-  `write_file`, `search_files`, `patch`, `web_extract`, `web_search`,
-  `vision_analyze`, `browser_navigate`, `delegate_task`, `image_generate`,
-  `text_to_speech`, `cronjob`, `memory`, `skill_view`, `execute_code`.
-- Do NOT name shell utilities the agent already has wrapped: say `read_file`
-  not cat/head/tail, `search_files` not grep/rg/find/ls, `patch` not sed/awk,
-  `web_extract` not curl-to-scrape, `write_file` not echo>file or heredocs.
-- Third-party CLIs (ffmpeg, gh, an SDK) are fine inside a script file, but the
-  prose still frames them as "invoke through the `terminal` tool". If the
-  skill needs an MCP server, name it and document its setup in Prerequisites.
 
-Quality bar:
-- Prefer exact commands, endpoint URLs, function signatures, and config keys
-  that appear VERBATIM in the source. NEVER invent flags, paths, or APIs — if
-  you didn't see it in the source, don't write it.
-- Keep it tight and scannable: ~100 lines for a simple skill, ~200 for a
-  complex one. Don't re-paste the source docs.
-- Don't write a router/index/hub skill that only points at other skills.
-- Larger scripts/parsers belong in a `scripts/` file (add via
-  `skill_manage` write_file), referenced from SKILL.md by relative path — not
-  inlined for the agent to re-type every run. References go in `references/`,
-  templates in `templates/`."""
+def _load_authoring_guidance() -> str:
+    """Format raw bundled authoring files with compact fallbacks.
+
+    The shared loader reads the exact bundled path without ``skill_view``, so
+    neither inline-shell preprocessing nor a user-local same-name skill can
+    affect ``/learn``.
+    """
+    try:
+        guidance = load_bundled_skill_authoring_guidance()
+    except Exception:
+        guidance = None
+    if not guidance:
+        return _FALLBACK_AUTHORING_GUIDANCE
+
+    parts = [
+        "AUTHORITATIVE HERMES AUTHORING SKILL:\n\n"
+        + guidance.skill_content.strip(),
+    ]
+    if guidance.contract_content:
+        parts.append(
+            "AUTHORITATIVE HERMES AUTHORING CONTRACT:\n\n"
+            + guidance.contract_content.strip()
+        )
+    else:
+        parts.append(
+            "The linked authoring contract could not be loaded. Apply this "
+            "fallback in addition to the skill:\n\n"
+            + _FALLBACK_AUTHORING_GUIDANCE
+        )
+    return "\n\n".join(parts)
 
 
 def build_learn_prompt(user_request: str) -> str:
@@ -105,8 +98,8 @@ def build_learn_prompt(user_request: str) -> str:
 
     Returns:
         A complete instruction the agent runs as a normal turn. The agent
-        gathers the described sources with its existing tools and authors the
-        skill via ``skill_manage``.
+        gathers the described sources, selects an authoring decision, and uses
+        the appropriate skill-management operation when a write is warranted.
     """
     req = (user_request or "").strip()
     if not req:
@@ -140,11 +133,22 @@ def build_learn_prompt(user_request: str) -> str:
         "1b. Apply every requirement, focus, and constraint in the request to "
         "the skill you author — these govern what the SKILL.md covers and "
         "emphasizes, not just which sources you read.\n"
-        "2. Author ONE SKILL.md and save it with the `skill_manage` tool "
-        "(action=\"create\"). Pick a sensible category. If the procedure needs "
-        "a non-trivial script, add it under the skill's `scripts/` with "
-        "`skill_manage` write_file and reference it by relative path.\n\n"
-        f"{_AUTHORING_STANDARDS}\n\n"
-        "When done, tell the user the skill name, its category, and a "
-        "one-line summary of what it captured."
+        "2. Before writing, inspect the installed library with `skills_list` "
+        "and read every plausible owner with `skill_view`. Search repository "
+        "and Hub skills too when those sources are in scope.\n"
+        "3. Choose exactly one decision from the evidence: UPDATE an existing "
+        "owner, CREATE a distinct reusable skill, CONSOLIDATE overlapping "
+        "skills under one owner, or SKIP when the behavior is already covered "
+        "or is not reusable. Do not default to creation.\n"
+        "4. Execute only that decision. Use `skill_manage` patch/edit for an "
+        "installed update, create for a genuinely new user-local skill, and "
+        "write_file for needed references/scripts/templates. Update the "
+        "umbrella before deleting a duplicate and obtain confirmation before "
+        "an unrequested deletion. A SKIP decision performs no write.\n"
+        "5. Validate the result as required by the authoring guidance below. "
+        "Do not invent commands, paths, APIs, or verification results.\n\n"
+        f"{_load_authoring_guidance()}\n\n"
+        "When done, report the UPDATE/CREATE/CONSOLIDATE/SKIP decision, the "
+        "skill name and category when applicable, what changed, and the "
+        "validation evidence."
     )

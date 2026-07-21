@@ -15006,6 +15006,52 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
 
+        # ── macOS clipboard image polling (iTerm2 workaround) ──────────
+        # On native iTerm2, Cmd+V with an image in the clipboard is
+        # intercepted at the terminal emulator level for inline image
+        # display via iTerm2's proprietary OSC protocol.  The bracketed
+        # paste handler never fires in that case, and the Ctrl+V fallback
+        # also never triggers — the app never learns about the paste
+        # gesture.  We use a lightweight asyncio timer to periodically
+        # check the clipboard for images so iTerm2 users can paste
+        # screenshots without needing /paste or Alt+V.
+        if sys.platform == "darwin":
+            _macos_clipboard_fingerprint: list[str] = [""]
+
+            async def _macos_clipboard_image_poller() -> None:
+                """Background clipboard-image watcher for macOS terminals."""
+                import asyncio as _aio_macos
+                import subprocess as _sp_macos
+
+                while True:
+                    try:
+                        await _aio_macos.sleep(2.0)
+                        if cli_ref._command_running:
+                            continue
+
+                        # Quick fingerprint check via osascript's clipboard info
+                        # returns lines like '«class PNGf»	1234568' — cheap (<1ms).
+                        _r = _sp_macos.run(
+                            ["osascript", "-e", "clipboard info"],
+                            capture_output=True, text=True, timeout=3,
+                        )
+                        _info = _r.stdout.strip() if _r.returncode == 0 else ""
+                        if not _info or _info == _macos_clipboard_fingerprint[0]:
+                            continue  # no image, or same content already attached
+
+                        # New or changed image — attach it
+                        if cli_ref._try_attach_clipboard_image():
+                            _macos_clipboard_fingerprint[0] = _info
+                            try:
+                                if cli_ref._app:
+                                    cli_ref._app.invalidate()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+            app.create_background_task(_macos_clipboard_image_poller())
+
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
         # to suppress the deliberate "reserve vertical space" scroll-up.

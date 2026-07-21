@@ -249,7 +249,13 @@ def _global_allow_private_urls() -> bool:
 
 
 def _reset_allow_private_cache() -> None:
-    """Reset the cached toggle — only for tests."""
+    """Reset the cached allow_private_urls toggle.
+
+    Clears the module-level cache so the next call to
+    _global_allow_private_urls() re-reads config and env var.
+    Safe to call from production code after a config hot-reload,
+    not just in tests.
+    """
     global _allow_private_resolved, _cached_allow_private
     _allow_private_resolved = False
     _cached_allow_private = False

@@ -56,6 +56,10 @@ INSTALL_POLICY = {
     #                  safe      caution    dangerous
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
+    # Tap: user-configured repos (hermes skills tap add). Same as trusted
+    # for safe/caution, but --force CAN override a dangerous verdict —
+    # unlike community/trusted where dangerous is always blocked.
+    "tap":           ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
     # Agent-created: "ask" on dangerous surfaces as an error to the agent,
     # which can retry without the flagged content. This gate only runs when
@@ -781,6 +785,8 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     if decision == "allow":
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
 
+    # --force does NOT override dangerous for community/trusted (hard block),
+    # but DOES work for "tap" (user-configured repos) and "agent-created".
     if force and not (result.verdict == "dangerous" and result.trust_level in ("community", "trusted")):
         return True, (
             f"Force-installed despite {result.verdict} verdict "
@@ -794,8 +800,8 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
             f"{len(result.findings)} findings)"
         )
 
-    # Dangerous verdicts cannot be overridden by --force (community/trusted);
-    # other blocks can.
+    # Dangerous verdicts cannot be overridden by --force for community/trusted;
+    # "tap" and "agent-created" CAN be force-overridden (handled above).
     if result.verdict == "dangerous" and result.trust_level in ("community", "trusted"):
         return False, (
             f"Blocked ({result.trust_level} source + dangerous verdict, "

@@ -76,7 +76,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         # so users can copy it for `hermes skills install`.
         table.add_column("Identifier", style="bold cyan", overflow="fold", no_wrap=False)
         for r in exact:
-            trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
+            trust_style = {"builtin": "bright_cyan", "trusted": "green", "tap": "cyan", "community": "yellow"}.get(r.trust_level, "dim")
             trust_label = "official" if r.source == "official" else r.trust_level
             table.add_row(r.source, f"[{trust_style}]{trust_label}[/]", r.identifier)
         c.print(table)
@@ -312,7 +312,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     table.add_column("Identifier", style="dim", overflow="fold", no_wrap=False)
 
     for r in results:
-        trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
+        trust_style = {"builtin": "bright_cyan", "trusted": "green", "tap": "cyan", "community": "yellow"}.get(r.trust_level, "dim")
         trust_label = "official" if r.source == "official" else r.trust_level
         table.add_row(
             r.name,
@@ -348,7 +348,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
     # Collect results from all (or filtered) sources in parallel.
     # Per-source limits are generous — parallelism + 30s timeout cap prevents hangs.
-    _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    _TRUST_RANK = {"builtin": 3, "trusted": 2, "tap": 2, "community": 1}
     # NOTE: when the centralized index is available, parallel_search_sources
     # skips the external API sources and serves everything from "hermes-index".
     # That source MUST therefore carry a limit large enough to cover the whole
@@ -804,7 +804,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         return
 
     c.print()
-    trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(meta.trust_level, "dim")
+    trust_style = {"builtin": "bright_cyan", "trusted": "green", "tap": "cyan", "community": "yellow"}.get(meta.trust_level, "dim")
     trust_label = "official" if meta.source == "official" else meta.trust_level
 
     info_lines = [
@@ -844,7 +844,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     )
 
     page_size = max(1, min(page_size, 100))
-    _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    _TRUST_RANK = {"builtin": 3, "trusted": 2, "tap": 2, "community": 1}
     # "hermes-index" must carry a high limit: when the index is available the
     # router skips external API sources and serves everything from it, so a
     # low cap here silently truncates the whole hub (see do_browse note).
@@ -1006,7 +1006,7 @@ def do_list(source_filter: str = "all",
             disabled_count += 1
             status_cell = "[dim red]disabled[/]"
 
-        trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
+        trust_style = {"builtin": "bright_cyan", "trusted": "green", "tap": "cyan", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
         table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]", status_cell)
 

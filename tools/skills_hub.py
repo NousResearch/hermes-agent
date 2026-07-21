@@ -572,6 +572,15 @@ class GitHubSource(SkillSource):
         self.taps = list(self.DEFAULT_TAPS)
         if extra_taps:
             self.taps.extend(extra_taps)
+        # Build a set of user-configured tap repo names for trust-level lookup.
+        # These repos get "tap" trust (higher than "community") because the
+        # user explicitly added them via `hermes skills tap add`.
+        self._tap_repos: set = set()
+        if extra_taps:
+            for t in extra_taps:
+                repo = t.get("repo", "")
+                if repo:
+                    self._tap_repos.add(repo)
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
@@ -598,6 +607,10 @@ class GitHubSource(SkillSource):
             repo = f"{parts[0]}/{parts[1]}"
             if repo in TRUSTED_REPOS:
                 return "trusted"
+            # User-configured taps get "tap" trust — higher than "community",
+            # allows --force override of dangerous verdicts.
+            if repo in self._tap_repos:
+                return "tap"
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -619,7 +632,7 @@ class GitHubSource(SkillSource):
         # Deduplicate by identifier, preferring higher trust levels.
         # identifier is unique per skill; name is not (two configured taps can
         # publish skills with the same name but different identifiers).
-        _trust_rank = {"builtin": 2, "trusted": 1, "community": 0}
+        _trust_rank = {"builtin": 2, "trusted": 1, "tap": 1, "community": 0}
         seen = {}
         for r in results:
             if r.identifier not in seen:
@@ -4215,7 +4228,7 @@ def unified_search(query: str, sources: List[SkillSource],
     # identifier is always unique per skill (e.g. "browse-sh/airbnb.com/search-listings-ddgioa").
     # Using name would incorrectly collapse browse-sh skills from different sites that share
     # the same task name (e.g. "search-listings" from Airbnb and Booking.com).
-    _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
+    _TRUST_RANK = {"builtin": 2, "trusted": 1, "tap": 1, "community": 0}
     seen: Dict[str, SkillMeta] = {}
     for r in all_results:
         if r.identifier not in seen:

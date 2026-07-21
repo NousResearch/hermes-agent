@@ -273,6 +273,26 @@ class TestTrustLevelFor:
                 "browsable via `hermes skills browse`."
             )
 
+    def test_user_tap_gets_tap_trust(self):
+        """User-configured taps should get 'tap' trust level."""
+        extra_taps = [{"repo": "paicha/skills", "path": "skills/"}]
+        auth = MagicMock(spec=GitHubAuth)
+        src = GitHubSource(auth=auth, extra_taps=extra_taps)
+        assert src.trust_level_for("paicha/skills/growth-dashboard") == "tap"
+
+    def test_user_tap_not_in_tap_repos_is_community(self):
+        """Repos not in user taps or TRUSTED_REPOS get 'community'."""
+        extra_taps = [{"repo": "paicha/skills", "path": "skills/"}]
+        auth = MagicMock(spec=GitHubAuth)
+        src = GitHubSource(auth=auth, extra_taps=extra_taps)
+        assert src.trust_level_for("other-user/other-repo/skill") == "community"
+
+    def test_no_extra_taps_no_tap_trust(self):
+        """Without extra_taps, no repo gets 'tap' trust."""
+        auth = MagicMock(spec=GitHubAuth)
+        src = GitHubSource(auth=auth)
+        assert src.trust_level_for("paicha/skills/growth-dashboard") == "community"
+
 
 # ---------------------------------------------------------------------------
 # SkillsShSource

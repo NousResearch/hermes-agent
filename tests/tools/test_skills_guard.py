@@ -719,3 +719,85 @@ class TestSkillIgnore:
             (junk / f"f{i}.txt").write_text("x")
         result = scan_skill(skill_dir, source="community")
         assert not any(fi.pattern_id == "too_many_files" for fi in result.findings)
+
+
+# ---------------------------------------------------------------------------
+# Tap trust level (issue #38801)
+# ---------------------------------------------------------------------------
+
+
+class TestTapTrustLevel:
+    """User-configured taps (hermes skills tap add) should get 'tap' trust.
+
+    Tap-sourced skills are treated like 'trusted' for safe/caution verdicts,
+    and --force CAN override a dangerous verdict (unlike community/trusted).
+    """
+
+    @staticmethod
+    def _make_result(trust_level: str, verdict: str, n_findings: int = 1):
+        return ScanResult(
+            skill_name="test-skill",
+            source="github",
+            trust_level=trust_level,
+            verdict=verdict,
+            findings=[
+                Finding(
+                    pattern_id="test",
+                    severity="high",
+                    category="exfiltration",
+                    file="SKILL.md",
+                    line=1,
+                    match="test pattern",
+                    description="Test finding",
+                )
+            ]
+            * n_findings,
+            scanned_at="2026-01-01T00:00:00Z",
+        )
+
+    def test_tap_safe_allowed(self):
+        result = self._make_result("tap", "safe")
+        allowed, reason = should_allow_install(result)
+        assert allowed is True
+        assert "Allowed" in reason
+
+    def test_tap_caution_allowed(self):
+        """Tap + caution should be allowed (same as trusted)."""
+        result = self._make_result("tap", "caution")
+        allowed, reason = should_allow_install(result)
+        assert allowed is True
+
+    def test_tap_dangerous_blocked_without_force(self):
+        """Tap + dangerous without --force should be blocked."""
+        result = self._make_result("tap", "dangerous")
+        allowed, reason = should_allow_install(result)
+        assert allowed is False
+        assert "Blocked" in reason
+
+    def test_tap_dangerous_force_overridable(self):
+        """Tap + dangerous WITH --force should succeed (unlike community/trusted)."""
+        result = self._make_result("tap", "dangerous")
+        allowed, reason = should_allow_install(result, force=True)
+        assert allowed is True
+        assert "Force-installed" in reason
+
+    def test_community_dangerous_force_still_blocked(self):
+        """Community + dangerous is still hard-blocked even with --force."""
+        result = self._make_result("community", "dangerous")
+        allowed, reason = should_allow_install(result, force=True)
+        assert allowed is False
+        assert "does not override" in reason
+
+    def test_trusted_dangerous_force_still_blocked(self):
+        """Trusted + dangerous is still hard-blocked even with --force."""
+        result = self._make_result("trusted", "dangerous")
+        allowed, reason = should_allow_install(result, force=True)
+        assert allowed is False
+        assert "does not override" in reason
+
+    def test_tap_in_install_policy(self):
+        """'tap' key exists in INSTALL_POLICY."""
+        from tools.skills_guard import INSTALL_POLICY
+
+        assert "tap" in INSTALL_POLICY
+        assert INSTALL_POLICY["tap"] == ("allow", "allow", "block")

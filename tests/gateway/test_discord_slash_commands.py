@@ -77,6 +77,7 @@ _ensure_discord_mock()
 
 from gateway.platforms.base import MessageType  # noqa: E402
 from plugins.platforms.discord.adapter import (  # noqa: E402
+    _APP_COMMAND_SCRIPT_RANGES,
     DiscordAdapter,
     _is_valid_app_command_name,
     _normalize_app_command_mentions,
@@ -1203,15 +1204,58 @@ def test_normalize_app_command_mentions(raw, expected):
 
 @pytest.mark.parametrize(
     "name",
-    ["café", "नमस्ते", "สวัสดี", "rock'n_roll"],
+    [
+        "café",
+        "नमस्ते",
+        "สวัสดี",
+        "rock'n_roll",
+        "\u0970",
+        "\u0e4f",
+        "\ua8e0",
+        "\U00011b00",
+        "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
+        "\u0e47\u0e4f",
+    ],
 )
 def test_valid_app_command_name_accepts_discord_unicode_grammar(name):
     assert _is_valid_app_command_name(name)
 
 
+def test_app_command_script_ranges_match_unicode_17_property_oracle():
+    """Pin the generated Script=Devanagari/Thai non-L/N range contract."""
+    expected_ranges = (
+        (0x0900, 0x0903),
+        (0x093A, 0x093C),
+        (0x093E, 0x094F),
+        (0x0955, 0x0957),
+        (0x0962, 0x0963),
+        (0x0970, 0x0970),
+        (0xA8E0, 0xA8F1),
+        (0xA8F8, 0xA8FA),
+        (0xA8FC, 0xA8FC),
+        (0xA8FF, 0xA8FF),
+        (0x11B00, 0x11B09),
+        (0x0E31, 0x0E31),
+        (0x0E34, 0x0E3A),
+        (0x0E47, 0x0E4F),
+        (0x0E5A, 0x0E5B),
+    )
+
+    assert _APP_COMMAND_SCRIPT_RANGES == expected_ranges
+
+
 @pytest.mark.parametrize(
     "name",
-    ["STATUS", "a" * 33, "status!", "has space", "tab\tname"],
+    [
+        "STATUS",
+        "a" * 33,
+        "status!",
+        "has space",
+        "tab\tname",
+        "\u0301",  # Combining mark outside the permitted scripts.
+        "\u0e3f",  # Thai block, but Script=Common.
+        "\u0964",  # Gap between exact Devanagari script ranges.
+    ],
 )
 def test_valid_app_command_name_rejects_discord_boundaries(name):
     assert not _is_valid_app_command_name(name)
@@ -1269,8 +1313,21 @@ async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypat
         ("</नमस्ते:102>", "/नमस्ते", MessageType.COMMAND),
         ("</rock'n_roll:103>", "/rock'n_roll", MessageType.COMMAND),
         ("</café समूह नमस्ते:104>", "/café समूह नमस्ते", MessageType.COMMAND),
+        ("</\u0970:107>", "/\u0970", MessageType.COMMAND),
+        ("</\u0e4f:108>", "/\u0e4f", MessageType.COMMAND),
+        ("</\ua8e0:109>", "/\ua8e0", MessageType.COMMAND),
+        ("</\U00011b00:110>", "/\U00011b00", MessageType.COMMAND),
+        (
+            f"</{''.join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2))}:111>",
+            "/" + "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
+            MessageType.COMMAND,
+        ),
+        ("</\u0e47\u0e4f:112>", "/\u0e47\u0e4f", MessageType.COMMAND),
         ("</STATUS:105>", "</STATUS:105>", MessageType.TEXT),
         (f"</{'a' * 33}:106>", f"</{'a' * 33}:106>", MessageType.TEXT),
+        ("</\u0301:113>", "</\u0301:113>", MessageType.TEXT),
+        ("</\u0e3f:114>", "</\u0e3f:114>", MessageType.TEXT),
+        ("</\u0964:115>", "</\u0964:115>", MessageType.TEXT),
     ],
 )
 async def test_clicked_slash_suggestion_enforces_discord_name_grammar(

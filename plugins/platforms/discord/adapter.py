@@ -308,19 +308,30 @@ def _clean_discord_id(entry: str) -> str:
 _APP_COMMAND_MENTION_RE = re.compile(r"</([^<>:\r\n]{1,98}):([0-9]+)>")
 
 # Python's stdlib ``re`` has no Unicode script properties. Letters and numbers
-# are covered via their Unicode general categories; these are the combining
-# marks from the Devanagari and Thai scripts that Discord's grammar additionally
-# permits. Keep this aligned with discord.py's validator ranges.
-_DEVANAGARI_COMBINING_RANGES = (
+# are covered via their Unicode general categories. This immutable table is the
+# remaining Script=Devanagari or Script=Thai code points whose Unicode 17.0
+# General_Category is not L* or N*. It was generated from the official files at
+# https://www.unicode.org/Public/17.0.0/ucd/{Scripts,UnicodeData}.txt; adjacent
+# code points were compressed into inclusive ranges. Keeping the script-property
+# exceptions explicit also makes behavior independent of Python's bundled
+# unicodedata version (notably, U+11B00-U+11B09 are unassigned in Python 3.11's
+# Unicode 14.0 database).
+_APP_COMMAND_SCRIPT_RANGES = (
     (0x0900, 0x0903),
-    (0x093A, 0x093F),
-    (0x0940, 0x094F),
+    (0x093A, 0x093C),
+    (0x093E, 0x094F),
     (0x0955, 0x0957),
     (0x0962, 0x0963),
-)
-_THAI_COMBINING_RANGES = (
-    (0x0E31, 0x0E3A),
-    (0x0E47, 0x0E4E),
+    (0x0970, 0x0970),
+    (0xA8E0, 0xA8F1),
+    (0xA8F8, 0xA8FA),
+    (0xA8FC, 0xA8FC),
+    (0xA8FF, 0xA8FF),
+    (0x11B00, 0x11B09),
+    (0x0E31, 0x0E31),
+    (0x0E34, 0x0E3A),
+    (0x0E47, 0x0E4F),
+    (0x0E5A, 0x0E5B),
 )
 
 
@@ -333,9 +344,7 @@ def _is_valid_app_command_name(name: str) -> bool:
         if char in "-_'" or unicodedata.category(char)[0] in {"L", "N"}:
             continue
         codepoint = ord(char)
-        if any(start <= codepoint <= end for start, end in _DEVANAGARI_COMBINING_RANGES):
-            continue
-        if any(start <= codepoint <= end for start, end in _THAI_COMBINING_RANGES):
+        if any(start <= codepoint <= end for start, end in _APP_COMMAND_SCRIPT_RANGES):
             continue
         return False
     return True

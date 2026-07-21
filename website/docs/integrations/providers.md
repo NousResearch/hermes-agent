@@ -1499,6 +1499,65 @@ Fallback is configured exclusively through `config.yaml` — or interactively vi
 
 ---
 
+## DeepClaude Proxy
+
+[DeepClaude](https://github.com/aattaran/deepclaude) runs a local
+Anthropic-compatible proxy on 127.0.0.1:3200 that forwards `/v1/messages` to
+cheaper backends — DeepSeek V4 Pro, OpenRouter, or Fireworks — while passing
+other traffic through to Anthropic.
+
+Connect Hermes as a named custom provider with `api_mode: anthropic_messages`:
+
+```yaml
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: deepclaude-proxy
+    base_url: http://127.0.0.1:3200
+    api_mode: anthropic_messages
+    api_key: dummy           # proxy does not require auth from localhost
+    models:
+      deepseek-v4-pro:
+        context_length: 128000
+      deepseek-v4-flash:
+        context_length: 128000
+
+model:
+  provider: custom:deepclaude-proxy
+  default: deepseek-v4-pro
+```
+
+Start the proxy separately (not from within Hermes):
+
+```bash
+cd /path/to/deepclaude
+export DEEPSEEK_API_KEY="sk-..."
+node proxy/start-proxy.js --port 3200
+```
+
+The proxy also supports `OPENROUTER_API_KEY` and `FIREWORKS_API_KEY` for
+alternative backends. Switch backends live without restarting Hermes:
+
+```bash
+curl -sX POST http://127.0.0.1:3200/_proxy/mode -d "backend=openrouter"
+```
+
+Pricing at a glance (vs Anthropic Opus at $15/M output):
+
+| Backend | Output /M | Proxy mode |
+|---|---|---|
+| DeepSeek | $0.87 | `deepseek` |
+| OpenRouter | $0.87 | `openrouter` |
+| Fireworks | $3.48 | `fireworks` |
+
+Limitations: DeepSeek's Anthropic endpoint does not support image/vision
+inputs; Anthropic's `cache_control` header is ignored (DeepSeek uses its own
+automatic caching).
+
+Why the proxy and not `deepclaude.sh`? The shell script wraps Claude Code CLI
+— it sets environment variables then `exec claude`, coupling Hermes' lifecycle
+to Claude Code. The proxy keeps the two independent: it runs as a standalone
+process, and Hermes treats it as an Anthropic-compatible endpoint.
+
 ## See Also
 
 - [Configuration](/user-guide/configuration) — General configuration (directory structure, config precedence, terminal backends, memory, compression, and more)

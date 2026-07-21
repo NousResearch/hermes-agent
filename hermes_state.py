@@ -2394,20 +2394,48 @@ class SessionDB:
         """
         if not session_key:
             return None
+        # Session-reset boundaries (explicit reset, idle, daily, suspended, and
+        # resume_pending_expired) define a recency fence: never-ended sessions that
+        # started *before* the latest reset boundary for the same key+source are not
+        # recoverable.  Without this fence, a crash between the reset's pop-and-save
+        # can leave the startup stale-route recovery repointing to an ancient
+        # never-ended session, silently undoing the reset (#68539).
+        _RESET_REASONS: tuple[str, ...] = (
+            "session_reset",
+            "idle",
+            "daily",
+            "suspended",
+            "resume_pending_expired",
+        )
+        _RECOVERABLE_REASONS: tuple[str, ...] = ("agent_close", "ws_orphan_reap")
+
         with self._lock:
             row = self._conn.execute(
                 """
                 SELECT * FROM sessions
                 WHERE session_key = ?
                   AND source = ?
-                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+                  AND (ended_at IS NULL OR end_reason IN (?, ?))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions AS rb
+                      WHERE rb.session_key = sessions.session_key
+                        AND rb.source = sessions.source
+                        AND rb.end_reason IN (?, ?, ?, ?, ?)
+                        AND rb.ended_at IS NOT NULL
+                        AND rb.started_at > COALESCE(sessions.started_at, 0)
+                  )
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (session_key, source),
+                (
+                    session_key,
+                    source,
+                    *_RECOVERABLE_REASONS,
+                    *_RESET_REASONS,
+                ),
             ).fetchone()
             if row is not None:
                 return dict(row)
@@ -2425,14 +2453,30 @@ class SessionDB:
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_type, '') = COALESCE(?, '')
                   AND COALESCE(thread_id, '') = COALESCE(?, '')
-                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+                  AND (ended_at IS NULL OR end_reason IN (?, ?))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions AS rb
+                      WHERE rb.session_key = sessions.session_key
+                        AND rb.source = sessions.source
+                        AND rb.end_reason IN (?, ?, ?, ?, ?)
+                        AND rb.ended_at IS NOT NULL
+                        AND rb.started_at > COALESCE(sessions.started_at, 0)
+                  )
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (source, user_id, chat_id, chat_type, thread_id),
+                (
+                    source,
+                    user_id,
+                    chat_id,
+                    chat_type,
+                    thread_id,
+                    *_RECOVERABLE_REASONS,
+                    *_RESET_REASONS,
+                ),
             ).fetchone()
         return dict(row) if row else None
 

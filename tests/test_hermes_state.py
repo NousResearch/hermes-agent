@@ -6359,3 +6359,125 @@ class TestLoneSurrogatePersistence:
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
 
+
+# ---------------------------------------------------------------------------
+# Gateway session recovery — reset boundary fence (#68539)
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_recovery_respects_reset_boundary_exact_key(db):
+    """A never-ended session that predates a session_reset must NOT be returned.
+
+    Scenario (the #68539 exact bug):
+    1. Session A (never ended, with messages) exists from before session_reset.
+    2. Session A was later ended with end_reason='session_reset'.
+    3. find_latest_gateway_session_for_peer must return None — the reset
+       boundary fences off the old session so recovery creates a fresh one.
+    """
+    now = time.time()
+    old_ts = now - 86400 * 3  # 3 days ago
+    with db._lock:
+        db._conn.execute(
+            "INSERT INTO sessions (id, source, session_key, user_id, chat_id, "
+            "chat_type, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("session_a", "telegram", "agent:main:telegram:dm:chat-1",
+             "user-1", "chat-1", "dm", old_ts),
+        )
+        db._conn.commit()
+    db.append_message("session_a", "user", "hello from the past")
+    db.end_session("session_a", "session_reset")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered is None, (
+        f"Expected None (reset boundary), got {recovered}"
+    )
+
+
+def test_gateway_recovery_returns_session_after_reset_boundary(db):
+    """A never-ended session created AFTER a session_reset IS recoverable."""
+    now = time.time()
+    old_ts = now - 86400 * 3  # 3 days — before reset
+    with db._lock:
+        db._conn.execute(
+            "INSERT INTO sessions (id, source, session_key, user_id, chat_id, "
+            "chat_type, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("session_a", "telegram", "agent:main:telegram:dm:chat-1",
+             "user-1", "chat-1", "dm", old_ts),
+        )
+        db._conn.commit()
+    db.append_message("session_a", "user", "hello from the past")
+
+    # Simulate a session_reset on session A
+    db.end_session("session_a", "session_reset")
+
+    # Create a new session after the reset
+    db.create_session(
+        "session_c", "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("session_c", "user", "hello after reset")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered is not None
+    assert recovered["id"] == "session_c"
+
+
+def test_gateway_recovery_excludes_both_reasons_via_fallback(db):
+    """Legacy fallback (no session_key) must also respect reset boundaries."""
+    now = time.time()
+    old_ts = now - 86400 * 3
+    with db._lock:
+        db._conn.execute(
+            "INSERT INTO sessions (id, source, session_key, user_id, chat_id, "
+            "chat_type, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("session_a", "telegram", None, "user-1", "chat-1", "dm", old_ts),
+        )
+        db._conn.commit()
+    db.append_message("session_a", "user", "hello from the past")
+    db.end_session("session_a", "session_reset")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered is None
+
+
+def test_gateway_recovery_not_affected_when_no_reset_boundary(db):
+    """Without any reset boundary, a live never-ended session is still found."""
+    db.create_session(
+        "normal-session", "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("normal-session", "user", "hello")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "normal-session"
+

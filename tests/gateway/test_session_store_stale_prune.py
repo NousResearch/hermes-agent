@@ -93,6 +93,42 @@ class TestPruneStaleSessionsLocked:
 
         assert "legacy_key" in store._entries
 
+    def test_prunes_session_reset_entry_without_recovery_attempt(self, tmp_path):
+        """A session_reset-ended entry must be pruned, not recovered.
+
+        Even when the entry has an origin (and thus *could* trigger recovery),
+        the early-return for intentional reset boundaries must skip recovery
+        and prune directly (#68539).
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning({
+            "sid_reset": {"end_reason": "session_reset", "id": "sid_reset"},
+        })
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry_with_origin(key, "sid_reset")
+
+        store._prune_stale_sessions_locked()
+
+        assert key not in store._entries
+        db.find_latest_gateway_session_for_peer.assert_not_called()
+        db.reopen_session.assert_not_called()
+
+    def test_prunes_idle_daily_suspended_reset_reasons_without_recovery(self, tmp_path):
+        """All reset boundary reasons (idle, daily, suspended, resume_pending_expired)
+        must also be pruned without recovery.
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        for reason in ("idle", "daily", "suspended", "resume_pending_expired"):
+            sid = f"sid_{reason}"
+            db = _db_returning({sid: {"end_reason": reason, "id": sid}})
+            store = _make_store_with_db(tmp_path, db)
+            store._entries[key] = _make_entry_with_origin(key, sid)
+
+            store._prune_stale_sessions_locked()
+
+            assert key not in store._entries, f"Failed for reason={reason}"
+            db.find_latest_gateway_session_for_peer.assert_not_called()
+
     def test_prunes_multiple_stale_entries(self, tmp_path):
         db = _db_returning({
             "sid_a": {"end_reason": "agent_close", "id": "sid_a"},

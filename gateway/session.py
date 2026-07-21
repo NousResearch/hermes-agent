@@ -1207,6 +1207,27 @@ class SessionStore:
                 # end_reason is None  -> session alive — keep
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
+                    # Intentional reset boundaries (session_reset, idle, daily,
+                    # suspended, resume_pending_expired) are explicit fresh-start
+                    # signals — do NOT recover to an older session.  Prune the
+                    # stale sessions.json entry so the next message creates a
+                    # fresh session.
+                    if row.get("end_reason") in (
+                        "session_reset",
+                        "idle",
+                        "daily",
+                        "suspended",
+                        "resume_pending_expired",
+                    ):
+                        logger.info(
+                            "gateway.session: pruning session_reset-ended entry "
+                            "%r -> %s — intentional boundary, not recovering",
+                            key,
+                            entry.session_id,
+                        )
+                        stale_keys.append(key)
+                        continue
+
                     recovered_entry = None
                     recovery_lookup_failed = False
                     if entry.origin is not None:

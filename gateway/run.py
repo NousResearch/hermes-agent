@@ -19721,6 +19721,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
+                        #
+                        # Flush any pending tail before clearing: a tool event
+                        # that arrived inside the edit-throttle window is in
+                        # progress_lines but has not been edited onto the
+                        # platform yet. Clearing here without flushing drops it,
+                        # so the user sees N-1 tool lines even though every tool
+                        # ran (#29371). The drain-path __reset__ handler below
+                        # already flushes before clearing — mirror it here.
+                        if can_edit and progress_lines and progress_msg_id:
+                            _pending_text = _progress_text(progress_lines)
+                            try:
+                                await _edit_progress_message(progress_msg_id, _pending_text)
+                            except Exception:
+                                pass
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None

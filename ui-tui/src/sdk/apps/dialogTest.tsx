@@ -35,6 +35,7 @@ const defaultBody = (zone: OverlayZone) =>
 
 export const dialogTestApp = defineWidgetApp<DialogTestState>({
   id: 'dialog-test',
+  help: 'open a sample dialog overlay with a faked backdrop',
   usage: USAGE,
 
   init(arg) {

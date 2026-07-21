@@ -13,7 +13,7 @@ beforeEach(() => resetOverlayState())
 
 describe('widget SDK host', () => {
   it('registers the reference apps', () => {
-    expect(listWidgetApps()).toEqual(expect.arrayContaining(['dialog-test', 'grid-test']))
+    expect(listWidgetApps().map(app => app.id)).toEqual(expect.arrayContaining(['dialog-test', 'grid-test', 'ticker', 'weather']))
     expect(getWidgetApp('grid-test')).toBe(gridTestApp)
   })
 
@@ -59,11 +59,23 @@ describe('widget SDK host', () => {
     expect(getOverlayState().widget).toBeNull()
   })
 
-  it('a widget in the slot blocks the composer', async () => {
+  it('a MODAL widget blocks the composer; ambient never does', async () => {
     const { $isBlocked } = await import('../app/overlayStore.js')
 
     expect($isBlocked.get()).toBe(false)
+    launchWidget('ticker', '')
+    expect($isBlocked.get()).toBe(false)
     launchWidget('dialog-test', 'center')
     expect($isBlocked.get()).toBe(true)
+  })
+
+  it('ambient apps dock together and toggle independently', () => {
+    expect(launchWidget('ticker', 'eurusd')).toBeNull()
+    expect(launchWidget('weather', '')).toBeNull()
+    expect(getOverlayState().ambient.map(a => a.appId)).toEqual(['ticker', 'weather'])
+
+    // Relaunch with no arg toggles just that app out of the dock.
+    expect(launchWidget('ticker', '')).toBeNull()
+    expect(getOverlayState().ambient.map(a => a.appId)).toEqual(['weather'])
   })
 })

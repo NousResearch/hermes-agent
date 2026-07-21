@@ -517,6 +517,9 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return f"-{target}: \"{old[:20]}\""
         return action
 
+    if tool_name == "browser_type":
+        return "[hidden text]"
+
     if tool_name == "send_message":
         target = args.get("target", "?")
         msg = _oneline(args.get("message", ""))

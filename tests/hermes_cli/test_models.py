@@ -318,11 +318,35 @@ class TestOpenRouterPolicyCatalog:
         monkeypatch.setenv("OPENROUTER_API_KEY", "key-b")
         with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("offline")):
             second = fetch_openrouter_models()
-
         assert [mid for mid, _ in first] == ["account-a/model"]
         assert second == []
 
-    def test_direct_selection_rejects_model_outside_policy(self, monkeypatch):
+    def test_generic_disk_cache_is_partitioned_for_plugin_provider_keys(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli.models import cached_provider_model_ids
+
+        cache_path = tmp_path / "provider_models.json"
+        monkeypatch.setattr(_models_mod, "_provider_models_cache_path", lambda: cache_path)
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "key-a")
+        fp_a = _models_mod._credential_fingerprint("openrouter")
+        with patch.object(
+            _models_mod,
+            "provider_model_ids",
+            side_effect=[["account-a/model"], []],
+        ) as fetch:
+            first = cached_provider_model_ids("openrouter")
+            monkeypatch.setenv("OPENROUTER_API_KEY", "key-b")
+            fp_b = _models_mod._credential_fingerprint("openrouter")
+            second = cached_provider_model_ids("openrouter")
+
+        assert fp_a != fp_b
+        assert first == ["account-a/model"]
+        assert second == []
+        assert fetch.call_count == 2
+
+    def test_direct_selection_rejects_model_outside_policy_catalog(self):
         from hermes_cli.models import validate_requested_model
 
         with patch(

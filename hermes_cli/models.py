@@ -2928,6 +2928,7 @@ def _credential_fingerprint(provider: str) -> str:
     import os as _os
 
     parts: list[str] = []
+    seen_env_vars: set[str] = set()
 
     # Env vars from PROVIDER_REGISTRY for this slug
     try:
@@ -2936,9 +2937,27 @@ def _credential_fingerprint(provider: str) -> str:
         if pcfg is not None:
             for ev in getattr(pcfg, "api_key_env_vars", ()) or ():
                 parts.append(f"{ev}={_os.environ.get(ev, '')}")
+                seen_env_vars.add(ev)
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
+                seen_env_vars.add(bev)
+    except Exception:
+        pass
+
+    # Plugin providers can be routable without an auth.PROVIDER_REGISTRY row.
+    # Include their declared credential env vars as well; otherwise every key
+    # hashes to the same empty fingerprint and the generic disk cache can leak
+    # account A's model catalog after rotating to account B.
+    try:
+        from providers import get_provider_profile  # type: ignore[attr-defined]
+
+        profile = get_provider_profile(provider)
+        if profile is not None:
+            for ev in getattr(profile, "env_vars", ()) or ():
+                if ev not in seen_env_vars:
+                    parts.append(f"{ev}={_os.environ.get(ev, '')}")
+                    seen_env_vars.add(ev)
     except Exception:
         pass
 

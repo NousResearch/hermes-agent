@@ -409,6 +409,19 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
     "new_sensitive",
 ]
 
+# Provider-side tool-call argument validation errors are request format
+# problems, even when the session is large. Keep them above the generic
+# 400 + large-session heuristic so malformed tool-call JSON does not trigger
+# context compression retries.
+_INVALID_TOOL_CALL_ARGUMENT_PATTERNS = [
+    "invalid tool call arguments",
+    "invalid tool_call arguments",
+    "invalid tool_calls arguments",
+    "tool call arguments are invalid",
+    "tool_call arguments are invalid",
+    "tool calls arguments are invalid",
+]
+
 # Auth patterns (non-status-code signals)
 _AUTH_PATTERNS = [
     "invalid api key",
@@ -1317,6 +1330,16 @@ def _classify_400(
             FailoverReason.billing,
             retryable=False,
             should_rotate_credential=True,
+            should_fallback=True,
+        )
+
+    # Provider-side malformed tool-call arguments are descriptive format
+    # errors. Classify them before the generic 400 + large-session heuristic
+    # so a bad tool call does not waste a retry on context compression.
+    if any(p in error_msg for p in _INVALID_TOOL_CALL_ARGUMENT_PATTERNS):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
             should_fallback=True,
         )
 

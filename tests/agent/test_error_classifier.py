@@ -1284,6 +1284,37 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    def test_400_invalid_tool_call_arguments_large_session_is_format_error(self):
+        """Malformed tool-call arguments are not fixed by context compression."""
+        e = MockAPIError(
+            "Bad Request",
+            status_code=400,
+            body={"error": {"message": "invalid tool call arguments: expected valid JSON object"}},
+        )
+        result = classify_api_error(e, approx_tokens=180000, context_length=200000, num_messages=300)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_400_openrouter_wrapped_invalid_tool_call_arguments_is_format_error(self):
+        """OpenRouter metadata.raw tool-call validation errors stay format errors."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {
+                        "raw": '{"error":{"message":"invalid tool call arguments: arguments must be valid JSON"}}'
+                    },
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", approx_tokens=180000, context_length=200000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
     def test_400_flat_body_generic_large_session_still_context_overflow(self):
         """Flat body with generic 'Error' message + large session → context overflow.
 

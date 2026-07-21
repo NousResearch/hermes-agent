@@ -27,6 +27,7 @@ from tools.skills_hub import (
     parallel_search_sources,
     unified_search,
     append_audit_log,
+    _normalize_github_tap_repo,
     _skill_meta_to_dict,
     quarantine_bundle,
 )
@@ -1408,6 +1409,17 @@ class TestHubLockFile:
 
 
 class TestTapsManager:
+    def test_normalize_github_tap_repo_accepts_owner_repo(self):
+        assert _normalize_github_tap_repo("owner/repo") == "owner/repo"
+
+    def test_normalize_github_tap_repo_accepts_github_urls(self):
+        assert _normalize_github_tap_repo("https://github.com/owner/repo.git") == "owner/repo"
+        assert _normalize_github_tap_repo("git@github.com:owner/repo.git") == "owner/repo"
+
+    def test_normalize_github_tap_repo_rejects_self_hosted_git(self):
+        with pytest.raises(ValueError, match="generic/self-hosted git URLs"):
+            _normalize_github_tap_repo("git@git.rccchina.com:crawl/spider-skills.git")
+
     def test_load_missing_file(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")
         assert mgr.load() == []
@@ -1432,6 +1444,11 @@ class TestTapsManager:
         taps = mgr.load()
         assert len(taps) == 1
         assert taps[0]["repo"] == "owner/repo"
+
+    def test_add_normalizes_github_url(self, tmp_path):
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        assert mgr.add("https://github.com/owner/repo.git") is True
+        assert mgr.load()[0]["repo"] == "owner/repo"
 
     def test_add_duplicate_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")

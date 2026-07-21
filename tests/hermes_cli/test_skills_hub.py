@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_tap, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -77,6 +77,13 @@ def _capture_check(monkeypatch, results, name=None) -> str:
     console = Console(file=sink, force_terminal=False, color_system=None)
     monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: results)
     do_check(name=name, console=console)
+    return sink.getvalue()
+
+
+def _capture_tap(action: str, repo: str = "") -> str:
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_tap(action=action, repo=repo, console=console)
     return sink.getvalue()
 
 
@@ -247,6 +254,13 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_do_tap_add_rejects_self_hosted_git_repo(hub_env):
+    output = _capture_tap("add", "git@git.rccchina.com:crawl/spider-skills.git")
+
+    assert "generic/self-hosted git URLs are not supported yet" in output
+    assert not (hub_env / "taps.json").exists()
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():

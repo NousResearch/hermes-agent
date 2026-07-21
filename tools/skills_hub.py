@@ -3463,6 +3463,42 @@ class HubLockFile:
 # Taps management
 # ---------------------------------------------------------------------------
 
+_GITHUB_TAP_REPO_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+)
+
+
+def _normalize_github_tap_repo(repo: str) -> str:
+    """Normalize tap repo input to owner/repo for the GitHub API backend."""
+    raw = (repo or "").strip()
+    if not raw:
+        raise ValueError("Repo required. Use owner/repo or https://github.com/owner/repo.")
+
+    if _GITHUB_TAP_REPO_RE.fullmatch(raw):
+        return raw
+
+    if raw.startswith("git@github.com:"):
+        path = raw.split(":", 1)[1].removesuffix(".git").strip("/")
+        if _GITHUB_TAP_REPO_RE.fullmatch(path):
+            return path
+
+    parsed = urlparse(raw)
+    if parsed.scheme in {"http", "https"} and parsed.netloc.lower() in {"github.com", "www.github.com"}:
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) == 2:
+            owner, name = parts
+            name = name.removesuffix(".git")
+            normalized = f"{owner}/{name}"
+            if _GITHUB_TAP_REPO_RE.fullmatch(normalized):
+                return normalized
+
+    raise ValueError(
+        "Custom skill taps currently support GitHub repositories via the "
+        "GitHub Contents API. Use owner/repo or https://github.com/owner/repo; "
+        "generic/self-hosted git URLs are not supported yet."
+    )
+
+
 class TapsManager:
     """Manages the taps.json file — custom GitHub repo sources."""
 
@@ -3484,6 +3520,7 @@ class TapsManager:
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
+        repo = _normalize_github_tap_repo(repo)
         taps = self.load()
         if any(t["repo"] == repo for t in taps):
             return False

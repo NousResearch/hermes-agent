@@ -19,7 +19,10 @@ Configuration in config.yaml::
             use_tls: true
             server_password: ""       # optional server password
             nickserv_password: ""     # optional NickServ identification
-            allowed_users: []         # empty = allow all, or list of nicks
+            allowed_users: []         # list of nicks; empty falls through to
+                                      # the gateway default (deny unless
+                                      # IRC_ALLOW_ALL_USERS / a global
+                                      # allowlist is set)
             max_message_length: 450   # IRC line limit (safe default)
 
 Or via environment variables (overrides config.yaml):
@@ -99,6 +102,14 @@ class IRCAdapter(BasePlatformAdapter):
     register_platform().
     """
 
+    # IRC has no message-edit primitive: send() only opens new PRIVMSG lines
+    # and there is no edit_message override. Without this flag the base
+    # default (True) makes the streaming path emit a literal cursor on the
+    # first line, then fail every edit/cursor-strip attempt and re-deliver the
+    # whole answer — leaving a stray cursor plus a duplicate message. Declaring
+    # it False suppresses the cursor and the edit attempts (matches Signal).
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config, **kwargs):
         platform = Platform("irc")
         super().__init__(config=config, platform=platform)
@@ -145,10 +156,36 @@ class IRCAdapter(BasePlatformAdapter):
         self._current_nick = self.nickname
         self._registered = False  # IRC registration complete
         self._registration_event = asyncio.Event()
+        # Set once the configured channel JOIN is confirmed (own JOIN echo or
+        # RPL_ENDOFNAMES) or rejected (a JOIN-failure numeric records the
+        # reason in _join_error). connect() waits on this before reporting a
+        # successful join.
+        self._join_event = asyncio.Event()
+        self._join_error: Optional[str] = None
 
     @property
     def name(self) -> str:
         return "IRC"
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Honor a config-only ``allowed_users`` allowlist at intake.
+
+        The adapter applies its allowlist inline in ``_handle_line`` before
+        dispatch, but the gateway's ``_is_user_authorized`` only consults the
+        ``IRC_ALLOWED_USERS`` env var — it never reads ``extra.allowed_users``.
+        Without this override, an operator who configures ``allowed_users`` in
+        config.yaml (and sets no env allowlist) would have every message
+        silently default-denied by the gateway even though the nick already
+        passed the adapter's own check.
+
+        This is deliberately gated on a *non-empty* allowlist so the adapter
+        claims to own its access policy only when it actually gated the
+        message. An empty ``allowed_users`` returns ``False`` and falls through
+        to the gateway default-deny — an empty list must never silently allow
+        every IRC user.
+        """
+        return bool(self._allowed_users_lower)
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
@@ -163,17 +200,22 @@ class IRCAdapter(BasePlatformAdapter):
             )
             return False
 
-        # Prevent two profiles from using the same IRC identity
+        # Prevent two profiles from using the same IRC identity. Route through
+        # the base helper, which unpacks the (acquired, existing) tuple that
+        # acquire_scoped_lock returns, logs the owning PID, and escalates a
+        # non-retryable ``irc_lock`` fatal error on conflict. The previous
+        # inline ``if not acquire_scoped_lock(...)`` tested a 2-tuple for
+        # truthiness — always True — so the conflict branch was dead code and
+        # two profiles sharing one server:nick would both connect.
         try:
-            from gateway.status import acquire_scoped_lock, release_scoped_lock
+            from gateway.status import acquire_scoped_lock  # noqa: F401 — probe availability
             lock_key = f"{self.server}:{self.nickname}"
-            if not acquire_scoped_lock("irc", lock_key):
-                logger.error("IRC: %s@%s already in use by another profile", self.nickname, self.server)
-                self._set_fatal_error("lock_conflict", "IRC identity in use by another profile", retryable=False)
+            if not self._acquire_platform_lock(
+                "irc", lock_key, f"IRC identity {self.nickname}@{self.server}"
+            ):
                 return False
-            self._lock_key = lock_key
         except ImportError:
-            self._lock_key = None  # status module not available (e.g. tests)
+            pass  # status module not available (e.g. tests)
 
         try:
             ssl_ctx = None
@@ -198,7 +240,9 @@ class IRCAdapter(BasePlatformAdapter):
         # Start receive loop
         self._recv_task = asyncio.create_task(self._receive_loop())
 
-        # Wait for registration (001 RPL_WELCOME) with timeout
+        # Wait for registration to resolve: 001 RPL_WELCOME sets the event on
+        # success; 464/465/ERROR set it after recording a non-retryable fatal
+        # error. Either way we stop blocking and inspect the outcome below.
         try:
             await asyncio.wait_for(self._registration_event.wait(), timeout=30.0)
         except asyncio.TimeoutError:
@@ -207,13 +251,40 @@ class IRCAdapter(BasePlatformAdapter):
             self._set_fatal_error("registration_timeout", "IRC server did not send RPL_WELCOME", retryable=True)
             return False
 
+        # A registration-failure numeric (bad password / ban) escalated a
+        # non-retryable fatal error and unblocked the wait above. Preserve that
+        # classification — do not fall through to JOIN and report a bogus
+        # success — so the reconnect watcher drops the platform from the retry
+        # queue instead of retrying unfixable credentials forever.
+        if self.has_fatal_error:
+            logger.error("IRC: registration failed: %s", self.fatal_error_message)
+            await self.disconnect()
+            return False
+
         # NickServ identification
         if self.nickserv_password:
             await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
             await asyncio.sleep(2)  # Give NickServ time to process
 
-        # Join channel
+        # Join channel and confirm it. The receive loop sets _join_event on the
+        # own JOIN echo / RPL_ENDOFNAMES (366) or records _join_error on a
+        # JOIN-failure numeric (403/405/471/473/474/475). Reporting a
+        # successful join without this would leave a "connected" adapter that
+        # silently black-holes every channel PRIVMSG on +n networks.
+        self._join_event.clear()
+        self._join_error = None
         await self._send_raw(f"JOIN {self.channel}")
+        try:
+            await asyncio.wait_for(self._join_event.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            # No ack within the window. Proceed rather than fail — some servers
+            # are slow and the join may still have succeeded — but log it.
+            logger.warning("IRC: no JOIN confirmation for %s within 10s", self.channel)
+        if self._join_error:
+            logger.error("IRC: %s", self._join_error)
+            await self.disconnect()
+            self._set_fatal_error("join_failed", self._join_error, retryable=False)
+            return False
 
         self._mark_connected()
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
@@ -222,12 +293,10 @@ class IRCAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Quit and close the connection."""
         # Release the scoped lock so another profile can use this identity
-        if getattr(self, "_lock_key", None):
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("irc", self._lock_key)
-            except Exception:
-                pass
+        try:
+            self._release_platform_lock()
+        except Exception:
+            pass
         self._mark_disconnected()
         if self._writer and not self._writer.is_closing():
             try:
@@ -252,6 +321,8 @@ class IRCAdapter(BasePlatformAdapter):
         self._writer = None
         self._registered = False
         self._registration_event.clear()
+        self._join_event.clear()
+        self._join_error = None
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -270,11 +341,21 @@ class IRCAdapter(BasePlatformAdapter):
 
         for line in lines:
             try:
-                await self._send_raw(f"PRIVMSG {target} :{line}")
+                # _send_raw silently drops the line and returns False when the
+                # writer closed mid-send (TCP/TLS drop, or connection_lost
+                # during the rate-limit sleep below). Surface that as a
+                # retryable failure instead of fabricating success for an
+                # unsent line, so the base layer can re-deliver the drop.
+                if not await self._send_raw(f"PRIVMSG {target} :{line}"):
+                    return SendResult(
+                        success=False,
+                        error="connection lost during send",
+                        retryable=True,
+                    )
                 # Basic rate limiting to avoid excess flood
                 await asyncio.sleep(0.3)
             except Exception as e:
-                return SendResult(success=False, error=str(e))
+                return SendResult(success=False, error=str(e), retryable=True)
 
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
 
@@ -283,7 +364,7 @@ class IRCAdapter(BasePlatformAdapter):
         pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        is_channel = chat_id.startswith("#") or chat_id.startswith("&")
+        is_channel = _is_irc_channel(chat_id)
         return {
             "name": chat_id,
             "type": "group" if is_channel else "dm",
@@ -356,13 +437,20 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Raw IRC I/O ──────────────────────────────────────────────────────
 
-    async def _send_raw(self, line: str) -> None:
-        """Send a raw IRC protocol line."""
+    async def _send_raw(self, line: str) -> bool:
+        """Send a raw IRC protocol line.
+
+        Returns ``True`` if the line was written to the transport, ``False``
+        if the writer is gone or closing (the line is dropped). Delivery-
+        critical callers (``send``) inspect the return value; lifecycle
+        callers (PING/PONG, JOIN, NICK) ignore it.
+        """
         if not self._writer or self._writer.is_closing():
-            return
+            return False
         encoded = (line + "\r\n").encode("utf-8")
         self._writer.write(encoded)
         await self._writer.drain()
+        return True
 
     async def _receive_loop(self) -> None:
         """Main receive loop — reads lines and dispatches them."""
@@ -426,6 +514,52 @@ class IRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"NICK {self._current_nick}")
             return
 
+        # Permanent registration failures. The ircd sends one of these and then
+        # closes the socket, so the connection can never self-resolve. Without
+        # explicit handling the receive loop just hits EOF (before
+        # _mark_connected, so its finally guard sets nothing) while connect()
+        # blocks on the 30s registration timeout and then escalates a
+        # *retryable* timeout — making the gateway reconnect forever on a
+        # credential/ban failure (burning a 30s timeout plus backoff each
+        # cycle, and on a ban escalating the server penalty). Escalate
+        # non-retryable and unblock connect() so the reconnect watcher drops
+        # the platform from the retry queue. The standalone cron path already
+        # rejects 464/465; this closes the same gap in the long-running adapter.
+        if command in {"464", "465"}:
+            code = "auth_rejected" if command == "464" else "banned"
+            detail = params[-1] if params else command
+            self._set_fatal_error(code, f"IRC server rejected registration: {detail}", retryable=False)
+            self._registration_event.set()
+            return
+
+        # Bare ERROR before registration completes — server-side connection
+        # kill (throttled / K-line / G-line). Treat as non-retryable only while
+        # unregistered; a post-registration ERROR is handled as a normal
+        # connection loss by the receive loop's EOF path.
+        if command == "ERROR" and not self._registered:
+            detail = params[-1] if params else "server closed the connection"
+            self._set_fatal_error("server_error", f"IRC server error during registration: {detail}", retryable=False)
+            self._registration_event.set()
+            return
+
+        # JOIN-failure numerics for the configured channel. The standalone cron
+        # path already rejects these; the long-running adapter used to ignore
+        # them, mark itself connected, and then silently black-hole every
+        # PRIVMSG to a channel it never actually joined.
+        if command in {"403", "405", "471", "473", "474", "475"}:
+            chan = params[1] if len(params) >= 2 else self.channel
+            self._join_error = f"JOIN {chan} rejected ({command})"
+            self._join_event.set()
+            return
+
+        # Own JOIN echo or RPL_ENDOFNAMES (366) confirms the channel join.
+        if command == "JOIN" and _extract_nick(msg["prefix"]).lower() == self._current_nick.lower():
+            self._join_event.set()
+            return
+        if command == "366":
+            self._join_event.set()
+            return
+
         # PRIVMSG — incoming message (channel or DM)
         if command == "PRIVMSG" and len(params) >= 2:
             sender_nick = _extract_nick(msg["prefix"])
@@ -444,8 +578,14 @@ class IRCAdapter(BasePlatformAdapter):
             if text.startswith("\x01"):
                 return
 
-            # Determine if this is a channel message or DM
-            is_channel = target.startswith("#") or target.startswith("&")
+            # Determine if this is a channel message or DM. Use the full
+            # RFC 2811 channel-prefix set ("#&+!") via _is_irc_channel so '+'
+            # (no-modes) and '!' (safe) channels are routed as channels and
+            # pass through the require-mention gate below — matching the
+            # outbound JOIN decision in _standalone_send. The narrower
+            # "#"/"&" check misclassified them as DMs, bypassing the gate and
+            # misrouting replies to the sender's nick.
+            is_channel = _is_irc_channel(target)
             chat_id = target if is_channel else sender_nick
             chat_type = "group" if is_channel else "dm"
 

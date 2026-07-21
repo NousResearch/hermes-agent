@@ -719,3 +719,329 @@ class TestIRCStandaloneSend:
         assert join_idx is not None, "JOIN must be sent for channel targets"
         assert privmsg_idx is not None
         assert join_idx < privmsg_idx, "JOIN must precede PRIVMSG"
+
+
+# ── Regression tests for the long-running adapter ─────────────────────────
+
+
+def _make_adapter(monkeypatch, **extra):
+    """Construct an IRCAdapter from config.yaml-style extra (no env vars)."""
+    for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+        monkeypatch.delenv(key, raising=False)
+    from gateway.config import PlatformConfig
+    base = {
+        "server": "localhost",
+        "port": 6667,
+        "nickname": "hermes",
+        "channel": "#test",
+        "use_tls": False,
+    }
+    base.update(extra)
+    a = IRCAdapter(PlatformConfig(enabled=True, extra=base))
+    a._current_nick = "hermes"
+    a._registered = True
+    return a
+
+
+class TestIRCChannelPrefixRouting:
+    """Inbound '+' and '!' channels must be treated as channels (RFC 2811)."""
+
+    @pytest.mark.asyncio
+    async def test_plus_channel_unaddressed_message_ignored(self, monkeypatch):
+        # A '+' (no-modes) channel message that does NOT address the bot must
+        # hit the require-mention gate and be dropped. The old narrow
+        # "#"/"&" check misclassified '+chan' as a DM, bypassing the gate.
+        adapter = _make_adapter(monkeypatch)
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":user!u@host PRIVMSG +chan :just chatting")
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_plus_channel_addressed_routes_to_channel(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":user!u@host PRIVMSG +chan :hermes: hi there")
+        assert len(dispatched) == 1
+        # Reply must go back to the channel, not the sender's nick.
+        assert dispatched[0]["chat_id"] == "+chan"
+        assert dispatched[0]["chat_type"] == "group"
+        assert dispatched[0]["text"] == "hi there"
+
+    @pytest.mark.asyncio
+    async def test_bang_channel_addressed_routes_to_channel(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":user!u@host PRIVMSG !ABCDEchan :hermes: yo")
+        assert len(dispatched) == 1
+        assert dispatched[0]["chat_id"] == "!ABCDEchan"
+        assert dispatched[0]["chat_type"] == "group"
+
+    @pytest.mark.asyncio
+    async def test_get_chat_info_classifies_plus_channel_as_group(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        info = await adapter.get_chat_info("+chan")
+        assert info["type"] == "group"
+
+
+class TestIRCSendDeliveryConfirmation:
+    """send() must not fabricate success for lines dropped mid-send."""
+
+    @pytest.mark.asyncio
+    async def test_send_reports_retryable_failure_when_writer_drops_midsend(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        writer = MagicMock()
+        # False for the top-of-send guard, True afterwards so _send_raw sees a
+        # closing writer and drops the line — simulating a connection_lost mid
+        # send. _send_raw must report the drop instead of swallowing it.
+        writer.is_closing = MagicMock(side_effect=[False, True, True])
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+
+        result = await adapter.send("#test", "hello")
+        assert result.success is False
+        assert result.retryable is True
+        assert "connection lost" in result.error
+        # The dropped line was never written to the transport.
+        writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_raw_returns_true_on_success_false_when_closed(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        assert await adapter._send_raw("PING :x") is True
+
+        writer.is_closing = MagicMock(return_value=True)
+        assert await adapter._send_raw("PING :x") is False
+
+
+class TestIRCAccessPolicy:
+    """Config-only allowed_users must bridge to the gateway, fail-open-safe."""
+
+    def test_enforces_own_access_policy_true_with_allowlist(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, allowed_users=["bob"])
+        assert adapter.enforces_own_access_policy is True
+
+    def test_enforces_own_access_policy_false_when_empty(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, allowed_users=[])
+        assert adapter.enforces_own_access_policy is False
+
+    def test_empty_allowlist_no_env_denies_arbitrary_user_at_gateway(self, monkeypatch):
+        """allowed_users=[] + no env allowlist => the gateway DENIES.
+
+        An empty list must NOT silently allow every IRC user: the adapter
+        declines to own the policy (enforces_own_access_policy is False) so the
+        gateway falls through to its default-deny.
+        """
+        for key in (
+            "IRC_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.session import SessionSource
+        from gateway.run import GatewayRunner
+
+        irc = Platform("irc")
+        adapter = _make_adapter(monkeypatch, allowed_users=[])
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={irc: PlatformConfig(enabled=True, extra={"allowed_users": []})}
+        )
+        runner.adapters = {irc: adapter}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+
+        source = SessionSource(
+            platform=irc, user_id="stranger", chat_id="#test",
+            user_name="stranger", chat_type="group",
+        )
+        assert runner._adapter_enforces_own_access_policy(irc) is False
+        assert runner._is_user_authorized(source) is False
+
+    def test_nonempty_allowlist_is_trusted_at_gateway(self, monkeypatch):
+        """A populated config allowlist makes the gateway trust adapter intake."""
+        for key in (
+            "IRC_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.session import SessionSource
+        from gateway.run import GatewayRunner
+
+        irc = Platform("irc")
+        adapter = _make_adapter(monkeypatch, allowed_users=["bob"])
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={irc: PlatformConfig(enabled=True, extra={"allowed_users": ["bob"]})}
+        )
+        runner.adapters = {irc: adapter}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+
+        source = SessionSource(
+            platform=irc, user_id="bob", chat_id="#test",
+            user_name="bob", chat_type="group",
+        )
+        assert runner._adapter_enforces_own_access_policy(irc) is True
+        assert runner._is_user_authorized(source) is True
+
+
+class TestIRCRegistrationEscalation:
+    """Permanent registration failures must escalate non-retryable."""
+
+    @pytest.mark.asyncio
+    async def test_464_passwd_mismatch_non_retryable(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._registered = False
+        adapter._registration_event = asyncio.Event()
+
+        await adapter._handle_line(":server 464 * :Password incorrect")
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        # connect() must be unblocked so it can return the failure.
+        assert adapter._registration_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_465_banned_non_retryable(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._registered = False
+        adapter._registration_event = asyncio.Event()
+
+        await adapter._handle_line(":server 465 * :You are banned from this server")
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter._registration_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_error_before_registration_non_retryable(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._registered = False
+        adapter._registration_event = asyncio.Event()
+
+        await adapter._handle_line("ERROR :Closing link: throttled")
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter._registration_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_error_after_registration_not_treated_as_fatal_here(self, monkeypatch):
+        # A post-registration ERROR is left to the receive-loop EOF path; the
+        # registration handler must not hijack it.
+        adapter = _make_adapter(monkeypatch)
+        adapter._registered = True
+
+        await adapter._handle_line("ERROR :server going down")
+        assert adapter.has_fatal_error is False
+
+
+class TestIRCJoinConfirmation:
+    """connect() confirms the channel join instead of assuming success."""
+
+    @pytest.mark.asyncio
+    async def test_join_failure_numeric_records_error(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._join_event = asyncio.Event()
+        adapter._join_error = None
+
+        # 473 = ERR_INVITEONLYCHAN
+        await adapter._handle_line(":server 473 hermes #test :Cannot join channel (+i)")
+        assert adapter._join_event.is_set()
+        assert adapter._join_error is not None
+        assert "473" in adapter._join_error
+
+    @pytest.mark.asyncio
+    async def test_endofnames_confirms_join(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._join_event = asyncio.Event()
+        adapter._join_error = None
+
+        await adapter._handle_line(":server 366 hermes #test :End of /NAMES list.")
+        assert adapter._join_event.is_set()
+        assert adapter._join_error is None
+
+    @pytest.mark.asyncio
+    async def test_own_join_echo_confirms_join(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._join_event = asyncio.Event()
+        adapter._join_error = None
+
+        await adapter._handle_line(":hermes!bot@host JOIN #test")
+        assert adapter._join_event.is_set()
+        assert adapter._join_error is None
+
+
+class TestIRCLockConflict:
+    """The identity lock guard must actually block on conflict (not dead code)."""
+
+    @pytest.mark.asyncio
+    async def test_connect_aborts_non_retryable_on_lock_conflict(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        import gateway.status as status_mod
+        # acquire_scoped_lock returns a (acquired, existing) tuple. The old
+        # `if not acquire_scoped_lock(...)` tested the tuple for truthiness —
+        # always True — so the conflict branch never fired. Simulate a held
+        # lock and assert connect() now bails before opening any socket.
+        monkeypatch.setattr(
+            status_mod, "acquire_scoped_lock",
+            lambda *a, **k: (False, {"pid": 4242, "platform": "irc"}),
+        )
+
+        opened = []
+
+        async def _fail_open(*a, **k):
+            opened.append(True)
+            raise AssertionError("connect() must abort before opening a socket")
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fail_open)
+
+        result = await adapter.connect()
+        assert result is False
+        assert opened == []
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        # Base helper escalates a "<scope>_lock" code (irc_lock), not the old
+        # cosmetic "lock_conflict".
+        assert adapter._fatal_error_code == "irc_lock"
+
+
+class TestIRCEditSupport:
+    """IRC has no edit primitive — declare it so streaming suppresses the cursor."""
+
+    def test_supports_message_editing_is_false(self, monkeypatch):
+        assert IRCAdapter.SUPPORTS_MESSAGE_EDITING is False
+        adapter = _make_adapter(monkeypatch)
+        assert getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is False

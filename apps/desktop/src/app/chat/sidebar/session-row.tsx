@@ -17,11 +17,12 @@ import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
 import { $unreadFinishedSessionIds } from '@/store/session'
 import { $sessionColorById } from '@/store/session-color'
-import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
+import { $attentionSessionIds, $stalledSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { type SessionDotState, sessionDotState, sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -90,6 +91,9 @@ export function SidebarSessionRow({
   // True when the session's most recent turn finished in the background (while
   // the user was viewing a different session) and hasn't been opened since.
   const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
+  // True when the turn is still running but the stream has been quiet long
+  // enough to soften the animation. This must never look like an idle row.
+  const isStalled = useStore($stalledSessionIds).includes(session.id)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
   // The session's resolved color (idle dot tint), read from the ONE shared map
@@ -99,15 +103,7 @@ export function SidebarSessionRow({
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just
   // to collapse them at the leaf is backwards.
-  const dotState: SessionDotState = needsInput
-    ? 'needs-input'
-    : isWorking
-      ? 'working'
-      : hasBackground
-        ? 'background'
-        : isUnread
-          ? 'unread'
-          : 'idle'
+  const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
 
   return (
     <SessionContextMenu
@@ -137,6 +133,7 @@ export function SidebarSessionRow({
               profile={session.profile}
               sessionId={session.id}
               title={title}
+              tooltip={r.actionsFor(title)}
             >
               <Button
                 aria-label={r.actionsFor(title)}
@@ -183,7 +180,7 @@ export function SidebarSessionRow({
         style={style}
         {...rest}
       >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
+        {sessionShowsRunningArc({ isWorking, needsInput }) && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
@@ -271,11 +268,6 @@ export function SidebarSessionRow({
   )
 }
 
-/** The session's display state for the sidebar lead dot. The call site
- *  resolves this from the four underlying signals (needs-input, working,
- *  background, unread) so the dot component itself is a pure lookup. */
-type SessionDotState = 'background' | 'idle' | 'needs-input' | 'unread' | 'working'
-
 function SessionRowLeadDot({
   branchStem,
   dotState = 'idle',
@@ -332,6 +324,14 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     ariaLabel: r => r.sessionRunning,
     className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING} before:bg-(--ui-accent) before:opacity-70`,
     role: 'status'
+  },
+  // Quiet accent pulse — the turn is still authoritative-running, but no
+  // stream activity has arrived for the watchdog window.
+  stalled: {
+    ariaLabel: r => r.sessionRunning,
+    className: `${DOT_BASE} bg-(--ui-accent) opacity-70 ${PING} before:bg-(--ui-accent) before:opacity-40`,
+    role: 'status',
+    title: r => r.sessionRunning
   },
   // Pulsing gray — a terminal(background=true) process is alive while the LLM
   // is idle. Gray (not accent) reads as "something chugging along". Brighter

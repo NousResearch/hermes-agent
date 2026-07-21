@@ -2653,7 +2653,11 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
-        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
+
+        Session-scoped by default; ``--global`` persists agent.service_tier
+        to config.yaml (parity with /model and /reasoning).
+        """
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
         if not self._fast_command_available():
             _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
@@ -2672,10 +2676,15 @@ class CLICommandsMixin:
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        arg_tokens = parts[1].strip().lower().split()
+        explicit_global = "--global" in arg_tokens
+        arg = " ".join(
+            token for token in arg_tokens
+            if token not in ("--global", "--session")
+        )
 
         if arg in {"fast", "on"}:
             self.service_tier = "priority"
@@ -2687,14 +2696,16 @@ class CLICommandsMixin:
             label = "NORMAL"
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config
-        if save_config_value("agent.service_tier", saved_value):
+        if explicit_global and save_config_value("agent.service_tier", saved_value):
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
+        elif explicit_global:
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only; config save failed){_RST}")
         else:
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (this session — use --global to persist){_RST}")
 
     def _handle_debug_command(self, cmd_original: str = ""):
         """Handle /debug — upload debug report + logs and print share URLs.

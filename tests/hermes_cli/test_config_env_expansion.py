@@ -1,4 +1,4 @@
-"""Tests for ${ENV_VAR} substitution in config.yaml values."""
+"""Tests for env-var substitution in config.yaml values."""
 
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
@@ -10,10 +10,20 @@ class TestExpandEnvVars:
             mp.setenv("MY_KEY", "secret123")
             assert _expand_env_vars("${MY_KEY}") == "secret123"
 
+    def test_simple_shell_style_substitution(self):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("MY_KEY", "secret123")
+            assert _expand_env_vars("$MY_KEY") == "secret123"
+
     def test_missing_var_kept_verbatim(self):
         with pytest.MonkeyPatch().context() as mp:
             mp.delenv("UNDEFINED_VAR_XYZ", raising=False)
             assert _expand_env_vars("${UNDEFINED_VAR_XYZ}") == "${UNDEFINED_VAR_XYZ}"
+
+    def test_missing_shell_style_var_kept_verbatim(self):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.delenv("UNDEFINED_VAR_XYZ", raising=False)
+            assert _expand_env_vars("$UNDEFINED_VAR_XYZ") == "$UNDEFINED_VAR_XYZ"
 
     def test_no_placeholder_unchanged(self):
         assert _expand_env_vars("plain-value") == "plain-value"
@@ -47,6 +57,12 @@ class TestExpandEnvVars:
             mp.setenv("HOST", "localhost")
             mp.setenv("PORT", "5432")
             assert _expand_env_vars("${HOST}:${PORT}") == "localhost:5432"
+
+    def test_mixed_placeholder_forms_in_one_string(self):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("HOST", "localhost")
+            mp.setenv("PORT", "5432")
+            assert _expand_env_vars("${HOST}:$PORT") == "localhost:5432"
 
     def test_dict_keys_not_expanded(self):
         with pytest.MonkeyPatch().context() as mp:
@@ -92,6 +108,26 @@ class TestLoadConfigExpansion:
         config = load_config()
 
         assert config["model"]["api_key"] == "${NOT_SET_XYZ_123}"
+
+    def test_load_config_expands_shell_style_env_vars(self, tmp_path, monkeypatch):
+        config_yaml = (
+            "model:\n"
+            "  api_key: $GOOGLE_API_KEY\n"
+            "auxiliary:\n"
+            "  title_generation:\n"
+            "    api_key: $MODELSCOPE_API_KEY\n"
+        )
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.setenv("GOOGLE_API_KEY", "gsk-test-key")
+        monkeypatch.setenv("MODELSCOPE_API_KEY", "ms-test-key")
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+
+        config = load_config()
+
+        assert config["model"]["api_key"] == "gsk-test-key"
+        assert config["auxiliary"]["title_generation"]["api_key"] == "ms-test-key"
 
 
 class TestLoadConfigCacheEnvStaleness:
@@ -148,7 +184,7 @@ class TestLoadConfigCacheEnvStaleness:
 
 
 class TestLoadCliConfigExpansion:
-    """Verify that load_cli_config() also expands ${VAR} references."""
+    """Verify that load_cli_config() expands both ${VAR} and $VAR references."""
 
     def test_cli_config_ignores_empty_terminal_section(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
@@ -196,3 +232,20 @@ class TestLoadCliConfigExpansion:
         config = load_cli_config()
 
         assert config["auxiliary"]["vision"]["api_key"] == "${UNSET_CLI_VAR_ABC}"
+
+    def test_cli_config_expands_shell_style_auxiliary_api_key(self, tmp_path, monkeypatch):
+        config_yaml = (
+            "auxiliary:\n"
+            "  title_generation:\n"
+            "    api_key: $TEST_TITLE_KEY_XYZ\n"
+        )
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.setenv("TEST_TITLE_KEY_XYZ", "title-key-123")
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+
+        from cli import load_cli_config
+        config = load_cli_config()
+
+        assert config["auxiliary"]["title_generation"]["api_key"] == "title-key-123"

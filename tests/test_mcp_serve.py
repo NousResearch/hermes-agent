@@ -347,6 +347,30 @@ class TestAttachmentExtraction:
         msg = {"content": "MEDIA: /a.png and MEDIA: /b.mp3"}
         assert len(_extract_attachments(msg)) == 2
 
+    def test_quoted_unix_media_path_with_spaces(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": 'Here MEDIA: "/tmp/my image.png" done'}
+        att = _extract_attachments(msg)
+        assert att == [{"type": "media", "path": "/tmp/my image.png"}]
+
+    def test_quoted_windows_media_path_with_spaces(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": 'Here MEDIA: "C:\\Users\\Simba\\Desktop\\my image.png" done'}
+        att = _extract_attachments(msg)
+        assert att == [{"type": "media", "path": "C:\\Users\\Simba\\Desktop\\my image.png"}]
+
+    def test_backticked_media_path(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "Here MEDIA: `/tmp/out file.mp3` done"}
+        att = _extract_attachments(msg)
+        assert att == [{"type": "media", "path": "/tmp/out file.mp3"}]
+
+    def test_media_path_trims_trailing_punctuation(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": 'Here MEDIA: "/tmp/out.png", done'}
+        att = _extract_attachments(msg)
+        assert att == [{"type": "media", "path": "/tmp/out.png"}]
+
     def test_no_attachments(self):
         from mcp_serve import _extract_attachments
         assert _extract_attachments({"content": "plain text"}) == []

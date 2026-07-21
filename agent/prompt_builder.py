@@ -331,6 +331,10 @@ TASK_COMPLETION_GUIDANCE = (
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
     "is always better than inventing a result."
+    "\nIntermediate commentary is progress-only and may be edited or omitted by a "
+    "messaging gateway. Keep every final response self-contained. A final "
+    "clarification must include the complete question and every referenced option; "
+    "never require the user to recover information from commentary."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

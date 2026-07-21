@@ -1605,6 +1605,19 @@ class TestTaskCompletionGuidance:
         prompt = agent._build_system_prompt()
         assert TASK_COMPLETION_GUIDANCE not in prompt
 
+    def test_guidance_requires_self_contained_final_responses(self):
+        agent = self._make_agent()
+        prompt = agent._build_system_prompt()
+
+        assert "Intermediate commentary is progress-only" in prompt
+        assert "complete question and every referenced option" in prompt
+        assert prompt.count("Intermediate commentary is progress-only") == 1
+
+    def test_self_contained_guidance_respects_task_completion_opt_out(self):
+        agent = self._make_agent(task_completion_guidance=False)
+
+        assert "Intermediate commentary is progress-only" not in agent._build_system_prompt()
+
     def test_no_tools_no_injection(self):
         """Same gate as tool_use_enforcement — no tools means no guidance.
         The guidance refers to ``tool calls`` and ``tool output``; without

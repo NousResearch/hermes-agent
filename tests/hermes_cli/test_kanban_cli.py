@@ -160,52 +160,84 @@ def test_run_slash_block_unblock_cycle(kanban_home):
 
 
 
+def _blocked_task_via_db(title: str = "real task") -> str:
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title=title)
+        kb.block_task(conn, tid, reason="waiting")
+    return tid
+
+
 def test_unblock_rejects_reason_looking_positional_before_mutation(kanban_home, capsys):
     """#68613: reason text before a real id must not partially unblock."""
-    import re
+    tid = _blocked_task_via_db()
 
-    out = kc.run_slash("create 'x' --assignee alice")
-    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    kc.run_slash(f"claim {tid}")
-    assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
-
-    ns = argparse.Namespace(
-        task_ids=["skill external_dirs fixed; retry review", tid],
-        reason=None,
+    code = kc._cmd_unblock(
+        argparse.Namespace(
+            task_ids=["skill external_dirs fixed; retry review", tid],
+            reason=None,
+        )
     )
-    code = kc._cmd_unblock(ns)
     captured = capsys.readouterr()
     assert code == 1
-    assert "invalid task id" in captured.err
+    assert "not a task id" in captured.err
     assert "--reason" in captured.err
-    assert "No tasks were unblocked" in captured.err
-    # Real task must still be blocked
-    show = kc.run_slash(f"show {tid}")
-    assert "blocked" in show.lower()
+    assert "No tasks were modified" in captured.err
+    assert tid in captured.err  # Did-you-mean includes the real id
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_unblock_with_reason_flag_no_longer_raises_on_bad_positional(kanban_home):
+    """With --reason set, pre-check prevents add_comment ValueError traceback."""
+    tid = _blocked_task_via_db()
+
+    code = kc._cmd_unblock(
+        argparse.Namespace(task_ids=["some reason text", tid], reason="a note")
+    )
+    assert code == 1
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
 
 
 def test_unblock_with_reason_flag_and_valid_id(kanban_home):
-    import re
-
-    out = kc.run_slash("create 'x' --assignee alice")
-    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    kc.run_slash(f"claim {tid}")
-    kc.run_slash(f"block {tid} 'need decision'")
+    tid = _blocked_task_via_db()
     ns = argparse.Namespace(task_ids=[tid], reason="skill external_dirs fixed")
     assert kc._cmd_unblock(ns) == 0
-    show = kc.run_slash(f"show {tid}")
-    # Unblock moves blocked -> ready/todo (history may still mention blocked)
-    assert "status:" in show.lower()
-    status_line = next(line for line in show.splitlines() if line.strip().lower().startswith("status"))
-    assert "blocked" not in status_line.lower()
-    assert "ready" in status_line.lower() or "todo" in status_line.lower()
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status in {"ready", "todo"}
+
+
+def test_unblock_still_works_for_bulk_valid_ids(kanban_home):
+    first, second = _blocked_task_via_db("one"), _blocked_task_via_db("two")
+    rc = kc._cmd_unblock(
+        argparse.Namespace(task_ids=[first, second], reason="done waiting")
+    )
+    assert rc == 0
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, first).status in {"ready", "todo"}
+        assert kb.get_task(conn, second).status in {"ready", "todo"}
+
+
+def test_unblock_accepts_legacy_short_task_ids(kanban_home):
+    """Ids have been 4/8/12 hex chars — guard checks shape, not length."""
+    with kb.connect_closing() as conn:
+        legacy = "t_abcd"  # 2-hex-byte era
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (?,?,?,?)",
+            (legacy, "legacy", "blocked", 0),
+        )
+        conn.commit()
+
+    rc = kc._cmd_unblock(argparse.Namespace(task_ids=[legacy], reason=None))
+    assert rc == 0, "a legacy short id must not be rejected as malformed"
 
 
 def test_looks_like_task_id():
     assert kc._looks_like_task_id("t_cc0254fd")
     assert kc._looks_like_task_id("t_deadbeefcafe")
+    assert kc._looks_like_task_id("t_abcd")  # legacy short
     assert not kc._looks_like_task_id("skill external_dirs fixed")
-    assert not kc._looks_like_task_id("t_short")
+    assert not kc._looks_like_task_id("t_short")  # non-hex
     assert not kc._looks_like_task_id("")
 
 

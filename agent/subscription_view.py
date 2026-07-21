@@ -300,14 +300,22 @@ def build_subscription_state(*, timeout: float = 15.0) -> SubscriptionState:
     return subscription_state_from_payload(payload, portal_url=portal_url)
 
 
-def subscription_manage_url(state: SubscriptionState) -> Optional[str]:
-    """Build ``{portal_origin}/manage-subscription?org_id=<id>`` from a state.
+def subscription_manage_url(
+    state: SubscriptionState, tier_id: Optional[str] = None
+) -> Optional[str]:
+    """Build ``{portal_origin}/manage-subscription?org_id=<id>[&plan=<tier_id>]``.
 
     Mirrors the TUI's ``buildManageUrl`` (``subscription.ts``): the deep-link
     target is NAS's OWN ``/manage-subscription`` page (NOT the Stripe Billing
     Portal — decided Jun 23), which routes upgrade→Checkout / downgrade→scheduled
     internally. ``org_id`` pins the page to the right account in multi-org
     situations. Returns ``None`` when no portal URL is resolvable.
+
+    ``tier_id`` (the stable ``tiers[]`` id, never a name/slug) is appended as
+    ``plan=`` so the portal preselects the picked plan — only for a NEW
+    subscription / upgrade the user chose. The portal validates it and simply
+    ignores an unknown tier, so the CLI appends unconditionally when a tier was
+    picked (parity with the TUI's ``?plan=``).
     """
     from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -322,7 +330,13 @@ def subscription_manage_url(state: SubscriptionState) -> Optional[str]:
     if not parts.scheme or not parts.netloc:
         return None
 
-    query = urlencode({"org_id": state.org_id}) if state.org_id else ""
+    # Insertion order (org_id before plan) is the emitted query order.
+    params: dict[str, str] = {}
+    if state.org_id:
+        params["org_id"] = state.org_id
+    if tier_id:
+        params["plan"] = tier_id
+    query = urlencode(params) if params else ""
     return urlunsplit((parts.scheme, parts.netloc, "/manage-subscription", query, ""))
 
 

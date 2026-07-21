@@ -42,6 +42,36 @@ def test_manage_url_omits_org_when_absent():
     assert "org_id" not in url
 
 
+def test_manage_url_appends_plan_when_tier_picked():
+    # A picked tier rides along as ?plan=<tier_id>, org_id first, plan second.
+    s = SubscriptionState(
+        logged_in=True,
+        org_id="org_x",
+        portal_url="https://portal.nousresearch.com/billing",
+    )
+    assert (
+        subscription_manage_url(s, tier_id="plus")
+        == "https://portal.nousresearch.com/manage-subscription?org_id=org_x&plan=plus"
+    )
+
+
+def test_manage_url_plan_without_org():
+    # No org_id → plan is still appended (the portal validates/ignores it).
+    s = SubscriptionState(logged_in=True, org_id=None, portal_url="https://p.example.com/")
+    assert (
+        subscription_manage_url(s, tier_id="ultra")
+        == "https://p.example.com/manage-subscription?plan=ultra"
+    )
+
+
+def test_manage_url_no_plan_when_tier_absent():
+    # No tier picked → no plan= param (unchanged legacy shape).
+    s = SubscriptionState(logged_in=True, org_id="org_x", portal_url="https://p.example.com/")
+    url = subscription_manage_url(s)
+    assert url == "https://p.example.com/manage-subscription?org_id=org_x"
+    assert "plan=" not in url
+
+
 def test_manage_url_none_without_portal():
     assert subscription_manage_url(SubscriptionState(logged_in=True, portal_url=None)) is None
 

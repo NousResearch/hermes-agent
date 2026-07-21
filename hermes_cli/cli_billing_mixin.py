@@ -254,11 +254,84 @@ class CLIBillingMixin:
 
         if is_free:
             # Starting a NEW subscription needs a fresh card — deep-link only.
-            self._subscription_open_portal(state, manage_url, verb="Start a subscription")
+            # Show the plan catalog, let the user pick, and carry ``plan=<tier_id>``
+            # into the portal deep-link so it preselects the chosen plan.
+            self._subscription_free_catalog(state, manage_url)
             return
 
         # Paid + admin/owner + interactive → the in-terminal change flow.
         self._subscription_change_menu(state, manage_url)
+
+    def _subscription_free_catalog(self, state, manage_url):
+        """Free + admin/owner + interactive: print the plan catalog, pick one, then
+        open the portal manage-subscription deep-link with ``plan=<tier_id>``.
+
+        The catalog mirrors the TUI Free rows (name · $/mo · $credits/mo, from the
+        same ``tiers[]`` data). Monthly credits are DOLLARS — rendered ``$X
+        credits/mo``. Starting a NEW subscription needs a fresh card, so the only
+        action is the portal hand-off (the terminal never charges here); the picked
+        tier rides along as ``plan=`` so the portal preselects it.
+        """
+        from cli import _cprint, _b, _d
+
+        from agent.billing_view import format_money
+        from agent.subscription_view import subscription_manage_url
+
+        # Catalog = enabled paid tiers (Free / tier_order 0 excluded), cheapest first.
+        tiers = sorted(
+            (t for t in (state.tiers or ()) if t.is_enabled and (t.tier_order or 0) > 0),
+            key=lambda t: t.tier_order or 0,
+        )
+        if not tiers:
+            # No catalog to show → the plain portal hand-off (no plan= to append).
+            self._subscription_open_portal(state, manage_url, verb="Start a subscription")
+            return
+
+        def _row(t) -> str:
+            return (
+                f"{t.name} · {format_money(t.dollars_per_month)}/mo · "
+                f"{format_money(t.monthly_credits)} credits/mo"
+            )
+
+        print()
+        _cprint(f"  ⚕ {_b('Choose a plan')}")
+        print(f"  {'─' * 41}")
+        for i, t in enumerate(tiers, 1):
+            print(f"  {i}. {_row(t)}")
+        _cprint(f"  {_d('Starting a subscription opens the portal to add your card.')}")
+
+        choices = [(t.tier_id, _row(t), f"start {t.name} on the portal") for t in tiers]
+        choices.append(("cancel", "Cancel", "do nothing"))
+        raw = self._prompt_text_input_modal(
+            title="Start a subscription",
+            detail="Pick a plan to open it on the portal.",
+            choices=choices,
+        )
+        choice = self._normalize_slash_confirm_choice(raw, choices)
+        if not choice or choice == "cancel":
+            print("  🟡 Cancelled. No plan started.")
+            return
+        # Numbered pick → open the portal deep-link directly, with the picked tier's
+        # plan= param so the portal preselects it (spec: pick → opens the portal).
+        tier_url = subscription_manage_url(state, tier_id=choice) or manage_url
+        if not tier_url:
+            _cprint(f"  {_d('No manage URL available — is your portal configured?')}")
+            return
+        picked = next((t for t in tiers if t.tier_id == choice), None)
+        label = picked.name if picked else "your plan"
+        opened = False
+        try:
+            import webbrowser
+
+            opened = webbrowser.open(tier_url)
+        except Exception:
+            opened = False
+        if opened:
+            print(f"  Opening the portal to start {label}…")
+        else:
+            # No browser (headless / SSH): print the link so it stays actionable.
+            print(f"  Open this URL to start {label}: {tier_url}")
+        print("  Finish in your browser, then re-run /subscription.")
 
     def _subscription_open_portal(self, state, manage_url, *, verb="Manage your subscription"):
         """Open / copy the manage-subscription URL — the portal hand-off."""
@@ -397,11 +470,17 @@ class CLIBillingMixin:
         if effect not in ("charge_now", "scheduled"):
             # blocked OR an unknown/unexpected effect → fail SAFE (never schedule a
             # real change on an unrecognized string, unlike a bare `else`), and
-            # re-offer the portal hand-off like the TUI's blocked branch.
+            # re-offer the portal hand-off like the TUI's blocked branch. The picked
+            # tier rides along as plan= only for an UPGRADE hand-off — new-sub /
+            # upgrade deep-links carry the plan; downgrades stay native (binding
+            # ruling), so a blocked downgrade keeps the generic manage link.
             from agent.subscription_view import subscription_manage_url
 
+            _orders = {t.tier_id: (t.tier_order or 0) for t in (state.tiers or ())}
+            _cur_order = _orders.get(state.current.tier_id, 0) if state.current else 0
+            _is_upgrade = _orders.get(tier_id, 0) > _cur_order
             _cprint(f"  🟡 {p.reason or 'This change cannot be confirmed here — manage it on the portal.'}")
-            _mu = subscription_manage_url(state)
+            _mu = subscription_manage_url(state, tier_id=tier_id if _is_upgrade else None)
             if _mu:
                 print(f"  Manage on portal: {_mu}")
             return
@@ -780,6 +859,24 @@ class CLIBillingMixin:
             self._billing_portal_hint(state)
             return
 
+        # One-time vs automatic — the two ways to add funds, the distinction stated
+        # up front in each first sentence (parity with the desktop revamp's split
+        # copy). "credits" stays out of the dollars-only /topup surface: "Add funds
+        # now" carries the one-time meaning without it.
+        _cprint(f"  {_d('Add funds now — a single charge, added to your balance today.')}")
+        if ar is not None and ar.enabled:
+            _auto_line = (
+                f"Refill when low — charges {format_money(ar.reload_to_usd)} automatically "
+                f"when your balance falls below {format_money(ar.threshold_usd)}."
+            )
+        else:
+            _auto_line = (
+                "Refill when low — charges your card automatically when your balance "
+                "falls below the amount you set."
+            )
+        _cprint(f"  {_d(_auto_line)}")
+        print(f"  {'─' * 41}")
+
         # Add funds first, then settings, then the scopeless browser handoff.
         # No "Allow Remote Spending" item — that's discovered at pay time.
         # "Add funds" charges in-terminal against the org's portal-saved card
@@ -787,8 +884,8 @@ class CLIBillingMixin:
         # missing card is NOT gated here: the buy flow reacts to the server's
         # no_payment_method 403 and hands off to the portal at charge time.
         choices = [
-            ("buy", "Add funds", "add money to your balance"),
-            ("auto", "Auto-reload", "configure automatic top-ups"),
+            ("buy", "Add funds", "a single charge, added to your balance today"),
+            ("auto", "Auto-reload", "refill automatically when your balance runs low"),
             ("limit", "Monthly limit", "show the monthly spend cap (read-only)"),
             ("portal", "Manage on portal", "open the billing page in your browser"),
             ("cancel", "Cancel", "do nothing"),

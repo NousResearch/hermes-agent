@@ -453,6 +453,13 @@ class HonchoClientConfig:
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
+    # When True, the resolved session name is additionally prefixed with the
+    # AI peer id (``{ai_peer}-``). Symmetric counterpart to
+    # ``session_peer_prefix`` (which prefixes the user peer). This keeps
+    # sessions disjoint when several AI peers share one workspace + peerName +
+    # gateway chat key; without it the gateway_session_key branch in
+    # resolve_session_name() yields the same name for every AI peer.
+    session_ai_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
@@ -584,6 +591,11 @@ class HonchoClientConfig:
         session_peer_prefix = (
             host_prefix if host_prefix is not None
             else raw.get("sessionPeerPrefix", False)
+        )
+        host_ai_prefix = host_block.get("sessionAiPeerPrefix")
+        session_ai_peer_prefix = (
+            host_ai_prefix if host_ai_prefix is not None
+            else raw.get("sessionAiPeerPrefix", False)
         )
 
         return cls(
@@ -729,6 +741,7 @@ class HonchoClientConfig:
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
+            session_ai_peer_prefix=session_ai_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,
             explicitly_configured=_explicitly_configured,
@@ -791,7 +804,43 @@ class HonchoClientConfig:
         session_id: str | None = None,
         gateway_session_key: str | None = None,
     ) -> str | None:
-        """Resolve Honcho session name.
+        """Resolve the Honcho session name, applying the AI-peer prefix.
+
+        Delegates to :meth:`_resolve_session_name_base` for the core
+        resolution order, then — when ``session_ai_peer_prefix`` is set and an
+        ``ai_peer`` is configured — prefixes the result with ``{ai_peer}-``.
+
+        The prefix is applied to *every* resolution path (including the
+        ``gateway_session_key`` branch, which otherwise returns an
+        AI-peer-agnostic name), so sessions stay disjoint when multiple AI
+        peers share a workspace + peerName + gateway chat key. This is the
+        symmetric counterpart to the user-side ``session_peer_prefix``. The
+        prefixed result is re-run through the session-id length limit so the
+        prefix can never push a name over Honcho's cap.
+        """
+        result = self._resolve_session_name_base(
+            cwd=cwd,
+            session_title=session_title,
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+        )
+        if result and self.session_ai_peer_prefix and self.ai_peer:
+            import re
+
+            ai = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
+            if ai:
+                prefixed = f"{ai}-{result}"
+                return self._enforce_session_id_limit(prefixed, prefixed)
+        return result
+
+    def _resolve_session_name_base(
+        self,
+        cwd: str | None = None,
+        session_title: str | None = None,
+        session_id: str | None = None,
+        gateway_session_key: str | None = None,
+    ) -> str | None:
+        """Core session-name resolution (no AI-peer prefixing).
 
         Resolution order:
           1. Gateway session key (stable per-chat identifier from gateway platforms)
@@ -802,6 +851,9 @@ class HonchoClientConfig:
           5. per-repo strategy — git repo root directory name
           6. per-directory strategy — directory basename
           7. global strategy — workspace name
+
+        See :meth:`resolve_session_name` for the public entry point that
+        post-processes this result with the optional ``ai_peer`` prefix.
         """
         import re
 

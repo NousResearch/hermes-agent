@@ -13209,6 +13209,8 @@ def cmd_memory(args):
             files_to_reset.append(("MEMORY.md", "agent notes"))
         if target in {"all", "user"}:
             files_to_reset.append(("USER.md", "user profile"))
+        if target in {"all", "posture"}:
+            files_to_reset.append(("POSTURE.md", "rotating posture"))
 
         # Check what exists
         existing = [

@@ -36,7 +36,7 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",
-        help="Erase all built-in memory (MEMORY.md and USER.md)",
+        help="Erase built-in memory files (MEMORY.md, USER.md, POSTURE.md)",
     )
     _reset_parser.add_argument(
         "--yes",
@@ -46,8 +46,8 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     )
     _reset_parser.add_argument(
         "--target",
-        choices=["all", "memory", "user"],
+        choices=["all", "memory", "user", "posture"],
         default="all",
-        help="Which store to reset: 'all' (default), 'memory', or 'user'",
+        help="Which store to reset: 'all' (default), 'memory', 'user', or 'posture'",
     )
     memory_parser.set_defaults(func=cmd_memory)

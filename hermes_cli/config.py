@@ -2318,6 +2318,12 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Rotating operational posture (POSTURE.md). Injected like MEMORY/USER
+        # but for short-lived bets/routing — not durable team law (AGENTS.md).
+        # Effective default: on when memory_enabled or user_profile_enabled is
+        # true; explicit false always wins. Blank Slate leaves memory off.
+        "posture_enabled": True,
+        "posture_char_limit": 1800,  # ~650 tokens
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

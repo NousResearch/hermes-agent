@@ -62,20 +62,23 @@ def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[di
     return builtin, mcp, subagent
 
 
-def _memory_blocks(agent: Any) -> Tuple[str, str]:
+def _memory_blocks(agent: Any) -> Tuple[str, str, str]:
     memory_block = ""
     user_block = ""
+    posture_block = ""
     store = getattr(agent, "_memory_store", None)
     if store is None:
-        return memory_block, user_block
+        return memory_block, user_block, posture_block
     try:
         if getattr(agent, "_memory_enabled", True):
             memory_block = store.format_for_system_prompt("memory") or ""
         if getattr(agent, "_user_profile_enabled", True):
             user_block = store.format_for_system_prompt("user") or ""
+        if getattr(agent, "_posture_enabled", True):
+            posture_block = store.format_for_system_prompt("posture") or ""
     except Exception:
         pass
-    return memory_block, user_block
+    return memory_block, user_block, posture_block
 
 
 def _strip_blocks(text: str, *blocks: str) -> str:
@@ -102,11 +105,13 @@ def compute_session_context_breakdown(
     skills_match = _SKILLS_BLOCK_RE.search(stable)
     skills_index = skills_match.group(0) if skills_match else ""
 
-    memory_block, user_block = _memory_blocks(agent)
-    memory_text = "\n\n".join(part for part in (memory_block, user_block) if part).strip()
+    memory_block, user_block, posture_block = _memory_blocks(agent)
+    memory_text = "\n\n".join(
+        part for part in (memory_block, user_block, posture_block) if part
+    ).strip()
 
     system_core = _strip_blocks(stable, skills_index)
-    system_tail = _strip_blocks(volatile, memory_block, user_block)
+    system_tail = _strip_blocks(volatile, memory_block, user_block, posture_block)
     system_prompt_text = "\n\n".join(part for part in (system_core, system_tail) if part).strip()
 
     tools = list(getattr(agent, "tools", None) or [])

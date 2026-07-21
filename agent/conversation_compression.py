@@ -55,7 +55,7 @@ COMPACTION_STATUS = (
 )
 
 
-def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
+def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str, str]]:
     """Return the built-in memory text that can affect a system prompt.
 
     ``MemoryStore`` freezes this text until ``load_from_disk()``.  Rendering
@@ -66,7 +66,7 @@ def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
     """
     store = getattr(agent, "_memory_store", None)
     if store is None:
-        return "", ""
+        return "", "", ""
     try:
         memory = (
             store.format_for_system_prompt("memory") or ""
@@ -78,9 +78,14 @@ def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
             if getattr(agent, "_user_profile_enabled", False)
             else ""
         )
+        posture = (
+            store.format_for_system_prompt("posture") or ""
+            if getattr(agent, "_posture_enabled", False)
+            else ""
+        )
     except Exception:
         return None
-    return memory, user
+    return memory, user, posture
 
 
 def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bool:
@@ -105,7 +110,7 @@ def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bo
         from tools.memory_tool import MEMORY_BLOCK_HEADERS
     except Exception:
         return False
-    for target, block in zip(("memory", "user"), snapshot):
+    for target, block in zip(("memory", "user", "posture"), snapshot):
         block = block.strip()
         if block:
             # build_system_prompt_parts embeds the stripped block verbatim;

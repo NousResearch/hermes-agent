@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: "Persistent Memory"
-description: "How Hermes Agent remembers across sessions — MEMORY.md, USER.md, and session search"
+description: "How Hermes Agent remembers across sessions — MEMORY.md, USER.md, POSTURE.md, and session search"
 ---
 
 # Persistent Memory
@@ -10,14 +10,17 @@ Hermes Agent has bounded, curated memory that persists across sessions. This let
 
 ## How It Works
 
-Two files make up the agent's memory:
+Three files make up the agent's built-in curated memory:
 
 | File | Purpose | Char Limit |
 |------|---------|------------|
 | **MEMORY.md** | Agent's personal notes — environment facts, conventions, things learned | 2,200 chars (~800 tokens) |
 | **USER.md** | User profile — your preferences, communication style, expectations | 1,375 chars (~500 tokens) |
+| **POSTURE.md** | Rotating operational bets and routing — what is primary *this month* | 1,800 chars (~650 tokens) |
 
-Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
+All live under `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start (when enabled). The agent manages them via the `memory` tool (`target`: `memory` | `user` | `posture`).
+
+**Law vs posture:** durable team rules belong in your project/user `AGENTS.md` (and skills). Do **not** grow AGENTS.md with weekly status essays. Put rotating bets in POSTURE.md and prune when the bet changes. Related: open PRs that budget the *repo* developer AGENTS.md (e.g. #56111) share the same instinct for a different surface.
 
 :::info
 Character limits keep memory focused. Memory does **not** auto-compact: when a
@@ -204,7 +207,19 @@ See [Session Search Tool](/user-guide/sessions#session-search-tool) for the thre
 | **Management** | Manually curated by agent | Automatic — all sessions stored |
 | **Token cost** | Fixed per session (~1,300 tokens) | On-demand (searched when needed) |
 
-**Memory** is for critical facts that should always be in context. **Session search** is for "did we discuss X last week?" queries where the agent needs to recall specifics from past conversations.
+**Memory** is for critical facts that should always be in context. **Posture** is for short rotating bets (primary project, routing defaults). **Session search** is for "did we discuss X last week?" queries.
+
+### POSTURE.md (rotating bets)
+
+Use `memory(target="posture", ...)` when something is true for weeks, not years:
+
+- Primary external project or contribution focus
+- Which builder/review lanes are default right now
+- Parked vs active product bets
+
+When a bet changes, **replace or remove** the old bullet — do not append forever. `hermes doctor` warns if POSTURE.md grows past the default 1,800 char budget.
+
+Do **not** use posture for durable engineering law, secrets, or chat replay.
 
 ## Configuration
 
@@ -213,9 +228,11 @@ See [Session Search Tool](/user-guide/sessions#session-search-tool) for the thre
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  memory_char_limit: 2200   # ~800 tokens
-  user_char_limit: 1375     # ~500 tokens
-  write_approval: false     # false = write freely (default) | true = require approval
+  posture_enabled: true       # rotating POSTURE.md (on when memory or user profile is on)
+  memory_char_limit: 2200     # ~800 tokens
+  user_char_limit: 1375       # ~500 tokens
+  posture_char_limit: 1800    # ~650 tokens
+  write_approval: false       # false = write freely (default) | true = require approval
 ```
 
 ## Controlling memory writes (`write_approval`)
@@ -230,7 +247,9 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 | `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
-> To turn memory off entirely (not just gate it), set `memory_enabled: false`.
+> To turn durable MEMORY.md off, set `memory_enabled: false`. To turn the user
+> profile off, set `user_profile_enabled: false`. To disable rotating POSTURE.md,
+> set `posture_enabled: false`. Blank Slate setup turns all three off.
 
 Review staged writes from the CLI or any messaging platform:
 

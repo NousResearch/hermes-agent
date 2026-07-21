@@ -738,6 +738,7 @@ def _run_review_in_thread(
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled
+            review_agent._posture_enabled = getattr(agent, "_posture_enabled", False)
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
             # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
@@ -817,7 +818,11 @@ def _run_review_in_thread(
             # read/write tool even when a profile set memory_enabled: false,
             # contaminating a memory-disabled profile (#54937 layer 2).
             review_toolsets = ["skills"]
-            if review_agent._memory_enabled or review_agent._user_profile_enabled:
+            if (
+                review_agent._memory_enabled
+                or review_agent._user_profile_enabled
+                or getattr(review_agent, "_posture_enabled", False)
+            ):
                 review_toolsets.insert(0, "memory")
             review_whitelist = {
                 t["function"]["name"]

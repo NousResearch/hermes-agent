@@ -1087,6 +1087,10 @@ class MemoryManager:
             return
 
         target = str(tool_args.get("target") or "memory")
+        # POSTURE.md is a rotating local snapshot. Do not mirror into external
+        # providers (they treat unknown targets as durable generic memory).
+        if target == "posture":
+            return
         operations = tool_args.get("operations")
         if isinstance(operations, list) and operations:
             raw_operations = operations

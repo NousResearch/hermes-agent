@@ -1594,7 +1594,8 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
         cfg = load_config()
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
-            cfg_provider = (model_cfg.get("provider") or "").strip().lower()
+            _raw_provider = model_cfg.get("provider")
+            cfg_provider = (str(_raw_provider) if isinstance(_raw_provider, str) else "").strip().lower()
             if cfg_provider == normalized:
                 return True
     except Exception:

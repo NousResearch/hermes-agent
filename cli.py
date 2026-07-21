@@ -3911,9 +3911,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._explicit_base_url = base_url
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
+        _cfg_provider = CLI_CONFIG["model"].get("provider")
         self.requested_provider = (
             provider
-            or CLI_CONFIG["model"].get("provider")
+            or (_cfg_provider if isinstance(_cfg_provider, str) else None)
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )

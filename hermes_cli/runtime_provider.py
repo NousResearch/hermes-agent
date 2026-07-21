@@ -1068,7 +1068,7 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
-    requested_norm = (requested_provider or "").strip().lower()
+    requested_norm = (str(requested_provider) if isinstance(requested_provider, str) else "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
     # vllm, llamacpp, …) follow the same base_url trust + routing rules

@@ -8252,6 +8252,31 @@ _SECRET_CONFIG_KEYS = frozenset({
     "bearer",
     "jwt",
 })
+# Suffix patterns for credential-shaped keys that don't match the exact
+# _SECRET_CONFIG_KEYS set — e.g. ``bot_token``, ``webhook_secret``,
+# ``my_custom_api_key``.  These are checked via ``endswith()`` on the
+# leaf key name.
+_SECRET_CONFIG_SUFFIXES = (
+    "_api_key",
+    "_api_token",
+    "_access_token",
+    "_auth_token",
+    "_refresh_token",
+    "_bearer_token",
+    "_client_secret",
+    "_id_token",
+    "_oauth_token",
+    "_private_key",
+    "_session_token",
+    "_secret_key",
+    "_password",
+    "_passwd",
+    "_secret",
+    "_token",
+    "_credential",
+    "_credentials",
+)
+
 
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
@@ -8273,7 +8298,10 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+            if isinstance(k, str) and v and (
+                k.lower() in _SECRET_CONFIG_KEYS
+                or k.lower().endswith(_SECRET_CONFIG_SUFFIXES)
+            ):
                 out[k] = mask_secret(v)
             else:
                 out[k] = redact_config_value(v, _depth + 1)
@@ -8825,7 +8853,13 @@ def set_config_value(key: str, value: str, force: bool = False):
     # (lowercase, so it misses the .env api_keys list above) and would otherwise
     # print the raw secret to the terminal.
     _leaf_key = key.rsplit(".", 1)[-1].lower()
-    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+    if (
+        isinstance(value, str) and value
+        and (
+            _leaf_key in _SECRET_CONFIG_KEYS
+            or _leaf_key.endswith(_SECRET_CONFIG_SUFFIXES)
+        )
+    ):
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     else:
@@ -8861,6 +8895,13 @@ def get_config_value(key: str, *, as_json: bool = False):
     if value is _MISSING:
         print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
+
+    # Mask credential-shaped values before printing
+    if isinstance(value, str) and value:
+        _leaf_key = key.rsplit(".", 1)[-1].lower()
+        if _leaf_key in _SECRET_CONFIG_KEYS or _leaf_key.endswith(_SECRET_CONFIG_SUFFIXES):
+            from agent.redact import mask_secret
+            value = mask_secret(value)
 
     print(_format_config_get_value(value, as_json=as_json))
 

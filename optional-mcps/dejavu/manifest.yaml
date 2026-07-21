@@ -1,0 +1,56 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dejavu
+description: Token efficiency engine — AI skills marketplace. Search 1,100+ reusable skills before reasoning from scratch. Saves 70x inference tokens.
+source: https://github.com/keepingtrack/dejavu-mcp
+
+# Dejavu ships as a pip-installable Python package (dejavu-mcp on PyPI).
+# The stdio server starts with `dejavu-mcp serve` — no git clone needed
+# for users who pip install. We use the CLI entry point.
+transport:
+  type: stdio
+  command: "dejavu-mcp"
+  args:
+    - "serve"
+
+# API key required for execution, ratings, and submissions.
+# Basic search (skill_search, skill_list) works without a key.
+auth:
+  type: api_key
+  env:
+    - name: DEJAVU_API_KEY
+      prompt: "Dejavu API key — get yours at https://dejavu.keepingtrack.biz/connect"
+      required: false
+      secret: true
+
+# Tool selection at install time:
+# Read-only search tools are safe defaults, enabled on install.
+# Mutating tools (rate, submit) and admin tools are opt-in —
+# users review them in the checklist and decide.
+tools:
+  default_enabled:
+    - skill_search
+    - skill_get
+    - skill_list
+    - skill_categories
+    - skill_execute
+    - skill_ratings
+    - scan_local_skills
+    - subscription_status
+    - savings_summary
+    - monthly_earnings
+    - catalog_sync
+
+post_install: |
+  Dejavu is a token efficiency engine backed by a skills marketplace.
+
+  **Free tier:** Search 1,100+ skills. `skill_search`, `skill_list`, and
+  `skill_categories` work without an API key.
+
+  **Pro tier ($6.67/mo):** Execute skills, rate them, submit new ones.
+  Get your API key at https://dejavu.keepingtrack.biz/connect
+
+  Start a new Hermes session to load the Dejavu tools.
+  All tools appear prefixed: `mcp_dejavu_skill_search`, etc.

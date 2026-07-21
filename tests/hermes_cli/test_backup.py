@@ -1431,6 +1431,29 @@ class TestSafeCopyDb:
         assert rows == [("wal-test",)]
 
 
+
+    def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
+        from hermes_cli.backup import is_zeroed_sqlite_file
+        p = tmp_path / "state.db"
+        p.write_bytes(bytes(4096))  # all NULs
+        assert is_zeroed_sqlite_file(p) is True
+
+    def test_is_zeroed_sqlite_file_rejects_valid_db(self, tmp_path):
+        from hermes_cli.backup import is_zeroed_sqlite_file
+        p = tmp_path / "ok.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE t (x INT)")
+        conn.commit()
+        conn.close()
+        assert is_zeroed_sqlite_file(p) is False
+
+    def test_is_zeroed_sqlite_file_empty_file(self, tmp_path):
+        from hermes_cli.backup import is_zeroed_sqlite_file
+        p = tmp_path / "empty.db"
+        p.write_bytes(b"")
+        assert is_zeroed_sqlite_file(p) is False
+
+
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
 # ---------------------------------------------------------------------------
@@ -1477,12 +1500,31 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         db_copy = hermes_home / "state-snapshots" / snap_id / "state.db"
         assert db_copy.exists()
-
         conn = sqlite3.connect(str(db_copy))
         rows = conn.execute("SELECT * FROM sessions").fetchall()
         conn.close()
         assert len(rows) == 1
         assert rows[0] == ("s1", "hello world")
+
+    def test_failed_state_db_copy_is_loud(self, hermes_home, monkeypatch, capsys):
+        """#68474: unreadable state.db must not look like a silent success."""
+        from hermes_cli import backup as backup_mod
+
+        def boom(src, dst):
+            return False
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", boom)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        err = capsys.readouterr().out
+        assert "SQLite safe copy FAILED" in err or "CRITICAL" in err
+        assert "state.db" in err
+        # Other small files may still snapshot
+        if snap_id:
+            manifest = (hermes_home / "state-snapshots" / snap_id / "manifest.json")
+            assert manifest.exists()
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            assert "state.db" not in data.get("files", {})
+            assert "state.db" in data.get("failed_dbs", [])
 
     def test_copies_nested_files(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot

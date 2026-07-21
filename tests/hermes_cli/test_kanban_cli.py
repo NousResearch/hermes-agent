@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -14,10 +16,52 @@ from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 
 
+def _resolve_hermes_command() -> list[str]:
+    """Locate the command used to drive the real ``hermes kanban create`` CLI.
+
+    Preference order:
+      1. ``HERMES_BIN`` env var — full path to a ``hermes`` executable. Lets
+         CI/operators pin a specific binary.
+      2. ``sys.executable -m hermes_cli.main`` — works in any environment where
+         this test's Python interpreter can import ``hermes_cli`` (the typical
+         editable-install / PYTHONPATH case). This guarantees the subprocess
+         exercises whatever source the test session is bound to, not a sibling
+         checkout's venv.
+
+    Always returns a non-empty command list — letting the subprocess raise
+    ImportError on a missing ``hermes_cli`` is more diagnostic than silently
+    skipping these tests.
+    """
+    override = os.environ.get("HERMES_BIN")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return [str(p)]
+    return [sys.executable, "-m", "hermes_cli.main"]
+
+
+HERMES_CMD = _resolve_hermes_command()
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    profiles_dir = home / "profiles"
+    profiles_dir.mkdir()
+    # The kanban-create lint (card t_ddcf16e1) rejects unknown --assignee
+    # values at the CLI entry point with exit 2. Tests in this file that
+    # use a placeholder profile name (alice, bob, etc.) need that name to
+    # exist as a profile directory under HERMES_HOME; otherwise the lint
+    # would correctly reject the create and the test would fail.
+    for name in (
+        "alice",
+        "bob",
+        "broken-model",
+        "newbie",
+        "orig",
+    ):
+        (profiles_dir / name).mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -565,3 +609,488 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# --assignee lint at the kanban create boundary (card t_ddcf16e1)
+# ---------------------------------------------------------------------------
+#
+# These tests exercise the full subprocess path so we catch the actual exit
+# code, stderr marker, and DB state. The lint runs in ``_cmd_create`` BEFORE
+# any DB write; a non-resolving --assignee must exit 2 with no card row.
+# The CLI subprocess is invoked via ``run_slash`` to match the project's
+# "exercise the real entry point both CLI and gateway use" style; the
+# underlying ``kanban_command`` returns the int exit code that ``run_slash``
+# surfaces through the SystemExit-raising path (we read it back via a small
+# wrapper that does NOT swallow SystemExit, so the int is captured exactly).
+#
+# The tests use the ``kanban_home`` fixture (which seeds ``alice``, ``bob``,
+# ``broken-model``, ``newbie``, ``orig``) so a happy-path --assignee resolves
+# against a real on-disk profile directory. The reject-path uses a name that
+# the fixture deliberately does NOT seed.
+
+
+class _AssigneeLintSubprocess:
+    """Drive the real ``hermes kanban create`` CLI in a temp HERMES_HOME.
+
+    Mirrors the subprocess pattern from ``tests/test_kanban_assignee_lint.py``
+    so the lint is exercised through the actual argparse → CLI → DB path,
+    not a mocked unit test. Captures (returncode, stdout, stderr) and the
+    post-call DB state.
+    """
+
+    # Resolved at import time by ``_resolve_hermes_command``: either an
+    # explicit ``hermes`` binary from $HERMES_BIN, or the test session's
+    # Python interpreter running ``-m hermes_cli.main``. Never a hardcoded
+    # absolute path — see card t_1fddf915 for the bug this replaced.
+    HERMES_CMD = HERMES_CMD
+
+    def __init__(self, kanban_home_dir: Path):
+        # kanban_home is already pointing at our temp HERMES_HOME (with the
+        # seeded profile dirs); reuse it directly. We just need to add a
+        # dedicated DB path so the subprocess doesn't accidentally share the
+        # in-process test DB.
+        self.home = kanban_home_dir
+        self.db_path = self.home / "kanban.db"
+
+    def run_create(self, *args: str) -> tuple[int, str, str]:
+        import subprocess
+
+        env = os.environ.copy()
+        # Strip dispatcher-set overrides so the lint is exercised in
+        # isolation, not against whatever board the parent test was on.
+        for var in (
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_HOME",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_TASK",
+            "PYTHONPATH",
+            "PYTHONHOME",
+        ):
+            env.pop(var, None)
+        env["HERMES_HOME"] = str(self.home)
+        env["HERMES_KANBAN_DB"] = str(self.db_path)
+        # When invoking ``python -m hermes_cli.main`` we want the subprocess
+        # to import the same source the test is bound to. The parent pytest
+        # process inherits a PYTHONPATH from its own launch, but the
+        # dispatcher / kanban-worker harness may have set it to point at a
+        # different checkout. Strip and re-pin to this test's module path so
+        # the subprocess always exercises the branch under test.
+        import hermes_cli as _hc  # noqa: WPS433 — local import by design
+
+        env["PYTHONPATH"] = (
+            str(Path(_hc.__file__).resolve().parent.parent)
+            + os.pathsep
+            + env.get("PYTHONPATH", "")
+        )
+        r = subprocess.run(
+            [*self.HERMES_CMD, "kanban", "create", *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        return r.returncode, r.stdout, r.stderr
+
+    def db_row_count(self) -> int:
+        import sqlite3
+
+        if not self.db_path.exists():
+            return 0
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM tasks"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def db_assignee_for_title(self, title: str) -> object:
+        import sqlite3
+
+        if not self.db_path.exists():
+            return None
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT assignee FROM tasks WHERE title = ?", (title,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+
+@pytest.fixture
+def assignee_lint(kanban_home):
+    # ``_resolve_hermes_command`` always returns a command (falls back to
+    # ``python -m hermes_cli.main``). Only skip when the operator pinned a
+    # non-existent $HERMES_BIN — in that case the literal override takes
+    # priority and we shouldn't silently fall back to a different binary.
+    if (
+        os.environ.get("HERMES_BIN")
+        and not Path(os.environ["HERMES_BIN"]).exists()
+    ):
+        pytest.skip(
+            f"HERMES_BIN={os.environ['HERMES_BIN']!r} does not exist"
+        )
+    return _AssigneeLintSubprocess(kanban_home)
+
+
+def test_create_with_valid_assignee_succeeds(assignee_lint):
+    """Happy path: a known profile → rc=0, card persisted with that assignee.
+
+    Acceptance criterion: ``hermes kanban create --assignee <seeded-valid-name>
+    \"x\"`` exits 0 and writes a card with the resolved assignee. The card
+    shape must be byte-identical to a pre-change valid create (no new columns,
+    no schema drift).
+    """
+    # "alice" is seeded by the kanban_home fixture (see top of this file).
+    rc, out, err = assignee_lint.run_create(
+        "Test valid", "--assignee", "alice",
+        "--body", "smoke", "--created-by", "test",
+    )
+    assert rc == 0, f"expected rc=0, got {rc}; stdout={out!r}; stderr={err!r}"
+    assert "Created" in out, f"missing 'Created' marker in stdout: {out!r}"
+    assert assignee_lint.db_row_count() == 1
+    assert assignee_lint.db_assignee_for_title("Test valid") == "alice"
+
+
+def test_create_with_unknown_assignee_exits_2(assignee_lint):
+    """Reject path: ghost profile → rc=2, stderr marker, no DB row.
+
+    Acceptance criterion: ``hermes kanban create --assignee ghostname \\"x\\"``
+    exits 2 with a stderr marker identifying ``ghostname`` as not a
+    registered profile, points at ``hermes profile list``, and writes no
+    card.
+
+    Format assertion (unified with the reaper branch's `_validate_assignee`,
+    per card t_fcad5872): ``kanban: assignee 'ghostname' is not a
+    registered Hermes profile.`` — this is the form produced by
+    ``_validate_assignee`` in ``hermes_cli/kanban.py``.
+    """
+    rc, out, err = assignee_lint.run_create(
+        "Test ghost", "--assignee", "ghostname",
+        "--body", "smoke", "--created-by", "test",
+    )
+    assert rc == 2, f"expected rc=2, got {rc}; stdout={out!r}; stderr={err!r}"
+    # Unified format: reaper branch's _validate_assignee uses
+    # `kanban: assignee '<name>' is not a registered Hermes profile.`
+    assert "ghostname" in err, (
+        f"expected 'ghostname' in stderr, got: {err!r}"
+    )
+    assert "is not a registered Hermes profile" in err, (
+        f"expected 'is not a registered Hermes profile' in stderr, got: {err!r}"
+    )
+    # Stderr should also point the operator at the help command advertised
+    # by the codebase (see hermes_cli/profiles.py and existing kanban CLI
+    # output that references ``hermes profile list``).
+    assert "hermes profile list" in err, (
+        f"expected stderr to suggest 'hermes profile list', got: {err!r}"
+    )
+    # No card was written.
+    assert assignee_lint.db_row_count() == 0
+
+
+def test_create_with_assignee_any_bypass_allowed(assignee_lint):
+    """Bypass path: ``__any__`` and omitted ``--assignee`` both exit 0.
+
+    Acceptance criterion: ``hermes kanban create --assignee __any__ \"x\"``
+    and ``hermes kanban create \"x\"`` both exit 0 and persist the card.
+
+    The bypass whitelist is exactly ``__any__`` and the omitted-flag case.
+    ``default`` is NOT a magic value — it's a real profile directory and
+    resolves through ``profile_resolver.resolve_assignee`` normally.
+    """
+    # Pass 1: --assignee __any__ (literal magic value from the bypass whitelist).
+    rc1, out1, err1 = assignee_lint.run_create(
+        "Test any", "--assignee", "__any__",
+        "--body", "smoke", "--created-by", "test",
+    )
+    assert rc1 == 0, f"expected rc=0, got {rc1}; stdout={out1!r}; stderr={err1!r}"
+    assert "Created" in out1
+    # Pass 2: --assignee omitted entirely (no flag).
+    rc2, out2, err2 = assignee_lint.run_create(
+        "Test omitted", "--body", "smoke", "--created-by", "test",
+    )
+    assert rc2 == 0, f"expected rc=0, got {rc2}; stdout={out2!r}; stderr={err2!r}"
+    assert "Created" in out2
+
+    # Both cards present, with the expected assignee values.
+    assert assignee_lint.db_row_count() == 2
+    assert assignee_lint.db_assignee_for_title("Test any") == "__any__"
+    assert assignee_lint.db_assignee_for_title("Test omitted") is None
+
+
+# ---------------------------------------------------------------------------
+# Daemon stranded-config wiring (MEDIUM-2 from the t_f8afafaa WAGS review).
+#
+# The standalone `hermes kanban daemon --force` path (kept behind a deprecation
+# notice for the rare host that can't run the gateway) was the only place
+# `kanban.stranded_timeout_seconds` / `kanban.stranded_action` were NOT wired
+# through. The fix adds the two kwargs to `kb.run_daemon(...)`, threads them
+# into every `dispatch_once(...)` call, and reads them from config in
+# `_cmd_daemon` — mirroring the pattern in `_cmd_dispatch`. These tests cover
+# the three cases the WAGS review asked for: defaults, custom timeout, and
+# custom action.
+# ---------------------------------------------------------------------------
+
+
+def _make_daemon_args(
+    *,
+    interval: float = 0.0,
+    max_spawn: Optional[int] = None,
+    failure_limit: Optional[int] = None,
+    force: bool = True,
+    pidfile: Optional[str] = None,
+    verbose: bool = False,
+):
+    """Build a minimal argparse.Namespace shaped like what
+    `hermes kanban daemon --force` parses. The daemon only reads the
+    attributes it actually consumes; everything else is None.
+    """
+    return argparse.Namespace(
+        interval=interval,
+        max=max_spawn,
+        failure_limit=(
+            failure_limit if failure_limit is not None
+            else kb.DEFAULT_SPAWN_FAILURE_LIMIT
+        ),
+        force=force,
+        pidfile=pidfile,
+        verbose=verbose,
+    )
+
+
+class TestDaemonConfig:
+    """Verify `_cmd_daemon --force` honours kanban.stranded_* config keys.
+
+    The daemon's main loop (`kb.run_daemon`) is monkey-patched to a stub
+    that records the kwargs it received and returns immediately — this
+    keeps the test fast and avoids racing the SIGINT/SIGTERM handler the
+    real loop installs. The captured kwargs are then asserted against
+    the operator's config so we know the wire-through is intact.
+    """
+
+    @staticmethod
+    def _capture_run_daemon(monkeypatch):
+        """Replace `kb.run_daemon` with a recorder. Returns the dict the
+        daemon writes its kwargs into. The stub ignores `stop_event`
+        because the caller (the daemon command) only sets it for the
+        real long-lived loop.
+        """
+        captured: dict = {}
+        calls: list = []
+
+        def _stub(**kwargs):
+            captured.update(kwargs)
+            calls.append(kwargs)
+            # stop_event.wait would block forever; the real loop relies
+            # on signal handlers to set the event. The stub returns
+            # immediately so the test thread doesn't hang.
+
+        monkeypatch.setattr(kb, "run_daemon", _stub)
+        return captured, calls
+
+    def test_defaults_when_no_config(self, kanban_home, monkeypatch, capsys):
+        """No config.yaml at all → daemon uses DEFAULT_STRANDED_* values.
+
+        Mirrors the gateway watcher's behaviour when `kanban:` is absent
+        from config.yaml (which is the most common deployment).
+        """
+        # No config file written to kanban_home.
+        assert not (kanban_home / "config.yaml").exists()
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert len(calls) == 1
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+        # Effective values are surfaced in the startup banner so an
+        # operator can sanity-check the daemon saw the right config
+        # without having to attach a debugger.
+        out = capsys.readouterr().err
+        assert f"stranded_timeout_seconds={kb.DEFAULT_STRANDED_TIMEOUT_SECONDS}" in out
+        assert f"stranded_action={kb.DEFAULT_STRANDED_ACTION!r}" in out
+
+    def test_defaults_when_kanban_section_empty(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`kanban:` present but missing the stranded keys → still defaults.
+
+        Distinguishes "config file present, keys absent" from "config
+        file absent entirely" — both paths must use the defaults so a
+        half-written config doesn't accidentally disable the reaper.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+
+    def test_custom_stranded_timeout_seconds(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`kanban.stranded_timeout_seconds: 5` is honored end-to-end.
+
+        Confirms the operator's tuned value reaches `kb.run_daemon` (and
+        therefore every nested `dispatch_once` call) without being
+        silently dropped or replaced by the default. Caps the timeout
+        at 5s so the test exercises a non-default value distinct from
+        the 1800s constant.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_timeout_seconds: 5\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_timeout_seconds"] == 5
+        # Action remains at default; only the timeout was customised.
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+        # Startup banner reflects the tuned value so the operator can
+        # confirm the daemon saw the right config without a debugger.
+        out = capsys.readouterr().err
+        assert "stranded_timeout_seconds=5" in out
+        assert f"stranded_action={kb.DEFAULT_STRANDED_ACTION!r}" in out
+
+    def test_custom_stranded_action_archive(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`kanban.stranded_action: archive` is honored end-to-end.
+
+        Mirrors the `auto` (default) → `archive` switch: with this
+        setting, a stranded ready task whose original assignee no
+        longer maps to an installed profile should be archived, not
+        reassigned. The test confirms the value passes through to
+        `kb.run_daemon` and is shown in the startup banner.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_action: archive\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_action"] == "archive"
+        # Timeout remains at default; only the action was customised.
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+        out = capsys.readouterr().err
+        assert "stranded_action='archive'" in out
+        assert (
+            f"stranded_timeout_seconds={kb.DEFAULT_STRANDED_TIMEOUT_SECONDS}"
+            in out
+        )
+
+    def test_custom_stranded_action_reassign(
+        self, kanban_home, monkeypatch,
+    ):
+        """`kanban.stranded_action: reassign` reaches the dispatcher.
+
+        The other valid non-default value. Combined with the
+        `archive` test above this proves every entry in
+        `kb.VALID_STRANDED_ACTIONS` survives the parse / lowercase /
+        validate pipeline.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_action: reassign\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_action"] == "reassign"
+
+    def test_invalid_stranded_action_falls_back_to_default(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """An unrecognised `kanban.stranded_action` falls back to 'auto'.
+
+        A typo in the operator's config (e.g. `archv`) must not crash
+        the legacy daemon — the safe default keeps the dispatcher
+        moving. The startup banner shows the original (raw) value
+        could not be applied; we at least confirm the daemon didn't
+        propagate the typo to `kb.run_daemon`.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_action: archv\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+        assert captured["stranded_action"] != "archv"
+
+    def test_invalid_stranded_timeout_falls_back_to_default(
+        self, kanban_home, monkeypatch,
+    ):
+        """A non-integer `kanban.stranded_timeout_seconds` falls back.
+
+        e.g. `stranded_timeout_seconds: "5m"` (human string) should not
+        crash the daemon — we log the parse failure and use the
+        constant. Mirrors the gateway watcher's handling.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_timeout_seconds: \"5m\"\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+
+    def test_deprecation_notice_still_prints_without_force(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`hermes kanban daemon` (no --force) still prints the deprecation
+        notice and exits 2 — the MEDIUM-2 fix must not regress the
+        operator-facing migration path. Even with a fully-tuned config
+        the legacy path is gated behind --force.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n"
+            "  stranded_timeout_seconds: 5\n"
+            "  stranded_action: archive\n",
+            encoding="utf-8",
+        )
+        # No run_daemon stub — the deprecation branch returns before
+        # touching it, and any future regression that calls into the
+        # loop will be loud (no monkeypatch → real loop tries to start).
+        args = _make_daemon_args(force=False)
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 2
+        out = capsys.readouterr().err
+        # Preserved language from the deprecation banner.
+        assert "DEPRECATED" in out
+        assert "the dispatcher now runs" in out
+        assert "--force" in out

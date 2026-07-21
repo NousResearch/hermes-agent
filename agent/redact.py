@@ -367,6 +367,10 @@ def mask_secret(
         return empty
     if len(value) < floor:
         return placeholder
+    # Guard against head+tail overlap: if the token is shorter than head+tail,
+    # the slices would overlap and expose the entire secret.
+    if len(value) < head + tail:
+        return placeholder
     return f"{value[:head]}...{value[-tail:]}"
 
 

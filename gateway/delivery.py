@@ -326,7 +326,8 @@ class DeliveryRouter:
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Save content to local files."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
         
         if job_id:
             output_path = self.output_dir / job_id / f"{timestamp}.md"
@@ -343,7 +344,7 @@ class DeliveryRouter:
             lines.append("# Delivery Output")
         
         lines.append("")
-        lines.append(f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"**Timestamp:** {now.strftime('%Y-%m-%d %H:%M:%S')}")
         
         if job_id:
             lines.append(f"**Job ID:** {job_id}")

@@ -226,6 +226,8 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
 
 def _count_occurrences(text: str, pattern: str) -> int:
     """Count non-overlapping occurrences of *pattern* in *text*."""
+    if not pattern:
+        return 0
     count = 0
     start = 0
     while True:
@@ -233,7 +235,7 @@ def _count_occurrences(text: str, pattern: str) -> int:
         if pos == -1:
             break
         count += 1
-        start = pos + 1
+        start = pos + len(pattern)
     return count
 
 

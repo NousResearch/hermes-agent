@@ -4,7 +4,7 @@ import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 import { $projects } from './projects'
 import { $sessions } from './session'
-import { $sessionColorById, sessionColorFor } from './session-color'
+import { $sessionColorById, $sessionColorOverrides, sessionColorFor, setSessionColorOverride } from './session-color'
 
 let nextId = 0
 
@@ -48,6 +48,7 @@ function makeProject(id: string, folders: string[], color: null | string): Proje
 afterEach(() => {
   $sessions.set([])
   $projects.set([])
+  $sessionColorOverrides.set({})
 })
 
 describe('$sessionColorById', () => {
@@ -83,6 +84,43 @@ describe('$sessionColorById', () => {
 
     $projects.set([makeProject('p_app', ['/www/app'], '#7bc86c')])
     expect($sessionColorById.get()[a.id]).toBe('#7bc86c')
+  })
+})
+
+describe('$sessionColorOverrides', () => {
+  it('an override wins over the inherited project color', () => {
+    const a = makeSession('/www/app', { git_repo_root: '/www/app' })
+
+    $projects.set([makeProject('p_app', ['/www/app'], '#4a9eff')])
+    $sessions.set([a])
+    setSessionColorOverride(a.id, '#ff0000')
+
+    expect($sessionColorById.get()[a.id]).toBe('#ff0000')
+  })
+
+  it('clearing an override falls back to the project color', () => {
+    const a = makeSession('/www/app', { git_repo_root: '/www/app' })
+
+    $projects.set([makeProject('p_app', ['/www/app'], '#4a9eff')])
+    $sessions.set([a])
+
+    setSessionColorOverride(a.id, '#ff0000')
+    expect($sessionColorById.get()[a.id]).toBe('#ff0000')
+
+    setSessionColorOverride(a.id, null)
+    expect($sessionColorById.get()[a.id]).toBe('#4a9eff')
+  })
+
+  it('keys on the durable lineage id so a color survives compression', () => {
+    // The live id rotates on auto-compression; the override is stored against the
+    // lineage root, so the continuation tip still resolves to the same color.
+    const root = makeSession('/x', { id: 'root' })
+    const tip = makeSession('/x', { id: 'tip', _lineage_root_id: 'root' })
+
+    setSessionColorOverride('root', '#abcdef')
+
+    $sessions.set([tip])
+    expect($sessionColorById.get().tip).toBe('#abcdef')
   })
 })
 

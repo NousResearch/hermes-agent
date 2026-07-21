@@ -409,7 +409,7 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
  * unless the user set one, so a session only tints when it belongs to a colored
  * project (inheritance is opt-in by coloring the project). Reuses
  * {@link liveSessionProjectId} so the color follows the SAME membership the
- * sidebar groups by; returns null for cwd-less / kanban / out-of-tree rows and
+ * sidebar groups by; returns null for rootless / kanban / out-of-tree rows and
  * for sessions under an uncolored (or auto) project.
  */
 export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {

@@ -4,7 +4,7 @@ import type { DesktopAuthProvider, DesktopConnectionConfig, DesktopConnectionPro
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
-type Mode = 'local' | 'remote' | 'cloud'
+type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 
@@ -20,7 +20,12 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteTokenPreview: null,
   remoteTokenSet: false,
   remoteUrl: '',
-  cloudOrg: ''
+  cloudOrg: '',
+  sshHost: '',
+  sshUser: '',
+  sshPort: null,
+  sshKeyPath: '',
+  sshRemoteHermesPath: ''
 }
 
 export interface UseRemoteConnectionFormOptions {
@@ -69,6 +74,9 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>('idle')
   const [probe, setProbe] = useState<DesktopConnectionProbeResult | null>(null)
   const probeSeq = useRef(0)
+  const saveSeq = useRef(0)
+  const signingSeq = useRef(0)
+  const testSeq = useRef(0)
 
   // Flipped true once the user edits the form, so the async config load below
   // won't clobber a value they already typed — the overlay mounts the form
@@ -130,6 +138,13 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
   useEffect(() => {
     setLastError(null)
   }, [state.remoteUrl, remoteToken])
+
+  useEffect(() => {
+    saveSeq.current += 1
+    signingSeq.current += 1
+    testSeq.current += 1
+    setLastTest(null)
+  }, [scope, state.mode, state.sshHost, state.sshUser, state.sshPort, state.sshKeyPath, state.sshRemoteHermesPath])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
   // syntactically plausible URL. The probe result drives whether we render the
@@ -255,10 +270,17 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
-    remoteUrl: trimmedUrl
+    remoteUrl: trimmedUrl,
+    sshHost: state.sshHost.trim(),
+    sshUser: state.sshUser.trim() || undefined,
+    sshPort: state.sshPort,
+    sshKeyPath: state.sshKeyPath.trim() || undefined,
+    sshRemoteHermesPath: state.sshRemoteHermesPath.trim()
   })
 
   const save = async (apply: boolean) => {
+    const seq = ++saveSeq.current
+
     if (state.mode === 'remote' && !canUseRemote) {
       notify({
         kind: 'warning',
@@ -277,6 +299,10 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
         ? await window.hermesDesktop.applyConnectionConfig(payload())
         : await window.hermesDesktop.saveConnectionConfig(payload())
 
+      if (seq !== saveSeq.current) {
+        return
+      }
+
       setState(next)
       setRemoteToken('')
 
@@ -291,10 +317,34 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
         })
       }
     } catch (err) {
-      notifyError(err, apply ? g.applyFailed : g.saveFailed)
-      setLastError(err instanceof Error ? err.message : String(err))
+      if (seq !== saveSeq.current) {
+        return
+      }
+
+      const sshError = err && typeof err === 'object' && 'sshError' in err ? String(err.sshError) : ''
+
+      const sshErrors = {
+        'auth-failed': g.sshErrAuth,
+        'hermes-not-found': g.sshErrNotInstalled,
+        'host-key-changed': g.sshErrHostKey,
+        timeout: g.sshErrTimeout,
+        unreachable: g.sshErrUnreachable,
+        'unsupported-platform': g.sshErrPlatform,
+        'update-required': g.sshErrUpdateRequired
+      }
+
+      if (state.mode === 'ssh' && sshError) {
+        const message = (sshErrors as Record<string, string>)[sshError] || g.sshErrUnknown
+        notify({ kind: 'error', title: apply ? g.applyFailed : g.saveFailed, message })
+        setLastError(message)
+      } else {
+        notifyError(err, apply ? g.applyFailed : g.saveFailed)
+        setLastError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setSaving(false)
+      if (seq === saveSeq.current) {
+        setSaving(false)
+      }
     }
   }
 
@@ -302,6 +352,8 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
   // the URL the login window needs), then open the gateway login window and
   // refresh the connection status from the saved config once it completes.
   const signIn = async () => {
+    const seq = ++signingSeq.current
+
     if (!trimmedUrl) {
       notify({ kind: 'warning', title: g.incompleteTitle, message: g.enterUrlFirst })
 
@@ -321,9 +373,17 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
         remoteUrl: trimmedUrl
       })
 
+      if (seq !== signingSeq.current) {
+        return
+      }
+
       setState(saved)
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
+
+      if (seq !== signingSeq.current) {
+        return
+      }
 
       if (result.connected) {
         const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
@@ -337,29 +397,45 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
         })
       }
     } catch (err) {
-      notifyError(err, g.signInFailed)
-      setLastError(err instanceof Error ? err.message : String(err))
+      if (seq === signingSeq.current) {
+        notifyError(err, g.signInFailed)
+        setLastError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setSigningIn(false)
+      if (seq === signingSeq.current) {
+        setSigningIn(false)
+      }
     }
   }
 
   const signOut = async () => {
+    const seq = ++signingSeq.current
     setSigningIn(true)
 
     try {
       await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
       const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
+
+      if (seq !== signingSeq.current) {
+        return
+      }
+
       setState(refreshed)
       notify({ kind: 'success', title: g.signedOutTitle, message: g.signedOutMessage })
     } catch (err) {
-      notifyError(err, g.signOutFailed)
+      if (seq === signingSeq.current) {
+        notifyError(err, g.signOutFailed)
+      }
     } finally {
-      setSigningIn(false)
+      if (seq === signingSeq.current) {
+        setSigningIn(false)
+      }
     }
   }
 
   const testRemote = async () => {
+    const seq = ++testSeq.current
+
     if (!canUseRemote) {
       notify({
         kind: 'warning',
@@ -383,14 +459,72 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
         remoteUrl: trimmedUrl
       })
 
-      const message = g.connectedTo(result.baseUrl, result.version ?? undefined)
+      if (seq !== testSeq.current) {
+        return
+      }
+
+      const message = g.connectedTo(result.baseUrl || trimmedUrl, result.version ?? undefined)
       setLastTest(message)
       notify({ kind: 'success', title: g.reachableTitle, message })
     } catch (err) {
-      notifyError(err, g.testFailed)
-      setLastError(err instanceof Error ? err.message : String(err))
+      if (seq === testSeq.current) {
+        notifyError(err, g.testFailed)
+        setLastError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setTesting(false)
+      if (seq === testSeq.current) {
+        setTesting(false)
+      }
+    }
+  }
+
+  const testSsh = async () => {
+    const seq = ++testSeq.current
+
+    if (!state.sshHost.trim()) {
+      notify({ kind: 'warning', title: g.incompleteTitle, message: g.sshIncompleteHost })
+
+      return
+    }
+
+    setTesting(true)
+    setLastTest(null)
+    setLastError(null)
+
+    try {
+      const result = await window.hermesDesktop.testConnectionConfig(payload())
+
+      if (seq !== testSeq.current) {
+        return
+      }
+
+      if (!result.reachable) {
+        const errors = {
+          'auth-failed': g.sshErrAuth,
+          'hermes-not-found': g.sshErrNotInstalled,
+          'host-key-changed': g.sshErrHostKey,
+          timeout: g.sshErrTimeout,
+          unreachable: g.sshErrUnreachable,
+          'unsupported-platform': g.sshErrPlatform,
+          'update-required': g.sshErrUpdateRequired,
+          unknown: g.sshErrUnknown
+        }
+
+        throw new Error(errors[result.sshError || 'unknown'] || result.error || g.sshErrUnknown)
+      }
+
+      const message = g.sshReachable(result.host || state.sshHost, result.remotePlatform || '?')
+      setLastTest(message)
+      notify({ kind: 'success', title: g.reachableTitle, message })
+    } catch (err) {
+      if (seq === testSeq.current) {
+        notifyError(err, g.testFailed)
+        setLastError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      if (seq === testSeq.current) {
+        setTesting(false)
+      }
     }
   }
 
@@ -416,6 +550,7 @@ export function useRemoteConnectionForm({ scope, lockedMode }: UseRemoteConnecti
     save,
     signIn,
     signOut,
-    testRemote
+    testRemote,
+    testSsh
   }
 }

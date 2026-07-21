@@ -3,7 +3,9 @@ import type { ReactNode } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
+import { triggerHaptic } from '@/lib/haptics'
 import { Check, HelpCircle, type IconComponent } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
@@ -162,8 +164,46 @@ export function ListRow({
   )
 }
 
+// A labelled on/off row — the canonical device-pref switch (haptic baked in).
+export function ToggleRow({
+  checked,
+  description,
+  disabled,
+  label,
+  onChange
+}: {
+  checked: boolean
+  description?: string
+  disabled?: boolean
+  label: string
+  onChange: (on: boolean) => void
+}) {
+  return (
+    <ListRow
+      action={
+        <Switch
+          aria-label={label}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={on => {
+            triggerHaptic('selection')
+            onChange(on)
+          }}
+        />
+      }
+      description={description}
+      title={label}
+    />
+  )
+}
+
 export function LoadingState({ label }: { label: string }) {
-  return <PageLoader label={label} />
+  return (
+    <PageLoader
+      className="-mt-[calc(var(--titlebar-height)+1rem)] h-[calc(100%+var(--titlebar-height)+1rem)]"
+      label={label}
+    />
+  )
 }
 
 // Canonical implementation lives in components/ui; re-exported so the many

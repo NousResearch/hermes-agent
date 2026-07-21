@@ -3,6 +3,7 @@ export type GatewayEventName =
   | 'session.info'
   | 'message.start'
   | 'message.delta'
+  | 'message.interim'
   | 'message.complete'
   | 'thinking.delta'
   | 'reasoning.delta'

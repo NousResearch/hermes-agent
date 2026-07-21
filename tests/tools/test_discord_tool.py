@@ -325,6 +325,95 @@ class TestChannelInfo:
 
 
 # ---------------------------------------------------------------------------
+# Actions: create_category / create_channel / set_channel_topic / create_project_workspace
+# ---------------------------------------------------------------------------
+
+class TestCreateChannels:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_category(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "10", "name": "DRONE STARTUP", "type": 4,
+            "guild_id": "111", "position": 2, "parent_id": None,
+        }
+        result = json.loads(discord_admin_handler(
+            action="create_category", guild_id="111", name="DRONE STARTUP", position=2,
+        ))
+        assert result["success"] is True
+        assert result["category"]["type"] == "category"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "DRONE STARTUP", "type": 4, "position": 2},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel_under_category(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "11", "name": "engineering-cad", "type": 0,
+            "guild_id": "111", "position": 0, "parent_id": "10",
+            "topic": "CAD docs",
+        }
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="engineering-cad",
+            parent_id="10", topic="CAD docs",
+        ))
+        assert result["success"] is True
+        assert result["channel"]["parent_id"] == "10"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "engineering-cad", "type": 0, "parent_id": "10", "topic": "CAD docs"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_set_channel_topic(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "11", "name": "factory-rfq", "type": 0,
+            "guild_id": "111", "topic": "Factory packet prep",
+            "position": 1, "parent_id": "10",
+        }
+        result = json.loads(discord_admin_handler(
+            action="set_channel_topic", channel_id="11", topic="Factory packet prep",
+        ))
+        assert result["success"] is True
+        assert result["channel"]["topic"] == "Factory packet prep"
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/11", "test-token", body={"topic": "Factory packet prep"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_project_workspace_default_channels(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        category = {"id": "10", "name": "DRONE STARTUP", "type": 4, "guild_id": "111"}
+        channels = [
+            {"id": str(11 + i), "name": name, "type": 0, "guild_id": "111", "parent_id": "10"}
+            for i, name in enumerate([
+                "start-here", "documents", "engineering-cad",
+                "bom-suppliers", "factory-rfq", "actions-decisions",
+            ])
+        ]
+        mock_req.side_effect = [category, *channels]
+        result = json.loads(discord_admin_handler(
+            action="create_project_workspace", guild_id="111", name="DRONE STARTUP",
+        ))
+        assert result["success"] is True
+        assert result["category"]["id"] == "10"
+        assert result["count"] == 6
+        assert [c["name"] for c in result["channels"]] == [
+            "start-here", "documents", "engineering-cad",
+            "bom-suppliers", "factory-rfq", "actions-decisions",
+        ]
+        assert mock_req.call_count == 7
+        first_call = mock_req.call_args_list[0]
+        assert first_call.args == ("POST", "/guilds/111/channels", "test-token")
+        assert first_call.kwargs["body"] == {"name": "DRONE STARTUP", "type": 4}
+        second_call = mock_req.call_args_list[1]
+        assert second_call.kwargs["body"]["parent_id"] == "10"
+        assert second_call.kwargs["body"]["name"] == "start-here"
+
+
+# ---------------------------------------------------------------------------
 # Action: list_roles
 # ---------------------------------------------------------------------------
 

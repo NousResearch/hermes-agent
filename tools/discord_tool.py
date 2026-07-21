@@ -152,6 +152,53 @@ def _channel_type_name(type_id: int) -> str:
     return _CHANNEL_TYPE_NAMES.get(type_id, f"unknown({type_id})")
 
 
+_CHANNEL_NAME_TO_TYPE = {
+    "text": 0,
+    "voice": 2,
+    "category": 4,
+    "announcement": 5,
+    "forum": 15,
+    "media": 16,
+}
+
+
+def _channel_type_id(channel_type: Any) -> int:
+    """Accept Discord channel type names or raw integer IDs."""
+    if channel_type in (None, ""):
+        return 0
+    if isinstance(channel_type, int):
+        if channel_type in _CHANNEL_TYPE_NAMES:
+            return channel_type
+        raise ValueError(f"Unsupported Discord channel type id: {channel_type}")
+    value = str(channel_type).strip().lower()
+    if value.isdigit():
+        type_id = int(value)
+        if type_id in _CHANNEL_TYPE_NAMES:
+            return type_id
+    if value in _CHANNEL_NAME_TO_TYPE:
+        return _CHANNEL_NAME_TO_TYPE[value]
+    allowed = ", ".join(sorted(_CHANNEL_NAME_TO_TYPE))
+    raise ValueError(f"Unsupported channel_type '{channel_type}'. Use one of: {allowed}")
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+def _channel_summary(ch: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": ch["id"],
+        "name": ch.get("name"),
+        "type": _channel_type_name(ch["type"]),
+        "guild_id": ch.get("guild_id"),
+        "topic": ch.get("topic"),
+        "position": ch.get("position"),
+        "parent_id": ch.get("parent_id"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Capability detection (application intents)
 # ---------------------------------------------------------------------------
@@ -451,6 +498,147 @@ def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
     })
 
 
+def _create_guild_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    channel_type: Any = "text",
+    parent_id: Optional[str] = None,
+    topic: Optional[str] = None,
+    position: Any = None,
+    nsfw: Any = None,
+) -> Dict[str, Any]:
+    """Create a guild channel/category and return Discord's channel object."""
+    type_id = _channel_type_id(channel_type)
+    body: Dict[str, Any] = {"name": name, "type": type_id}
+    maybe_position = _optional_int(position)
+    if maybe_position is not None:
+        body["position"] = maybe_position
+    if parent_id:
+        body["parent_id"] = parent_id
+    if topic and type_id in {0, 5, 15, 16}:
+        body["topic"] = topic
+    if nsfw not in (None, "") and type_id in {0, 5, 15, 16}:
+        body["nsfw"] = bool(nsfw)
+    return _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+
+
+def _create_category(
+    token: str,
+    guild_id: str,
+    name: str,
+    position: Any = None,
+    **_kwargs: Any,
+) -> str:
+    """Create a Discord category."""
+    ch = _create_guild_channel(
+        token=token,
+        guild_id=guild_id,
+        name=name,
+        channel_type="category",
+        position=position,
+    )
+    return json.dumps({"success": True, "category": _channel_summary(ch)})
+
+
+def _create_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    channel_type: Any = "text",
+    parent_id: Optional[str] = None,
+    topic: Optional[str] = None,
+    position: Any = None,
+    nsfw: Any = None,
+    **_kwargs: Any,
+) -> str:
+    """Create a Discord guild channel, optionally inside a category."""
+    ch = _create_guild_channel(
+        token=token,
+        guild_id=guild_id,
+        name=name,
+        channel_type=channel_type,
+        parent_id=parent_id,
+        topic=topic,
+        position=position,
+        nsfw=nsfw,
+    )
+    return json.dumps({"success": True, "channel": _channel_summary(ch)})
+
+
+def _set_channel_topic(token: str, channel_id: str, topic: str, **_kwargs: Any) -> str:
+    """Set the topic for a text/forum/media/announcement channel."""
+    ch = _discord_request("PATCH", f"/channels/{channel_id}", token, body={"topic": topic})
+    return json.dumps({"success": True, "channel": _channel_summary(ch)})
+
+
+def _workspace_channels(channels: Any) -> List[Dict[str, Any]]:
+    """Normalize create_project_workspace channel specs."""
+    if not channels:
+        return [
+            {"name": "start-here", "topic": "Project orientation, current priority, and links to live docs."},
+            {"name": "documents", "topic": "Finished or review-ready project documents."},
+            {"name": "engineering-cad", "topic": "CAD, schematics, STEP/DXF/PDF drawings, mounting patterns, tolerances, and keep-out zones."},
+            {"name": "bom-suppliers", "topic": "Parts, suppliers, availability, alternates, and BOM decisions."},
+            {"name": "factory-rfq", "topic": "Manufacturer quote packets, RFQ drafts, factory questions, and approval-gated outreach."},
+            {"name": "actions-decisions", "topic": "Durable decisions and action items with owner/date/blocker."},
+        ]
+    if isinstance(channels, str):
+        stripped = channels.strip()
+        if not stripped:
+            return _workspace_channels(None)
+        try:
+            channels = json.loads(stripped)
+        except json.JSONDecodeError:
+            channels = [c.strip() for c in stripped.split(",") if c.strip()]
+    normalized: List[Dict[str, Any]] = []
+    for item in channels:
+        if isinstance(item, str):
+            normalized.append({"name": item})
+        elif isinstance(item, dict) and item.get("name"):
+            normalized.append(item)
+        else:
+            raise ValueError("channels must be names or objects containing a name")
+    return normalized
+
+
+def _create_project_workspace(
+    token: str,
+    guild_id: str,
+    name: str,
+    channels: Any = None,
+    position: Any = None,
+    **_kwargs: Any,
+) -> str:
+    """Create a project category and text channels in one operation."""
+    category = _create_guild_channel(
+        token=token,
+        guild_id=guild_id,
+        name=name,
+        channel_type="category",
+        position=position,
+    )
+    created = []
+    for spec in _workspace_channels(channels):
+        ch = _create_guild_channel(
+            token=token,
+            guild_id=guild_id,
+            name=spec["name"],
+            channel_type=spec.get("channel_type", spec.get("type", "text")),
+            parent_id=category["id"],
+            topic=spec.get("topic"),
+            position=spec.get("position"),
+            nsfw=spec.get("nsfw"),
+        )
+        created.append(_channel_summary(ch))
+    return json.dumps({
+        "success": True,
+        "category": _channel_summary(category),
+        "channels": created,
+        "count": len(created),
+    })
+
+
 def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all roles in a guild."""
     roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
@@ -635,6 +823,10 @@ _ACTIONS = {
     "server_info": _server_info,
     "list_channels": _list_channels,
     "channel_info": _channel_info,
+    "create_category": _create_category,
+    "create_channel": _create_channel,
+    "set_channel_topic": _set_channel_topic,
+    "create_project_workspace": _create_project_workspace,
     "list_roles": _list_roles,
     "member_info": _member_info,
     "search_members": _search_members,
@@ -662,6 +854,10 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("server_info", "(guild_id)", "server details + member counts"),
     ("list_channels", "(guild_id)", "all channels grouped by category"),
     ("channel_info", "(channel_id)", "single channel details"),
+    ("create_category", "(guild_id, name)", "create a server category"),
+    ("create_channel", "(guild_id, name)", "create a text/voice/forum/media/announcement channel; optional parent_id/topic"),
+    ("set_channel_topic", "(channel_id, topic)", "set a channel topic"),
+    ("create_project_workspace", "(guild_id, name)", "create a category plus a default project-channel set"),
     ("list_roles", "(guild_id)", "roles sorted by position"),
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
@@ -686,6 +882,10 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "member_info": ["guild_id", "user_id"],
     "search_members": ["guild_id", "query"],
     "channel_info": ["channel_id"],
+    "create_category": ["guild_id", "name"],
+    "create_channel": ["guild_id", "name"],
+    "set_channel_topic": ["channel_id", "topic"],
+    "create_project_workspace": ["guild_id", "name"],
     "fetch_messages": ["channel_id"],
     "list_pins": ["channel_id"],
     "pin_message": ["channel_id", "message_id"],
@@ -845,13 +1045,41 @@ def _build_schema(
             "type": "string",
             "description": "Discord message ID.",
         },
+        "parent_id": {
+            "type": "string",
+            "description": "Parent category ID for create_channel.",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Channel topic for create_channel or set_channel_topic.",
+        },
+        "channel_type": {
+            "type": "string",
+            "enum": ["text", "voice", "category", "announcement", "forum", "media"],
+            "description": "Discord channel type for create_channel (default text).",
+        },
+        "position": {
+            "type": "integer",
+            "description": "Optional channel/category position.",
+        },
+        "nsfw": {
+            "type": "boolean",
+            "description": "Whether the created channel should be marked NSFW.",
+        },
+        "channels": {
+            "type": "string",
+            "description": (
+                "Optional create_project_workspace channel list as a JSON array "
+                "or comma-separated names. Empty uses the default project set."
+            ),
+        },
         "query": {
             "type": "string",
             "description": "Member name prefix to search for (search_members).",
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "Name for create_thread, create_channel, create_category, or create_project_workspace.",
         },
         "limit": {
             "type": "integer",
@@ -930,6 +1158,18 @@ _ACTION_403_HINT = {
     "delete_message": (
         "Bot lacks MANAGE_MESSAGES permission in this channel, or cannot view the channel/message."
     ),
+    "create_category": (
+        "Bot lacks MANAGE_CHANNELS permission in this server."
+    ),
+    "create_channel": (
+        "Bot lacks MANAGE_CHANNELS permission in this server or cannot place channels in the target category."
+    ),
+    "set_channel_topic": (
+        "Bot lacks MANAGE_CHANNELS permission for this channel."
+    ),
+    "create_project_workspace": (
+        "Bot lacks MANAGE_CHANNELS permission in this server."
+    ),
     "create_thread": (
         "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it."
     ),
@@ -995,6 +1235,12 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    parent_id: str = "",
+    topic: str = "",
+    channel_type: str = "text",
+    channels: Any = None,
+    position: Any = None,
+    nsfw: Any = None,
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -1032,6 +1278,7 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "topic": topic,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1050,6 +1297,12 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            parent_id=parent_id,
+            topic=topic,
+            channel_type=channel_type,
+            channels=channels,
+            position=position,
+            nsfw=nsfw,
             limit=limit,
             before=before,
             after=after,
@@ -1082,6 +1335,8 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
+    "parent_id": "", "topic": "", "channel_type": "text", "channels": None,
+    "position": None, "nsfw": None,
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 

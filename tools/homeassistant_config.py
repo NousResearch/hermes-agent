@@ -259,8 +259,10 @@ class HomeAssistantResources:
                 "update",
                 self._mutation_payload(resource_type, change["before"]),
             )
-        if not change.get("created_by_hermes"):
-            raise ValueError("created resource was not recorded as created by Hermes")
+        if not change.get("created_by_hermes") or not change.get("authoritative_id"):
+            raise ValueError(
+                "created resource lacks authoritative Hermes ownership evidence"
+            )
         if resource_type in REST_RESOURCES:
             return await self.client.rest(
                 "DELETE", f"/api/config/{resource_type}/config/{resource_id}"

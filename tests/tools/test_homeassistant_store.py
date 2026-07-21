@@ -228,8 +228,12 @@ def test_rollback_claim_requires_current_state_to_match_applied_state(tmp_path):
         now=NOW,
     )
     store.claim_proposal(proposal["id"], proposal["before_fingerprint"], now=NOW)
-    change = store.record_applied(
-        proposal["id"], after=proposal["desired"], created_by_hermes=True, now=NOW
+    change = store.begin_apply(
+        proposal["id"], created_by_hermes=True, now=NOW
+    )
+    store.identify_created_resource(change["id"], "guest_mode")
+    change = store.finalize_applied(
+        change["id"], after=proposal["desired"], resource_id="guest_mode", now=NOW
     )
 
     with pytest.raises(ProposalStale):
@@ -245,6 +249,24 @@ def test_rollback_claim_requires_current_state_to_match_applied_state(tmp_path):
     assert claimed["status"] == "rolling_back"
     rolled_back = store.record_rolled_back(change["id"], now=NOW)
     assert rolled_back["status"] == "rolled_back"
+
+
+def test_non_authoritative_create_cannot_be_claimed_for_rollback(tmp_path):
+    store = _store(tmp_path)
+    proposal = store.create_proposal(
+        resource_type="area", resource_id="guest_room", operation="create",
+        before=None, desired={"name": "Guest room"}, now=NOW,
+    )
+    store.claim_proposal(proposal["id"], proposal["before_fingerprint"], now=NOW)
+    change = store.record_applied(
+        proposal["id"], after={"name": "Guest room"},
+        created_by_hermes=True, now=NOW,
+    )
+
+    with pytest.raises(ProposalUnavailable, match="authoritative.*ownership"):
+        store.claim_rollback(
+            change["id"], change["after_fingerprint"], now=NOW,
+        )
 
 
 def test_concurrent_claim_has_exactly_one_winner(tmp_path):

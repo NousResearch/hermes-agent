@@ -527,6 +527,14 @@ class HomeAssistantChangeStore:
             if change is None or change["status"] != "applied":
                 conn.rollback()
                 raise ProposalUnavailable("change is not available for rollback")
+            if (
+                change["operation"] == "create"
+                and (not change["created_by_hermes"] or not change["authoritative_id"])
+            ):
+                conn.rollback()
+                raise ProposalUnavailable(
+                    "created resource lacks authoritative Hermes ownership evidence"
+                )
             if current_fingerprint != change["after_fingerprint"]:
                 conn.rollback()
                 raise ProposalStale("resource changed after Hermes applied it")

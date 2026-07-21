@@ -87,7 +87,7 @@ async def test_rollback_only_deletes_a_resource_hermes_created():
     client.websocket = AsyncMock(return_value=None)
     resources = HomeAssistantResources(client)
 
-    with pytest.raises(ValueError, match="created by Hermes"):
+    with pytest.raises(ValueError, match="authoritative.*ownership"):
         await resources.rollback(
             {"resource_type": "timer", "resource_id": "tea", "operation": "create",
              "before": None, "created_by_hermes": False}
@@ -95,9 +95,19 @@ async def test_rollback_only_deletes_a_resource_hermes_created():
 
     await resources.rollback(
         {"resource_type": "timer", "resource_id": "tea", "operation": "create",
-         "before": None, "created_by_hermes": True}
+         "before": None, "created_by_hermes": True, "authoritative_id": True}
     )
     client.websocket.assert_awaited_once_with({"type": "timer/delete", "timer_id": "tea"})
+
+
+@pytest.mark.asyncio
+async def test_created_resource_without_authoritative_id_cannot_be_deleted():
+    resources = HomeAssistantResources(MagicMock())
+    with pytest.raises(ValueError, match="authoritative.*ownership"):
+        await resources.rollback({
+            "resource_type": "area", "resource_id": "guest_room", "operation": "create",
+            "before": None, "created_by_hermes": True, "authoritative_id": False,
+        })
 
 
 @pytest.mark.asyncio

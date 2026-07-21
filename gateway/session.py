@@ -1608,6 +1608,34 @@ class SessionStore:
             claimed.add(legacy_key)
             return True
 
+    @staticmethod
+    def _recovered_row_matches_source_scope(
+        recovered: Dict[str, Any], source: SessionSource
+    ) -> bool:
+        """Reject recovered rows whose recorded origin belongs to another workspace.
+
+        Slack group/channel rows recorded with an origin_json carry the
+        workspace (scope_id) they were created under. A workspace-scoped
+        lookup must not adopt a row another team recorded — even via the
+        legacy-key fallback — unless the recorded origin names the same
+        workspace. Rows without a parseable origin are rejected for scoped
+        sources: an unattributable transcript is precisely the ambiguity
+        this guard exists to avoid.
+        """
+        if (
+            source.platform != Platform.SLACK
+            or source.chat_type == "dm"
+            or not source.scope_id
+        ):
+            return True
+        try:
+            origin = json.loads(recovered.get("origin_json") or "")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(origin, dict):
+            return False
+        return origin.get("scope_id", origin.get("guild_id")) == source.scope_id
+
     def _create_entry_from_recovered_row(
         self,
         *,
@@ -1702,6 +1730,8 @@ class SessionStore:
             migrated_legacy = bool(recovered)
         if not recovered:
             return None
+        if not self._recovered_row_matches_source_scope(recovered, source):
+            return None
         if not self._recovered_row_allowed_for_active_profile(
             requested_session_key=session_key,
             recovered=recovered,
@@ -1733,7 +1763,9 @@ class SessionStore:
             )
         return entry
 
-    def _query_recoverable_session(self, *, session_key, source, now):
+    def _query_recoverable_session(
+        self, *, session_key, source, now, lookup_session_key=None
+    ):
         """DB-only half of _recover_session_from_db (no lock needed).
 
         Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
@@ -1757,6 +1789,8 @@ class SessionStore:
             )
             migrated_legacy = bool(recovered)
         if not isinstance(recovered, dict):
+            return None
+        if not self._recovered_row_matches_source_scope(recovered, source):
             return None
         if not self._recovered_row_allowed_for_active_profile(
             requested_session_key=session_key,
@@ -2153,22 +2187,39 @@ class SessionStore:
         # workspace scope was part of the key. Move (rather than copy) the
         # legacy entry so a second workspace with identical Slack ids cannot
         # attach to the same transcript.
+        #
+        # Adoption policy (composed from #20583/#66398 and #68925):
+        #   - The legacy entry's recorded origin names a workspace → migrate
+        #     only when it matches the incoming workspace (precise).
+        #   - Scope-less origin, DM → first workspace claims it once
+        #     (claim-once): a 1:1 DM has a single human peer, so continuity
+        #     across the key-format change outweighs the ambiguity risk.
+        #   - Scope-less origin, channel/group → refuse: channel ids collide
+        #     across workspaces and a shared transcript leaking to a second
+        #     tenant is exactly the bug this fix removes.
         migrated_legacy_entry: Optional[SessionEntry] = None
         legacy_key = self._legacy_slack_session_key(source)
         if legacy_key and not force_new:
             with self._lock:
                 self._ensure_loaded_locked()
-                if (
-                    session_key not in self._entries
-                    and legacy_key in self._entries
-                    and self._claim_legacy_slack_key(legacy_key)
-                ):
-                    migrated_legacy_entry = self._entries.pop(legacy_key)
-                    migrated_legacy_entry.session_key = session_key
-                    migrated_legacy_entry.origin = source
-                    migrated_legacy_entry.platform = source.platform
-                    migrated_legacy_entry.chat_type = source.chat_type
-                    self._entries[session_key] = migrated_legacy_entry
+                legacy_entry = self._entries.get(legacy_key)
+                if session_key not in self._entries and legacy_entry is not None:
+                    origin_scope = (
+                        getattr(legacy_entry.origin, "scope_id", None)
+                        if legacy_entry.origin is not None
+                        else None
+                    )
+                    if origin_scope is not None:
+                        adopt = origin_scope == source.scope_id
+                    else:
+                        adopt = source.chat_type == "dm"
+                    if adopt and self._claim_legacy_slack_key(legacy_key):
+                        migrated_legacy_entry = self._entries.pop(legacy_key)
+                        migrated_legacy_entry.session_key = session_key
+                        migrated_legacy_entry.origin = source
+                        migrated_legacy_entry.platform = source.platform
+                        migrated_legacy_entry.chat_type = source.chat_type
+                        self._entries[session_key] = migrated_legacy_entry
             if migrated_legacy_entry is not None:
                 self._save_entries()
                 self._record_gateway_session_peer(
@@ -2313,6 +2364,15 @@ class SessionStore:
             recovered = self._query_recoverable_session(
                 session_key=session_key, source=source, now=now,
             )
+            recovered_from_legacy = False
+            if recovered is None and legacy_session_key is not None:
+                recovered = self._query_recoverable_session(
+                    session_key=session_key,
+                    lookup_session_key=legacy_session_key,
+                    source=source,
+                    now=now,
+                )
+                recovered_from_legacy = recovered is not None
             if recovered is not None:
                 with self._lock:
                     published = self._entries.get(session_key)
@@ -2321,6 +2381,13 @@ class SessionStore:
                         published = recovered
                 entry = published
                 _needs_save = True
+                if recovered_from_legacy and published is recovered:
+                    self._record_gateway_session_peer(
+                        recovered.session_id,
+                        session_key,
+                        source,
+                        display_name=recovered.display_name,
+                    )
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another

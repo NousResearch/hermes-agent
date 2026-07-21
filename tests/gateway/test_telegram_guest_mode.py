@@ -7,7 +7,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import MessageType, _thread_metadata_for_source
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import ParseMode, TelegramAdapter
 
 
 class _RecordingApp:
@@ -143,7 +143,7 @@ async def test_final_guest_send_uses_answer_guest_query_once(monkeypatch):
     adapter = _adapter()
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.InputTextMessageContent",
-        lambda text: SimpleNamespace(message_text=text),
+        lambda text, **kwargs: SimpleNamespace(message_text=text, **kwargs),
     )
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.InlineQueryResultArticle",
@@ -167,7 +167,45 @@ async def test_final_guest_send_uses_answer_guest_query_once(monkeypatch):
     adapter._bot.answer_guest_query.assert_awaited_once()
     query_id, article = adapter._bot.answer_guest_query.await_args.args
     assert query_id == "5323706597129951744"
-    assert article.input_message_content.message_text == "Yes — I’m here."
+    assert article.input_message_content.message_text == "Yes — I’m here\\."
+    assert article.input_message_content.parse_mode == ParseMode.MARKDOWN_V2
+
+
+@pytest.mark.asyncio
+async def test_final_guest_send_formats_markdown_as_telegram_markdown_v2(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.InputTextMessageContent",
+        lambda text, **kwargs: SimpleNamespace(message_text=text, **kwargs),
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.InlineQueryResultArticle",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    adapter._bot.answer_guest_query = AsyncMock(
+        return_value=SimpleNamespace(message_id=778)
+    )
+
+    result = await adapter.send(
+        "1482299073",
+        "## Turnout so far\n\n| Time | Turnout |\n|---|---:|\n| 9am | **7.97%** |",
+        metadata={
+            "telegram_guest_query_id": "5323706597129951744",
+            "notify": True,
+        },
+    )
+
+    assert result.success is True
+    _, article = adapter._bot.answer_guest_query.await_args.args
+    rendered = article.input_message_content
+    assert rendered.parse_mode == ParseMode.MARKDOWN_V2
+    assert "##" not in rendered.message_text
+    assert "**" not in rendered.message_text
+    assert "|---" not in rendered.message_text
+    assert "*Turnout so far*" in rendered.message_text
+    assert "*7\\.97%*" in rendered.message_text
+    assert "*9am*" in rendered.message_text
+    assert "• Turnout: *7\\.97%*" in rendered.message_text
 
 
 @pytest.mark.asyncio
@@ -175,7 +213,7 @@ async def test_guest_answer_failure_is_non_retryable(monkeypatch):
     adapter = _adapter()
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.InputTextMessageContent",
-        lambda text: SimpleNamespace(message_text=text),
+        lambda text, **kwargs: SimpleNamespace(message_text=text, **kwargs),
     )
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.InlineQueryResultArticle",

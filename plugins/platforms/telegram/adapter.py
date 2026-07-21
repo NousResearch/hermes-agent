@@ -4545,10 +4545,14 @@ class TelegramAdapter(BasePlatformAdapter):
             if not (metadata or {}).get("notify"):
                 return SendResult(success=True, message_id=None)
             try:
+                formatted = self.format_message(content.strip())
                 result = InlineQueryResultArticle(
                     id=str(guest_query_id),
                     title="Response",
-                    input_message_content=InputTextMessageContent(content.strip()),
+                    input_message_content=InputTextMessageContent(
+                        formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    ),
                 )
                 sent = await self._bot.answer_guest_query(str(guest_query_id), result)
                 return SendResult(

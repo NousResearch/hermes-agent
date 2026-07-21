@@ -658,6 +658,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
+    # Fallback: v24+ config may store custom providers under models.providers
+    # (e.g. when configured via dashboard or setup wizard without explicit
+    # top-level providers key). Both schemas share the same fields: api_key,
+    # base_url, key_env, name, default_model.
+    if not isinstance(providers, dict):
+        providers = (config.get("models") or {}).get("providers")
     if isinstance(providers, dict):
         from hermes_cli.config import is_provider_enabled
         for ep_name, entry in providers.items():

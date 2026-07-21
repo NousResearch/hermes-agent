@@ -1549,6 +1549,16 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Model-facing computer-use safety guidance. Default True preserves the
+    # existing safety posture; users with a trusted/local model can disable the
+    # prompt text independently from secret redaction and tool enforcement.
+    _security_section = _agent_cfg.get("security", {})
+    if not isinstance(_security_section, dict):
+        _security_section = {}
+    agent._computer_use_safety_guidance = bool(
+        _security_section.get("computer_use_safety_guidance", True)
+    )
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

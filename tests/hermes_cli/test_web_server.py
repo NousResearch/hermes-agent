@@ -4652,6 +4652,24 @@ class TestBuildSchemaFromConfig:
         assert "yolo" not in options, "stale option 'yolo' should not appear"
         assert "deny" not in options, "stale option 'deny' should not appear"
 
+    def test_llm_security_controls_are_exposed_as_boolean_settings(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert DEFAULT_CONFIG["security"]["redact_secrets"] is True
+        assert DEFAULT_CONFIG["security"]["computer_use_safety_guidance"] is True
+        for key in (
+            "security.redact_secrets",
+            "security.computer_use_safety_guidance",
+        ):
+            assert CONFIG_SCHEMA[key]["type"] == "boolean"
+            assert CONFIG_SCHEMA[key]["category"] == "security"
+
+        assert "model" in CONFIG_SCHEMA["security.redact_secrets"]["description"].lower()
+        assert "system prompt" in CONFIG_SCHEMA[
+            "security.computer_use_safety_guidance"
+        ]["description"].lower()
+
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
         test_config = {"model": "test", "nested": {"key": "val"}}
@@ -4786,6 +4804,29 @@ class TestConfigRoundTrip:
 
         # Restore
         web_config["agent"]["max_turns"] = original_turns
+        self.client.put("/api/config", json={"config": web_config})
+
+    def test_edit_llm_security_controls(self):
+        """Dashboard toggles for model-facing security controls persist."""
+        from hermes_cli.config import load_config
+
+        web_config = self.client.get("/api/config").json()
+        security = web_config.setdefault("security", {})
+        original_redaction = security.get("redact_secrets")
+        original_guidance = security.get("computer_use_safety_guidance")
+        security["redact_secrets"] = False
+        security["computer_use_safety_guidance"] = False
+
+        response = self.client.put("/api/config", json={"config": web_config})
+
+        assert response.status_code == 200
+        after = load_config()
+        assert after["security"]["redact_secrets"] is False
+        assert after["security"]["computer_use_safety_guidance"] is False
+
+        # Restore
+        security["redact_secrets"] = original_redaction
+        security["computer_use_safety_guidance"] = original_guidance
         self.client.put("/api/config", json={"config": web_config})
 
     def test_round_trip_preserves_custom_providers(self):

@@ -247,10 +247,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Computer-use — goes in as its own block rather than being merged into
     # tool_guidance because the content is multi-paragraph. The guidance is
     # rendered for the host platform so Windows/Linux hosts don't see
-    # macOS-only wording (Mac, Space, cmd+s).
+    # macOS-only wording (Mac, Space, cmd+s). Model-facing safety instructions
+    # are independently configurable; the operational workflow remains.
     if "computer_use" in agent.valid_tool_names:
         from agent.prompt_builder import computer_use_guidance
-        stable_parts.append(computer_use_guidance())
+        stable_parts.append(
+            computer_use_guidance(
+                include_safety=getattr(agent, "_computer_use_safety_guidance", True)
+            )
+        )
 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:

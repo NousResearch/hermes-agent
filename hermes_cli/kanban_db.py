@@ -1621,15 +1621,111 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+# Repairable integrity_check error classes. Both shapes are *index-scoped*:
+# the table b-tree is intact and only a secondary index disagrees with it,
+# which REINDEX rebuilds losslessly from the table data. The index name is
+# parsed generically from the message — no hardcoded index list. Any other
+# integrity_check message (page corruption, "database disk image is
+# malformed", freelist damage, …) is NOT repairable this way and keeps the
+# fail-closed behavior.
+_REPAIRABLE_INDEX_ERROR_PATTERNS = (
+    re.compile(r"^wrong # of entries in index (?P<index>.+)$"),
+    re.compile(r"^row \d+ missing from index (?P<index>.+)$"),
+)
+
+
+def _integrity_messages_ok(messages: list[str]) -> bool:
+    """True iff ``PRAGMA integrity_check`` output is the single ``ok`` row."""
+    return len(messages) == 1 and messages[0].strip().lower() == "ok"
+
+
+def _run_integrity_check(conn: sqlite3.Connection) -> list[str]:
+    """Return all ``PRAGMA integrity_check`` message rows as strings."""
+    rows = conn.execute("PRAGMA integrity_check").fetchall()
+    return [str(row[0]) for row in rows if row is not None and row[0] is not None]
+
+
+def _repairable_index_names(messages: list[str]) -> Optional[list[str]]:
+    """Return the distinct index names iff EVERY message is index-repairable.
+
+    ``None`` when any line falls outside the repairable index-class errors
+    (or when there are no messages at all) — the caller must then fail
+    closed exactly as before. Order of first appearance is preserved so the
+    REINDEX pass is deterministic.
+    """
+    names: list[str] = []
+    saw_any = False
+    for raw in messages:
+        message = (raw or "").strip()
+        if not message:
+            continue
+        for pattern in _REPAIRABLE_INDEX_ERROR_PATTERNS:
+            match = pattern.match(message)
+            if match:
+                break
+        else:
+            return None
+        saw_any = True
+        name = match.group("index").strip()
+        if name and name not in names:
+            names.append(name)
+    if not saw_any or not names:
+        return None
+    return names
+
+
+def _attempt_index_reindex_repair(
+    path: Path, index_names: list[str],
+) -> tuple[bool, list[str]]:
+    """REINDEX the named indexes, then re-run ``PRAGMA integrity_check``.
+
+    Tries a per-index ``REINDEX "<name>"`` first (cheapest, most targeted);
+    if any per-index statement fails — e.g. the parsed name does not resolve
+    because integrity_check reported an internal/auto index — falls back to
+    a bare ``REINDEX`` of the whole database. Returns
+    ``(clean, post_repair_messages)``; never raises. Callers must hold the
+    board's cross-process init flock so no other process connects mid-repair.
+    """
+    try:
+        conn = _sqlite_connect(path)
+    except sqlite3.Error as exc:
+        return False, [f"could not reopen for REINDEX: {exc}"]
+    try:
+        try:
+            for name in index_names:
+                escaped = name.replace('"', '""')
+                conn.execute(f'REINDEX "{escaped}"')
+        except sqlite3.Error:
+            # Per-index rebuild failed (unresolvable parsed name, auto
+            # index, …) — bare REINDEX rebuilds every index in the DB.
+            conn.execute("REINDEX")
+        messages = _run_integrity_check(conn)
+    except sqlite3.Error as exc:
+        return False, [f"REINDEX failed: {exc}"]
+    finally:
+        conn.close()
+    return _integrity_messages_ok(messages), messages
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
     Opens the probe in read/write mode so SQLite can recover or
     checkpoint a healthy WAL/hot-journal DB before we declare it
-    corrupt. If the file is malformed, copy it (and any WAL/SHM
-    sidecars) to a timestamped backup and raise
-    :class:`KanbanDbCorruptError` so callers cannot silently recreate
-    the schema on top of a damaged DB.
+    corrupt.
+
+    **Narrow auto-repair:** when the integrity failure consists *only* of
+    index-scoped errors (``wrong # of entries in index <name>`` / ``row N
+    missing from index <name>``), the table b-trees are intact and REINDEX
+    rebuilds the damaged indexes losslessly. In that case we take the
+    corrupt backup FIRST (same content-addressed quarantine as the
+    fail-closed path), run REINDEX under the caller-held init flock,
+    re-run ``integrity_check``, and proceed only if it comes back clean.
+    Anything else — page corruption, ``malformed`` images, a REINDEX that
+    does not produce a clean re-check — fails closed exactly as before:
+    copy the file (and any WAL/SHM sidecars) to a backup and raise
+    :class:`KanbanDbCorruptError` so callers cannot silently recreate the
+    schema on top of a damaged DB.
 
     Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
     treated as corruption; they propagate raw so the caller sees a
@@ -1660,14 +1756,18 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     if str(resolved) in _INITIALIZED_PATHS:
         return
     reason: Optional[str] = None
+    messages: list[str] = []
     try:
         probe = _sqlite_connect(resolved)
         try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
+            messages = _run_integrity_check(probe)
         finally:
             probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        if not _integrity_messages_ok(messages):
+            reason = (
+                f"integrity_check returned "
+                f"{messages[0] if messages else '<no row>'!r}"
+            )
     except sqlite3.OperationalError:
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
@@ -1675,7 +1775,30 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
+    # Quarantine FIRST — both the repair path and the fail-closed path
+    # preserve the pre-touch bytes before anything mutates the file.
     backup = _backup_corrupt_db(resolved)
+    index_names = _repairable_index_names(messages)
+    if index_names:
+        _log.warning(
+            "kanban DB %s failed integrity_check with index-only errors "
+            "(%s); pre-repair backup at %s — attempting REINDEX auto-repair.",
+            resolved, ", ".join(index_names),
+            backup if backup is not None else "<backup failed>",
+        )
+        repaired, post = _attempt_index_reindex_repair(resolved, index_names)
+        if repaired:
+            _log.warning(
+                "kanban DB %s auto-repaired via REINDEX (%s); "
+                "integrity_check now clean. Pre-repair copy kept at %s.",
+                resolved, ", ".join(index_names),
+                backup if backup is not None else "<backup failed>",
+            )
+            return
+        reason = (
+            f"{reason}; REINDEX auto-repair attempted but integrity_check "
+            f"still returned {post[0] if post else '<no row>'!r}"
+        )
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 

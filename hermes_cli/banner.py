@@ -120,6 +120,11 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 # (e.g. nix-built hermes — no local git history to count against).
 UPDATE_AVAILABLE_NO_COUNT = -1
 
+# Sentinel when HEAD and origin/main have diverged (neither is an ancestor of
+# the other). A tip-only behind count would mislead (e.g. "1 commit behind"
+# on a long-lived feature branch). See #68484.
+UPDATE_DIVERGED = -2
+
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
 
@@ -191,6 +196,21 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+
+def _git_is_ancestor(maybe_ancestor: str, rev: str, repo_dir: Path) -> bool:
+    """True when *maybe_ancestor* is an ancestor of *rev* (or equal)."""
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", maybe_ancestor, rev],
+            capture_output=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
@@ -245,7 +265,14 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
-            return int(result.stdout.strip())
+            behind = int(result.stdout.strip())
+            # Only report an exact behind-count when HEAD can fast-forward
+            # onto origin/main. Otherwise a diverged feature branch can
+            # print a tiny tip count ("1 commit behind") while the trees
+            # differ by hundreds/thousands of files (#68484).
+            if behind > 0 and not _git_is_ancestor("HEAD", "origin/main", repo_dir):
+                return UPDATE_DIVERGED
+            return behind
     except Exception:
         pass
     return None
@@ -300,9 +327,11 @@ def check_for_updates() -> Optional[int]:
     it to upstream main via ``git ls-remote``. Otherwise look for a local
     git checkout and count commits behind ``origin/main``.
 
-    Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
-    if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
-    the check failed or doesn't apply. Cached for 6 hours.
+    Returns the number of commits behind (fast-forward only),
+    ``UPDATE_AVAILABLE_NO_COUNT`` (-1) if behind but the count is unknown,
+    ``UPDATE_DIVERGED`` (-2) if HEAD and origin/main have diverged,
+    ``0`` if up-to-date, or ``None`` if the check failed or doesn't apply.
+    Cached for 6 hours.
     """
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
@@ -875,6 +904,14 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 right_lines.append(
                     f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
+                )
+            elif behind == UPDATE_DIVERGED:
+                # Diverged feature branch: do not imply a small fast-forward.
+                right_lines.append(
+                    "[bold yellow]⚠ branch diverged from origin/main[/]"
+                    f"[dim yellow] — not a fast-forward; review before "
+                    f"[bold]{recommended_update_command()}[/bold] "
+                    "(switches to main / may stash WIP)[/]"
                 )
             else:
                 # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update

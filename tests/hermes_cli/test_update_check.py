@@ -93,8 +93,8 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    # origin probe + is-shallow probe + git fetch + git rev-list
-    assert mock_run.call_count == 4
+    # origin probe + is-shallow probe + git fetch + git rev-list + ancestry check
+    assert mock_run.call_count == 5
 
 
 def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
@@ -214,12 +214,44 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
             return MagicMock(returncode=0, stdout="")
         if cmd[:3] == ["git", "rev-list", "--count"]:
             return MagicMock(returncode=0, stdout="7\n")
+        # HEAD is ancestor of origin/main → fast-forward behind count is valid
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return MagicMock(returncode=0, stdout="")
         raise AssertionError(f"unexpected git command: {cmd!r}")
 
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = banner._check_via_local_git(repo_dir)
 
     assert result == 7
+
+
+def test_check_via_local_git_diverged_branch_not_false_behind_count(tmp_path):
+    """#68484: diverged feature branch must not report a tiny tip behind-count."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            # Tip math says "1 behind" — the misleading signal on diverged branches
+            return MagicMock(returncode=0, stdout="1\n")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            # HEAD is NOT an ancestor of origin/main
+            return MagicMock(returncode=1, stdout="")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == banner.UPDATE_DIVERGED
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ CLOUD_OBSERVATION_SCHEMA = "muncho-owner-gate-cloud-observation.v1"
 HOST_OBSERVATION_SCHEMA = "muncho-owner-gate-host-observation.v2"
 PREFLIGHT_SCHEMA = "muncho-owner-gate-inert-preflight.v2"
 POST_IAM_PREFLIGHT_SCHEMA = "muncho-owner-gate-post-iam-preflight.v2"
-HOST_OBSERVATION_FRESHNESS_SECONDS = 60
+HOST_OBSERVATION_FRESHNESS_SECONDS = 300
 HOST_RELEASE_ENTRYPOINTS = (
     "muncho-owner-gate-intake",
     "muncho-passkey-v2-web",

@@ -69,7 +69,7 @@ def get_env_value(name, default=None):
         return os.getenv(name, default)
     value = _get_env_value(name)
     return default if value is None else value
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.managed_tool_gateway import is_managed_tool_gateway_ready, resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
@@ -2712,7 +2712,7 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
 
 def _has_openai_audio_backend() -> bool:
     """Return True when OpenAI audio can use direct credentials or the managed gateway."""
-    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
+    return bool(resolve_openai_audio_api_key() or is_managed_tool_gateway_ready("openai-audio"))
 
 
 # ===========================================================================

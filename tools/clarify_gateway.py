@@ -108,6 +108,9 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     for 10 minutes with zero activity touches and the gateway's inactivity
     watchdog kills the agent while the user is still typing.
 
+    ``timeout <= 0`` means unlimited wait (no auto-skip). The heartbeat
+    still runs so gateway inactivity watchdogs do not kill a live prompt.
+
     Returns the resolved response string, or ``None`` on timeout.
     """
     with _lock:
@@ -120,13 +123,19 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
-    deadline = time.monotonic() + max(timeout, 0.0)
+    # 0 / negative → unlimited (user preference: never auto-skip mid-think).
+    unlimited = timeout is None or float(timeout) <= 0.0
+    deadline = None if unlimited else (time.monotonic() + float(timeout))
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        if entry.event.wait(timeout=min(1.0, remaining)):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            slice_s = min(1.0, remaining)
+        else:
+            slice_s = 1.0
+        if entry.event.wait(timeout=slice_s):
             break
         if touch_activity_if_due is not None:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
@@ -312,6 +321,8 @@ def get_clarify_timeout() -> int:
     (#32762).
 
     Reads ``agent.clarify_timeout`` from config.yaml.
+    Set to ``0`` (or negative) for unlimited wait — never auto-skip while
+    the user is still deciding (Desktop / gateway path).
     """
     try:
         from hermes_cli.config import load_config

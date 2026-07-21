@@ -11429,7 +11429,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         import time as _time
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        # 0 / negative = unlimited (never auto-skip mid-think). Prefer top-level
+        # clarify.timeout; fall back to agent.clarify_timeout for one-knob setups.
+        _raw_timeout = CLI_CONFIG.get("clarify", {}).get("timeout", None)
+        if _raw_timeout is None:
+            _raw_timeout = (CLI_CONFIG.get("agent") or {}).get("clarify_timeout", 120)
+        try:
+            timeout = int(_raw_timeout)
+        except (TypeError, ValueError):
+            timeout = 120
         response_queue = queue.Queue()
         is_open_ended = not choices
 
@@ -11439,7 +11447,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "selected": 0,
             "response_queue": response_queue,
         }
-        self._clarify_deadline = _time.monotonic() + timeout
+        # None deadline ⇒ unlimited wait (no auto-proceed).
+        self._clarify_deadline = None if timeout <= 0 else (_time.monotonic() + timeout)
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
@@ -11456,13 +11465,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         while True:
             try:
                 result = response_queue.get(timeout=1)
-                self._clarify_deadline = 0
+                self._clarify_deadline = None
                 self._persist_prompt_summary("?", "Clarify", question, str(result))
                 return result
             except queue.Empty:
-                remaining = self._clarify_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                if self._clarify_deadline is not None:
+                    remaining = self._clarify_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 now = _time.monotonic()
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
@@ -11471,7 +11481,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
         self._clarify_freetext = False
-        self._clarify_deadline = 0
+        self._clarify_deadline = None
         self._paint_now()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
@@ -14411,8 +14421,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ]
 
             if cli_ref._clarify_state:
-                remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
-                countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
+                # None deadline = unlimited (no auto-skip); hide countdown.
+                if cli_ref._clarify_deadline is None:
+                    countdown = ''
+                else:
+                    remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
                 if cli_ref._clarify_freetext:
                     return [
                         ('class:hint', '  type your answer and press Enter'),

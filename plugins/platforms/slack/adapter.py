@@ -6507,6 +6507,58 @@ async def _standalone_send(
                 exc_info=True,
             )
 
+    # Out-of-process cron runs have no live SlackAdapter.  Upload MEDIA files
+    # here so the standalone path has feature parity with the live adapter
+    # instead of silently succeeding with text only.  This runs BEFORE the
+    # empty-text skip: a media delivery with a blank caption must still
+    # upload the files.
+    if media_files:
+        if not check_slack_requirements():
+            return {"error": "Slack send failed: slack-sdk is not installed"}
+
+        paths = []
+        for media in media_files:
+            path = media[0] if isinstance(media, (tuple, list)) else media
+            path = str(path)
+            if not os.path.isfile(path):
+                return {"error": f"Slack media file not found: {os.path.basename(path)}"}
+            paths.append(path)
+
+        try:
+            client = AsyncWebClient(token=token)  # pyright: ignore[reportCallIssue]
+            _apply_slack_proxy(client, resolve_proxy_url())
+            upload_result = None
+            for start in range(0, len(paths), 10):
+                batch = paths[start : start + 10]
+                kwargs = {
+                    "channel": chat_id,
+                    "initial_comment": formatted if start == 0 else "",
+                    "thread_ts": thread_id,
+                }
+                if len(batch) == 1:
+                    kwargs.update(
+                        file=batch[0],
+                        filename=os.path.basename(batch[0]),
+                    )
+                else:
+                    kwargs["file_uploads"] = [
+                        {"file": path, "filename": os.path.basename(path)}
+                        for path in batch
+                    ]
+                upload_result = await client.files_upload_v2(**kwargs)
+            return {
+                "success": True,
+                "platform": "slack",
+                "chat_id": chat_id,
+                "message_id": (
+                    upload_result.get("ts")
+                    if upload_result is not None and hasattr(upload_result, "get")
+                    else None
+                ),
+            }
+        except Exception as e:
+            return {"error": f"Slack media upload failed: {e}"}
+
     if not formatted or not formatted.strip():
         logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
         return {
@@ -6521,7 +6573,7 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
 
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)

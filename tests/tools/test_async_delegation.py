@@ -143,6 +143,30 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_single_async_runner_crash_emits_failed_logical_envelope():
+    def runner():
+        raise RuntimeError("boom")
+
+    ad.dispatch_async_delegation(
+        goal="crash",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+    )
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["status"] == "error"
+    assert evt["outcome"] == "failed"
+    assert evt["exit_reason"] == "error"
+    assert evt["interrupted"] is False
+    assert evt["tool_error_count"] == 0
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -394,7 +418,10 @@ def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
     assert durable["delivery_state"] == "pending"
     restored = queue.Queue()
     assert ad.restore_undelivered_completions(restored) == 1
-    assert restored.get_nowait()["status"] == "unknown"
+    restored_event = restored.get_nowait()
+    assert restored_event["status"] == "unknown"
+    assert restored_event["outcome"] == "unknown"
+    assert restored_event["error_authoritative"] is False
 
 
 def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch):

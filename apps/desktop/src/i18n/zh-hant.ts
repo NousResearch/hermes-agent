@@ -964,6 +964,7 @@ export const zhHant = defineLocale({
     running: '執行中',
     failed: '失敗',
     done: '完成',
+    verificationRequired: '需要驗證',
     streaming: '串流傳輸中',
     files: '檔案',
     moreFiles: count => `還有 ${count} 個檔案`,

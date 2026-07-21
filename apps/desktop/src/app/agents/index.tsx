@@ -15,8 +15,9 @@ import {
   $subagentsBySession,
   allSubagents,
   buildSubagentTree,
+  isFailedSubagent,
   type SubagentNode,
-  type SubagentStatus,
+  type SubagentProgress,
   type SubagentStreamEntry
 } from '@/store/subagents'
 
@@ -24,8 +25,8 @@ import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
-function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
-  if (status === 'running' || status === 'queued') {
+function statusGlyph(item: Pick<SubagentProgress, 'outcome' | 'status'>, a: Translations['agents']): ReactNode {
+  if (item.status === 'running' || item.status === 'queued') {
     return (
       <GlyphSpinner
         ariaLabel={a.running}
@@ -35,11 +36,12 @@ function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNo
     )
   }
 
-  if (status === 'failed' || status === 'interrupted') {
+  if (isFailedSubagent(item)) {
     return <AlertCircle aria-label={a.failed} className="size-3.5 shrink-0 text-destructive" />
   }
 
-  return <CheckCircle2 aria-label={a.done} className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
+  // Lifecycle completion is not task acceptance; no verified outcome exists yet.
+  return <AlertCircle aria-label={a.verificationRequired} className="size-3.5 shrink-0 text-amber-500/85" />
 }
 
 const STREAM_TONE: Record<SubagentStreamEntry['kind'], string> = {
@@ -49,7 +51,7 @@ const STREAM_TONE: Record<SubagentStreamEntry['kind'], string> = {
   tool: 'text-foreground/85'
 }
 
-function streamGlyph(entry: SubagentStreamEntry): ReactNode {
+function streamGlyph(entry: SubagentStreamEntry, a: Translations['agents']): ReactNode {
   if (entry.isError) {
     return <AlertCircle aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
   }
@@ -59,6 +61,15 @@ function streamGlyph(entry: SubagentStreamEntry): ReactNode {
   }
 
   if (entry.kind === 'summary') {
+    if (entry.isUnverified !== false) {
+      return (
+        <AlertCircle
+          aria-label={a.verificationRequired}
+          className="mt-0.5 size-3 shrink-0 text-amber-500/85"
+        />
+      )
+    }
+
     return <CheckCircle2 aria-hidden className="mt-0.5 size-3 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
   }
 
@@ -183,7 +194,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   const active = flat.filter(n => n.status === 'running' || n.status === 'queued').length
-  const failed = flat.filter(n => n.status === 'failed' || n.status === 'interrupted').length
+  const failed = flat.filter(isFailedSubagent).length
   const tools = flat.reduce((sum, n) => sum + (n.toolCount ?? 0), 0)
   const files = flat.reduce((sum, n) => sum + n.filesRead.length + n.filesWritten.length, 0)
   const tokens = flat.reduce((sum, n) => sum + (n.inputTokens ?? 0) + (n.outputTokens ?? 0), 0)
@@ -276,7 +287,7 @@ function StreamLine({
 
   return (
     <div className="flex min-w-0 items-baseline gap-2 text-[0.72rem] leading-relaxed" ref={enterRef}>
-      <span className="flex h-[0.95rem] shrink-0 items-center">{streamGlyph(entry)}</span>
+      <span className="flex h-[0.95rem] shrink-0 items-center">{streamGlyph(entry, t.agents)}</span>
       <span className={cn('min-w-0 flex-1 wrap-anywhere', tone, isMono && 'font-mono text-[0.69rem]')}>
         {entry.text}
         {active ? (
@@ -327,7 +338,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
         onClick={() => setOpen(v => !v)}
         type="button"
       >
-        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents)}</span>
+        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node, t.agents)}</span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span
             className={cn(

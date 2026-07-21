@@ -201,6 +201,10 @@ export function isRunning(item: Pick<SubagentProgress, 'status'>): boolean {
   return item.status === 'running' || item.status === 'queued'
 }
 
+export function isFailedSubagent(item: Pick<SubagentProgress, 'outcome' | 'status'>): boolean {
+  return item.outcome === 'failed' || item.status === 'error' || item.status === 'failed' || item.status === 'timeout'
+}
+
 const SPARK_RAMP = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'] as const
 
 /**

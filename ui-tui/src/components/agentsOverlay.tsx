@@ -22,6 +22,7 @@ import {
   fmtTokens,
   formatSummary,
   hotnessBucket,
+  isFailedSubagent,
   peakHotness,
   sparkline,
   topLevelSubagents,
@@ -80,11 +81,7 @@ const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
   all: () => true,
   leaf: n => n.children.length === 0,
   running: n => n.item.status === 'running' || n.item.status === 'queued',
-  failed: n =>
-    n.item.status === 'error' ||
-    n.item.status === 'failed' ||
-    n.item.status === 'interrupted' ||
-    n.item.status === 'timeout'
+  failed: n => isFailedSubagent(n.item)
 }
 
 const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
@@ -122,6 +119,19 @@ const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
 const statusGlyph = (item: SubagentProgress, t: Theme) => {
+  if (item.outcome === 'failed') {
+    const g = STATUS_GLYPH.failed
+
+    return { color: g.color(t), glyph: g.glyph }
+  }
+
+  if (
+    item.status === 'completed' &&
+    (item.outcome === 'partial' || item.outcome === 'unknown' || item.outcome === 'unverified' || item.outcome == null)
+  ) {
+    return { color: t.color.warn, glyph: '◇' }
+  }
+
   // Defensive fallback for cross-version snapshots with unknown statuses.
   const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
 

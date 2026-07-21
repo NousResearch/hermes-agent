@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import type { SpawnTreeLoadResponse } from '../gatewayTypes.js'
-import type { SubagentProgress, SubagentStatus } from '../types.js'
+import type { SubagentOutcome, SubagentProgress, SubagentStatus } from '../types.js'
 
 export interface SpawnSnapshot {
   finishedAt: number
@@ -31,6 +31,8 @@ const KNOWN_SUBAGENT_STATUSES = new Set<SubagentStatus>([
   'timeout'
 ])
 
+const KNOWN_SUBAGENT_OUTCOMES = new Set<SubagentOutcome>(['failed', 'partial', 'unknown', 'unverified'])
+
 const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): SubagentStatus => {
   if (typeof status !== 'string') {
     return fallback
@@ -39,6 +41,16 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   const normalized = status.toLowerCase() as SubagentStatus
 
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
+}
+
+const normalizeSubagentOutcome = (outcome: unknown): SubagentOutcome | undefined => {
+  if (typeof outcome !== 'string') {
+    return undefined
+  }
+
+  const normalized = outcome.toLowerCase() as SubagentOutcome
+
+  return KNOWN_SUBAGENT_OUTCOMES.has(normalized) ? normalized : undefined
 }
 
 export const $spawnHistory = atom<SpawnSnapshot[]>([])
@@ -145,6 +157,7 @@ function normaliseSubagent(raw: unknown): SubagentProgress {
     notes: (arr<string>(o.notes) ?? []).filter(x => typeof x === 'string'),
     outputTail: arr(o.outputTail) as SubagentProgress['outputTail'],
     outputTokens: n(o.outputTokens),
+    outcome: normalizeSubagentOutcome(o.outcome),
     parentId: s(o.parentId) ?? null,
     reasoningTokens: n(o.reasoningTokens),
     startedAt: n(o.startedAt),

@@ -47,6 +47,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.delegation_outcome import (
+    is_fatal_delegation_exit_reason,
+    is_partial_delegation_exit_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2031,6 +2035,69 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
+# Neutral / warning markers for the logical outcome of a delegated task.
+# Deliberately NO green check for any value here: subagent output availability
+# is never task acceptance in this envelope. "✗" marks a hard failure; the
+# warning glyph marks output that exists but has NOT been verified.
+_OUTCOME_ICON = {
+    "unverified": "⚠",
+    "partial": "◐",
+    "failed": "✗",
+    "unknown": "⚠",
+}
+
+
+def _derive_result_outcome(r: dict) -> str:
+    """Return the logical outcome for a child result, failing closed.
+
+    Prefers the explicit machine-readable ``outcome`` set by
+    ``delegate_tool._run_single_child``. Legacy results (predating the field)
+    are derived from ``status``/``summary`` and are NEVER promoted to a
+    verified-success class — a bare non-empty summary maps to ``unverified``
+    at best, so an old false-green ``status="completed"`` can no longer render
+    as accepted work.
+    """
+    status = str(r.get("status") or "").strip().lower()
+    exit_reason = r.get("exit_reason") or r.get("turn_exit_reason")
+    if (
+        (bool(r.get("error")) and r.get("error_authoritative") is not False)
+        or status in ("error", "timeout", "failed")
+        or is_fatal_delegation_exit_reason(exit_reason)
+    ):
+        return "failed"
+    summary = r.get("summary")
+    has_summary = (
+        isinstance(summary, str)
+        and summary.strip()
+        and summary.strip() != "(empty)"
+    )
+    outcome = r.get("outcome")
+    if outcome == "failed":
+        return "failed"
+    if outcome == "unknown" or status == "unknown":
+        return "unknown"
+    if status == "interrupted" or is_partial_delegation_exit_reason(exit_reason):
+        return "partial" if has_summary else "failed"
+    if isinstance(outcome, str) and outcome in _OUTCOME_ICON:
+        return outcome
+    # status in {completed, success, unknown, ...}: a summary is unverified,
+    # its absence is a failure. Never "verified"/"success".
+    return "unverified" if has_summary else "failed"
+
+
+def _delegation_evidence_fields(r: dict) -> list[str]:
+    """Return concise runtime evidence fields for parent verification."""
+    fields: list[str] = []
+    if r.get("exit_reason") is not None:
+        exit_reason = str(r["exit_reason"]).replace("\n", " ")[:80]
+        fields.append(f"exit_reason={exit_reason}")
+    if "interrupted" in r and r.get("interrupted") is not None:
+        fields.append(f"interrupted={str(bool(r['interrupted'])).lower()}")
+    if r.get("tool_error_count") is not None:
+        fields.append(f"tool_errors={r['tool_error_count']}")
+    return fields
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -2073,6 +2140,9 @@ def _format_async_delegation(evt: dict) -> str:
             "has finished. All ran in parallel and waited on each other; their "
             "consolidated results are below. You may have moved on since "
             "dispatching — act on these or re-dispatch if things have changed.",
+            "NOTE: a subagent finishing and producing output is NOT task "
+            "acceptance. Each task below is marked unverified/partial/failed — "
+            "verify the returned handles/evidence yourself before relying on it.",
             "",
         ]
         if isinstance(dispatched_at, (int, float)):
@@ -2091,31 +2161,39 @@ def _format_async_delegation(evt: dict) -> str:
         for r in sorted(results, key=lambda x: x.get("task_index", 0)):
             idx = r.get("task_index", 0)
             r_status = r.get("status", "?")
+            r_outcome = _derive_result_outcome(r)
             r_summary = r.get("summary")
             r_error = r.get("error")
             r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
-            icon = "✓" if r_status in ("completed", "success") else "✗"
+            icon = _OUTCOME_ICON.get(r_outcome, "⚠")
             lines.append("")
             header = f"--- {icon} TASK {idx + 1}/{n}"
             if r_goal:
                 header += f": {r_goal}"
-            header += f"  (status={r_status}"
+            header += f"  (outcome={r_outcome}, status={r_status}"
             if r.get("api_calls"):
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            evidence = _delegation_evidence_fields(r)
+            if evidence:
+                header += ", " + ", ".join(evidence)
             header += ") ---"
             lines.append(header)
-            if r_status in ("completed", "success") and r_summary:
+            if r_outcome == "unverified" and r_summary:
+                lines.append(
+                    "Unverified summary (subagent self-report — verify before "
+                    "relying on it):"
+                )
                 lines.append(r_summary)
             elif r_summary:
                 if r_error:
-                    lines.append(f"({r_status}: {r_error})")
-                lines.append("Partial output:")
+                    lines.append(f"({r_outcome}: {r_error})")
+                lines.append(f"Partial/unverified output (outcome={r_outcome}):")
                 lines.append(r_summary)
             else:
                 lines.append(
-                    f"(no summary — status={r_status}"
+                    f"(no summary — outcome={r_outcome}, status={r_status}"
                     + (f": {r_error}" if r_error else "")
                     + ")"
                 )
@@ -2130,11 +2208,15 @@ def _format_async_delegation(evt: dict) -> str:
     if isinstance(dispatched_at, (int, float)):
         age = f" ({_format_age(completed_at - dispatched_at)} ago)"
 
+    outcome = _derive_result_outcome(evt)
     lines = [
         f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
         "A background subagent you dispatched earlier has finished. You may "
         "have moved on since dispatching it; the full task source is below so "
         "you can act on the result or re-dispatch if things have changed.",
+        "NOTE: the subagent finishing and producing output is NOT task "
+        "acceptance. Verify the returned handles/evidence yourself before "
+        "relying on this result.",
         "",
     ]
     if isinstance(dispatched_at, (int, float)):
@@ -2146,26 +2228,37 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
-    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    lines.append(
+        f"Outcome: {outcome}   Status: {status}   API calls: {api_calls}   "
+        f"Duration: {duration}s"
+    )
+    evidence = _delegation_evidence_fields(evt)
+    if evidence:
+        lines.append("Runtime evidence: " + ", ".join(evidence))
     lines.append("--- RESULT ---")
-    if status in ("completed", "success") and summary:
-        lines.append(summary)
-    elif status == "interrupted":
+    if outcome == "unverified" and summary:
         lines.append(
-            "The subagent was interrupted before completing"
-            + (f": {error}" if error else ".")
+            "Unverified summary (subagent self-report — verify before relying "
+            "on it):"
         )
-        if summary:
-            lines.append("Partial output:")
-            lines.append(summary)
-    else:
-        # error / timeout / failed
+        lines.append(summary)
+    elif outcome == "partial" and summary:
         lines.append(
-            f"The subagent did not complete successfully (status={status})."
+            "The subagent produced partial output (ran out of iterations or "
+            "was interrupted)."
+            + (f" {error}" if error else "")
+        )
+        lines.append(f"Partial/unverified output (outcome={outcome}):")
+        lines.append(summary)
+    else:
+        # failed / no usable output
+        lines.append(
+            f"The subagent did not complete successfully (outcome={outcome}, "
+            f"status={status})."
             + (f"\n{error}" if error else "")
         )
         if summary:
-            lines.append("Partial output:")
+            lines.append(f"Partial/unverified output (outcome={outcome}):")
             lines.append(summary)
     return "\n".join(lines)
 

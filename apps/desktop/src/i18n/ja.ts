@@ -994,6 +994,7 @@ export const ja = defineLocale({
     running: '実行中',
     failed: '失敗',
     done: '完了',
+    verificationRequired: '検証が必要',
     streaming: 'ストリーミング中',
     files: 'ファイル',
     moreFiles: count => `+${count} 件のファイル`,

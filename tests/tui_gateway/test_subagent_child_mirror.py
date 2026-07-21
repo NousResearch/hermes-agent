@@ -201,6 +201,30 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     assert "child-1" not in server._active_child_runs
 
 
+def test_parent_relay_preserves_delegation_outcome_evidence(server, emits):
+    _relay(
+        server,
+        "subagent.complete",
+        child_session_id="child-1",
+        status="completed",
+        outcome="unverified",
+        exit_reason="completed",
+        interrupted=False,
+        tool_error_count=1,
+        summary="self-report",
+    )
+
+    payload = next(
+        payload
+        for event, sid, payload in emits
+        if event == "subagent.complete" and sid == "parent-sid"
+    )
+    assert payload["outcome"] == "unverified"
+    assert payload["exit_reason"] == "completed"
+    assert payload["interrupted"] is False
+    assert payload["tool_error_count"] == 1
+
+
 def test_start_mirrors_as_immediate_header_line(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
 

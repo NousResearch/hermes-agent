@@ -1,6 +1,6 @@
 import type { UsageModelData } from '@hermes/shared/billing'
 
-import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
+import type { SessionInfo, SlashCategory, SubagentOutcome, SubagentStatus, Usage } from './types.js'
 
 export interface GatewaySkin {
   banner_hero?: string
@@ -467,12 +467,15 @@ export interface SubagentEventPayload {
   cost_usd?: number
   depth?: number
   duration_seconds?: number
+  exit_reason?: string
   files_read?: string[]
   files_written?: string[]
   goal: string
   input_tokens?: number
+  interrupted?: boolean
   iteration?: number
   model?: string
+  outcome?: SubagentOutcome
   output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
   output_tokens?: number
   parent_id?: null | string
@@ -484,6 +487,7 @@ export interface SubagentEventPayload {
   task_index: number
   text?: string
   tool_count?: number
+  tool_error_count?: number
   tool_name?: string
   tool_preview?: string
   toolsets?: string[]

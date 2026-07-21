@@ -248,11 +248,18 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None,
+                "status": "unknown", "outcome": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+                "error_authoritative": False,
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
-            result = {"status": "unknown", "summary": None, "error": event["error"]}
+            result = {
+                "status": "unknown",
+                "outcome": "unknown",
+                "summary": None,
+                "error": event["error"],
+                "error_authoritative": False,
+            }
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
@@ -533,8 +540,12 @@ def dispatch_async_delegation(
             logger.exception("Async delegation %s crashed", delegation_id)
             result = {
                 "status": "error",
+                "outcome": "failed",
                 "summary": None,
                 "error": f"{type(exc).__name__}: {exc}",
+                "exit_reason": "error",
+                "interrupted": False,
+                "tool_error_count": 0,
                 "api_calls": 0,
                 "duration_seconds": round(time.time() - dispatched_at, 2),
             }
@@ -621,6 +632,7 @@ def _push_completion_event(
         "role": record.get("role"),
         "model": result.get("model") or record.get("model"),
         "status": status,
+        "outcome": result.get("outcome"),
         "summary": summary,
         "error": error,
         "api_calls": result.get("api_calls", 0),
@@ -630,6 +642,8 @@ def _push_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
+        "interrupted": bool(result.get("interrupted", False)),
+        "tool_error_count": result.get("tool_error_count", 0),
     }
     _persist_completion(evt, result)
     try:

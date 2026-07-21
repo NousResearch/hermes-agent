@@ -453,7 +453,11 @@ def validation_allows_discovery(skill_dir: Path) -> bool:
         if has_tests:
             from tools.skill_sidecar_io import secure_sidecar_io_available
 
-            return secure_sidecar_io_available()
+            # Tested packages opt into lifecycle validation. When secure
+            # sidecar I/O is available, absence of a record must fail closed;
+            # legacy fallback is retained only on platforms that cannot create
+            # race-safe sidecars.
+            return not secure_sidecar_io_available()
         return True
     return record.get("status") in {"passed", "static"}
 

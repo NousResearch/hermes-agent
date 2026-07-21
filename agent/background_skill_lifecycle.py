@@ -8,6 +8,7 @@ bounded failure diagnostics are returned to the review agent for refinement.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -17,6 +18,8 @@ from tools.skill_lifecycle_orchestrator import (
     run_skill_lifecycle,
 )
 from tools.skill_validation import record_skill_validation
+
+logger = logging.getLogger(__name__)
 
 _PACKAGE_MUTATIONS = frozenset(
     {"create", "edit", "patch", "write_file", "remove_file"}
@@ -135,36 +138,49 @@ def run_background_skill_lifecycles(
     )
     results: dict[str, SkillLifecycleResult] = {}
     for name in names:
-        skill_dir = _resolve_skill_dir(name)
-        if skill_dir is None:
-            continue
+        try:
+            skill_dir = _resolve_skill_dir(name)
+            if skill_dir is None:
+                continue
 
-        if execute is None:
-            record_skill_validation(skill_dir)
-            continue
+            if execute is None:
+                record_skill_validation(skill_dir)
+                continue
 
-        def refine(request, *, _name=name) -> bool:
-            history = list(
-                getattr(review_agent, "_session_messages", None)
-                or review_messages_list
+            def refine(request, *, _name=name) -> bool:
+                history = list(
+                    getattr(review_agent, "_session_messages", None)
+                    or review_messages_list
+                )
+                review_agent.run_conversation(
+                    user_message=_refinement_prompt(
+                        _name, request.attempt, request.test_output
+                    ),
+                    conversation_history=history,
+                )
+                # The orchestrator independently verifies that the digest changed;
+                # this return value means only that the refinement turn completed.
+                return True
+
+            results[name] = run_skill_lifecycle(
+                skill_dir,
+                execute=execute,
+                refine=refine,
+                max_refinements=max_refinements,
+                python_executable=getattr(execute, "python_executable", None),
             )
-            review_agent.run_conversation(
-                user_message=_refinement_prompt(
-                    _name, request.attempt, request.test_output
-                ),
-                conversation_history=history,
+        except Exception as exc:
+            # A malformed or concurrently changing package must not prevent
+            # later independent skills from reaching validation. Tested
+            # packages without a valid sidecar are hidden by the discovery gate.
+            logger.warning("Skill lifecycle failed for %s: %s", name, exc)
+            results[name] = SkillLifecycleResult(
+                status="error",
+                registered=False,
+                test_attempts=0,
+                refinement_attempts=0,
+                message=f"{type(exc).__name__}: {str(exc)[:500]}",
             )
-            # The orchestrator independently verifies that the digest changed;
-            # this return value means only that the refinement turn completed.
-            return True
-
-        results[name] = run_skill_lifecycle(
-            skill_dir,
-            execute=execute,
-            refine=refine,
-            max_refinements=max_refinements,
-            python_executable=getattr(execute, "python_executable", None),
-        )
     return results
 
 

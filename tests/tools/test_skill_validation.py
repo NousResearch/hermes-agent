@@ -142,6 +142,20 @@ def test_content_digest_binds_executable_mode_bits(tmp_path):
     assert executable != non_executable
 
 
+def test_tested_package_without_validation_sidecar_is_hidden(tmp_path):
+    from tools.skill_validation import validation_allows_discovery
+
+    with isolated_skills(tmp_path):
+        assert _create_skill("validated-skill", VALID_SKILL)["success"]
+        skill_dir = tmp_path / "skills" / "validated-skill"
+        tests_dir = skill_dir / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_add.py").write_text(PASSING_TEST, encoding="utf-8")
+
+        assert not (skill_dir / ".validation.json").exists()
+        assert validation_allows_discovery(skill_dir) is False
+
+
 def test_validation_token_is_consumed_atomically_across_threads(tmp_path):
     with isolated_skills(tmp_path):
         skill_dir = create_code_skill(PASSING_TEST, tmp_path)

@@ -173,6 +173,33 @@ def test_background_lifecycle_fails_closed_without_isolated_executor(
     assert validation_allows_discovery(skill_dir) is False
 
 
+def test_malformed_skill_does_not_abort_later_lifecycles(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    bad_dir = _skill(tmp_path, "bad-skill")
+    good_dir = _skill(tmp_path, "good-skill")
+    try:
+        (bad_dir / "scripts").mkdir()
+        (bad_dir / "scripts" / "unsafe-link").symlink_to(tmp_path / "outside")
+    except OSError:
+        return
+
+    messages = _review_messages("bad-skill") + _review_messages("good-skill")
+    results = run_background_skill_lifecycles(
+        object(),
+        messages,
+        execute=lambda _request: ExecutionResult(0, "1 passed", "test"),
+    )
+
+    assert results["bad-skill"].status == "error"
+    assert results["bad-skill"].registered is False
+    assert results["good-skill"].status == "passed"
+    assert results["good-skill"].registered is True
+    assert validation_allows_discovery(bad_dir) is False
+    assert validation_allows_discovery(good_dir) is True
+
+
 def test_background_review_dispatches_autonomous_lifecycle(monkeypatch) -> None:
     executor = object()
     captured = {}

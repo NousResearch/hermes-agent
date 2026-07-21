@@ -366,7 +366,7 @@ def gmail_reply(args):
                 "userId": "me",
                 "id": args.message_id,
                 "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                
             },
         )
         headers = _headers_dict(original)

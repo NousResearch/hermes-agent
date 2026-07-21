@@ -386,16 +386,20 @@ def test_bedrock_current_gen_claude_rows_resolve():
 
 
 def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
-    """Cross-region inference profiles (us./global./eu. prefixes) must resolve
-    to the same pricing entry as the bare foundation-model id.  Without prefix
-    normalization, ``us.anthropic.claude-*`` sessions price as unknown.
+    """Cross-region inference profiles must resolve to the same pricing entry
+    as the bare foundation-model id.  Without prefix normalization a scoped
+    ``<region>.anthropic.claude-*`` session prices as unknown.
+
+    Asia-Pacific (``apac.``) and Australia (``au.``) are included because AWS
+    uses the full ``apac.`` prefix, not ``ap.`` — a bare ``ap.`` never matches
+    an ``apac.*`` id, so those geographies previously priced as unknown.
     """
     bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
     bare = get_pricing_entry(
         "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
     )
     assert bare is not None
-    for prefix in ("us.", "global.", "eu."):
+    for prefix in ("us.", "global.", "eu.", "apac.", "au."):
         scoped = get_pricing_entry(
             f"{prefix}anthropic.claude-sonnet-4-5",
             provider="bedrock",

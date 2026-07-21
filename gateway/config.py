@@ -74,6 +74,23 @@ def _env_multiplex_profiles_override() -> "bool | None":
     return None
 
 
+def _normalize_transport_token(value: Any) -> str:
+    """Normalize a streaming transport/mode value to a canonical token.
+
+    Handles the YAML 1.1 boolean quirk where bare ``on`` / ``off`` parse to
+    Python ``True`` / ``False`` (see ``gateway/display_config.py`` ``_normalise``).
+    Without this, ``mode: off`` arrives as boolean ``False`` and stringifying it
+    yields ``"false"`` instead of the advertised ``"off"``, so streaming would be
+    enabled instead of disabled. Booleans map to ``"auto"`` (True) / ``"off"``
+    (False); anything else is lower-cased, defaulting to ``"auto"``.
+    """
+    if value is None:
+        return "auto"
+    if isinstance(value, bool):
+        return "auto" if value else "off"
+    return str(value).strip().lower() or "auto"
+
+
 def _coerce_float(value: Any, default: float) -> float:
     """Coerce numeric config values, falling back on malformed input."""
     if value is None:
@@ -717,9 +734,41 @@ class StreamingConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
         if not isinstance(data, dict) or not data:
             return cls()
+
+        # ``mode`` is an ergonomic alias for the transport that ALSO implies
+        # ``enabled``.  A config like ``streaming: {mode: auto}`` reads as
+        # "turn streaming on, transport=auto" — matching the natural intent
+        # of someone enabling streaming without also spelling out
+        # ``enabled: true``.  Without this, ``mode`` was silently ignored and
+        # streaming stayed disabled (``enabled`` defaults to False), which is
+        # a surprising footgun: the whole reply buffers and sends at once.
+        # ``mode: off`` disables streaming; an explicit ``enabled`` key always
+        # wins so callers can force either state.
+        #
+        # ``transport`` alone does NOT imply ``enabled``: ``streaming.enabled``
+        # is the documented master switch (see website/docs/user-guide/
+        # configuration.md), so a bare ``transport`` only selects HOW to stream
+        # once streaming is on. Only the ``mode`` alias flips ``enabled``.
+        raw_transport = data.get("transport")
+        raw_mode = data.get("mode")
+        # Normalize both through the same helper so YAML's bare ``off``/``on``
+        # (parsed as bool False/True) become canonical tokens rather than
+        # ``"false"``/``"true"``.
+        picked = raw_transport if raw_transport is not None else raw_mode
+        transport = _normalize_transport_token(picked)
+
+        if "enabled" in data:
+            enabled = _coerce_bool(data.get("enabled"), False)
+        elif raw_mode is not None:
+            # The ``mode`` alias (and only ``mode``) infers enabled:
+            # ``off`` disables, anything else enables.
+            enabled = _normalize_transport_token(raw_mode) != "off"
+        else:
+            enabled = False
+
         return cls(
-            enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "auto"),
+            enabled=enabled,
+            transport=transport,
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),

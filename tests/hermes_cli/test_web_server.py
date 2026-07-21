@@ -3989,6 +3989,18 @@ class TestWebServerEndpoints:
         assert "api_key" not in out
         assert "api_mode" not in out
 
+        # switching providers when the stale secret lives under the legacy
+        # ``api`` alias only (no api_key) → it must be cleared too. The resolver
+        # reads ``model.api`` as a key, so leaving it behind keeps a secret in
+        # config.yaml that contaminates the next custom resolution.
+        out = _apply_main_model_assignment(
+            {"provider": "custom", "api": "sk-legacy-stale", "base_url": "http://endpoint-a/v1"},
+            "openrouter",
+            "m",
+        )
+        assert "api" not in out
+        assert "api_key" not in out
+
     def test_parse_model_ids_handles_openai_and_bare_shapes(self):
         """Model discovery must tolerate the common /v1/models shapes and
         never raise (so a slightly non-standard local endpoint still works)."""
@@ -4251,6 +4263,206 @@ class TestWebServerEndpoints:
         assert cfg["model"]["provider"] == "axet-proxy"
         assert cfg["model"]["default"] == "gpt-5.4"
         assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
+
+    def _seed_custom_provider_with_key(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/m1",
+                "api_key": "sk-stored-old",
+                "models": {"acme/m1": {}},
+            }
+        }
+        save_config(cfg)
+
+    def test_set_model_main_honors_an_explicitly_supplied_api_key(self):
+        """A key in the request must win over the provider entry's stored one.
+
+        The entry-key fallback exists so switching to a configured provider
+        picks up its credential. Applying it unconditionally discards a key the
+        caller is rotating in — and ``model.api_key`` outranks the environment
+        at client construction (#62269), so the stale key keeps authenticating
+        while the UI reports the change saved.
+        """
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "acme",
+                "model": "acme/m1",
+                "api_key": "sk-new-rotated",
+            },
+        )
+        assert resp.status_code == 200
+        assert load_config()["model"]["api_key"] == "sk-new-rotated"
+
+    def test_set_model_main_falls_back_to_the_provider_entry_key(self):
+        """With no key in the request the stored one is still adopted."""
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "acme", "model": "acme/m1"},
+        )
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["api_key"] == "sk-stored-old"
+        # The sibling base_url fill is unaffected.
+        assert model_cfg["base_url"] == "https://llm.acme.corp/v1"
+
+    def test_custom_endpoint_edit_preserves_hand_written_provider_fields(self):
+        """The panel edits a few fields; it does not own the whole entry.
+
+        A ``providers.<name>`` block can carry keys the dashboard has no field
+        for — ``api_mode``, ``key_env``, ``extra_headers`` (which may carry
+        credentials), ``request_overrides``. Rebuilding the entry from scratch
+        on an unrelated edit silently dropped all of them, leaving a provider
+        that no longer authenticates or speaks the right protocol.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_mode": "responses",
+                "key_env": "ACME_API_KEY",
+                "extra_headers": {"X-Org-Id": "org_123"},
+                "request_overrides": {"reasoning_effort": "high"},
+                "models": {
+                    "acme/model-1": {"context_length": 200000},
+                    "acme/model-2": {"context_length": 400000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        # The user opens the panel and only switches the default model.
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-2",
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = load_config()["providers"]["acme"]
+        assert entry["api_mode"] == "responses"
+        assert entry["key_env"] == "ACME_API_KEY"
+        assert entry["extra_headers"] == {"X-Org-Id": "org_123"}
+        assert entry["request_overrides"] == {"reasoning_effort": "high"}
+        # The edit still applies.
+        assert entry["model"] == "acme/model-2"
+
+    def test_custom_endpoint_edit_keeps_the_other_models(self):
+        """The panel names one default model; it doesn't enumerate the catalogue."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "models": {
+                    "acme/model-1": {"context_length": 200000},
+                    "acme/model-2": {"context_length": 400000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-2",
+            },
+        )
+
+        models = load_config()["providers"]["acme"]["models"]
+        assert sorted(models) == ["acme/model-1", "acme/model-2"]
+        assert models["acme/model-1"]["context_length"] == 200000
+
+    def test_deleting_the_active_custom_endpoint_clears_its_model_mirror(self):
+        """Deleting an endpoint must not leave its key running the agent.
+
+        ``activate`` copies the endpoint's base_url + api_key onto ``model``,
+        and ``model.api_key`` outranks the environment at client construction
+        (#62269). Without clearing that mirror the agent keeps authenticating
+        to the deleted host with the deleted key, and the key the operator
+        just removed through the dashboard stays in config.yaml.
+        """
+        from hermes_cli.config import load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_key": "sk-acme-secret",
+            },
+        )
+        assert self.client.post(
+            "/api/providers/custom-endpoints/acme/activate", json={}
+        ).status_code == 200
+
+        cfg = load_config()
+        assert cfg["model"]["api_key"] == "sk-acme-secret"
+
+        assert self.client.request(
+            "DELETE", "/api/providers/custom-endpoints/acme"
+        ).status_code == 200
+
+        cfg = load_config()
+        assert "acme" not in (cfg.get("providers") or {})
+        model_cfg = cfg.get("model") or {}
+        assert not model_cfg.get("api_key"), "deleted endpoint's key still in config.yaml"
+        assert not model_cfg.get("base_url"), "deleted endpoint's host still routed to"
+        assert not model_cfg.get("provider")
+
+    def test_deleting_an_inactive_custom_endpoint_leaves_the_active_one_alone(self):
+        """Only the mirror of the DELETED provider is scrubbed."""
+        from hermes_cli.config import load_config
+
+        for name, key in (("acme", "sk-acme"), ("other", "sk-other")):
+            self.client.post(
+                "/api/providers/custom-endpoints",
+                json={
+                    "id": name,
+                    "name": name,
+                    "base_url": f"https://llm.{name}.corp/v1",
+                    "model": f"{name}/m",
+                    "api_key": key,
+                },
+            )
+
+        self.client.post("/api/providers/custom-endpoints/other/activate", json={})
+        self.client.request("DELETE", "/api/providers/custom-endpoints/acme")
+
+        model_cfg = load_config().get("model") or {}
+        assert model_cfg.get("provider") == "other"
+        assert model_cfg.get("api_key") == "sk-other"
+        assert model_cfg.get("base_url") == "https://llm.other.corp/v1"
 
     def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
         """Selecting a named custom endpoint from the Desktop model picker
@@ -5598,6 +5810,26 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         by_name = {p["name"]: p for p in resp.json()["providers"]}
         assert by_name["ElevenLabs"]["status"] == "ready"
+
+    def test_get_toolset_config_tts_rows_carry_provider_key(self):
+        """TTS provider rows surface their tts_provider config key.
+
+        The desktop Capabilities panel renders the provider's voice/model
+        config fields (tts.<key>.*) inline; without the key it can only show
+        API keys. Every built-in TTS row declares one.
+        """
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        providers = resp.json()["providers"]
+        assert providers
+        for prov in providers:
+            assert prov.get("tts_provider"), f"row {prov['name']!r} missing tts_provider"
+        by_name = {p["name"]: p for p in providers}
+        assert by_name["OpenAI TTS"]["tts_provider"] == "openai"
+        assert by_name["Microsoft Edge TTS"]["tts_provider"] == "edge"
+        # Non-TTS toolsets must not grow the field.
+        web = self.client.get("/api/tools/toolsets/web/config").json()
+        assert all("tts_provider" not in p for p in web["providers"])
 
     def test_get_toolset_config_reflects_selected_provider(self):
         """Selecting a provider is reflected in the next /config read.
@@ -8198,7 +8430,9 @@ class TestPtyWebSocket:
         relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
         python_path = tmp_path / relative_python
         python_path.parent.mkdir(parents=True)
-        os.link(sys.executable, python_path)
+        # copy2, not os.link: tmp_path may sit on a different filesystem than
+        # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+        shutil.copy2(sys.executable, python_path)
         monkeypatch.setenv("HERMES_CWD", str(tmp_path))
         monkeypatch.setenv("HERMES_PYTHON", str(relative_python))
         monkeypatch.setattr(
@@ -8220,7 +8454,9 @@ class TestPtyWebSocket:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         executable = bin_dir / command
-        os.link(sys.executable, executable)
+        # copy2, not os.link: tmp_path may sit on a different filesystem than
+        # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+        shutil.copy2(sys.executable, executable)
         env = {
             "HERMES_CWD": str(tmp_path),
             "HERMES_PYTHON": command,

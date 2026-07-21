@@ -1631,6 +1631,22 @@ class TestBuildAnthropicKwargs:
             assert _supports_xhigh_effort(m) is True, m
             assert _forbids_sampling_params(m) is False, m
 
+    def test_bare_k3_coding_plan_slug_is_kimi_family(self):
+        """Kimi Coding Plan serves K3 as the bare slug ``k3`` — it must be
+        classified as Kimi family (adaptive thinking) even on proxied
+        endpoints where only the model name is available. Lookalike
+        non-Kimi names must NOT match the exact-slug rule."""
+        from agent.anthropic_adapter import (
+            _model_name_is_kimi_family,
+            _supports_adaptive_thinking,
+        )
+        for m in ("k3", "K3", "moonshotai/k3", "k3.1-preview", "k3-turbo"):
+            assert _model_name_is_kimi_family(m) is True, m
+        assert _supports_adaptive_thinking("k3") is True
+        # Prefix-lookalikes without a separator must not be swept in.
+        for m in ("k30", "k3000-chat", "keras-3"):
+            assert _model_name_is_kimi_family(m) is False, m
+
     def test_fast_mode_omitted_for_unsupported_model(self):
         """fast_mode=True on Opus 4.7 must NOT inject speed=fast (API 400s)."""
         kwargs = build_anthropic_kwargs(

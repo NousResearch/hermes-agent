@@ -341,7 +341,10 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     if not model_id or not isinstance(model_id, str):
         return None
     name = model_id.strip().lower()
-    for prefix in ("us.", "eu.", "apac.", "ap.", "global.", "jp."):
+    for prefix in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break

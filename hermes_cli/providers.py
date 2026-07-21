@@ -88,6 +88,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="http://127.0.0.1:1234/v1",
         base_url_env_var="LM_BASE_URL",
     ),
+    "local": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        base_url_env_var="LOCAL_BASE_URL",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",

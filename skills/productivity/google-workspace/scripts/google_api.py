@@ -88,7 +88,8 @@ def _gws_binary() -> str | None:
 
 def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    if TOKEN_PATH.exists():
+        env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
     return env
 
 
@@ -97,20 +98,13 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
     if not binary:
         raise RuntimeError("gws not installed")
 
-    _ensure_authenticated()
-
     cmd = [binary, *parts]
     if params is not None:
         cmd.extend(["--params", json.dumps(params)])
     if body is not None:
         cmd.extend(["--json", json.dumps(body)])
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        env=_gws_env(),
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, env=_gws_env())
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "Unknown gws error"
         print(err, file=sys.stderr)

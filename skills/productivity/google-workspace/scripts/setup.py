@@ -56,6 +56,34 @@ SCOPES = [
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
+
+def _gws_auth_status() -> dict | None:
+    """Query ``gws auth status`` for native credential info.
+
+    Returns the parsed JSON dict on success, or None if gws is not
+    installed or the command fails.
+    """
+    binary = os.getenv("HERMES_GWS_BIN") or shutil.which("gws")
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "auth", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        # gws may print non-JSON preamble lines (e.g. "Using keyring backend: ...")
+        # before the JSON object — find the first '{'.
+        stdout = result.stdout
+        brace = stdout.find("{")
+        if brace == -1:
+            return None
+        data = json.loads(stdout[brace:])
+        return data if data.get("encrypted_credentials_exists") or data.get("plain_credentials_exists") else None
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        return None
+
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
@@ -162,6 +190,17 @@ def check_auth_live():
     # final status line reflects the live-call outcome (OK or FAILED).
     if not check_auth(quiet=True):
         return False
+
+    if not TOKEN_PATH.exists():
+        # Authenticated via gws native credentials — gws auth status already
+        # confirmed token_valid in check_auth(), so we trust that result.
+        status = _gws_auth_status()
+        if status and status.get("token_valid"):
+            print("LIVE_CHECK_OK: gws auth status reports token_valid=true.")
+            return True
+        print("LIVE_CHECK_FAILED: gws auth status reports token is not valid.")
+        return False
+
     try:
         from googleapiclient.discovery import build
         from google.oauth2.credentials import Credentials
@@ -185,6 +224,23 @@ def check_auth_live():
 def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
+        status = _gws_auth_status()
+        if status:
+            if not status.get("token_valid"):
+                print("GWS_TOKEN_INVALID: gws credentials found but token is not valid. "
+                      "Re-run: gws auth login")
+                return False
+            gws_scopes = set(status.get("scopes") or [])
+            missing = sorted(s for s in SCOPES if s not in gws_scopes)
+            if missing and not quiet:
+                print(f"AUTHENTICATED (partial): gws native credentials valid "
+                      f"but missing {len(missing)} Hermes scopes:")
+                for s in missing:
+                    print(f"  - {s}")
+            if not quiet:
+                user = status.get("user", "unknown")
+                print(f"AUTHENTICATED: Using gws CLI native credentials ({user})")
+            return True
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
 

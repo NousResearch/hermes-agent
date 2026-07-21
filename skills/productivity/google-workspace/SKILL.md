@@ -48,6 +48,8 @@ $GSETUP --check
 ```
 
 If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+This includes users who already authenticated via `gws auth login` — the
+check detects gws native credentials automatically.
 
 ### Step 1: Triage — ask the user what they need
 
@@ -161,7 +163,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
-- If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
+- If the user already authenticated via `gws auth login`, the skill detects gws native credentials automatically — no Hermes OAuth setup needed. If both `~/.hermes/google_token.json` and gws native credentials exist, the Hermes token takes priority.
 - To revoke: `$GSETUP --revoke`
 
 ## Usage
@@ -320,7 +322,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 | Problem | Fix |
 |---------|-----|
-| `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
+| `NOT_AUTHENTICATED` | Run setup Steps 2-5 above, or authenticate via `gws auth login` if `gws` is installed |
 | `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
 | `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |

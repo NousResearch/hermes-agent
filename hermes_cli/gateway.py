@@ -3914,17 +3914,47 @@ def _spawn_detached_gateway() -> bool:
     return True
 
 
-def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) -> bool:
+def _launchd_fallback_to_detached(
+    reason: str,
+    *,
+    exit_on_failure: bool = True,
+    check_existing: bool = True,
+) -> bool:
     """Start the gateway detached when launchd can't manage it, with guidance.
 
-    Returns True if the detached gateway was launched. When it can't be
-    launched, prints the manual workaround and (by default) exits non-zero so
-    the failure surfaces instead of silently doing nothing.
+    Returns True if the detached gateway was launched (or was already running).
+    When it can't be launched, prints the manual workaround and (by default)
+    exits non-zero so the failure surfaces instead of silently doing nothing.
+
+    Args:
+        check_existing: When True (default), skip spawning if a gateway
+            process is already running.  Set to False in restart paths where
+            the existing gateway is intentionally being replaced.
     """
     from hermes_constants import display_hermes_home as _dhh
 
     _write_launchd_unsupported_marker()
     print(f"⚠ launchd cannot manage the gateway on this macOS version ({reason}).")
+
+    # Guard: if a background gateway process is already running (e.g. from a
+    # previous fallback), don't spawn a duplicate.  Without this check an
+    # external watchdog that polls `hermes gateway start` on an interval will
+    # kill-and-restart the gateway on every tick because launchd always
+    # reports the service as unloaded.  See #41676.
+    if check_existing:
+        try:
+            from gateway.status import get_running_pid
+
+            existing_pid = get_running_pid()
+            if existing_pid is not None:
+                print(
+                    f"✓ Gateway is already running as a background process (PID {existing_pid})."
+                )
+                print("  No need to start another instance.")
+                return True
+        except Exception:
+            pass  # Don't let the guard itself block startup.
+
     if _spawn_detached_gateway():
         print("✓ Started gateway as a background process instead")
         print("  It will NOT auto-start at login or auto-restart on crash.")
@@ -4440,7 +4470,10 @@ def launchd_restart():
             # unmanageable (error 5), degrade to detached; the old process was
             # already drained/terminated above. Otherwise re-raise.
             if _launchctl_domain_unsupported(e.returncode):
-                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+                _launchd_fallback_to_detached(
+                    f"launchctl kickstart exit {e.returncode}",
+                    check_existing=False,
+                )
                 return
             raise
         # Job not loaded — bootstrap and start fresh
@@ -4466,7 +4499,10 @@ def launchd_restart():
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
-            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            _launchd_fallback_to_detached(
+                f"launchctl exit {e2.returncode}",
+                check_existing=False,
+            )
             return
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()

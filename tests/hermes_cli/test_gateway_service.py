@@ -1480,6 +1480,64 @@ class TestLaunchdDomainDetection:
         assert d1 == d2
         assert run_count[0] == 1  # Only probed once
 
+    def test_launchd_fallback_skips_spawn_when_gateway_already_running(
+        self, monkeypatch, capsys
+    ):
+        """Don't spawn a duplicate when a background gateway is already alive."""
+        import gateway.status as _gw_status
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda: 42)
+
+        result = gateway_cli._launchd_fallback_to_detached("test reason")
+
+        assert result is True
+        assert spawned == [], "Should NOT spawn when gateway is already running"
+        out = capsys.readouterr().out
+        assert "already running" in out.lower()
+        assert "PID 42" in out
+
+    def test_launchd_fallback_spawns_when_no_gateway_running(
+        self, monkeypatch, capsys
+    ):
+        """Normal fallback when no gateway is running."""
+        import gateway.status as _gw_status
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda: None)
+
+        result = gateway_cli._launchd_fallback_to_detached("test reason")
+
+        assert result is True
+        assert spawned == [True], "Should spawn when no gateway is running"
+
+    def test_launchd_fallback_still_spawns_when_pid_check_raises(
+        self, monkeypatch, capsys
+    ):
+        """If get_running_pid raises, don't block the fallback."""
+        import gateway.status as _gw_status
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        def _raising():
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(_gw_status, "get_running_pid", _raising)
+
+        result = gateway_cli._launchd_fallback_to_detached("test reason")
+
+        assert result is True
+        assert spawned == [True], "Should spawn when PID check raises"
+
 
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):

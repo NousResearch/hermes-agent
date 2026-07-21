@@ -534,7 +534,13 @@ def render_reusable_outcome_summary(
     for receipt in receipts:
         receipt_id = receipt.get("id")
         recorded_at = receipt.get("recorded_at") or "unknown time"
-        rendered.append(f"#{receipt_id} (verified {recorded_at})")
+        contract_digest = receipt.get("completion_contract_digest")
+        contract_note = (
+            f", criteria {str(contract_digest)[:12]}"
+            if isinstance(contract_digest, str) and contract_digest
+            else ""
+        )
+        rendered.append(f"#{receipt_id} (verified {recorded_at}{contract_note})")
     return (
         f"Verified learning outcomes ({len(receipts)}): {', '.join(rendered)}. "
         "They are explicit pull-only candidates; no prompt or memory was changed."
@@ -1745,6 +1751,8 @@ class GoalManager:
                     cwd=cwd,
                     goal=state.goal,
                     terminal_kind="judge_done_unconfirmed",
+                    completion_contract=state.contract.to_dict(),
+                    subgoals=state.subgoals,
                     actor="goal_judge",
                 )
                 if receipt is not None:

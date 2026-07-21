@@ -2452,6 +2452,22 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        evidence_session_id = session_id or task_id or effective_task_id or "default"
+
+        def mark_foreground_workspace_stale(command_cwd: Optional[str]) -> None:
+            """Best-effort invalidation after an attempted foreground command."""
+            # A shell command can write before timing out or raising a backend
+            # error.  Mark only after env.execute() has been attempted, never
+            # for commands rejected by a guard or workdir validation.
+            try:
+                from agent.verification_evidence import mark_workspace_edited
+
+                mark_workspace_edited(
+                    session_id=evidence_session_id,
+                    cwd=command_cwd,
+                )
+            except Exception:
+                logger.debug("workspace edit freshness marker failed", exc_info=True)
 
         if background:
             # Spawn a tracked background process via the process registry.
@@ -2739,6 +2755,7 @@ def terminal_tool(
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
+                        mark_foreground_workspace_stale(command_cwd)
                         return json.dumps({
                             "output": "",
                             "exit_code": 124,
@@ -2756,6 +2773,7 @@ def terminal_tool(
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
                                  max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                    mark_foreground_workspace_stale(command_cwd)
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
@@ -2854,13 +2872,22 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            # Shell commands can change the workspace without going through the
+            # file tools.  Conservatively invalidate older proof before writing
+            # this command's fresh terminal evidence, so an outcome cannot stay
+            # reusable merely because a formatter, script, or VCS command ran
+            # outside the file-tool path.  We deliberately do this for every
+            # completed foreground command: safely inferring shell write intent
+            # is not reliable, while a subsequent verification restores a fresh
+            # result.  Background process provenance is handled separately.
+            mark_foreground_workspace_stale(command_cwd)
             try:
                 from agent.verification_evidence import record_terminal_result
 
                 evidence = record_terminal_result(
                     command=command,
                     cwd=command_cwd,
-                    session_id=session_id or task_id or effective_task_id or "default",
+                    session_id=evidence_session_id,
                     exit_code=returncode,
                     output=output,
                 )

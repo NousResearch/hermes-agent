@@ -328,6 +328,14 @@ class TestGoalManager:
             cwd=tmp_path,
             goal="ship it",
             terminal_kind="judge_done_unconfirmed",
+            completion_contract={
+                "outcome": "",
+                "verification": "",
+                "constraints": "",
+                "boundaries": "",
+                "stop_when": "",
+            },
+            subgoals=[],
             actor="goal_judge",
         )
 
@@ -337,7 +345,11 @@ class TestGoalManager:
         mgr = GoalManager(session_id="summary-session")
         with patch(
             "agent.verification_evidence.list_reusable_outcome_receipts",
-            return_value=[{"id": 73, "recorded_at": "2030-01-01T00:00:00+00:00"}],
+            return_value=[{
+                "id": 73,
+                "recorded_at": "2030-01-01T00:00:00+00:00",
+                "completion_contract_digest": "a" * 64,
+            }],
         ) as list_receipts:
             summary = mgr.render_reusable_outcomes(cwd=tmp_path)
 
@@ -347,6 +359,7 @@ class TestGoalManager:
             session_id="summary-session",
         )
         assert "#73" in summary
+        assert "criteria aaaaaaaaaaaa" in summary
         assert "pull-only" in summary
         assert "prompt or memory was changed" in summary
 

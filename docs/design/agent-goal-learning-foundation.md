@@ -46,9 +46,10 @@ restarting this conversation.
 ## Verified outcome receipts
 
 `verification_evidence.db` now stores append-only `outcome_receipts` beside,
-not inside, recalled memory. Each receipt contains a goal SHA-256 digest,
+not inside, recalled memory. Each receipt contains a goal SHA-256 digest, a
+versioned digest of the final completion contract and ordered subgoals,
 terminal classification, current verification status/event, actor, confirmation
-time, and `reusable` flag. It never stores the raw goal text.
+time, and `reusable` flag. It never stores raw goal, contract, or subgoal text.
 
 | State | Reusable? | Reason |
 | --- | --- | --- |
@@ -63,7 +64,8 @@ does not alter memory prompts, background learning writes, or skill files.
 `/goal outcomes` (with `/goal learning` as an alias) exposes that pull-only
 view on CLI, gateway, and TUI. It is restricted to the active session and
 current workspace, presents only receipts with currently passing evidence, and
-does not disclose raw goal text, mutate a receipt, or inject a model prompt.
+shows a short criteria-digest prefix for newly recorded receipts. It does not
+disclose raw goal text, mutate a receipt, or inject a model prompt.
 
 When a `/goal` judge returns `done`, the shared `GoalManager` first persists
 the goal terminal state, then records a `judge_done_unconfirmed` receipt for
@@ -78,6 +80,14 @@ workspace makes its supporting evidence stale. This workspace edit marker is
 monotonic: a later verification can establish a new receipt, but cannot revive
 an older receipt whose proof predates the edit. The read path does not update
 receipt state, inject a prompt, or create a memory/skill artifact.
+
+Every attempted foreground terminal command records the same workspace
+freshness marker before its normal terminal result is classified, and before a
+timeout or final execution error is returned. This is deliberately
+conservative: a formatter, script, or version-control command can write files
+without using a Hermes file tool, and shell syntax is not a trustworthy way to
+infer write intent. A later recognized verification command records fresh
+evidence; background-process provenance remains outside this milestone.
 
 ## Immutable approval-decision receipts
 

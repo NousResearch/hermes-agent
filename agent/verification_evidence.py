@@ -28,7 +28,7 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 4
+_VERIFY_SCHEMA_VERSION = 5
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 _OUTCOME_TERMINAL_KINDS = frozenset(
     {"judge_done_unconfirmed", "blocked", "cancelled", "achieved_confirmed"}
@@ -142,6 +142,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             session_id TEXT NOT NULL,
             root TEXT NOT NULL,
             goal_digest TEXT NOT NULL,
+            completion_contract_digest TEXT,
             terminal_kind TEXT NOT NULL,
             verification_status TEXT NOT NULL,
             verification_event_id INTEGER,
@@ -151,6 +152,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    outcome_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(outcome_receipts)").fetchall()
+    }
+    if "completion_contract_digest" not in outcome_columns:
+        # V5 binds new learning candidates to the exact structured completion
+        # criteria without retaining that potentially sensitive prose.  Legacy
+        # rows stay readable with a NULL digest rather than being rewritten.
+        conn.execute(
+            "ALTER TABLE outcome_receipts ADD COLUMN completion_contract_digest TEXT"
+        )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_verification_events_session_root
@@ -756,6 +768,42 @@ def _goal_digest(goal: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _completion_contract_digest(
+    completion_contract: dict[str, Any] | None,
+    subgoals: list[str] | tuple[str, ...] | None,
+) -> str:
+    """Hash the exact completion criteria without retaining their prose.
+
+    A goal's headline alone is insufficient evidence of what the judge was
+    asked to prove: a running goal can acquire a structured contract and
+    ordered subgoals.  Canonicalizing that final criteria set makes a reusable
+    receipt auditable without storing raw goal or contract text in the ledger.
+    """
+    if completion_contract is not None and not isinstance(completion_contract, dict):
+        raise ValueError("completion_contract must be a dictionary when provided")
+    if subgoals is not None and not isinstance(subgoals, (list, tuple)):
+        raise ValueError("subgoals must be a list or tuple when provided")
+
+    contract = completion_contract or {}
+    normalized_contract = {
+        field: str(contract.get(field) or "").strip()
+        for field in ("outcome", "verification", "constraints", "boundaries", "stop_when")
+    }
+    normalized_subgoals = [str(value).strip() for value in (subgoals or [])]
+    payload = {
+        "version": 1,
+        "contract": normalized_contract,
+        "subgoals": [value for value in normalized_subgoals if value],
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _outcome_root(cwd: str | Path | None) -> Optional[str]:
     try:
         from agent.coding_context import project_facts_for
@@ -964,14 +1012,17 @@ def record_outcome_receipt(
     cwd: str | Path | None,
     goal: str,
     terminal_kind: str,
+    completion_contract: dict[str, Any] | None = None,
+    subgoals: list[str] | tuple[str, ...] | None = None,
     actor: str = "agent",
     user_confirmed: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Append a bounded outcome receipt next to verification evidence.
 
     This is deliberately an audit/learning *candidate*, not memory.  Raw goal
-    text is hashed, judge completion is kept unconfirmed, and no receipt is
-    automatically injected into later prompts or allowed to mutate skills.
+    text and completion criteria are hashed, judge completion is kept
+    unconfirmed, and no receipt is automatically injected into later prompts
+    or allowed to mutate skills.
     Only an explicit ``achieved_confirmed`` receipt with fresh passing
     verification can become reusable.
     """
@@ -986,6 +1037,9 @@ def record_outcome_receipt(
         return None
     sid = str(session_id or "default")
     actor = str(actor or "agent").strip() or "agent"
+    completion_contract_digest = _completion_contract_digest(
+        completion_contract, subgoals
+    )
     status = _outcome_verification_status(session_id=sid, root=root)
     evidence = status.get("evidence") or {}
     verification_status_value = str(status.get("status") or "unverified")
@@ -1002,16 +1056,18 @@ def record_outcome_receipt(
             cur = conn.execute(
                 """
                 INSERT INTO outcome_receipts(
-                    recorded_at, session_id, root, goal_digest, terminal_kind,
+                    recorded_at, session_id, root, goal_digest, completion_contract_digest,
+                    terminal_kind,
                     verification_status, verification_event_id, actor,
                     user_confirmed_at, reusable
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     recorded_at,
                     sid,
                     root,
                     _goal_digest(goal),
+                    completion_contract_digest,
                     kind,
                     verification_status_value,
                     evidence.get("id"),

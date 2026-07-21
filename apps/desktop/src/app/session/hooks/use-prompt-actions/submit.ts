@@ -558,9 +558,31 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 activeSessionIdRef.current = recoveredId
               }
 
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              )
+              // A recovered submit may itself sit in the bounded session-busy
+              // retry loop. Revalidate the pinned route before every attempt:
+              // the user can switch chats during the retry delay, and their
+              // text must never land in the conversation they just left.
+              const recoveryContextDrift = new Error('submit recovery context changed')
+
+              try {
+                await withSessionBusyRetry(() => {
+                  if (sessionDriftReason()) {
+                    throw recoveryContextDrift
+                  }
+
+                  return requestGateway(
+                    'prompt.submit',
+                    submitParams(recoveredId),
+                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+                })
+              } catch (retryErr) {
+                if (retryErr === recoveryContextDrift) {
+                  return abortForSessionSwitch(sessionId)
+                }
+
+                throw retryErr
+              }
             } else {
               submitErr = firstErr
             }

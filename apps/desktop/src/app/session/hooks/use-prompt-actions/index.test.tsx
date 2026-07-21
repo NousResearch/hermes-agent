@@ -15,6 +15,7 @@ import {
   $messages,
   $sessions,
   $turnStartedAt,
+  setActiveSessionId,
   setCurrentUsage,
   setMessages,
   setSessions
@@ -1839,6 +1840,64 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // The atom must be updated alongside the ref so subsequent
     // submits don't re-use the stale runtime id.
     expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
+  })
+
+  it('abandons a recovered submit when the user switches sessions during a session-busy retry delay', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const switchedStoredId = 'stored-user-selected-b'
+    const switchedRuntimeId = 'rt-user-selected-b'
+    let routeToken = 'route-a'
+    let submitAttempts = 0
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        if (submitAttempts === 2) {
+          setTimeout(() => {
+            selectedStoredSessionIdRef.current = switchedStoredId
+            activeSessionIdRef.current = switchedRuntimeId
+            routeToken = 'route-b'
+            setActiveSessionId(switchedRuntimeId)
+          }, 10)
+
+          throw new Error('4009: session busy')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('do not send after I switch')).toBe(false)
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(submitAttempts).toBe(2)
+    expect(activeSessionIdRef.current).toBe(switchedRuntimeId)
+    expect($activeSessionId.get()).toBe(switchedRuntimeId)
   })
 
   // #67603 (second symptom): a recovery resume must re-register on the session's

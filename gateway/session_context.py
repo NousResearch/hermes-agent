@@ -249,7 +249,9 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PROFILE,
     ):
         var.set("")
-    for token in tokens:
+    # Some legacy/mock gateway paths pass ``None`` because the old cleanup
+    # implementation ignored this argument entirely. Preserve that contract.
+    for token in tokens or ():
         if getattr(token, "var", None) is _CRON_SESSION:
             _CRON_SESSION.reset(token)
     # Reset async-delivery capability to the "never set" sentinel rather than a

@@ -152,6 +152,13 @@ def test_scoped_cron_session_restores_env_fallback(monkeypatch):
     assert get_session_env("HERMES_CRON_SESSION") == "1"
 
 
+def test_clear_session_vars_accepts_legacy_none_tokens():
+    """Mock/legacy callers may have no saved token list to provide."""
+    clear_session_vars(None)
+
+    assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+
+
 def test_get_session_env_default_when_nothing_set(monkeypatch):
     """get_session_env returns default when neither contextvar nor env is set."""
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)

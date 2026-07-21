@@ -28,11 +28,15 @@ Usage::
 """
 
 import logging
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -104,6 +108,7 @@ ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elev
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
+CHUNK_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB chunk target (under Groq's 25 MB free limit)
 
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
@@ -179,6 +184,273 @@ def _get_local_command_template() -> Optional[str]:
 
 def _has_local_command() -> bool:
     return _get_local_command_template() is not None
+
+
+# ---------------------------------------------------------------------------
+# Remote URL helpers
+# ---------------------------------------------------------------------------
+
+
+def _probe_audio_url(url: str) -> Dict[str, Any]:
+    """Probe a remote audio URL with a HEAD request, following redirects.
+
+    Returns:
+        dict with keys:
+          - success (bool)
+          - url (str): final URL after redirects
+          - content_type (str or None)
+          - content_length (int or None)
+          - error (str, optional)
+    """
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        req.add_header("User-Agent", "Hermes-Agent/1.0")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            final_url = resp.url
+            content_type = resp.headers.get("Content-Type")
+            content_length_str = resp.headers.get("Content-Length")
+            content_length = int(content_length_str) if content_length_str else None
+            return {
+                "success": True,
+                "url": final_url,
+                "content_type": content_type,
+                "content_length": content_length,
+            }
+    except urllib.error.HTTPError as e:
+        return {
+            "success": False,
+            "url": url,
+            "content_type": None,
+            "content_length": None,
+            "error": f"HTTP {e.code}: {e.reason}",
+        }
+    except urllib.error.URLError as e:
+        return {
+            "success": False,
+            "url": url,
+            "content_type": None,
+            "content_length": None,
+            "error": f"URL error: {e.reason}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "url": url,
+            "content_type": None,
+            "content_length": None,
+            "error": str(e),
+        }
+
+
+def _download_audio(url: str) -> Dict[str, Any]:
+    """Download audio from a URL to a temporary file.
+
+    Returns:
+        dict with keys:
+          - success (bool)
+          - file_path (str, optional): path to the downloaded temp file
+          - error (str, optional)
+    """
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Hermes-Agent/1.0")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+            # Guess extension from Content-Type
+            content_type = resp.headers.get("Content-Type", "")
+            ext = ".mp3"  # default
+            if "ogg" in content_type or "opus" in content_type:
+                ext = ".ogg"
+            elif "wav" in content_type or "wave" in content_type:
+                ext = ".wav"
+            elif "m4a" in content_type or "mp4" in content_type:
+                ext = ".m4a"
+            elif "webm" in content_type:
+                ext = ".webm"
+            elif "flac" in content_type:
+                ext = ".flac"
+            elif "aac" in content_type:
+                ext = ".aac"
+
+            fd, file_path = tempfile.mkstemp(suffix=ext, prefix="hermes-url-audio-")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+
+        return {"success": True, "file_path": file_path}
+    except urllib.error.HTTPError as e:
+        return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
+    except urllib.error.URLError as e:
+        return {"success": False, "error": f"URL error: {e.reason}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _split_audio(
+    input_path: str,
+    output_dir: str,
+    max_bytes: int = CHUNK_SIZE_LIMIT,
+) -> Dict[str, Any]:
+    """Split a large audio file into chunks below ``max_bytes`` using ffmpeg.
+
+    Args:
+        input_path: Path to the audio file.
+        output_dir: Directory to write chunks into.
+        max_bytes: Approximate max bytes per chunk (default: CHUNK_SIZE_LIMIT).
+
+    Returns:
+        dict with keys:
+          - success (bool)
+          - chunks (list[str], optional): list of chunk file paths
+          - error (str, optional)
+    """
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return {"success": False, "error": "ffmpeg not found"}
+
+    try:
+        # Get duration with ffprobe
+        probe_cmd = [
+            _find_binary("ffprobe") or "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            input_path,
+        ]
+        probe_result = subprocess.run(
+            probe_cmd, check=True, capture_output=True, text=True, timeout=30
+        )
+        probe_data = json.loads(probe_result.stdout)
+        duration = float(probe_data.get("format", {}).get("duration", 0))
+        total_bytes = int(probe_data.get("format", {}).get("size", 0))
+
+        if duration <= 0 or total_bytes <= 0:
+            return {
+                "success": False,
+                "error": f"Could not determine audio duration/size: duration={duration}, bytes={total_bytes}",
+            }
+
+        # Calculate chunk duration
+        bytes_per_sec = total_bytes / duration
+        chunk_duration = max(int(max_bytes / bytes_per_sec), 5)  # min 5s per chunk
+
+        # Split with ffmpeg
+        base = os.path.splitext(os.path.basename(input_path))[0]
+        ext = os.path.splitext(input_path)[1] or ".mp3"
+        output_pattern = os.path.join(output_dir, f"{base}_chunk_%03d{ext}")
+
+        split_cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            input_path,
+            "-f",
+            "segment",
+            "-segment_time",
+            str(chunk_duration),
+            "-c",
+            "copy",
+            "-map",
+            "0",
+            output_pattern,
+        ]
+
+        subprocess.run(split_cmd, check=True, capture_output=True, text=True, timeout=300)
+
+        # Collect chunk files in order
+        chunks = sorted(
+            os.path.join(output_dir, f)
+            for f in os.listdir(output_dir)
+            if f.startswith(f"{base}_chunk_")
+        )
+
+        if not chunks:
+            return {"success": False, "error": "ffmpeg split produced no chunk files"}
+
+        return {"success": True, "chunks": chunks}
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "ffmpeg split timed out"}
+    except subprocess.CalledProcessError as e:
+        detail = e.stderr.strip() or e.stdout.strip() or str(e)
+        logger.error("ffmpeg split failed for %s: %s", input_path, detail)
+        return {"success": False, "error": f"ffmpeg split failed: {detail}"}
+    except Exception as e:
+        logger.error("Split audio failed: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+def _transcribe_chunks(
+    chunk_paths: list,
+    model_name: str,
+) -> Dict[str, Any]:
+    """Transcribe audio chunks sequentially via Groq and merge with segment markers.
+
+    Args:
+        chunk_paths: Ordered list of chunk file paths.
+        model_name: STT model name.
+
+    Returns:
+        dict with keys:
+          - success (bool)
+          - transcript (str): merged transcript with [MM:SS] markers
+          - error (str, optional)
+    """
+    merged_parts = []
+    chunk_duration = None  # will be inferred from ffprobe
+
+    for i, chunk_path in enumerate(chunk_paths):
+        logger.info("Transcribing chunk %d/%d: %s", i + 1, len(chunk_paths), chunk_path)
+
+        # Get chunk duration for timestamp
+        if chunk_duration is None:
+            try:
+                probe_cmd = [
+                    _find_binary("ffprobe") or "ffprobe",
+                    "-v",
+                    "quiet",
+                    "-print_format",
+                    "json",
+                    "-show_format",
+                    chunk_path,
+                ]
+                probe_result = subprocess.run(
+                    probe_cmd, check=True, capture_output=True, text=True, timeout=15
+                )
+                import json as _json
+
+                probe_data = _json.loads(probe_result.stdout)
+                chunk_duration = float(probe_data.get("format", {}).get("duration", 0))
+            except Exception:
+                chunk_duration = 0
+
+        start_seconds = i * (chunk_duration or 0)
+        minutes = int(start_seconds // 60)
+        seconds = int(start_seconds % 60)
+        marker = f"[{minutes:02d}:{seconds:02d}]"
+
+        # Transcribe this chunk
+        result = _transcribe_groq(chunk_path, model_name)
+        if not result["success"]:
+            merged_parts.append(f"{marker} [TRANSCRIPTION ERROR: {result.get('error', 'unknown')}]")
+        else:
+            transcript = result["transcript"].strip()
+            if transcript:
+                merged_parts.append(f"{marker} {transcript}")
+
+        # Rate-limit between chunks
+        if i < len(chunk_paths) - 1:
+            time.sleep(1)
+
+        # Clean up the temp chunk file
+        try:
+            os.remove(chunk_path)
+        except OSError:
+            pass
+
+    merged = "\n\n".join(merged_parts) if merged_parts else ""
+    return {"success": True, "transcript": merged, "provider": "groq"}
 
 
 def _normalize_local_model(model_name: Optional[str]) -> str:
@@ -1294,8 +1566,26 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Groq Whisper API (free tier available)."""
+def _transcribe_groq(
+    file_path: str,
+    model_name: str,
+    audio_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Transcribe using Groq Whisper API (free tier available).
+
+    Args:
+        file_path: Path to local audio file (used for error messages and as fallback).
+        model_name: STT model name.
+        audio_url: Optional remote URL to transcribe. When set, passes ``url``
+            to the Groq API instead of uploading the local file.
+
+    Returns:
+        dict with keys:
+          - success (bool)
+          - transcript (str): The transcribed text
+          - error (str, optional)
+          - provider (str, optional): "groq"
+    """
     api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
@@ -1312,16 +1602,27 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
-            with open(file_path, "rb") as audio_file:
+            if audio_url:
+                # Remote URL mode — pass url as multipart field
                 transcription = client.audio.transcriptions.create(
                     model=model_name,
-                    file=audio_file,
+                    url=audio_url,
                     response_format="text",
                 )
+                log_source = audio_url
+            else:
+                # Local file mode — existing behaviour
+                with open(file_path, "rb") as audio_file:
+                    transcription = client.audio.transcriptions.create(
+                        model=model_name,
+                        file=audio_file,
+                        response_format="text",
+                    )
+                log_source = Path(file_path).name
 
             transcript_text = str(transcription).strip()
             logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
+                         log_source, model_name, len(transcript_text))
 
             return {"success": True, "transcript": transcript_text, "provider": "groq"}
         finally:
@@ -1843,6 +2144,129 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+
+
+def transcribe_url(url: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Transcribe audio from a remote URL, with redirect handling and chunk fallback.
+
+    Workflow:
+      1. Probe URL (HEAD, follow redirects) for content type and size.
+      2. If size is within the free-tier limit (25 MB) and provider is Groq:
+         pass the URL directly to the Groq API.
+      3. If over limit: download → split with ffmpeg → transcribe chunks
+         sequentially → merge with [MM:SS] segment markers.
+
+    Args:
+        url:   Remote audio URL to transcribe.
+        model: Override the model. If None, uses config or provider default.
+
+    Returns:
+        dict with keys:
+          - success (bool): Whether transcription succeeded.
+          - transcript (str): The transcribed text (empty on failure).
+          - error (str, optional): Error message if success is False.
+          - provider (str, optional): Which provider was used.
+    """
+    # Load config
+    stt_config = _load_stt_config()
+    if not is_stt_enabled(stt_config):
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "STT is disabled in config.yaml (stt.enabled: false).",
+        }
+
+    provider = _get_provider(stt_config)
+
+    # Only Groq supports direct URL transcription
+    if provider != "groq":
+        return {
+            "success": False,
+            "transcript": "",
+            "error": (
+                f"Remote URL transcription is currently only supported for the Groq provider "
+                f"(configured: {provider!r}). Set stt.provider to 'groq' in config.yaml."
+            ),
+        }
+
+    api_key = get_env_value("GROQ_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
+    if not _HAS_OPENAI:
+        return {"success": False, "transcript": "", "error": "openai package not installed"}
+
+    model_name = model or DEFAULT_GROQ_STT_MODEL
+    if model_name in OPENAI_MODELS:
+        logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
+        model_name = DEFAULT_GROQ_STT_MODEL
+
+    # Step 1: Probe URL
+    logger.info("Probing remote audio URL: %s", url)
+    probe = _probe_audio_url(url)
+    if not probe["success"]:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Failed to probe audio URL: {probe.get('error', 'unknown error')}",
+        }
+
+    content_length = probe.get("content_length")
+    final_url = probe["url"]
+
+    # Step 2: Route based on size
+    if content_length is not None and content_length <= MAX_FILE_SIZE:
+        # Direct URL transcription — pass URL to Groq
+        logger.info(
+            "Audio URL %s (%s bytes) within limit — transcribing via Groq URL mode",
+            final_url, content_length,
+        )
+        # We pass the file_path as the URL for error message context
+        return _transcribe_groq(
+            file_path=final_url,
+            model_name=model_name,
+            audio_url=final_url,
+        )
+
+    # Step 3: Over limit — download + split + transcribe chunks
+    logger.info(
+        "Audio URL %s (%s bytes) exceeds direct limit — downloading and splitting",
+        final_url,
+        content_length or "unknown",
+    )
+
+    # 3a. Download
+    download = _download_audio(final_url)
+    if not download["success"]:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Failed to download audio: {download.get('error')}",
+        }
+
+    download_path = download["file_path"]
+    try:
+        # 3b. Split into chunks
+        with tempfile.TemporaryDirectory(prefix="hermes-chunks-") as chunk_dir:
+            split = _split_audio(download_path, chunk_dir)
+            if not split["success"]:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": split.get("error", "Failed to split audio"),
+                }
+
+            chunks = split["chunks"]
+
+            # 3c. Transcribe chunks sequentially
+            logger.info("Transcribing %d audio chunks via Groq", len(chunks))
+            return _transcribe_chunks(chunks, model_name)
+
+    finally:
+        # 3d. Clean up downloaded file
+        try:
+            os.remove(download_path)
+        except OSError:
+            pass
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:

@@ -466,6 +466,35 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+_STATUS_MAP = {
+    "pending": "[ ]",
+    "in_progress": "[>]",
+    "completed": "[x]",
+    "cancelled": "[-]",
+}
+
+
+def _render_todo_checklist(result_str: str) -> str:
+    """Parse a todo tool result and render a compact checklist.
+
+    Returns the checklist string, or an empty string on failure (caller
+    should handle the empty case gracefully).
+    """
+    try:
+        data = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    todos = data.get("todos") if isinstance(data, dict) else None
+    if not todos:
+        return ""
+    lines = ["📋 Task List"]
+    for item in todos:
+        content = (item.get("content") or "")[:80]
+        status = _STATUS_MAP.get(item.get("status", "pending"), "[ ]")
+        lines.append(f"{status} {content}")
+    return "\n".join(lines)
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -19305,6 +19334,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Regular tool calls are suppressed.
             if not tool_progress_enabled:
                 return
+
+            # Todo checklist: on tool.completed, render todo results as an
+            # editable checklist in the progress message bubble.
+            if event_type == "tool.completed" and tool_name == "todo":
+                try:
+                    progress_queue.put(_render_todo_checklist(kwargs.get("result", "")))
+                except Exception:
+                    logger.debug("Failed to render todo checklist", exc_info=True)
+                return
+
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:

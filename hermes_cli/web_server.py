@@ -14108,6 +14108,9 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "provider": _profile_attr(info, "provider"),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+        "role_specific_skill_count": int(
+            _profile_attr(info, "role_specific_skill_count", 0) or 0
+        ),
         "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
         "description": _profile_attr(info, "description", "") or "",
         "description_auto": bool(_profile_attr(info, "description_auto", False)),
@@ -14137,6 +14140,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "provider": provider,
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
+            "role_specific_skill_count": _safe(
+                lambda: profiles_mod._count_role_specific_skills(default_home), 0
+            ),
             "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
             "description": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description", ""), ""),
             "description_auto": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description_auto", False), False),
@@ -14160,6 +14166,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "provider": provider,
                 "has_env": (entry / ".env").exists(),
                 "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
+                "role_specific_skill_count": _safe(
+                    lambda entry=entry: profiles_mod._count_role_specific_skills(entry), 0
+                ),
                 "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
                 "description": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
                 "description_auto": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),

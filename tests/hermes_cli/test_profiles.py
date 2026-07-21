@@ -1896,3 +1896,157 @@ class TestProfilesToServe:
     def test_on_no_named_profiles_returns_just_default(self, profile_env):
         serve = profiles_to_serve(multiplex=True)
         assert [n for n, _ in serve] == ["default"]
+
+
+class TestCountRoleSpecificSkills:
+    """Regression tests for issue #49495: hermes profile create seeds every
+    new profile with the full bundled skill set, so a plain skill_count gives
+    no signal about which skills are actually role-specific. These test
+    _count_role_specific_skills() directly (identical/missing/modified) and
+    the /api/profiles response shape (the actual gap flagged in review --
+    the field must reach _profile_to_dict, not just an internal fallback)."""
+
+    def _write_skill(self, base: Path, name: str, body: str) -> None:
+        skill_dir = base / "skills" / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(body)
+
+    def test_identical_skill_not_counted_as_role_specific(self, profile_env):
+        from hermes_cli.profiles import _count_role_specific_skills
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "# PDF skill\nShared content.\n")
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "pdf", "# PDF skill\nShared content.\n")
+
+        assert _count_role_specific_skills(profile_dir) == 0
+
+    def test_modified_skill_counted_as_role_specific(self, profile_env):
+        from hermes_cli.profiles import _count_role_specific_skills
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "# PDF skill\nShared content.\n")
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "pdf", "# PDF skill\nCUSTOMIZED for librarian.\n")
+
+        assert _count_role_specific_skills(profile_dir) == 1
+
+    def test_skill_missing_from_default_counted_as_role_specific(self, profile_env):
+        from hermes_cli.profiles import _count_role_specific_skills
+
+        default_home = profile_env / ".hermes"
+        default_home.mkdir(exist_ok=True)
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "library-catalog", "# Library-only skill\n")
+
+        assert _count_role_specific_skills(profile_dir) == 1
+
+    def test_mixed_skills_only_changed_ones_counted(self, profile_env):
+        from hermes_cli.profiles import _count_role_specific_skills
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "shared\n")
+        self._write_skill(default_home, "web", "shared\n")
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "pdf", "shared\n")  # identical
+        self._write_skill(profile_dir, "web", "CHANGED\n")  # modified
+        self._write_skill(profile_dir, "library-only", "new\n")  # profile-only
+
+        assert _count_role_specific_skills(profile_dir) == 2
+
+    def test_default_profile_counts_every_skill_as_its_own(self, profile_env):
+        """The default profile has no baseline to compare against -- every
+        skill it has counts as role_specific == skill_count."""
+        from hermes_cli.profiles import _count_role_specific_skills, _count_skills
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "shared\n")
+        self._write_skill(default_home, "web", "shared\n")
+
+        assert _count_role_specific_skills(default_home) == _count_skills(default_home) == 2
+
+    def test_no_skills_dir_returns_zero(self, profile_env):
+        from hermes_cli.profiles import _count_role_specific_skills
+
+        create_profile("empty-profile", no_alias=True)
+        profile_dir = get_profile_dir("empty-profile")
+        shutil.rmtree(profile_dir / "skills", ignore_errors=True)
+
+        assert _count_role_specific_skills(profile_dir) == 0
+
+    def test_cache_invalidates_when_profile_skill_changes(self, profile_env):
+        """Editing a skill's content after the first (cached) call must be
+        reflected once the skills-dir mtime signature changes."""
+        import time
+        from hermes_cli.profiles import _count_role_specific_skills
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "shared\n")
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "pdf", "shared\n")
+
+        assert _count_role_specific_skills(profile_dir) == 0
+
+        # Modify the skill and bump the category dir's mtime so the cache
+        # signature changes (matches _skills_dir_signature's mtime check).
+        skill_dir = profile_dir / "skills" / "pdf"
+        self._write_skill(profile_dir, "pdf", "now different\n")
+        future = time.time() + 5
+        os.utime(skill_dir, (future, future))
+        os.utime(profile_dir / "skills", (future, future))
+
+        assert _count_role_specific_skills(profile_dir) == 1
+
+
+class TestProfileToDictRoleSpecificSkillCount:
+    """Regression (review of #49506): role_specific_skill_count must reach
+    the actual /api/profiles response shape -- both _profile_to_dict()
+    (the normal list_profiles() path) and _fallback_profile_dicts()
+    (the degraded-mode path) -- not just an internal dataclass field no
+    HTTP response ever reads."""
+
+    def _write_skill(self, base: Path, name: str, body: str) -> None:
+        skill_dir = base / "skills" / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(body)
+
+    def test_profile_to_dict_includes_role_specific_skill_count(self, profile_env):
+        """The actual gap flagged in review: the normal list_profiles() ->
+        _profile_to_dict() path must carry the field, not just the
+        fallback dict builder."""
+        from hermes_cli.web_server import _profile_to_dict
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "shared\n")
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "pdf", "CUSTOM\n")
+
+        infos = list_profiles()
+        librarian_info = next(p for p in infos if p.name == "librarian")
+        d = _profile_to_dict(librarian_info)
+
+        assert "role_specific_skill_count" in d
+        assert d["role_specific_skill_count"] == 1
+        assert d["skill_count"] == 1
+
+    def test_fallback_profile_dicts_includes_role_specific_skill_count(self, profile_env):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.web_server import _fallback_profile_dicts
+
+        default_home = profile_env / ".hermes"
+        self._write_skill(default_home, "pdf", "shared\n")
+        create_profile("librarian", no_alias=True)
+        profile_dir = get_profile_dir("librarian")
+        self._write_skill(profile_dir, "pdf", "CUSTOM\n")
+
+        dicts = _fallback_profile_dicts(profiles_mod)
+        librarian_dict = next(d for d in dicts if d["name"] == "librarian")
+
+        assert "role_specific_skill_count" in librarian_dict
+        assert librarian_dict["role_specific_skill_count"] == 1

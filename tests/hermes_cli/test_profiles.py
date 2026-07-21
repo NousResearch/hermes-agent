@@ -1896,6 +1896,8 @@ class TestProfilesToServe:
     def test_on_no_named_profiles_returns_just_default(self, profile_env):
         serve = profiles_to_serve(multiplex=True)
         assert [n for n, _ in serve] == ["default"]
+
+
 class TestCountSkills:
     """_count_skills must see symlinked skill dirs (external skill managers)."""
 
@@ -1913,7 +1915,10 @@ class TestCountSkills:
         vault = tmp_path / "vault" / "linked-skill"
         vault.mkdir(parents=True)
         (vault / "SKILL.md").write_text("---\nname: linked-skill\n---\n", encoding="utf-8")
-        (skills_dir / "linked-skill").symlink_to(vault)
+        try:
+            (skills_dir / "linked-skill").symlink_to(vault)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
 
         assert _count_skills(profile_dir) == 2
 

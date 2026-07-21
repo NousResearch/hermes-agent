@@ -68,6 +68,55 @@ def _ra():
     return run_agent
 
 
+def _rehydrate_session_cost(agent) -> None:
+    """Restore ``agent.session_estimated_cost_usd`` and
+    ``agent.session_cost_status`` from SQLite on agent construction
+    (issue #67762).
+
+    Before this helper, both attributes were reset to ``0.0`` / ``"unknown"``
+    by the ``init_agent`` reset block with no read from any persisted source.
+    After a gateway restart mid-session, the live counter would silently drop
+    to ``$0.00`` even though ``session_model_usage`` had the real accumulated
+    cost.
+
+    Fail-open: any unexpected error leaves the agent at the post-reset values
+    (``$0.0`` / ``"unknown"``). The next API call will accumulate from there,
+    so a transient rehydration failure is not catastrophic — just lossy for
+    one turn.
+
+    Note: the rehydrated ``session_cost_status`` is overwritten by the
+    unconditional ``=`` assignment at ``agent/conversation_loop.py:2321``
+    (and the equivalent at ``agent/codex_runtime.py:150``) on the very next
+    API call. The *cost value* survives across a gateway restart; the *status*
+    label reverts to "latest call wins" until issue #67764 (priority ladder)
+    also lands and converts those assignments to sticky ``max()`` semantics.
+    """
+    import sqlite3
+    _session_db = getattr(agent, "_session_db", None)
+    _session_id = getattr(agent, "session_id", None)
+    if _session_db is None or not _session_id:
+        return
+
+    try:
+        row = _session_db.get_session_cost_summary(_session_id)
+    except (sqlite3.Error, AttributeError, TypeError, ValueError) as exc:
+        # Scoped: only the failures we expect from the SQLite read. Anything
+        # more exotic (e.g., a bug in our SQL) should surface, not be swallowed.
+        _ra().logger.debug(
+            "Cost rehydration read failed for session %s: %s",
+            _session_id, exc,
+        )
+        return
+
+    if row is not None:
+        agent.session_estimated_cost_usd = float(
+            row.get("estimated_cost_usd") or 0.0
+        )
+        status = row.get("cost_status")
+        if status:
+            agent.session_cost_status = str(status)
+
+
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
@@ -2059,7 +2108,24 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
-    
+
+    # Rehydrate the cost counters from the persisted source so a gateway
+    # restart mid-session doesn't reset the live counter to $0.00 (issue #67762).
+    # SQLite is the source of truth (the JSON SessionEntry can desync if a
+    # write fails between the per-call update_token_counts transaction and
+    # the JSON to_dict save). The JSON fallback below covers the case where
+    # SQLite is unavailable. Fail-open: if both raise, the agent continues
+    # at $0.0 and accumulates from the next API call.
+    #
+    # Note: the rehydrated session_cost_status will be overwritten by the
+    # unconditional `=` assignment at agent/conversation_loop.py:2321 (and
+    # the equivalent at agent/codex_runtime.py:150) on the very next API
+    # call. The *cost value* survives across a gateway restart; the *status*
+    # label reverts to "latest call wins" until issue #67764 (priority
+    # ladder) also lands and converts those assignments to sticky `max()`
+    # semantics.
+    _rehydrate_session_cost(agent)
+
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.
     # When running against an Ollama server, detect the model's max context

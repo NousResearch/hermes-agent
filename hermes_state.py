@@ -3257,6 +3257,65 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_session_cost_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return accumulated cost + status across the session's per-model rows.
+
+        Used by ``agent/agent_init.py`` on resume to rehydrate the in-memory
+        ``agent.session_estimated_cost_usd`` and ``agent.session_cost_status``
+        so a gateway restart doesn't reset the live counter to $0 (issue #67762).
+
+        Returns a dict with ``estimated_cost_usd`` (float, sum of all per-model
+        rows for this session) and ``cost_status`` (sticky priority across the
+        same rows: ``actual`` wins, then ``included``, then ``unknown``, then
+        the most recent call's status). Returns ``None`` if the session has
+        no per-model rows yet — callers use this to distinguish "no spend"
+        from "explicit zero spend".
+
+        Read-only; uses the connection's read path (no transaction needed).
+        Single SQL query: ``SUM(CASE WHEN ...)`` is the codebase's preferred
+        conditional-aggregation pattern (see ``agent/insights.py:373-376``).
+        """
+        if self._conn is None:
+            return None
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(estimated_cost_usd), 0.0) AS estimated_cost_usd,
+                    CASE
+                        WHEN SUM(CASE WHEN cost_status = 'actual' THEN 1 ELSE 0 END) > 0
+                            THEN 'actual'
+                        WHEN SUM(CASE WHEN cost_status = 'included' THEN 1 ELSE 0 END) > 0
+                            THEN 'included'
+                        WHEN SUM(CASE WHEN cost_status = 'unknown' THEN 1 ELSE 0 END) > 0
+                            THEN 'unknown'
+                        ELSE COALESCE(
+                            (SELECT cost_status FROM session_model_usage
+                             WHERE session_id = :sid
+                             ORDER BY last_seen DESC LIMIT 1),
+                            'estimated'
+                        )
+                    END AS cost_status,
+                    COUNT(*) AS row_count
+                FROM session_model_usage
+                WHERE session_id = :sid
+                """,
+                {"sid": session_id},
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        # row_count lets us distinguish "no rows" from "rows but zero sum"
+        result = dict(row)
+        if int(result.get("row_count") or 0) == 0:
+            return None
+        try:
+            result["estimated_cost_usd"] = float(result["estimated_cost_usd"] or 0.0)
+        except (TypeError, ValueError):
+            result["estimated_cost_usd"] = 0.0
+        result.pop("row_count", None)
+        return result
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

@@ -177,6 +177,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
 }
 
 interface FreshSessionDraftOptions {
+  preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
@@ -270,6 +271,7 @@ export function useSessionActions({
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
+      const preserveRoute = draftOptions.preserveRoute ?? false
       const replaceRoute = draftOptions.replaceRoute ?? false
 
       const hasWorkspaceTarget =
@@ -290,7 +292,11 @@ export function useSessionActions({
       // rebind race, so leaving the old id here could revive it on a very fast
       // New Chat -> Enter sequence.
       onFreshDraftRouteIntent?.()
-      navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
+
+      if (!preserveRoute) {
+        navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
+      }
+
       setActiveSessionId(null)
       activeSessionIdRef.current = null
       setSelectedStoredSessionId(null)

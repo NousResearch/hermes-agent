@@ -90,9 +90,11 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  navigate = vi.fn(),
   onReady,
   requestGateway
 }: {
+  navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
@@ -106,7 +108,7 @@ function Harness({
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
     getRoutedStoredSessionId: () => null,
-    navigate: vi.fn() as never,
+    navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
@@ -403,6 +405,25 @@ async function createWith(
 
   return createParams
 }
+
+describe('startFreshSessionDraft', () => {
+  afterEach(() => cleanup())
+
+  it('can reset machine-bound session state without closing the current overlay route', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => handle!.startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null }))
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect($currentCwd.get()).toBe('')
+    expect($newChatWorkspaceTarget.get()).toBeNull()
+  })
+})
 
 describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {

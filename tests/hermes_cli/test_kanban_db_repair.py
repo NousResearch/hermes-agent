@@ -194,3 +194,83 @@ def test_repaired_db_connects_normally_afterwards(tmp_path):
     finally:
         conn.close()
     assert set(tmp_path.glob("kanban.db.corrupt.*.bak")) == before
+
+
+# ---------------------------------------------------------------------------
+# Corrupt-backup retention cap
+# ---------------------------------------------------------------------------
+
+def test_corrupt_backup_retention_cap_prunes_oldest(tmp_path, monkeypatch):
+    """Mutating corruption can't accumulate quarantine files forever.
+
+    Regression for the field report of 124 ``.corrupt.*.bak`` files: each
+    distinct corrupt byte-state mints a new content-addressed backup, so a
+    board whose file keeps changing between failures grows one backup per
+    mutation. The cap keeps only the newest ``_CORRUPT_BACKUP_RETENTION``.
+    """
+    monkeypatch.setattr(kb, "_CORRUPT_BACKUP_RETENTION", 3)
+    db_path = tmp_path / "kanban.db"
+    _write_page_corrupt_db(db_path)
+
+    minted: list[Path] = []
+    for i in range(8):
+        # Mutate the corrupt bytes → new sha → new backup each round.
+        with db_path.open("r+b") as fh:
+            fh.seek(200)
+            fh.write(bytes([i]) * 16)
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb.connect(db_path=db_path)
+        assert excinfo.value.backup_path is not None
+        minted.append(excinfo.value.backup_path)
+        # The just-created backup always survives its own prune pass.
+        assert excinfo.value.backup_path.exists()
+
+    remaining = sorted(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert len(remaining) == 3, (
+        f"expected retention cap of 3, found {len(remaining)}: {remaining}"
+    )
+    # The newest backup (this round's) is among the survivors.
+    assert minted[-1] in remaining
+
+
+def test_corrupt_backup_retention_prunes_sidecar_copies(tmp_path, monkeypatch):
+    """Pruned backups take their copied -wal/-shm sidecars with them."""
+    monkeypatch.setattr(kb, "_CORRUPT_BACKUP_RETENTION", 1)
+    db_path = tmp_path / "kanban.db"
+    _write_page_corrupt_db(db_path)
+
+    # Fabricate an old backup + sidecars that the next prune should remove.
+    import os
+    stale = tmp_path / "kanban.db.corrupt.deadbeef00000000.bak"
+    stale.write_bytes(b"old corrupt bytes")
+    (tmp_path / (stale.name + "-wal")).write_bytes(b"wal")
+    (tmp_path / (stale.name + "-shm")).write_bytes(b"shm")
+    past = 1_000_000_000
+    os.utime(stale, (past, past))
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.connect(db_path=db_path)
+    fresh = excinfo.value.backup_path
+    assert fresh is not None and fresh.exists()
+
+    assert not stale.exists()
+    assert not (tmp_path / (stale.name + "-wal")).exists()
+    assert not (tmp_path / (stale.name + "-shm")).exists()
+
+
+def test_identical_corrupt_bytes_still_reuse_one_backup(tmp_path):
+    """The retention cap must not break content-addressed dedupe."""
+    db_path = tmp_path / "kanban.db"
+    _write_page_corrupt_db(db_path)
+
+    backups: set[Path] = set()
+    for _ in range(5):
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb.connect(db_path=db_path)
+        assert excinfo.value.backup_path is not None
+        backups.add(excinfo.value.backup_path)
+    assert len(backups) == 1
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 1
